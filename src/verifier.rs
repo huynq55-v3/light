@@ -299,7 +299,7 @@ impl Verifier {
     }
 
     /// Khai báo tất cả các biến ký hiệu (Symbolic Variables) cho Z3
-    fn declare_all_vars(func: &Function, exprs: &[&Expr], smt: &mut String) {
+    fn declare_all_vars(func: &Function, exprs: &[&Expr], smt: &mut String) -> std::collections::HashSet<String> {
         let mut vars = std::collections::HashSet::new();
         for p in &func.params {
             vars.insert(p.name.clone());
@@ -307,9 +307,10 @@ impl Verifier {
         for e in exprs {
             Self::collect_vars(e, &mut vars);
         }
-        for v in vars {
+        for v in &vars {
             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", v));
         }
+        vars
     }
     /// Chuyển đổi biểu thức Expr sang chuỗi logic SMT-LIB2 (Bit-Vector 64-bit)
     pub fn expr_to_smt(expr: &Expr) -> String {
@@ -498,7 +499,7 @@ impl Verifier {
                     let name = d.trim_start_matches('%');
                     smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
                 }
-                Instruction::RetIf { cond, .. } => {
+                Instruction::RetIf { cond, .. } | Instruction::BrIf { cond, .. } => {
                     let c = cond.trim_start_matches('%');
                     // Condition did NOT hold, so cond == 0
                     smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c));
@@ -637,11 +638,15 @@ impl Verifier {
 
         let mut all_exprs: Vec<&Expr> = requires.iter().collect();
         all_exprs.extend(invariants.iter());
-        Self::declare_all_vars(func, &all_exprs, &mut smt);
+        let mut declared_vars = Self::declare_all_vars(func, &all_exprs, &mut smt);
 
         for (buf_name, size) in buffer_sizes {
             let clean = buf_name.trim_start_matches('%');
-            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            let blen = format!("{}_len", clean);
+            if !declared_vars.contains(&blen) {
+                smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", blen));
+                declared_vars.insert(blen);
+            }
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
         }
 
@@ -661,18 +666,70 @@ impl Verifier {
             match &s_inst.inst {
                 Instruction::AssignConst { dest, val: Value::I64(v), .. } => {
                     let d = dest.trim_start_matches('%');
+                    if !declared_vars.contains(d) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        declared_vars.insert(d.to_string());
+                    }
+                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
                     if d == loop_var {
-                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
                         found_init = true;
                     }
                 }
                 Instruction::Mov { dest, src } => {
                     let d = dest.trim_start_matches('%');
                     let s = src.trim_start_matches('%');
+                    if !declared_vars.contains(d) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        declared_vars.insert(d.to_string());
+                    }
+                    smt.push_str(&format!("(assert (= {} {}))\n", d, s));
                     if d == loop_var {
-                        smt.push_str(&format!("(assert (= {} {}))\n", d, s));
                         found_init = true;
                     }
+                }
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    if !declared_vars.contains(d) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        declared_vars.insert(d.to_string());
+                    }
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::Binary { op, dest, src1, src2, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    if !declared_vars.contains(d) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        declared_vars.insert(d.to_string());
+                    }
+                    let s1 = match src1 {
+                        Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                        Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    let s2 = match src2 {
+                        Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                        Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    let expr_str = match op {
+                        BinOp::Add => format!("(bvadd {} {})", s1, s2),
+                        BinOp::Sub => format!("(bvsub {} {})", s1, s2),
+                        BinOp::Mul => format!("(bvmul {} {})", s1, s2),
+                        BinOp::Div => format!("(bvsdiv {} {})", s1, s2),
+                        BinOp::Lt => format!("(ite (bvslt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Lte => format!("(ite (bvsle {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Gt => format!("(ite (bvsgt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Gte => format!("(ite (bvsge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Eq => format!("(ite (= {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Neq => format!("(ite (distinct {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    smt.push_str(&format!("(assert (= {} {}))\n", d, expr_str));
+                }
+                Instruction::RetIf { cond, .. } | Instruction::BrIf { cond, .. } => {
+                    let c = cond.trim_start_matches('%');
+                    smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c));
                 }
                 _ => {}
             }
@@ -985,7 +1042,7 @@ impl Verifier {
                         smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
                     }
                 }
-                Instruction::RetIf { cond, .. } => {
+                Instruction::RetIf { cond, .. } | Instruction::BrIf { cond, .. } => {
                     let c = cond.trim_start_matches('%');
                     smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c));
                 }

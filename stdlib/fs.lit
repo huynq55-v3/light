@@ -103,3 +103,23 @@ FUNC fs_write_file(path: slice<u8>, content: slice<u8>) -> i64
   ENSURE %bytes >= -1 && %bytes <= len(content)
   RET %bytes
 END_FUNC
+
+# High-level file writing: write exact count bytes from buffer to file
+FUNC fs_write_file_bytes(path: slice<u8>, content: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
+
+  %flags = CONST i64 577
+  %mode = CONST i64 420
+  %fd = CALL sys_open path %flags %mode
+
+  %zero = CONST i64 0
+  %is_err = LT i64 %fd %zero
+  RET_IF %is_err %fd
+
+  %bytes = CALL sys_write %fd content count
+  %dummy = CALL sys_close %fd
+
+  ENSURE %bytes >= -1 && %bytes <= count
+  RET %bytes
+END_FUNC
+

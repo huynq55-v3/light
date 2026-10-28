@@ -1,0 +1,6 @@
+# Test program with custom string and exit code
+FUNC main() -> i64
+  %msg = ALLOC slice<u8> 64
+  STORE_STR %msg "🚀 Self-hosting Light compiler is ALIVE and PROVEN by Z3!\n"
+  RET 42
+END_FUNC
