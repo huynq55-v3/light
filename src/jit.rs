@@ -110,6 +110,19 @@ impl MachineCodeEmitter {
         self.code.push(modrm);
     }
 
+    /// Emit: test reg1, reg2
+    pub fn emit_test_reg_reg(&mut self, reg1: X86Reg, reg2: X86Reg) {
+        let r1 = reg1 as u8;
+        let r2 = reg2 as u8;
+        let mut rex = 0x48;
+        if r2 >= 8 { rex |= 0x04; }
+        if r1 >= 8 { rex |= 0x01; }
+        self.code.push(rex);
+        self.code.push(0x85);
+        let modrm = 0xc0 | ((r2 & 7) << 3) | (r1 & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit: syscall (0F 05)
     pub fn emit_syscall(&mut self) {
         self.code.push(0x0f);
@@ -324,7 +337,7 @@ impl MachineCodeEmitter {
                     }
                 }
 
-                Instruction::Syscall { rax, rdi, rsi, rdx } => {
+                Instruction::Syscall { dest, rax, rdi, rsi, rdx } => {
                     // Để tránh việc nạp thanh ghi này làm đè mất giá trị của thanh ghi kia:
                     // Ta nạp lần lượt: rdx, rsi, rdi, rax (ngược lại từ sau ra trước)
                     let args = [
@@ -359,6 +372,13 @@ impl MachineCodeEmitter {
                     }
 
                     self.emit_syscall();
+
+                    if let Some(d) = dest {
+                        let dst_reg = self.get_reg(d);
+                        if dst_reg != X86Reg::Rax {
+                            self.emit_mov_reg_reg(dst_reg, X86Reg::Rax);
+                        }
+                    }
                 }
 
                 Instruction::Ret(val) => {
@@ -384,6 +404,33 @@ impl MachineCodeEmitter {
                     } else {
                         self.emit_ret();
                     }
+                }
+
+                Instruction::RetIf { cond, val } => {
+                    let cond_reg = self.get_reg(cond);
+                    self.emit_test_reg_reg(cond_reg, cond_reg);
+                    // 0x74 = jz rel8
+                    self.code.push(0x74);
+                    let jump_idx = self.code.len();
+                    self.code.push(0);
+
+                    if let Some(op) = val {
+                        match op {
+                            Operand::Const(Value::I64(n)) => self.emit_mov_reg_imm64(X86Reg::Rax, *n),
+                            Operand::Reg(r) => {
+                                let src_reg = self.get_reg(r);
+                                if src_reg != X86Reg::Rax {
+                                    self.emit_mov_reg_reg(X86Reg::Rax, src_reg);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.emit_ret();
+
+                    let after = self.code.len();
+                    let rel = after - (jump_idx + 1);
+                    self.code[jump_idx] = rel as u8;
                 }
 
                 _ => {}

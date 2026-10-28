@@ -486,7 +486,13 @@ impl Parser {
                 });
             }
             let raw_str = &line[first_quote + 1..last_quote];
-            let unescaped = raw_str.replace("\\n", "\n").replace("\\t", "\t");
+            let unescaped = raw_str
+                .replace("\\0", "\0")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\r", "\r")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
             let prefix = line[..first_quote].trim();
             let p_parts: Vec<&str> = prefix.split_whitespace().collect();
             let offset = if p_parts.len() == 2 {
@@ -518,6 +524,7 @@ impl Parser {
                 });
             }
             return Ok(Instruction::Syscall {
+                dest: None,
                 rax: Self::parse_operand(parts[1]),
                 rdi: Self::parse_operand(parts[2]),
                 rsi: Self::parse_operand(parts[3]),
@@ -528,6 +535,21 @@ impl Parser {
         if parts[0] == "RET" {
             let ret_val = parts.get(1).map(|s| Self::parse_operand(s));
             return Ok(Instruction::Ret(ret_val));
+        }
+
+        if parts[0] == "RET_IF" {
+            if parts.len() < 2 {
+                return Err(ParseError {
+                    line_no,
+                    message: "Syntax: RET_IF %cond [%val]".into(),
+                });
+            }
+            let cond = parts[1].to_string();
+            let ret_val = parts.get(2).map(|s| Self::parse_operand(s));
+            return Ok(Instruction::RetIf {
+                cond,
+                val: ret_val,
+            });
         }
 
         // --- GÁN %dest = ... ---
@@ -686,6 +708,21 @@ impl Parser {
                         dest,
                         buf: parts[3].to_string(),
                         offset: Self::parse_operand(parts[4]),
+                    });
+                }
+                "SYSCALL" => {
+                    if parts.len() < 7 {
+                        return Err(ParseError {
+                            line_no,
+                            message: "Syntax: %dest = SYSCALL rax rdi rsi rdx".into(),
+                        });
+                    }
+                    return Ok(Instruction::Syscall {
+                        dest: Some(dest),
+                        rax: Self::parse_operand(parts[3]),
+                        rdi: Self::parse_operand(parts[4]),
+                        rsi: Self::parse_operand(parts[5]),
+                        rdx: Self::parse_operand(parts[6]),
                     });
                 }
                 "ADD" | "SUB" | "MUL" | "DIV" | "MOD" | "EQ" | "NEQ" | "LT" | "LTE" | "GT" | "GTE"

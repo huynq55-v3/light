@@ -1,0 +1,157 @@
+# ==============================================================================
+# LIGHT SELF-HOSTING BOOTSTRAP COMPILER (Stage 1)
+# Written directly in Light (.lit) flat SSA language!
+# Fully verified with Z3 SMT Solver
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+IMPORT "../stdlib/string.lit"
+IMPORT "../stdlib/fs.lit"
+
+# Emit 64-byte ELF64 Header and 56-byte Program Header into destination buffer
+FUNC emit_elf_header(buf: slice<u8>, code_len: i64) -> i64
+  REQUIRE len(buf) >= 120 && code_len >= 0
+
+  %ptr = SLICE_PTR buf
+
+  # ELF Magic: 0x7F 'E' 'L' 'F'
+  %b0 = CONST i64 127
+  STORE8 %ptr 0 %b0
+  %b1 = CONST i64 69
+  STORE8 %ptr 1 %b1
+  %b2 = CONST i64 76
+  STORE8 %ptr 2 %b2
+  %b3 = CONST i64 70
+  STORE8 %ptr 3 %b3
+
+  # EI_CLASS = 2 (64-bit), EI_DATA = 1 (Little Endian), EI_VERSION = 1
+  %two = CONST i64 2
+  STORE8 %ptr 4 %two
+  %one = CONST i64 1
+  STORE8 %ptr 5 %one
+  STORE8 %ptr 6 %one
+
+  # e_type = 2 (ET_EXEC) at offset 16
+  STORE8 %ptr 16 %two
+
+  # e_machine = 0x3E (AMD x86-64 = 62) at offset 18
+  %mach = CONST i64 62
+  STORE8 %ptr 18 %mach
+
+  # e_version = 1 at offset 20
+  STORE8 %ptr 20 %one
+
+  # e_entry = 0x400078 (4194424) at offset 24
+  %entry = CONST i64 4194424
+  STORE64 %ptr 24 %entry
+
+  # e_phoff = 64 at offset 32
+  %phoff = CONST i64 64
+  STORE64 %ptr 32 %phoff
+
+  # e_ehsize = 64 at offset 52
+  STORE8 %ptr 52 %phoff
+
+  # e_phentsize = 56 at offset 54
+  %phentsize = CONST i64 56
+  STORE8 %ptr 54 %phentsize
+
+  # e_phnum = 1 at offset 56
+  STORE8 %ptr 56 %one
+
+  # Program Header (offset 64):
+  # p_type = 1 (PT_LOAD) at offset 64
+  STORE8 %ptr 64 %one
+
+  # p_flags = 7 (PF_R | PF_W | PF_X) at offset 68
+  %flags = CONST i64 7
+  STORE8 %ptr 68 %flags
+
+  # p_vaddr = 0x400000 (4194304) at offset 80
+  %vaddr = CONST i64 4194304
+  STORE64 %ptr 80 %vaddr
+
+  # p_paddr = 0x400000 at offset 88
+  STORE64 %ptr 88 %vaddr
+
+  # Total binary size = 120 + code_len
+  %hdr_len = CONST i64 120
+  %total_sz = ADD i64 %hdr_len code_len
+
+  # p_filesz at offset 96
+  STORE64 %ptr 96 %total_sz
+
+  # p_memsz at offset 104
+  STORE64 %ptr 104 %total_sz
+
+  # p_align = 4096 at offset 112
+  %align = CONST i64 4096
+  STORE64 %ptr 112 %align
+
+  RET %hdr_len
+END_FUNC
+
+# Emit standalone exit machine code at offset 120
+FUNC emit_exit_code(buf: slice<u8>, exit_code: i64) -> i64
+  REQUIRE len(buf) >= 136 && exit_code >= 0 && exit_code <= 255
+
+  %ptr = SLICE_PTR buf
+
+  # mov rdi, exit_code -> 48 c7 c7 <code: 4 bytes>
+  %b_rex = CONST i64 72
+  STORE8 %ptr 120 %b_rex
+  %b_c7 = CONST i64 199
+  STORE8 %ptr 121 %b_c7
+  STORE8 %ptr 122 %b_c7
+  STORE8 %ptr 123 exit_code
+
+  # mov rax, 60 (sys_exit) -> 48 c7 c0 3c 00 00 00
+  STORE8 %ptr 127 %b_rex
+  STORE8 %ptr 128 %b_c7
+  %b_c0 = CONST i64 192
+  STORE8 %ptr 129 %b_c0
+  %b_sys_exit = CONST i64 60
+  STORE8 %ptr 130 %b_sys_exit
+
+  # syscall -> 0f 05
+  %b_0f = CONST i64 15
+  STORE8 %ptr 134 %b_0f
+  %b_05 = CONST i64 5
+  STORE8 %ptr 135 %b_05
+
+  %total_len = CONST i64 136
+  RET %total_len
+END_FUNC
+
+# Main compiler entry point: compiles a standalone ELF binary into out.bin
+FUNC main() -> i64
+  %msg = ALLOC slice<u8> 80
+  STORE_STR %msg "🚀 Light Self-Hosting Compiler v0.1 emitting standalone ELF...\n"
+  %msg_len = SLICE_LEN %msg
+  %dummy1 = CALL std_print_slice %msg %msg_len
+
+  # 1. Allocate ELF binary buffer (512 bytes)
+  %elf_buf = ALLOC slice<u8> 512
+
+  # 2. Emit ELF Header with 16 bytes of machine code
+  %code_len = CONST i64 16
+  %hdr_len = CALL emit_elf_header %elf_buf %code_len
+
+  # 3. Emit Exit Machine Code with exit code 42
+  %exit_val = CONST i64 42
+  %bin_sz = CALL emit_exit_code %elf_buf %exit_val
+
+  # 4. Write standalone ELF executable to disk
+  %out_path = ALLOC slice<u8> 16
+  STORE_STR %out_path "out.bin\0"
+
+  %bytes_written = CALL fs_write_file %out_path %elf_buf
+
+  %success_msg = ALLOC slice<u8> 64
+  STORE_STR %success_msg "🎉 Successfully emitted standalone ELF: out.bin!\n"
+  %s_len = SLICE_LEN %success_msg
+  %dummy2 = CALL std_print_slice %success_msg %s_len
+
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC

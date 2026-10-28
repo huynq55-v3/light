@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct MemoryBuffer {
+    pub base_addr: usize,
     pub data: Vec<u8>,
 }
 
@@ -16,6 +17,8 @@ pub struct VirtualMachine {
     pub buffers: HashMap<String, MemoryBuffer>,
     pub next_ptr_addr: usize,
     pub functions: HashMap<String, Function>,
+    pub open_files: HashMap<i64, std::fs::File>,
+    pub next_fd: i64,
 }
 
 impl VirtualMachine {
@@ -26,6 +29,8 @@ impl VirtualMachine {
             buffers: HashMap::new(),
             next_ptr_addr: 0x1000,
             functions: HashMap::new(),
+            open_files: HashMap::new(),
+            next_fd: 3,
         }
     }
 
@@ -39,6 +44,8 @@ impl VirtualMachine {
             buffers: HashMap::new(),
             next_ptr_addr: 0x1000,
             functions,
+            open_files: HashMap::new(),
+            next_fd: 3,
         }
     }
 
@@ -67,6 +74,40 @@ impl VirtualMachine {
         match self.get_operand_val(op)? {
             Value::Bool(b) => Ok(b),
             other => Err(format!("Expected bool, found {:?}", other)),
+        }
+    }
+
+    pub fn val_to_i64(&self, val: &Value) -> Result<i64, String> {
+        match val {
+            Value::I64(v) => Ok(*v),
+            Value::U64(v) => Ok(*v as i64),
+            Value::Ptr(v) => Ok(*v as i64),
+            Value::Bool(b) => Ok(if *b { 1 } else { 0 }),
+            _ => Err(format!("Expected integer, found {:?}", val)),
+        }
+    }
+
+    pub fn resolve_buffer_name_and_offset(&self, val: &Value) -> Result<(String, usize), String> {
+        match val {
+            Value::Slice { buf_name, .. } => Ok((buf_name.clone(), 0)),
+            Value::Ptr(addr) => {
+                for (name, buf) in &self.buffers {
+                    if *addr >= buf.base_addr && *addr < buf.base_addr + buf.data.len() {
+                        return Ok((name.clone(), *addr - buf.base_addr));
+                    }
+                }
+                Err(format!("Pointer 0x{:x} does not point to any allocated buffer", addr))
+            }
+            Value::I64(addr) => {
+                let uaddr = *addr as usize;
+                for (name, buf) in &self.buffers {
+                    if uaddr >= buf.base_addr && uaddr < buf.base_addr + buf.data.len() {
+                        return Ok((name.clone(), uaddr - buf.base_addr));
+                    }
+                }
+                Err(format!("Address {} does not match any allocated buffer", addr))
+            }
+            _ => Err(format!("Expected buffer pointer or slice, found {:?}", val)),
         }
     }
 
@@ -160,23 +201,25 @@ impl VirtualMachine {
                 }
 
                 Instruction::Alloc { dest, size } => {
+                    let ptr_val = self.next_ptr_addr;
+                    self.next_ptr_addr += (size + 63) & !63; // Align 64 bytes
                     let buf = MemoryBuffer {
+                        base_addr: ptr_val,
                         data: vec![0u8; *size],
                     };
                     self.buffers.insert(dest.clone(), buf);
-                    let ptr_val = self.next_ptr_addr;
-                    self.next_ptr_addr += (size + 63) & !63; // Align 64 bytes
                     self.registers.insert(dest.clone(), Value::Ptr(ptr_val));
                     pc += 1;
                 }
 
                 Instruction::AllocSlice { dest, len, .. } => {
+                    let ptr_val = self.next_ptr_addr;
+                    self.next_ptr_addr += (len + 63) & !63;
                     let buf = MemoryBuffer {
+                        base_addr: ptr_val,
                         data: vec![0u8; *len],
                     };
                     self.buffers.insert(dest.clone(), buf);
-                    let ptr_val = self.next_ptr_addr;
-                    self.next_ptr_addr += (len + 63) & !63;
                     self.registers.insert(
                         dest.clone(),
                         Value::Slice {
@@ -210,35 +253,55 @@ impl VirtualMachine {
                 Instruction::Store8 { buf, offset, val } => {
                     let off = self.get_i64(offset)? as usize;
                     let byte_val = self.get_i64(val)? as u8;
+
+                    let (buf_name, base_off) = if self.buffers.contains_key(buf) {
+                        (buf.clone(), 0)
+                    } else if let Some(reg_val) = self.registers.get(buf) {
+                        self.resolve_buffer_name_and_offset(reg_val)?
+                    } else {
+                        return Err(format!("Buffer or pointer '{}' does not exist", buf));
+                    };
+
+                    let total_off = base_off + off;
                     let buffer = self
                         .buffers
-                        .get_mut(buf)
-                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf))?;
-                    if off >= buffer.data.len() {
+                        .get_mut(&buf_name)
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf_name))?;
+                    if total_off >= buffer.data.len() {
                         return Err(format!(
                             "Runtime Bounds Error: Out of bounds byte store at offset {} (buffer len: {})",
-                            off,
+                            total_off,
                             buffer.data.len()
                         ));
                     }
-                    buffer.data[off] = byte_val;
+                    buffer.data[total_off] = byte_val;
                     pc += 1;
                 }
 
                 Instruction::Load8 { dest, buf, offset } => {
                     let off = self.get_i64(offset)? as usize;
+
+                    let (buf_name, base_off) = if self.buffers.contains_key(buf) {
+                        (buf.clone(), 0)
+                    } else if let Some(reg_val) = self.registers.get(buf) {
+                        self.resolve_buffer_name_and_offset(reg_val)?
+                    } else {
+                        return Err(format!("Buffer or pointer '{}' does not exist", buf));
+                    };
+
+                    let total_off = base_off + off;
                     let buffer = self
                         .buffers
-                        .get(buf)
-                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf))?;
-                    if off >= buffer.data.len() {
+                        .get(&buf_name)
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf_name))?;
+                    if total_off >= buffer.data.len() {
                         return Err(format!(
                             "Runtime Bounds Error: Out of bounds byte load at offset {} (buffer len: {})",
-                            off,
+                            total_off,
                             buffer.data.len()
                         ));
                     }
-                    let byte_val = buffer.data[off] as i64;
+                    let byte_val = buffer.data[total_off] as i64;
                     self.registers.insert(dest.clone(), Value::I64(byte_val));
                     pc += 1;
                 }
@@ -246,37 +309,57 @@ impl VirtualMachine {
                 Instruction::Store64 { buf, offset, val } => {
                     let off = self.get_i64(offset)? as usize;
                     let i64_val = self.get_i64(val)?;
+
+                    let (buf_name, base_off) = if self.buffers.contains_key(buf) {
+                        (buf.clone(), 0)
+                    } else if let Some(reg_val) = self.registers.get(buf) {
+                        self.resolve_buffer_name_and_offset(reg_val)?
+                    } else {
+                        return Err(format!("Buffer or pointer '{}' does not exist", buf));
+                    };
+
+                    let total_off = base_off + off;
                     let buffer = self
                         .buffers
-                        .get_mut(buf)
-                        .ok_or_else(|| format!("Buffer '{}' không tồn tại", buf))?;
-                    if off + 8 > buffer.data.len() {
+                        .get_mut(&buf_name)
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf_name))?;
+                    if total_off + 8 > buffer.data.len() {
                         return Err(format!(
-                            "Lỗi Runtime Bounds Check: Ghi i64 vượt biên tại offset {} (buffer len: {})",
-                            off,
+                            "Runtime Bounds Check Error: i64 store exceeds buffer at offset {} (buffer len: {})",
+                            total_off,
                             buffer.data.len()
                         ));
                     }
                     let bytes = i64_val.to_le_bytes();
-                    buffer.data[off..off + 8].copy_from_slice(&bytes);
+                    buffer.data[total_off..total_off + 8].copy_from_slice(&bytes);
                     pc += 1;
                 }
 
                 Instruction::Load64 { dest, buf, offset } => {
                     let off = self.get_i64(offset)? as usize;
+
+                    let (buf_name, base_off) = if self.buffers.contains_key(buf) {
+                        (buf.clone(), 0)
+                    } else if let Some(reg_val) = self.registers.get(buf) {
+                        self.resolve_buffer_name_and_offset(reg_val)?
+                    } else {
+                        return Err(format!("Buffer or pointer '{}' does not exist", buf));
+                    };
+
+                    let total_off = base_off + off;
                     let buffer = self
                         .buffers
-                        .get(buf)
-                        .ok_or_else(|| format!("Buffer '{}' không tồn tại", buf))?;
-                    if off + 8 > buffer.data.len() {
+                        .get(&buf_name)
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf_name))?;
+                    if total_off + 8 > buffer.data.len() {
                         return Err(format!(
-                            "Lỗi Runtime Bounds Check: Đọc i64 vượt biên tại offset {} (buffer len: {})",
-                            off,
+                            "Runtime Bounds Check Error: i64 load exceeds buffer at offset {} (buffer len: {})",
+                            total_off,
                             buffer.data.len()
                         ));
                     }
                     let mut bytes = [0u8; 8];
-                    bytes.copy_from_slice(&buffer.data[off..off + 8]);
+                    bytes.copy_from_slice(&buffer.data[total_off..total_off + 8]);
                     let i64_val = i64::from_le_bytes(bytes);
                     self.registers.insert(dest.clone(), Value::I64(i64_val));
                     pc += 1;
@@ -379,13 +462,16 @@ impl VirtualMachine {
                 }
 
                 // Giao tiếp hệ điều hành Linux: SYSCALL
-                Instruction::Syscall { rax, rdi, rsi, rdx } => {
+                Instruction::Syscall { dest, rax, rdi, rsi, rdx } => {
                     let sys_id = self.get_i64(rax)?;
-                    let arg1 = self.get_i64(rdi)?;
+                    let arg1 = self.get_operand_val(rdi)?;
                     let arg2 = self.get_operand_val(rsi)?;
-                    let arg3 = self.get_i64(rdx)?;
+                    let arg3 = self.get_operand_val(rdx)?;
 
-                    self.handle_linux_syscall(sys_id, arg1, &arg2, arg3)?;
+                    let ret_val = self.handle_linux_syscall(sys_id, &arg1, &arg2, &arg3)?;
+                    if let Some(d) = dest {
+                        self.registers.insert(d.clone(), Value::I64(ret_val));
+                    }
                     pc += 1;
                 }
 
@@ -396,6 +482,23 @@ impl VirtualMachine {
                     }
                     return Ok(None);
                 }
+
+                Instruction::RetIf { cond, val } => {
+                    let should_ret = match self.registers.get(cond) {
+                        Some(Value::Bool(b)) => *b,
+                        Some(Value::I64(n)) => *n != 0,
+                        Some(Value::U64(n)) => *n != 0,
+                        _ => false,
+                    };
+                    if should_ret {
+                        if let Some(op) = val {
+                            let ret_val = self.get_operand_val(op)?;
+                            return Ok(Some(ret_val));
+                        }
+                        return Ok(None);
+                    }
+                    pc += 1;
+                }
             }
         }
 
@@ -405,51 +508,118 @@ impl VirtualMachine {
     fn handle_linux_syscall(
         &mut self,
         sys_id: i64,
-        arg1: i64,
+        arg1: &Value,
         arg2: &Value,
-        arg3: i64,
-    ) -> Result<(), String> {
+        arg3: &Value,
+    ) -> Result<i64, String> {
         match sys_id {
-            // sys_write: (fd = arg1, buf = arg2, count = arg3)
-            1 => {
-                let count = arg3 as usize;
-                // Tìm buffer khớp với arg2
-                let mut found_data: Option<&[u8]> = None;
-                if let Value::Slice { buf_name, .. } = arg2 {
-                    if let Some(buf) = self.buffers.get(buf_name) {
-                        if count <= buf.data.len() {
-                            found_data = Some(&buf.data[..count]);
-                        }
-                    }
-                }
-                if found_data.is_none() {
-                    for buf in self.buffers.values() {
-                        if count <= buf.data.len() {
-                            found_data = Some(&buf.data[..count]);
-                            break;
-                        }
-                    }
+            // sys_read: (fd = arg1, buf = arg2, count = arg3)
+            0 => {
+                let fd = self.val_to_i64(arg1)?;
+                let count = self.val_to_i64(arg3)? as usize;
+                let (buf_name, base_off) = self.resolve_buffer_name_and_offset(arg2)?;
+                let buf = self.buffers.get_mut(&buf_name).ok_or_else(|| format!("Buffer '{}' not found", buf_name))?;
+                if base_off + count > buf.data.len() {
+                    return Err(format!("sys_read: buffer overflow (need {}, have {})", base_off + count, buf.data.len()));
                 }
 
-                if let Some(data) = found_data {
-                    let text = String::from_utf8_lossy(data);
-                    if arg1 == 1 {
-                        // stdout
-                        print!("{}", text);
-                    } else if arg1 == 2 {
-                        // stderr
-                        eprint!("{}", text);
-                    }
+                if fd == 0 {
+                    use std::io::Read;
+                    let bytes_read = std::io::stdin()
+                        .take(count as u64)
+                        .read(&mut buf.data[base_off..base_off + count])
+                        .map_err(|e| e.to_string())?;
+                    Ok(bytes_read as i64)
+                } else if let Some(file) = self.open_files.get_mut(&fd) {
+                    use std::io::Read;
+                    let bytes_read = file
+                        .read(&mut buf.data[base_off..base_off + count])
+                        .map_err(|e| e.to_string())?;
+                    Ok(bytes_read as i64)
                 } else {
-                    return Err(format!("sys_write: Cannot find valid buffer of size {} bytes", count));
+                    Ok(-1)
                 }
-                Ok(())
             }
+
+            // sys_write: (fd = arg1, buf = arg2, count = arg3)
+            1 => {
+                let fd = self.val_to_i64(arg1)?;
+                let count = self.val_to_i64(arg3)? as usize;
+                let (buf_name, base_off) = self.resolve_buffer_name_and_offset(arg2)?;
+                let buf = self.buffers.get(&buf_name).ok_or_else(|| format!("Buffer '{}' not found", buf_name))?;
+                if base_off + count > buf.data.len() {
+                    return Err(format!("sys_write: buffer overflow (need {}, have {})", base_off + count, buf.data.len()));
+                }
+                let data = &buf.data[base_off..base_off + count];
+
+                if fd == 1 {
+                    let text = String::from_utf8_lossy(data);
+                    print!("{}", text);
+                    Ok(count as i64)
+                } else if fd == 2 {
+                    let text = String::from_utf8_lossy(data);
+                    eprint!("{}", text);
+                    Ok(count as i64)
+                } else if let Some(file) = self.open_files.get_mut(&fd) {
+                    use std::io::Write;
+                    file.write_all(data).map_err(|e| e.to_string())?;
+                    Ok(count as i64)
+                } else {
+                    Ok(-1)
+                }
+            }
+
+            // sys_open: (filename = arg1, flags = arg2, mode = arg3)
+            2 => {
+                let flags = self.val_to_i64(arg2)?;
+                let _mode = self.val_to_i64(arg3)?;
+
+                let (buf_name, base_off) = self.resolve_buffer_name_and_offset(arg1)?;
+                let buf = self.buffers.get(&buf_name).ok_or_else(|| format!("Buffer '{}' not found", buf_name))?;
+                let slice_data = &buf.data[base_off..];
+                // Read until null terminator or end
+                let len = slice_data.iter().position(|&b| b == 0).unwrap_or(slice_data.len());
+                let path_str = std::str::from_utf8(&slice_data[..len]).map_err(|e| e.to_string())?;
+
+                let is_write = (flags & 1 != 0) || (flags & 2 != 0);
+                let is_create = flags & 64 != 0;
+                let is_trunc = flags & 512 != 0;
+                let is_append = flags & 1024 != 0;
+
+                let mut options = std::fs::OpenOptions::new();
+                if is_write {
+                    options.write(true);
+                    if is_create { options.create(true); }
+                    if is_trunc { options.truncate(true); }
+                    if is_append { options.append(true); }
+                } else {
+                    options.read(true);
+                }
+
+                match options.open(path_str) {
+                    Ok(f) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.open_files.insert(fd, f);
+                        Ok(fd)
+                    }
+                    Err(_) => Ok(-1),
+                }
+            }
+
+            // sys_close: (fd = arg1)
+            3 => {
+                let fd = self.val_to_i64(arg1)?;
+                self.open_files.remove(&fd);
+                Ok(0)
+            }
+
             // sys_exit: (status = arg1)
             60 => {
-                println!("\n[System: Light process exited safely with code: {}]", arg1);
-                Ok(())
+                let code = self.val_to_i64(arg1)?;
+                Ok(code)
             }
+
             _ => Err(format!("Linux Syscall ID {} is not supported in this runtime", sys_id)),
         }
     }

@@ -1,0 +1,29 @@
+IMPORT "../stdlib/io.lit"
+IMPORT "../stdlib/fs.lit"
+
+FUNC main() -> i64
+  # Prepare null-terminated filename
+  %filename = ALLOC slice<u8> 16
+  STORE_STR %filename "test_out.txt\0"
+
+  # Prepare content to write
+  %content = ALLOC slice<u8> 28
+  STORE_STR %content "Light FS verified by Z3!\n"
+
+  # Write file
+  %bytes_written = CALL fs_write_file %filename %content
+
+  # Read it back into buffer
+  %read_buf = ALLOC slice<u8> 64
+  %bytes_read = CALL fs_read_file %filename %read_buf
+
+  # Guard: ensure read was successful and read > 0 bytes before printing
+  %zero = CONST i64 0
+  %read_err = LTE i64 %bytes_read %zero
+  RET_IF %read_err %bytes_read
+
+  # Print read content
+  %print_res = CALL std_print_slice %read_buf %bytes_read
+
+  RET %zero
+END_FUNC

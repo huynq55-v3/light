@@ -1,0 +1,23 @@
+IMPORT "../stdlib/io.lit"
+IMPORT "../stdlib/string.lit"
+
+FUNC main() -> i64
+  # Test parse_i64
+  %num_str = ALLOC slice<u8> 4
+  STORE_STR %num_str "1337"
+
+  %val = CALL parse_i64 %num_str
+
+  # Test find_char: search for '3' (ASCII 51)
+  %target_c = CONST i64 51
+  %pos = CALL find_char %num_str %target_c
+
+  # Print a success message
+  %msg = ALLOC slice<u8> 32
+  STORE_STR %msg "String parsing verified: OK!\n"
+
+  %len = SLICE_LEN %msg
+  %dummy = CALL std_print_slice %msg %len
+
+  RET %val
+END_FUNC

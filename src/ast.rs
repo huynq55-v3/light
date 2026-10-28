@@ -176,8 +176,9 @@ pub enum Instruction {
     EndLoop(String),
 
     // --- GIAO TIẾP HỆ ĐIỀU HÀNH & KẾT THÚC (NO LIBC, RAW LINUX SYSCALL) ---
-    /// Gọi ngắt hệ điều hành Linux: SYSCALL rax rdi rsi rdx
+    /// Gọi ngắt hệ điều hành Linux: SYSCALL rax rdi rsi rdx hoặc %dest = SYSCALL rax rdi rsi rdx
     Syscall {
+        dest: Option<String>,
         rax: Operand,
         rdi: Operand,
         rsi: Operand,
@@ -185,6 +186,11 @@ pub enum Instruction {
     },
     /// Trả về kết quả: RET %reg hoặc RET const
     Ret(Option<Operand>),
+    /// Trả về có điều kiện: RET_IF %cond [%val]
+    RetIf {
+        cond: String,
+        val: Option<Operand>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

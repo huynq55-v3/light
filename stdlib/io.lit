@@ -1,9 +1,9 @@
 # ==============================================================================
-# LIGHT STANDARD LIBRARY: std/io.lit
-# Module I/O & Process Control được kiểm chứng toán học 100% bằng Z3 SMT Solver
+# LIGHT STANDARD LIBRARY: stdlib/io.lit
+# Formally verified I/O & Process Control module using Z3 SMT Solver
 # ==============================================================================
 
-# In chuỗi an toàn từ slice<u8> với độ dài len chỉ định
+# Safely print a byte slice with specified length
 FUNC std_print_slice(s: slice<u8>, len: i64) -> i64
   REQUIRE len > 0 && len <= len(s)
 
@@ -18,7 +18,7 @@ FUNC std_print_slice(s: slice<u8>, len: i64) -> i64
   RET %res
 END_FUNC
 
-# In toàn bộ slice<u8> (tự động đọc chính xác độ dài slice)
+# Safely print an entire byte slice
 FUNC std_print_all(s: slice<u8>) -> i64
   REQUIRE len(s) > 0
 
@@ -34,7 +34,7 @@ FUNC std_print_all(s: slice<u8>) -> i64
   RET %res
 END_FUNC
 
-# Thoát tiến trình an toàn với exit code
+# Safely terminate process with an exit status code
 FUNC std_exit(code: i64) -> i64
   REQUIRE code >= 0 && code <= 255
 

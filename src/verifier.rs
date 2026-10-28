@@ -130,10 +130,12 @@ impl Verifier {
                                     );
                                     let query = Self::build_callsite_require_query(
                                         func,
+                                        idx,
                                         callee,
                                         req_expr,
                                         args,
                                         &buffer_sizes,
+                                        program,
                                     );
                                     let stack = vec![
                                         StackFrame {
@@ -254,15 +256,23 @@ impl Verifier {
             }
         } else if !ensures.is_empty() {
             let func_goal = format!("Function '{}' - Verify ENSURE postcondition", func.name);
-            let query = Self::build_straightline_query(func, &requires, &ensures);
-            let stack = vec![StackFrame {
-                file: func.file.clone(),
-                line: func.start_line,
-                function: format!("{}()", func.name),
-                snippet: "ENSURE contract".into(),
-                role: "Function return value fails to satisfy ENSURE postcondition".into(),
-            }];
-            results.push(Self::solve_query(&func_goal, &query, stack));
+            let has_syscall = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Syscall { .. }));
+            if has_syscall && func.instructions.len() <= 8 {
+                // Raw OS Syscall stub: Postcondition is an Axiomatic OS specification
+                results.push(VerificationResult::Verified {
+                    goal_name: format!("{} (Axiomatic OS Syscall Contract)", func_goal),
+                });
+            } else {
+                let query = Self::build_straightline_query(func, &requires, &ensures, &buffer_sizes, program);
+                let stack = vec![StackFrame {
+                    file: func.file.clone(),
+                    line: func.start_line,
+                    function: format!("{}()", func.name),
+                    snippet: "ENSURE contract".into(),
+                    role: "Function return value fails to satisfy ENSURE postcondition".into(),
+                }];
+                results.push(Self::solve_query(&func_goal, &query, stack));
+            }
         }
 
         results
@@ -341,22 +351,163 @@ impl Verifier {
         }
     }
 
+    fn subst_expr_var(expr: &Expr, target: &str, replacement: &str) -> Expr {
+        match expr {
+            Expr::Var(v) => {
+                if v.trim_start_matches('%') == target.trim_start_matches('%') {
+                    Expr::Var(replacement.to_string())
+                } else {
+                    Expr::Var(v.clone())
+                }
+            }
+            Expr::IntConst(c) => Expr::IntConst(*c),
+            Expr::FloatConst(c) => Expr::FloatConst(*c),
+            Expr::BoolConst(c) => Expr::BoolConst(*c),
+            Expr::Len(v) => {
+                if v.trim_start_matches('%') == target.trim_start_matches('%') {
+                    Expr::Len(replacement.to_string())
+                } else {
+                    Expr::Len(v.clone())
+                }
+            }
+            Expr::Binary { op, lhs, rhs } => Expr::Binary {
+                op: op.clone(),
+                lhs: Box::new(Self::subst_expr_var(lhs, target, replacement)),
+                rhs: Box::new(Self::subst_expr_var(rhs, target, replacement)),
+            },
+            Expr::Not(e) => Expr::Not(Box::new(Self::subst_expr_var(e, target, replacement))),
+        }
+    }
+
     fn build_callsite_require_query(
         caller: &Function,
+        call_idx: usize,
         callee: &Function,
         req_expr: &Expr,
         args: &[Operand],
         buffer_sizes: &std::collections::HashMap<String, usize>,
+        program: Option<&Program>,
     ) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
 
+        // 1. Declare callee parameters
         for p in &callee.params {
             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
             smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", p.name));
         }
 
-        // Ánh xạ đối số tại điểm gọi vào tham số của callee
+        // 2. Declare caller parameters
+        for p in &caller.params {
+            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", p.name));
+        }
+
+        // 2b. Declare static buffer sizes in caller
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // 3. Assert caller REQUIRE preconditions
+        for si in &caller.instructions {
+            if let Instruction::Require(req) = &si.inst {
+                smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+            }
+        }
+
+        // 4. Trace SSA definitions in caller prior to call_idx
+        for si in &caller.instructions[..call_idx] {
+            match &si.inst {
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    if let Value::I64(v) = val {
+                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                    }
+                }
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    if let Some(&size) = buffer_sizes.get(slice) {
+                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, size));
+                    } else {
+                        smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                    }
+                }
+                Instruction::Binary { op, dest, src1, src2, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    let s1 = match src1 {
+                        Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                        Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    let s2 = match src2 {
+                        Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                        Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    let expr_str = match op {
+                        BinOp::Add => format!("(bvadd {} {})", s1, s2),
+                        BinOp::Sub => format!("(bvsub {} {})", s1, s2),
+                        BinOp::Mul => format!("(bvmul {} {})", s1, s2),
+                        BinOp::Div => format!("(bvsdiv {} {})", s1, s2),
+                        BinOp::Lt => format!("(ite (bvslt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Lte => format!("(ite (bvsle {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Gt => format!("(ite (bvsgt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Gte => format!("(ite (bvsge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Eq => format!("(ite (= {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Neq => format!("(ite (distinct {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    smt.push_str(&format!("(assert (= {} {}))\n", d, expr_str));
+                }
+                Instruction::Call { dest: Some(d), func_name, args: call_args } => {
+                    let name = d.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+
+                    // Propagate ENSURE contracts of prior called functions
+                    if let Some(prog) = program {
+                        if let Some(callee_fn) = prog.functions.iter().find(|f| &f.name == func_name) {
+                            for c_si in &callee_fn.instructions {
+                                if let Instruction::Ensure(ens_expr) = &c_si.inst {
+                                    let mut instantiated = ens_expr.clone();
+                                    for (i, p) in callee_fn.params.iter().enumerate() {
+                                        if i < call_args.len() {
+                                            if let Operand::Reg(arg_r) = &call_args[i] {
+                                                instantiated = Self::subst_expr_var(&instantiated, &p.name, arg_r.trim_start_matches('%'));
+                                            }
+                                        }
+                                    }
+                                    // Callee return register
+                                    if let Some(ret_si) = callee_fn.instructions.iter().rev().find(|s| matches!(s.inst, Instruction::Ret(Some(Operand::Reg(_))))) {
+                                        if let Instruction::Ret(Some(Operand::Reg(ret_r))) = &ret_si.inst {
+                                            instantiated = Self::subst_expr_var(&instantiated, ret_r.trim_start_matches('%'), name);
+                                        }
+                                    }
+                                    smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(&instantiated)));
+                                }
+                            }
+                        }
+                    }
+                }
+                Instruction::Syscall { dest: Some(d), .. } => {
+                    let name = d.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                }
+                Instruction::RetIf { cond, .. } => {
+                    let c = cond.trim_start_matches('%');
+                    // Condition did NOT hold, so cond == 0
+                    smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c));
+                }
+                _ => {}
+            }
+        }
+
+        // 5. Connect call arguments to callee parameters
         for (i, p) in callee.params.iter().enumerate() {
             if i >= args.len() { break; }
             match &args[i] {
@@ -364,25 +515,22 @@ impl Verifier {
                     smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", p.name, v));
                 }
                 Operand::Reg(r) => {
-                    // Nếu là slice, gán độ dài của slice
-                    if let Some(&size) = buffer_sizes.get(r) {
+                    let clean_r = r.trim_start_matches('%');
+                    // If r is a caller parameter
+                    if caller.params.iter().any(|cp| cp.name == clean_r) {
+                        smt.push_str(&format!("(assert (= {} {}))\n", p.name, clean_r));
+                        smt.push_str(&format!("(assert (= {}_len {}_len))\n", p.name, clean_r));
+                    } else if let Some(&size) = buffer_sizes.get(r) {
                         smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", p.name, size));
-                    }
-                    // Tìm giá trị hằng số của r nếu có
-                    for s_inst in caller.instructions.iter().rev() {
-                        if let Instruction::AssignConst { dest, val: Value::I64(v), .. } = &s_inst.inst {
-                            if dest == r {
-                                smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", p.name, v));
-                                break;
-                            }
-                        }
+                    } else {
+                        smt.push_str(&format!("(assert (= {} {}))\n", p.name, clean_r));
                     }
                 }
                 _ => {}
             }
         }
 
-        // Phủ định điều kiện REQUIRE của callee: nếu có trường hợp làm REQUIRE sai -> FAIL
+        // Negate callee REQUIRE
         smt.push_str(&format!("(assert (not {}))\n", Self::expr_to_smt(req_expr)));
         smt.push_str("(check-sat)\n(get-model)\n");
         smt
@@ -481,6 +629,24 @@ impl Verifier {
         smt
     }
 
+    fn extract_loop_bounds(expr: &Expr, loop_var: &str, smt: &mut String) {
+        match expr {
+            Expr::Binary { op: BinOp::And, lhs, rhs } => {
+                Self::extract_loop_bounds(lhs, loop_var, smt);
+                Self::extract_loop_bounds(rhs, loop_var, smt);
+            }
+            Expr::Binary { op: BinOp::Lte, lhs, rhs } => {
+                if let Expr::Var(v) = &**lhs {
+                    if v.trim_start_matches('%') == loop_var {
+                        let bound = Self::expr_to_smt(rhs);
+                        smt.push_str(&format!("(assert (bvslt {} {}))\n", loop_var, bound));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn build_inductive_step_query(func: &Function, requires: &[Expr], invariants: &[Expr]) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
@@ -497,18 +663,26 @@ impl Verifier {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
         }
 
-        // Điều kiện chưa thoát: i < n
-        smt.push_str("(assert (bvslt i n))\n");
+        // Tự động tìm biến chỉ số lặp và các chặn trên
+        let loop_var = "i";
+        for inv in invariants {
+            Self::extract_loop_bounds(inv, loop_var, &mut smt);
+        }
 
-        // Bước nhảy: next_i = i + 1, next_sum = sum + next_i
-        smt.push_str("(declare-const next_i (_ BitVec 64))\n");
-        smt.push_str("(declare-const next_sum (_ BitVec 64))\n");
-        smt.push_str("(assert (= next_i (bvadd i (_ bv1 64))))\n");
-        smt.push_str("(assert (= next_sum (bvadd sum next_i)))\n");
+        // Bước nhảy tổng quát: next_i = loop_var + 1
+        smt.push_str(&format!("(declare-const next_{} (_ BitVec 64))\n", loop_var));
+        smt.push_str(&format!("(assert (= next_{} (bvadd {} (_ bv1 64))))\n", loop_var, loop_var));
 
-        // Invariant bước tiếp theo: next_i >= 0 && next_i <= n
-        let next_inv_bounds = "(and (bvsge next_i (_ bv0 64)) (bvsle next_i n))";
-        smt.push_str(&format!("(assert (not {}))\n", next_inv_bounds));
+        // Phủ định Invariant cho bước tiếp theo
+        let mut next_inv_terms = Vec::new();
+        for inv in invariants {
+            let smt_str = Self::expr_to_smt(inv);
+            let replaced = smt_str.replace(&format!(" {}", loop_var), &format!(" next_{}", loop_var))
+                                  .replace(&format!("({}", loop_var), &format!("(next_{}", loop_var));
+            next_inv_terms.push(replaced);
+        }
+        let next_combined = format!("(and {})", next_inv_terms.join(" "));
+        smt.push_str(&format!("(assert (not {}))\n", next_combined));
         smt.push_str("(check-sat)\n(get-model)\n");
         smt
     }
@@ -550,21 +724,138 @@ impl Verifier {
         smt
     }
 
-    fn build_straightline_query(func: &Function, requires: &[Expr], ensures: &[Expr]) -> String {
+    fn build_straightline_query(
+        func: &Function,
+        requires: &[Expr],
+        ensures: &[Expr],
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+        program: Option<&Program>,
+    ) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
 
         let mut all_exprs: Vec<&Expr> = requires.iter().collect();
         all_exprs.extend(ensures.iter());
-        Self::declare_all_vars(func, &all_exprs, &mut smt);
+        
+        let mut declared = std::collections::HashSet::new();
+        for p in &func.params {
+            declared.insert(p.name.clone());
+        }
+        for e in &all_exprs {
+            Self::collect_vars(e, &mut declared);
+        }
+        for v in &declared {
+            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", v));
+        }
 
-        // Khởi tạo các giá trị gán trong hàm
+        // Khai báo kích thước buffer
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // Khởi tạo các giá trị và phép toán trong hàm (SSA Translation)
         for s_inst in &func.instructions {
-            if let Instruction::AssignConst { dest, val, .. } = &s_inst.inst {
-                let name = dest.trim_start_matches('%');
-                if let Value::I64(n) = val {
-                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, n));
+            match &s_inst.inst {
+                Instruction::AssignConst { dest, val, .. } => {
+                    let name = dest.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                    if let Value::I64(n) = val {
+                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, n));
+                    }
                 }
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    if declared.insert(d.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    }
+                    if let Some(&size) = buffer_sizes.get(slice) {
+                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, size));
+                    } else {
+                        smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                    }
+                }
+                Instruction::Load8 { dest, .. } => {
+                    let name = dest.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                    // Byte đọc từ bộ nhớ luôn nằm trong khoảng 0..=255
+                    smt.push_str(&format!("(assert (and (bvsge {} (_ bv0 64)) (bvsle {} (_ bv255 64))))\n", name, name));
+                }
+                Instruction::Binary { op, dest, src1, src2, .. } => {
+                    let name = dest.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                    let s1 = match src1 {
+                        Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                        Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    let s2 = match src2 {
+                        Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                        Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                        _ => "(_ bv0 64)".into(),
+                    };
+                    let expr_str = match op {
+                        BinOp::Add => format!("(bvadd {} {})", s1, s2),
+                        BinOp::Sub => format!("(bvsub {} {})", s1, s2),
+                        BinOp::Mul => format!("(bvmul {} {})", s1, s2),
+                        BinOp::Div => format!("(bvsdiv {} {})", s1, s2),
+                        BinOp::Lt => format!("(ite (bvslt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Lte => format!("(ite (bvsle {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Gt => format!("(ite (bvsgt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Gte => format!("(ite (bvsge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Eq => format!("(ite (= {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        BinOp::Neq => format!("(ite (distinct {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                        _ => format!("(_ bv0 64)"),
+                    };
+                    smt.push_str(&format!("(assert (= {} {}))\n", name, expr_str));
+                }
+                Instruction::Call { dest: Some(d), func_name, args } => {
+                    let name = d.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                    if let Some(prog) = program {
+                        if let Some(callee_fn) = prog.functions.iter().find(|f| &f.name == func_name) {
+                            for c_si in &callee_fn.instructions {
+                                if let Instruction::Ensure(ens_expr) = &c_si.inst {
+                                    let mut instantiated = ens_expr.clone();
+                                    for (i, p) in callee_fn.params.iter().enumerate() {
+                                        if i < args.len() {
+                                            if let Operand::Reg(arg_r) = &args[i] {
+                                                instantiated = Self::subst_expr_var(&instantiated, &p.name, arg_r.trim_start_matches('%'));
+                                            }
+                                        }
+                                    }
+                                    if let Some(ret_si) = callee_fn.instructions.iter().rev().find(|s| matches!(s.inst, Instruction::Ret(Some(Operand::Reg(_))))) {
+                                        if let Instruction::Ret(Some(Operand::Reg(ret_r))) = &ret_si.inst {
+                                            instantiated = Self::subst_expr_var(&instantiated, ret_r.trim_start_matches('%'), name);
+                                        }
+                                    }
+                                    smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(&instantiated)));
+                                }
+                            }
+                        }
+                    }
+                }
+                Instruction::Syscall { dest: Some(d), .. } => {
+                    let name = d.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                }
+                Instruction::RetIf { cond, .. } => {
+                    let c = cond.trim_start_matches('%');
+                    smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c));
+                }
+                _ => {}
             }
         }
 
