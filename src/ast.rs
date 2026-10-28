@@ -98,6 +98,13 @@ pub enum Instruction {
         src2: Operand,
     },
 
+    /// Gọi hàm: %dest = CALL func_name arg1 arg2 ...
+    Call {
+        dest: Option<String>,
+        func_name: String,
+        args: Vec<Operand>,
+    },
+
     // --- BỘ NHỚ AN TOÀN (BUFFER, ARRAYS & SLICES) ---
     /// Cấp phát bộ nhớ cục bộ an toàn: ALLOC %buf size
     Alloc {

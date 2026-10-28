@@ -367,6 +367,23 @@ impl Parser {
             return Ok(Instruction::Assert(expr));
         }
 
+        if parts[0] == "CALL" {
+            // CALL func_name arg1 arg2 ...
+            if parts.len() < 2 {
+                return Err(ParseError {
+                    line_no,
+                    message: "Cú pháp: CALL func_name arg1 arg2 ...".into(),
+                });
+            }
+            let func_name = parts[1].to_string();
+            let args: Vec<Operand> = parts[2..].iter().map(|s| Self::parse_operand(s)).collect();
+            return Ok(Instruction::Call {
+                dest: None,
+                func_name,
+                args,
+            });
+        }
+
         // --- ĐIỀU KHIỂN VÒNG LẶP ---
         if parts[0] == "LOOP" {
             let label = parts.get(1).unwrap_or(&"loop").to_string();
@@ -499,6 +516,21 @@ impl Parser {
             let op = parts[2];
 
             match op {
+                "CALL" => {
+                    if parts.len() < 4 {
+                        return Err(ParseError {
+                            line_no,
+                            message: "Cú pháp: %dest = CALL func_name arg1 arg2 ...".into(),
+                        });
+                    }
+                    let func_name = parts[3].to_string();
+                    let args: Vec<Operand> = parts[4..].iter().map(|s| Self::parse_operand(s)).collect();
+                    return Ok(Instruction::Call {
+                        dest: Some(dest),
+                        func_name,
+                        args,
+                    });
+                }
                 "CONST" => {
                     if parts.len() < 5 {
                         return Err(ParseError {

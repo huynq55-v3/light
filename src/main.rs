@@ -97,7 +97,7 @@ fn execute_file(file_path: &str, run_vm: bool) {
         println!("\n🚀 Bắt đầu thực thi chương trình trên Safe VM...");
         let main_func = program.functions.iter().find(|f| f.name == "main");
         if let Some(func) = main_func {
-            let mut vm = VirtualMachine::new();
+            let mut vm = VirtualMachine::with_program(&program);
             match vm.run_function(func, &[]) {
                 Ok(ret) => {
                     if let Some(val) = ret {

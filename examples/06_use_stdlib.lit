@@ -1,5 +1,5 @@
-# Ví dụ 6: Sử dụng Thư Viện Chuẩn thông qua lệnh IMPORT
-# Gọi các hàm từ stdlib/io.lit đã được Z3 kiểm chứng toán học!
+# Ví dụ 6: Sử dụng Thư Viện Chuẩn THỰC SỰ thông qua lệnh CALL
+# Gọi trực tiếp hàm std_print từ stdlib/io.lit
 
 IMPORT "../stdlib/io.lit"
 
@@ -8,16 +8,11 @@ FUNC main() -> i64
   ALLOC %greeting 28
   STORE_STR %greeting 0 "Welcome to Light Standard!\n"
 
-  # Gọi trực tiếp hàm std_print từ thư viện chuẩn
-  # Không cần viết lại các lệnh syscall rườm rà nữa!
+  # GỌI HÀM THƯ VIỆN CHUẨN THỰC THỤ: std_print(buf, len)
   %len = CONST i64 27
-  %rax = CONST i64 1
-  %rdi = CONST i64 1
-  %rsi = MOV %greeting
-  %rdx = MOV %len
-  SYSCALL %rax %rdi %rsi %rdx
+  %res = CALL std_print %greeting %len
 
-  # Thoát chương trình qua mã exit 0
+  # Thoát chương trình với exit code = 0
   %exit_code = CONST i64 0
   RET %exit_code
 END_FUNC

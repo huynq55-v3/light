@@ -15,14 +15,30 @@ pub struct VirtualMachine {
     pub registers: HashMap<String, Value>,
     pub buffers: HashMap<String, MemoryBuffer>,
     pub next_ptr_addr: usize,
+    pub functions: HashMap<String, Function>,
 }
 
 impl VirtualMachine {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             registers: HashMap::new(),
             buffers: HashMap::new(),
             next_ptr_addr: 0x1000,
+            functions: HashMap::new(),
+        }
+    }
+
+    pub fn with_program(program: &Program) -> Self {
+        let mut functions = HashMap::new();
+        for f in &program.functions {
+            functions.insert(f.name.clone(), f.clone());
+        }
+        Self {
+            registers: HashMap::new(),
+            buffers: HashMap::new(),
+            next_ptr_addr: 0x1000,
+            functions,
         }
     }
 
@@ -87,6 +103,34 @@ impl VirtualMachine {
 
                 Instruction::AssignConst { dest, val, .. } => {
                     self.registers.insert(dest.clone(), val.clone());
+                    pc += 1;
+                }
+
+                Instruction::Call { dest, func_name, args } => {
+                    let callee = self
+                        .functions
+                        .get(func_name)
+                        .cloned()
+                        .ok_or_else(|| format!("Không tìm thấy hàm '{}' để gọi", func_name))?;
+
+                    let mut evaluated_args = Vec::new();
+                    for a in args {
+                        evaluated_args.push(self.get_operand_val(a)?);
+                    }
+
+                    // Lưu trạng thái thanh ghi hiện tại (Stack frame)
+                    let saved_regs = self.registers.clone();
+
+                    let ret = self.run_function(&callee, &evaluated_args)?;
+
+                    // Khôi phục thanh ghi
+                    self.registers = saved_regs;
+
+                    if let Some(d) = dest {
+                        if let Some(val) = ret {
+                            self.registers.insert(d.clone(), val);
+                        }
+                    }
                     pc += 1;
                 }
 

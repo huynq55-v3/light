@@ -38,6 +38,7 @@ Expressions support: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, 
 ### Assignment & Arithmetic
 - `%dest = CONST <type> <val>`  (e.g., `%a = CONST i64 10`)
 - `%dest = MOV %src`            (Copy value)
+- `%dest = CALL func_name arg1 arg2 ...` (Function invocation)
 - `%dest = ADD|SUB|MUL|DIV|MOD <type> %src1 %src2`
 - `%dest = EQ|NEQ|LT|LTE|GT|GTE|AND|OR <type> %src1 %src2`
 
