@@ -173,7 +173,8 @@ impl MachineCodeEmitter {
             }
         }
 
-        for inst in &func.instructions {
+        for s_inst in &func.instructions {
+            let inst = &s_inst.inst;
             match inst {
                 // Các chỉ thị kiểm chứng chỉ dùng cho Z3 ở bước trước, không sinh mã máy
                 Instruction::Require(_) | Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Assert(_) => {}

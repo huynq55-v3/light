@@ -1,0 +1,17 @@
+# Example 12: DEMO VERIFICATION STACK TRACE
+# Call std_print_slice from main with invalid length (35 > 28)
+# to see full multi-frame Verification Stack Trace!
+
+IMPORT "../stdlib/io.lit"
+
+FUNC main() -> i64
+  %msg = ALLOC slice<u8> 28
+  STORE_STR %msg "Welcome to Light Standard!\n"
+
+  # Line 12: Calling std_print_slice with invalid length 35!
+  %len = CONST i64 35
+  %res = CALL std_print_slice %msg %len
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC

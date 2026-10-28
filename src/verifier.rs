@@ -6,16 +6,26 @@ use crate::ast::*;
 use std::process::{Command, Stdio};
 use std::io::Write;
 
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    pub file: String,
+    pub line: usize,
+    pub function: String,
+    pub snippet: String,
+    pub role: String,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum VerificationResult {
     /// Đã kiểm chứng thành công 100%: UNSAT (Không tồn tại phản ví dụ gây lỗi)
     Verified { goal_name: String },
-    /// Phát hiện lỗi logic! Kèm phản ví dụ cụ thể do SMT Solver sinh ra
+    /// Phát hiện lỗi logic! Kèm phản ví dụ và Stack Trace rõ ràng
     Failed {
         goal_name: String,
         reason: String,
         counter_example: Option<String>,
+        stack_trace: Vec<StackFrame>,
     },
     /// Không tìm thấy Z3 solver trong máy (chỉ xuất công thức SMT-LIB2)
     SolverNotFound {
@@ -31,13 +41,13 @@ impl Verifier {
     pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
         let mut results = Vec::new();
 
-        // 1. Thu thập các mệnh đề kiểm chứng
+        // 1. Collect verification directives
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
         let mut invariants = Vec::new();
 
-        for inst in &func.instructions {
-            match inst {
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
                 Instruction::Require(e) => requires.push(e.clone()),
                 Instruction::Ensure(e) => ensures.push(e.clone()),
                 Instruction::Invariant(e) => invariants.push(e.clone()),
@@ -46,18 +56,25 @@ impl Verifier {
         }
 
         // 2. Implicit check: Division by Zero
-        for (idx, inst) in func.instructions.iter().enumerate() {
-            if let Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } = inst {
-                let div_zero_goal = format!("Function '{}' - Instruction #{}: Division-by-Zero safety", func.name, idx + 1);
+        for (_idx, s_inst) in func.instructions.iter().enumerate() {
+            if let Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } = &s_inst.inst {
+                let div_zero_goal = format!("Function '{}' - Line {}: Division-by-Zero safety", func.name, s_inst.loc.line);
                 let query = Self::build_div_zero_query(func, &requires, src2);
-                results.push(Self::solve_query(&div_zero_goal, &query));
+                let stack = vec![StackFrame {
+                    file: s_inst.loc.file.clone(),
+                    line: s_inst.loc.line,
+                    function: format!("{}()", func.name),
+                    snippet: s_inst.loc.text.clone(),
+                    role: "Division operation with potential zero divisor".into(),
+                }];
+                results.push(Self::solve_query(&div_zero_goal, &query, stack));
             }
         }
 
         // 3. Implicit check: Memory bounds & buffer overflow for UTF-8 strings and syscalls
         let mut buffer_sizes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for inst in &func.instructions {
-            match inst {
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
                 Instruction::Alloc { dest, size } => {
                     buffer_sizes.insert(dest.clone(), *size);
                 }
@@ -68,15 +85,21 @@ impl Verifier {
             }
         }
 
-        for (idx, inst) in func.instructions.iter().enumerate() {
-            match inst {
+        for (idx, s_inst) in func.instructions.iter().enumerate() {
+            match &s_inst.inst {
                 Instruction::StoreStr { buf, offset, content } => {
                     let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
-                    let goal_name = format!("Function '{}' - Instruction #{}: String write within buffer '{}'", func.name, idx + 1, buf);
-                    // Đo chính xác số UTF-8 bytes thực tế
+                    let goal_name = format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf);
                     let utf8_len = content.as_bytes().len();
                     let req_size = *offset + utf8_len;
                     if req_size > buf_size {
+                        let stack = vec![StackFrame {
+                            file: s_inst.loc.file.clone(),
+                            line: s_inst.loc.line,
+                            function: format!("{}()", func.name),
+                            snippet: s_inst.loc.text.clone(),
+                            role: format!("Overflows buffer '{}' (capacity: {} bytes, required: {} bytes)", buf, buf_size, req_size),
+                        }];
                         results.push(VerificationResult::Failed {
                             goal_name,
                             reason: format!(
@@ -89,20 +112,21 @@ impl Verifier {
                                 req_size,
                                 req_size - buf_size
                             )),
+                            stack_trace: stack,
                         });
                     } else {
                         results.push(VerificationResult::Verified { goal_name });
                     }
                 }
                 Instruction::Call { func_name, args, .. } => {
-                    // Call-site REQUIRE contract verification
+                    // Call-site REQUIRE contract verification with STACK TRACE!
                     if let Some(prog) = program {
                         if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
                             for (_c_idx, c_inst) in callee.instructions.iter().enumerate() {
-                                if let Instruction::Require(req_expr) = c_inst {
+                                if let Instruction::Require(req_expr) = &c_inst.inst {
                                     let goal_name = format!(
-                                        "Function '{}' - Instruction #{}: Verify REQUIRE contract of '{}'",
-                                        func.name, idx + 1, func_name
+                                        "Function '{}' - Line {}: Verify REQUIRE contract of '{}'",
+                                        func.name, s_inst.loc.line, func_name
                                     );
                                     let query = Self::build_callsite_require_query(
                                         func,
@@ -111,7 +135,23 @@ impl Verifier {
                                         args,
                                         &buffer_sizes,
                                     );
-                                    results.push(Self::solve_query(&goal_name, &query));
+                                    let stack = vec![
+                                        StackFrame {
+                                            file: callee.file.clone(),
+                                            line: c_inst.loc.line,
+                                            function: format!("{}()", callee.name),
+                                            snippet: c_inst.loc.text.clone(),
+                                            role: "Contract REQUIRE violated here".into(),
+                                        },
+                                        StackFrame {
+                                            file: s_inst.loc.file.clone(),
+                                            line: s_inst.loc.line,
+                                            function: format!("{}()", func.name),
+                                            snippet: s_inst.loc.text.clone(),
+                                            role: "Called from here with invalid arguments".into(),
+                                        },
+                                    ];
+                                    results.push(Self::solve_query(&goal_name, &query, stack));
                                 }
                             }
                         }
@@ -124,7 +164,7 @@ impl Verifier {
 
                     for _ in 0..4 {
                         for prev_inst in func.instructions[..idx].iter().rev() {
-                            if let Instruction::AssignConst { dest, val, .. } = prev_inst {
+                            if let Instruction::AssignConst { dest, val, .. } = &prev_inst.inst {
                                 if let Operand::Reg(r) = &actual_rax {
                                     if r == dest { actual_rax = Operand::Const(val.clone()); }
                                 }
@@ -132,7 +172,7 @@ impl Verifier {
                                     if r == dest { actual_rdx = Operand::Const(val.clone()); }
                                 }
                             }
-                            if let Instruction::Mov { dest, src } = prev_inst {
+                            if let Instruction::Mov { dest, src } = &prev_inst.inst {
                                 if let Operand::Reg(r) = &actual_rsi {
                                     if r == dest { actual_rsi = Operand::Reg(src.clone()); }
                                 }
@@ -156,12 +196,19 @@ impl Verifier {
                         };
                         if let Some(&buf_size) = buffer_sizes.get(&buf_name) {
                             let goal_name = format!(
-                                "Function '{}' - Instruction #{}: sys_write count within buffer '{}'",
-                                func.name, idx + 1, buf_name
+                                "Function '{}' - Line {}: sys_write count within buffer '{}'",
+                                func.name, s_inst.loc.line, buf_name
                             );
 
                             let query = Self::build_buffer_overflow_query(func, &requires, &actual_rdx, buf_size, &buf_name);
-                            results.push(Self::solve_query(&goal_name, &query));
+                            let stack = vec![StackFrame {
+                                file: s_inst.loc.file.clone(),
+                                line: s_inst.loc.line,
+                                function: format!("{}()", func.name),
+                                snippet: s_inst.loc.text.clone(),
+                                role: format!("sys_write count exceeds buffer '{}' (capacity: {} bytes)", buf_name, buf_size),
+                            }];
+                            results.push(Self::solve_query(&goal_name, &query, stack));
                         }
                     }
                 }
@@ -173,21 +220,49 @@ impl Verifier {
         if !invariants.is_empty() {
             let base_goal = format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name);
             let base_query = Self::build_base_case_query(func, &requires, &invariants);
-            results.push(Self::solve_query(&base_goal, &base_query));
+            let stack = vec![StackFrame {
+                file: func.file.clone(),
+                line: func.start_line,
+                function: format!("{}()", func.name),
+                snippet: "Base Case loop invariant".into(),
+                role: "Loop initialization does not satisfy invariant".into(),
+            }];
+            results.push(Self::solve_query(&base_goal, &base_query, stack));
 
             let step_goal = format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name);
             let step_query = Self::build_inductive_step_query(func, &requires, &invariants);
-            results.push(Self::solve_query(&step_goal, &step_query));
+            let stack2 = vec![StackFrame {
+                file: func.file.clone(),
+                line: func.start_line,
+                function: format!("{}()", func.name),
+                snippet: "Inductive Step loop invariant".into(),
+                role: "Loop body fails to preserve invariant".into(),
+            }];
+            results.push(Self::solve_query(&step_goal, &step_query, stack2));
 
             if !ensures.is_empty() {
                 let exit_goal = format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name);
                 let exit_query = Self::build_exit_step_query(func, &requires, &invariants, &ensures);
-                results.push(Self::solve_query(&exit_goal, &exit_query));
+                let stack3 = vec![StackFrame {
+                    file: func.file.clone(),
+                    line: func.start_line,
+                    function: format!("{}()", func.name),
+                    snippet: "ENSURE contract".into(),
+                    role: "Loop exit condition fails to satisfy ENSURE postcondition".into(),
+                }];
+                results.push(Self::solve_query(&exit_goal, &exit_query, stack3));
             }
         } else if !ensures.is_empty() {
             let func_goal = format!("Function '{}' - Verify ENSURE postcondition", func.name);
             let query = Self::build_straightline_query(func, &requires, &ensures);
-            results.push(Self::solve_query(&func_goal, &query));
+            let stack = vec![StackFrame {
+                file: func.file.clone(),
+                line: func.start_line,
+                function: format!("{}()", func.name),
+                snippet: "ENSURE contract".into(),
+                role: "Function return value fails to satisfy ENSURE postcondition".into(),
+            }];
+            results.push(Self::solve_query(&func_goal, &query, stack));
         }
 
         results
@@ -294,8 +369,8 @@ impl Verifier {
                         smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", p.name, size));
                     }
                     // Tìm giá trị hằng số của r nếu có
-                    for inst in caller.instructions.iter().rev() {
-                        if let Instruction::AssignConst { dest, val: Value::I64(v), .. } = inst {
+                    for s_inst in caller.instructions.iter().rev() {
+                        if let Instruction::AssignConst { dest, val: Value::I64(v), .. } = &s_inst.inst {
                             if dest == r {
                                 smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", p.name, v));
                                 break;
@@ -484,8 +559,8 @@ impl Verifier {
         Self::declare_all_vars(func, &all_exprs, &mut smt);
 
         // Khởi tạo các giá trị gán trong hàm
-        for inst in &func.instructions {
-            if let Instruction::AssignConst { dest, val, .. } = inst {
+        for s_inst in &func.instructions {
+            if let Instruction::AssignConst { dest, val, .. } = &s_inst.inst {
                 let name = dest.trim_start_matches('%');
                 if let Value::I64(n) = val {
                     smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, n));
@@ -505,7 +580,7 @@ impl Verifier {
     }
 
     /// Gọi Z3 Solver trực tiếp (nếu có trên máy) hoặc trả về công thức SMT-LIB2
-    fn solve_query(goal_name: &str, query: &str) -> VerificationResult {
+    fn solve_query(goal_name: &str, query: &str, stack_trace: Vec<StackFrame>) -> VerificationResult {
         // Tìm binary z3: ưu tiên ~/.local/bin/z3 hoặc z3 trong PATH
         let home = std::env::var("HOME").unwrap_or_default();
         let local_z3 = format!("{}/.local/bin/z3", home);
@@ -542,6 +617,7 @@ impl Verifier {
                     goal_name: goal_name.to_string(),
                     reason: format!("Failed to spawn Z3 solver: {}", e),
                     counter_example: None,
+                    stack_trace,
                 };
             }
         };
@@ -556,12 +632,14 @@ impl Verifier {
                 goal_name: goal_name.to_string(),
                 reason: "Counter-example found: Mathematical/safety contract violated!".to_string(),
                 counter_example: Some(stdout.to_string()),
+                stack_trace,
             }
         } else {
             VerificationResult::Failed {
                 goal_name: goal_name.to_string(),
                 reason: format!("Z3 returned unknown/error status: {}", stdout),
                 counter_example: None,
+                stack_trace,
             }
         }
     }

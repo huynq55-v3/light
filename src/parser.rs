@@ -102,7 +102,8 @@ impl Parser {
                         message: "Nested function definitions are not allowed".into(),
                     });
                 }
-                let func = Self::parse_func_signature(trimmed, line_no)?;
+                let file_str = canonical.display().to_string();
+                let func = Self::parse_func_signature(trimmed, &file_str, line_no)?;
                 current_func = Some(func);
                 continue;
             }
@@ -131,7 +132,14 @@ impl Parser {
             })?;
 
             let inst = Self::parse_instruction(trimmed, line_no)?;
-            func.instructions.push(inst);
+            func.instructions.push(SpannedInstruction {
+                inst,
+                loc: Loc {
+                    file: canonical.display().to_string(),
+                    line: line_no,
+                    text: trimmed.to_string(),
+                },
+            });
         }
 
         if let Some(func) = current_func {
@@ -170,10 +178,10 @@ impl Parser {
                 if current_func.is_some() {
                     return Err(ParseError {
                         line_no,
-                        message: "Không được lồng định nghĩa hàm bên trong hàm khác".into(),
+                        message: "Nested function definitions are not allowed".into(),
                     });
                 }
-                let func = Self::parse_func_signature(trimmed, line_no)?;
+                let func = Self::parse_func_signature(trimmed, "<memory>", line_no)?;
                 current_func = Some(func);
                 continue;
             }
@@ -184,7 +192,7 @@ impl Parser {
                 } else {
                     return Err(ParseError {
                         line_no,
-                        message: "Gặp END_FUNC nhưng không có hàm nào đang mở".into(),
+                        message: "Encountered END_FUNC without an active function block".into(),
                     });
                 }
                 continue;
@@ -192,11 +200,18 @@ impl Parser {
 
             let func = current_func.as_mut().ok_or_else(|| ParseError {
                 line_no,
-                message: format!("Lệnh '{}' phải nằm bên trong khối FUNC ... END_FUNC", parts[0]),
+                message: format!("Instruction '{}' must be placed inside a FUNC ... END_FUNC block", parts[0]),
             })?;
 
             let inst = Self::parse_instruction(trimmed, line_no)?;
-            func.instructions.push(inst);
+            func.instructions.push(SpannedInstruction {
+                inst,
+                loc: Loc {
+                    file: "<memory>".into(),
+                    line: line_no,
+                    text: trimmed.to_string(),
+                },
+            });
         }
 
         if let Some(func) = current_func {
@@ -265,7 +280,7 @@ impl Parser {
         }
     }
 
-    fn parse_func_signature(line: &str, line_no: usize) -> Result<Function, ParseError> {
+    fn parse_func_signature(line: &str, file: &str, line_no: usize) -> Result<Function, ParseError> {
         let line = line.strip_prefix("FUNC").unwrap().trim();
         let paren_start = line.find('(').ok_or_else(|| ParseError {
             line_no,
@@ -314,6 +329,8 @@ impl Parser {
 
         Ok(Function {
             name,
+            file: file.to_string(),
+            start_line: line_no,
             params,
             return_ty,
             instructions: Vec::new(),

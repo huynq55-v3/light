@@ -89,7 +89,8 @@ impl VirtualMachine {
         let mut loop_stack: Vec<(String, usize)> = Vec::new(); // (label, start_pc)
 
         while pc < func.instructions.len() {
-            let inst = &func.instructions[pc];
+            let s_inst = &func.instructions[pc];
+            let inst = &s_inst.inst;
 
             match inst {
                 // Các chỉ thị kiểm chứng chỉ dành cho compiler & SMT Solver, VM chỉ bỏ qua hoặc assert runtime
@@ -342,9 +343,9 @@ impl VirtualMachine {
                         let mut depth = 1;
                         let mut search_pc = pc + 1;
                         while search_pc < func.instructions.len() {
-                            if let Instruction::Loop(_) = &func.instructions[search_pc] {
+                            if let Instruction::Loop(_) = &func.instructions[search_pc].inst {
                                 depth += 1;
-                            } else if let Instruction::EndLoop(l) = &func.instructions[search_pc] {
+                            } else if let Instruction::EndLoop(l) = &func.instructions[search_pc].inst {
                                 depth -= 1;
                                 if depth == 0 && l == &target_label {
                                     pc = search_pc + 1;

@@ -188,6 +188,19 @@ pub enum Instruction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Loc {
+    pub file: String,
+    pub line: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedInstruction {
+    pub inst: Instruction,
+    pub loc: Loc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
     pub ty: Type,
@@ -196,9 +209,11 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub name: String,
+    pub file: String,
+    pub start_line: usize,
     pub params: Vec<Param>,
     pub return_ty: Option<Type>,
-    pub instructions: Vec<Instruction>,
+    pub instructions: Vec<SpannedInstruction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

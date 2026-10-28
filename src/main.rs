@@ -183,12 +183,24 @@ fn run_verification(program: &ast::Program) -> bool {
                 VerificationResult::Verified { goal_name } => {
                     println!("  🛡️ [PASS] {}", goal_name);
                 }
-                VerificationResult::Failed { goal_name, reason, counter_example } => {
+                VerificationResult::Failed { goal_name, reason, counter_example, stack_trace } => {
                     has_failure = true;
                     eprintln!("  🚨 [FAIL] {}", goal_name);
                     eprintln!("     Reason: {}", reason);
                     if let Some(ce) = counter_example {
                         eprintln!("     🔍 Z3 Counter-example:\n{}", ce);
+                    }
+                    if !stack_trace.is_empty() {
+                        eprintln!("     📍 Verification Stack Trace (most recent call first):");
+                        for (idx, frame) in stack_trace.iter().enumerate() {
+                            let rel_file = if let Ok(cwd) = std::env::current_dir() {
+                                frame.file.strip_prefix(cwd.to_str().unwrap_or("")).unwrap_or(&frame.file).trim_start_matches('/')
+                            } else {
+                                &frame.file
+                            };
+                            eprintln!("       ↳ [{}] {}:{} in {}", idx + 1, rel_file, frame.line, frame.function);
+                            eprintln!("             | {}  <-- {}", frame.snippet, frame.role);
+                        }
                     }
                 }
                 VerificationResult::SolverNotFound { goal_name, .. } => {
