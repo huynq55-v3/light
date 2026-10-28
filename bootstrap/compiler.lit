@@ -191,6 +191,218 @@ FUNC emit_sub_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
   RET %next_pos
 END_FUNC
 
+# Emit: imul dst, src (4 bytes: 0x48, 0x0F, 0xAF, 0xC0 | (dst<<3) | src)
+FUNC emit_mul_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_0f = CONST i64 15
+  STORE8 %ptr %p1 %b_0f
+  %p2 = ADD i64 pos 2
+  %b_af = CONST i64 175
+  STORE8 %ptr %p2 %b_af
+  %p3 = ADD i64 pos 3
+  %eight = CONST i64 8
+  %dst_sh = MUL i64 dst %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %dst_sh
+  %modrm = ADD i64 %tmp src
+  STORE8 %ptr %p3 %modrm
+  %next_pos = ADD i64 pos 4
+  ENSURE %next_pos == pos + 4
+  RET %next_pos
+END_FUNC
+
+# Emit: and dst, src (3 bytes: 0x48, 0x21, 0xC0 | (src<<3) | dst)
+FUNC emit_and_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_21 = CONST i64 33
+  STORE8 %ptr %p1 %b_21
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %src_sh = MUL i64 src %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %src_sh
+  %modrm = ADD i64 %tmp dst
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: or dst, src (3 bytes: 0x48, 0x09, 0xC0 | (src<<3) | dst)
+FUNC emit_or_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_09 = CONST i64 9
+  STORE8 %ptr %p1 %b_09
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %src_sh = MUL i64 src %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %src_sh
+  %modrm = ADD i64 %tmp dst
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: xor dst, src (3 bytes: 0x48, 0x31, 0xC0 | (src<<3) | dst)
+FUNC emit_xor_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_31 = CONST i64 49
+  STORE8 %ptr %p1 %b_31
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %src_sh = MUL i64 src %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %src_sh
+  %modrm = ADD i64 %tmp dst
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: cmp r1, r2 (3 bytes: 0x48, 0x39, 0xC0 | (r2<<3) | r1)
+FUNC emit_cmp_rr(buf: slice<u8>, pos: i64, r1: i64, r2: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && r1 >= 0 && r1 <= 7 && r2 >= 0 && r2 <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_39 = CONST i64 57
+  STORE8 %ptr %p1 %b_39
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %r2_sh = MUL i64 r2 %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %r2_sh
+  %modrm = ADD i64 %tmp r1
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: push reg (1 byte: 0x50 + reg)
+FUNC emit_push_reg(buf: slice<u8>, pos: i64, reg: i64) -> i64
+  REQUIRE pos >= 0 && pos + 1 <= len(buf) && reg >= 0 && reg <= 7
+  %ptr = SLICE_PTR buf
+  %b_base = CONST i64 80
+  %opcode = ADD i64 %b_base reg
+  STORE8 %ptr pos %opcode
+  %next_pos = ADD i64 pos 1
+  ENSURE %next_pos == pos + 1
+  RET %next_pos
+END_FUNC
+
+# Emit: pop reg (1 byte: 0x58 + reg)
+FUNC emit_pop_reg(buf: slice<u8>, pos: i64, reg: i64) -> i64
+  REQUIRE pos >= 0 && pos + 1 <= len(buf) && reg >= 0 && reg <= 7
+  %ptr = SLICE_PTR buf
+  %b_base = CONST i64 88
+  %opcode = ADD i64 %b_base reg
+  STORE8 %ptr pos %opcode
+  %next_pos = ADD i64 pos 1
+  ENSURE %next_pos == pos + 1
+  RET %next_pos
+END_FUNC
+
+# Emit: movzx rax, byte ptr [rax + rcx] (5 bytes: 48 0f b6 04 08)
+FUNC emit_load8_idx(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 5 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b0 = CONST i64 72
+  STORE8 %ptr pos %b0
+  %p1 = ADD i64 pos 1
+  %b1 = CONST i64 15
+  STORE8 %ptr %p1 %b1
+  %p2 = ADD i64 pos 2
+  %b2 = CONST i64 182
+  STORE8 %ptr %p2 %b2
+  %p3 = ADD i64 pos 3
+  %b3 = CONST i64 4
+  STORE8 %ptr %p3 %b3
+  %p4 = ADD i64 pos 4
+  %b4 = CONST i64 8
+  STORE8 %ptr %p4 %b4
+  %next_pos = ADD i64 pos 5
+  ENSURE %next_pos == pos + 5
+  RET %next_pos
+END_FUNC
+
+# Emit: mov byte ptr [rax + rcx], dl (3 bytes: 88 14 08)
+FUNC emit_store8_idx(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b0 = CONST i64 136
+  STORE8 %ptr pos %b0
+  %p1 = ADD i64 pos 1
+  %b1 = CONST i64 20
+  STORE8 %ptr %p1 %b1
+  %p2 = ADD i64 pos 2
+  %b2 = CONST i64 8
+  STORE8 %ptr %p2 %b2
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: mov rax, qword ptr [rax + rcx] (4 bytes: 48 8b 04 08)
+FUNC emit_load64_idx(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b0 = CONST i64 72
+  STORE8 %ptr pos %b0
+  %p1 = ADD i64 pos 1
+  %b1 = CONST i64 139
+  STORE8 %ptr %p1 %b1
+  %p2 = ADD i64 pos 2
+  %b2 = CONST i64 4
+  STORE8 %ptr %p2 %b2
+  %p3 = ADD i64 pos 3
+  %b3 = CONST i64 8
+  STORE8 %ptr %p3 %b3
+  %next_pos = ADD i64 pos 4
+  ENSURE %next_pos == pos + 4
+  RET %next_pos
+END_FUNC
+
+# Emit: mov qword ptr [rax + rcx], rdx (4 bytes: 48 89 14 08)
+FUNC emit_store64_idx(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b0 = CONST i64 72
+  STORE8 %ptr pos %b0
+  %p1 = ADD i64 pos 1
+  %b1 = CONST i64 137
+  STORE8 %ptr %p1 %b1
+  %p2 = ADD i64 pos 2
+  %b2 = CONST i64 20
+  STORE8 %ptr %p2 %b2
+  %p3 = ADD i64 pos 3
+  %b3 = CONST i64 8
+  STORE8 %ptr %p3 %b3
+  %next_pos = ADD i64 pos 4
+  ENSURE %next_pos == pos + 4
+  RET %next_pos
+END_FUNC
+
 # Emit: syscall (2 bytes: 0x0F, 0x05)
 FUNC emit_syscall_inst(buf: slice<u8>, pos: i64) -> i64
   REQUIRE pos >= 0 && pos + 2 <= len(buf)
@@ -216,7 +428,7 @@ FUNC emit_ret_inst(buf: slice<u8>, pos: i64) -> i64
   RET %next_pos
 END_FUNC
 
-# Parse register name (%rax, %rcx, %rdx, %rbx, %rsi, %rdi) into 0..7 ID
+# Parse register name (%rax, %rcx, %rdx, %rbx, %rsi, %rdi, or %r0..%r7) into 0..7 ID
 FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   REQUIRE pos >= 0 && pos + 4 <= len(buf)
 
@@ -225,6 +437,15 @@ FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   %c2 = LOAD8 %ptr %p2
   %p3 = ADD i64 pos 3
   %c3 = LOAD8 %ptr %p3
+
+  # Check if %r0 .. %r7 (ASCII 48 .. 55)
+  %c_0 = CONST i64 48
+  %c_7 = CONST i64 55
+  %is_digit_low = GTE i64 %c2 %c_0
+  %is_digit_high = LTE i64 %c2 %c_7
+  %is_r_num = AND bool %is_digit_low %is_digit_high
+  %digit_id = SUB i64 %c2 %c_0
+  RET_IF %is_r_num %digit_id
 
   # Check 'a' (97) -> rax = 0
   %c_a = CONST i64 97
@@ -238,15 +459,24 @@ FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   %one = CONST i64 1
   RET_IF %is_c %one
 
-  # Check 'b' (98) -> rbx = 3
+  # Check 'b' (98): if c3 == 'p' (112) -> rbp = 5, else rbx = 3
   %c_b = CONST i64 98
   %is_b = EQ i64 %c2 %c_b
+  %c_p = CONST i64 112
+  %is_bp = EQ i64 %c3 %c_p
+  %is_rbp = AND bool %is_b %is_bp
+  %five = CONST i64 5
+  RET_IF %is_rbp %five
   %three = CONST i64 3
   RET_IF %is_b %three
 
-  # Check 's' (115) -> rsi = 6
+  # Check 's' (115): if c3 == 'p' (112) -> rsp = 4, else rsi = 6
   %c_s = CONST i64 115
   %is_s = EQ i64 %c2 %c_s
+  %is_sp = EQ i64 %c3 %c_p
+  %is_rsp = AND bool %is_s %is_sp
+  %four = CONST i64 4
+  RET_IF %is_rsp %four
   %six = CONST i64 6
   RET_IF %is_s %six
 
@@ -469,8 +699,20 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %p_sub = ALLOC slice<u8> 8
   STORE_STR %p_sub "SUB i64 "
 
-  # Allocate ELF binary buffer (1024 bytes)
-  %elf_buf = ALLOC slice<u8> 1024
+  # Allocate prefix slice for "MUL i64 "
+  %p_mul = ALLOC slice<u8> 8
+  STORE_STR %p_mul "MUL i64 "
+
+  # Allocate prefix slice for "MOV "
+  %p_mov = ALLOC slice<u8> 4
+  STORE_STR %p_mov "MOV "
+
+  # Allocate prefix slice for "SYSCALL"
+  %p_sys = ALLOC slice<u8> 7
+  STORE_STR %p_sys "SYSCALL"
+
+  # Allocate ELF binary buffer (2048 bytes)
+  %elf_buf = ALLOC slice<u8> 2048
   %src_raw_ptr = SLICE_PTR %src_buf
   %c_pct_val = CONST i64 37
   %t_flag = CONST bool true
@@ -499,7 +741,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     BR_IF %near_eof advance_pos
 
     # Bound check for current code buffer position
-    %max_pos = CONST i64 900
+    %max_pos = CONST i64 500
     %code_overflow = GT i64 %cur_code_pos %max_pos
     %err_ovf = CONST i64 -2
     RET_IF %code_overflow %err_ovf
@@ -539,7 +781,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %c_start = LOAD8 %src_raw_ptr %start
     %is_pct = EQ i64 %c_start %c_pct_val
     %not_pct = EQ bool %is_pct %false_b
-    BR_IF %not_pct check_store
+    BR_IF %not_pct check_syscall
 
     %dst_reg = CALL parse_reg_id %src_buf %start
     %eq_char = CONST i64 61
@@ -588,7 +830,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # 2c. Check if rhs is "SUB i64 "
     %is_sub = CALL str_starts_with %src_buf %rhs_pos %p_sub
     %not_sub = EQ bool %is_sub %false_b
-    BR_IF %not_sub advance_pos
+    BR_IF %not_sub check_mul
 
     %r1_s_check = ADD i64 %rhs_pos 16
     %r1_s_near = GT i64 %r1_s_check %bytes_read
@@ -603,6 +845,57 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %cur_code_pos = MOV %next_pos_s
     %t_flag_s = CONST bool true
     %has_dyn_code = MOV %t_flag_s
+    JUMP advance_pos
+
+    LABEL check_mul
+    # 2d. Check if rhs is "MUL i64 "
+    %is_mul = CALL str_starts_with %src_buf %rhs_pos %p_mul
+    %not_mul = EQ bool %is_mul %false_b
+    BR_IF %not_mul check_mov
+
+    %r1_m_check = ADD i64 %rhs_pos 16
+    %r1_m_near = GT i64 %r1_m_check %bytes_read
+    BR_IF %r1_m_near advance_pos
+
+    %r1_m_p = ADD i64 %rhs_pos 8
+    %r1_m = CALL parse_reg_id %src_buf %r1_m_p
+    %sp_pos_m = CALL find_char_from %src_buf %r1_m_p %sp_c
+    %r2_m_p = CALL skip_whitespace %src_buf %sp_pos_m
+    %r2_m = CALL parse_reg_id %src_buf %r2_m_p
+    %next_pos_m = CALL emit_mul_rr %elf_buf %cur_code_pos %r1_m %r2_m
+    %cur_code_pos = MOV %next_pos_m
+    %t_flag_m = CONST bool true
+    %has_dyn_code = MOV %t_flag_m
+    JUMP advance_pos
+
+    LABEL check_mov
+    # 2e. Check if rhs is "MOV "
+    %is_mov = CALL str_starts_with %src_buf %rhs_pos %p_mov
+    %not_mov = EQ bool %is_mov %false_b
+    BR_IF %not_mov advance_pos
+
+    %r_src_p = ADD i64 %rhs_pos 4
+    %r_src_check = ADD i64 %r_src_p 4
+    %r_src_near = GT i64 %r_src_check %bytes_read
+    BR_IF %r_src_near advance_pos
+
+    %r_src = CALL parse_reg_id %src_buf %r_src_p
+    %next_pos_mov = CALL emit_mov_rr %elf_buf %cur_code_pos %dst_reg %r_src
+    %cur_code_pos = MOV %next_pos_mov
+    %t_flag_mov = CONST bool true
+    %has_dyn_code = MOV %t_flag_mov
+    JUMP advance_pos
+
+    LABEL check_syscall
+    # Check if line is "SYSCALL"
+    %is_sys = CALL str_starts_with %src_buf %start %p_sys
+    %not_sys = EQ bool %is_sys %false_b
+    BR_IF %not_sys check_store
+
+    %next_pos_sys = CALL emit_syscall_inst %elf_buf %cur_code_pos
+    %cur_code_pos = MOV %next_pos_sys
+    %t_flag_sys = CONST bool true
+    %has_dyn_code = MOV %t_flag_sys
     JUMP advance_pos
 
     LABEL check_store
@@ -622,8 +915,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %no_q2 = GTE i64 %q2 %nl
     BR_IF %no_q2 advance_pos
 
-    # Copy string bytes unescaped into elf_buf starting at offset 176
-    %dest_off = CONST i64 176
+    # Copy string bytes unescaped into elf_buf starting at offset 512
+    %dest_off = CONST i64 512
     %src_raw = SLICE_PTR %src_buf
     %dst_raw = SLICE_PTR %elf_buf
     %copied = CALL copy_str_unescaped %src_raw %q1_plus_1 %q2 %dst_raw %dest_off
@@ -644,6 +937,28 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %not_dyn = EQ bool %has_dyn_code %false_dyn
   BR_IF %not_dyn check_str_or_plain
 
+  # If has_string is true in dynamic mode:
+  %no_str_in_dyn = EQ bool %has_string %false_dyn
+  BR_IF %no_str_in_dyn write_pure_dyn
+
+  # Bounded string check (0..500)
+  %max_dyn_str = CONST i64 500
+  %str_too_big_d = GT i64 %str_len %max_dyn_str
+  %err_d = CONST i64 -1
+  RET_IF %str_too_big_d %err_d
+  %str_neg_d = LT i64 %str_len %zero
+  RET_IF %str_neg_d %err_d
+
+  # Dynamic code + string: total payload = 392 + str_len
+  %c_392 = CONST i64 392
+  %dyn_str_payload = ADD i64 %c_392 %str_len
+  %hdr_dyn_str = CALL emit_elf_header %elf_buf %dyn_str_payload
+  %c_512 = CONST i64 512
+  %total_dyn_sz = ADD i64 %c_512 %str_len
+  %res_dyn_str = CALL fs_write_file_bytes out_path %elf_buf %total_dyn_sz
+  RET %res_dyn_str
+
+  LABEL write_pure_dyn
   # Bounded dynamic code check (120..1000)
   %c_120 = CONST i64 120
   %dyn_code_len = SUB i64 %cur_code_pos %c_120
@@ -700,17 +1015,29 @@ FUNC main() -> i64
   %msg_len = SLICE_LEN %msg
   %dummy1 = CALL std_print_slice %msg %msg_len
 
-  %src_path = ALLOC slice<u8> 16
-  STORE_STR %src_path "test_calc.lit\0"
+  # 1. Compile test_syscall.lit -> syscall.bin
+  %src0 = ALLOC slice<u8> 20
+  STORE_STR %src0 "test_syscall.lit\0"
+  %out0 = ALLOC slice<u8> 16
+  STORE_STR %out0 "syscall.bin\0"
+  %res0 = CALL compile_file %src0 %out0
 
-  %out_path = ALLOC slice<u8> 16
-  STORE_STR %out_path "calc.bin\0"
+  # 2. Compile test_advanced.lit -> advanced.bin
+  %src1 = ALLOC slice<u8> 20
+  STORE_STR %src1 "test_advanced.lit\0"
+  %out1 = ALLOC slice<u8> 16
+  STORE_STR %out1 "advanced.bin\0"
+  %res1 = CALL compile_file %src1 %out1
 
-  # Compile test_calc.lit -> calc.bin!
-  %compile_res = CALL compile_file %src_path %out_path
+  # 3. Compile test_calc.lit -> calc.bin
+  %src2 = ALLOC slice<u8> 16
+  STORE_STR %src2 "test_calc.lit\0"
+  %out2 = ALLOC slice<u8> 16
+  STORE_STR %out2 "calc.bin\0"
+  %res2 = CALL compile_file %src2 %out2
 
-  %success_msg = ALLOC slice<u8> 64
-  STORE_STR %success_msg "🎉 Successfully compiled test_calc.lit -> calc.bin!\n"
+  %success_msg = ALLOC slice<u8> 80
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, advanced, calc)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 

@@ -1,0 +1,12 @@
+# Advanced Arithmetic Test for Light Self-Hosting Compiler
+FUNC main() -> i64
+  %r1 = CONST i64 5
+  %r2 = CONST i64 10
+  %r1 = MUL i64 %r1 %r2
+  %r3 = CONST i64 30
+  %r1 = ADD i64 %r1 %r3
+  %r4 = CONST i64 3
+  %r1 = SUB i64 %r1 %r4
+  %rax = MOV %r1
+  RET %rax
+END_FUNC
