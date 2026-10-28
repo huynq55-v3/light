@@ -1,0 +1,7 @@
+# Test program with dynamic arithmetic computation
+FUNC main() -> i64
+  %rax = CONST i64 50
+  %rcx = CONST i64 73
+  %res = ADD i64 %rax %rcx
+  RET %rax
+END_FUNC

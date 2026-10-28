@@ -216,6 +216,51 @@ FUNC emit_ret_inst(buf: slice<u8>, pos: i64) -> i64
   RET %next_pos
 END_FUNC
 
+# Parse register name (%rax, %rcx, %rdx, %rbx, %rsi, %rdi) into 0..7 ID
+FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf)
+
+  %ptr = SLICE_PTR buf
+  %p2 = ADD i64 pos 2
+  %c2 = LOAD8 %ptr %p2
+  %p3 = ADD i64 pos 3
+  %c3 = LOAD8 %ptr %p3
+
+  # Check 'a' (97) -> rax = 0
+  %c_a = CONST i64 97
+  %is_a = EQ i64 %c2 %c_a
+  %zero = CONST i64 0
+  RET_IF %is_a %zero
+
+  # Check 'c' (99) -> rcx = 1
+  %c_c = CONST i64 99
+  %is_c = EQ i64 %c2 %c_c
+  %one = CONST i64 1
+  RET_IF %is_c %one
+
+  # Check 'b' (98) -> rbx = 3
+  %c_b = CONST i64 98
+  %is_b = EQ i64 %c2 %c_b
+  %three = CONST i64 3
+  RET_IF %is_b %three
+
+  # Check 's' (115) -> rsi = 6
+  %c_s = CONST i64 115
+  %is_s = EQ i64 %c2 %c_s
+  %six = CONST i64 6
+  RET_IF %is_s %six
+
+  # Check 'd' (100): if c3 == 'i' (105) -> rdi = 7, else rdx = 2
+  %c_i = CONST i64 105
+  %is_i = EQ i64 %c3 %c_i
+  %seven = CONST i64 7
+  RET_IF %is_i %seven
+
+  %two = CONST i64 2
+  ENSURE %two >= 0 && %two <= 7
+  RET %two
+END_FUNC
+
 # Emit standalone exit machine code at offset 120
 FUNC emit_exit_code(buf: slice<u8>, exit_code: i64) -> i64
   REQUIRE len(buf) >= 136 && exit_code >= 0 && exit_code <= 255
@@ -401,6 +446,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %parsed_exit = CONST i64 0
   %has_string = CONST bool false
   %str_len = CONST i64 0
+  %has_dyn_code = CONST bool false
+  %cur_code_pos = CONST i64 120
 
   # Allocate prefix slice for "RET "
   %p_ret = ALLOC slice<u8> 4
@@ -410,8 +457,23 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %p_store = ALLOC slice<u8> 9
   STORE_STR %p_store "STORE_STR"
 
+  # Allocate prefix slice for "CONST i64 "
+  %p_const = ALLOC slice<u8> 10
+  STORE_STR %p_const "CONST i64 "
+
+  # Allocate prefix slice for "ADD i64 "
+  %p_add = ALLOC slice<u8> 8
+  STORE_STR %p_add "ADD i64 "
+
+  # Allocate prefix slice for "SUB i64 "
+  %p_sub = ALLOC slice<u8> 8
+  STORE_STR %p_sub "SUB i64 "
+
   # Allocate ELF binary buffer (1024 bytes)
   %elf_buf = ALLOC slice<u8> 1024
+  %src_raw_ptr = SLICE_PTR %src_buf
+  %c_pct_val = CONST i64 37
+  %t_flag = CONST bool true
 
   # Scan lines
   LOOP parse_file_loop
@@ -430,35 +492,135 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %nl_char = CONST i64 10
     %nl = CALL find_char_from %src_buf %start %nl_char
 
-    # Check if line starts with "RET "
+    # Ensure buffer space in line for instruction parsing
+    %safe_margin = CONST i64 16
+    %needed_len = ADD i64 %start %safe_margin
+    %near_eof = GT i64 %needed_len %bytes_read
+    BR_IF %near_eof advance_pos
+
+    # Bound check for current code buffer position
+    %max_pos = CONST i64 900
+    %code_overflow = GT i64 %cur_code_pos %max_pos
+    %err_ovf = CONST i64 -2
+    RET_IF %code_overflow %err_ovf
+
+    # 1. Check if line starts with "RET "
     %is_ret = CALL str_starts_with %src_buf %start %p_ret
     %false_b = CONST bool false
     %not_ret = EQ bool %is_ret %false_b
-    BR_IF %not_ret check_store
+    BR_IF %not_ret check_reg_line
 
-    # Parse integer after "RET "
+    # Check if char after "RET " is '%' (ASCII 37)
+    %ret_arg_p = ADD i64 %start 4
+    %c_arg = LOAD8 %src_raw_ptr %ret_arg_p
+    %is_ret_reg = EQ i64 %c_arg %c_pct_val
+    %not_ret_reg = EQ bool %is_ret_reg %false_b
+    BR_IF %not_ret_reg parse_imm_ret
+
+    # It is RET %reg -> emit mov rdi, ret_reg; mov rax, 60; syscall
+    %ret_reg = CALL parse_reg_id %src_buf %ret_arg_p
+    %c1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %ret_reg
+    %c2 = CALL emit_mov_imm %elf_buf %c1 0 60
+    %c3 = CALL emit_syscall_inst %elf_buf %c2
+    %cur_code_pos = MOV %c3
+    %t_flag = CONST bool true
+    %has_dyn_code = MOV %t_flag
+    JUMP advance_pos
+
+    LABEL parse_imm_ret
     %ret_len = CONST i64 4
     %val_start = ADD i64 %start %ret_len
     %val = CALL parse_int_from %src_buf %val_start %nl
     %parsed_exit = MOV %val
-    JUMP line_done
+    JUMP advance_pos
+
+    LABEL check_reg_line
+    # 2. Check if line defines a register: starts with '%'
+    %c_start = LOAD8 %src_raw_ptr %start
+    %is_pct = EQ i64 %c_start %c_pct_val
+    %not_pct = EQ bool %is_pct %false_b
+    BR_IF %not_pct check_store
+
+    %dst_reg = CALL parse_reg_id %src_buf %start
+    %eq_char = CONST i64 61
+    %eq_pos = CALL find_char_from %src_buf %start %eq_char
+    %no_eq = GTE i64 %eq_pos %nl
+    BR_IF %no_eq advance_pos
+    %after_eq = ADD i64 %eq_pos 1
+    %rhs_pos = CALL skip_whitespace %src_buf %after_eq
+
+    # 2a. Check if rhs is "CONST i64 "
+    %is_const = CALL str_starts_with %src_buf %rhs_pos %p_const
+    %not_const = EQ bool %is_const %false_b
+    BR_IF %not_const check_add
+
+    %c_val_p = ADD i64 %rhs_pos 10
+    %c_val = CALL parse_int_from %src_buf %c_val_p %nl
+    %next_pos_c = CALL emit_mov_imm %elf_buf %cur_code_pos %dst_reg %c_val
+    %cur_code_pos = MOV %next_pos_c
+    %t_flag_c = CONST bool true
+    %has_dyn_code = MOV %t_flag_c
+    JUMP advance_pos
+
+    LABEL check_add
+    # 2b. Check if rhs is "ADD i64 "
+    %is_add = CALL str_starts_with %src_buf %rhs_pos %p_add
+    %not_add = EQ bool %is_add %false_b
+    BR_IF %not_add check_sub
+
+    %r1_check = ADD i64 %rhs_pos 16
+    %r1_near_eof = GT i64 %r1_check %bytes_read
+    BR_IF %r1_near_eof advance_pos
+
+    %r1_pos = ADD i64 %rhs_pos 8
+    %r1 = CALL parse_reg_id %src_buf %r1_pos
+    %sp_c = CONST i64 32
+    %sp_pos = CALL find_char_from %src_buf %r1_pos %sp_c
+    %r2_pos = CALL skip_whitespace %src_buf %sp_pos
+    %r2 = CALL parse_reg_id %src_buf %r2_pos
+    %next_pos_a = CALL emit_add_rr %elf_buf %cur_code_pos %r1 %r2
+    %cur_code_pos = MOV %next_pos_a
+    %t_flag_a = CONST bool true
+    %has_dyn_code = MOV %t_flag_a
+    JUMP advance_pos
+
+    LABEL check_sub
+    # 2c. Check if rhs is "SUB i64 "
+    %is_sub = CALL str_starts_with %src_buf %rhs_pos %p_sub
+    %not_sub = EQ bool %is_sub %false_b
+    BR_IF %not_sub advance_pos
+
+    %r1_s_check = ADD i64 %rhs_pos 16
+    %r1_s_near = GT i64 %r1_s_check %bytes_read
+    BR_IF %r1_s_near advance_pos
+
+    %r1_s_p = ADD i64 %rhs_pos 8
+    %r1_s = CALL parse_reg_id %src_buf %r1_s_p
+    %sp_pos_s = CALL find_char_from %src_buf %r1_s_p %sp_c
+    %r2_s_p = CALL skip_whitespace %src_buf %sp_pos_s
+    %r2_s = CALL parse_reg_id %src_buf %r2_s_p
+    %next_pos_s = CALL emit_sub_rr %elf_buf %cur_code_pos %r1_s %r2_s
+    %cur_code_pos = MOV %next_pos_s
+    %t_flag_s = CONST bool true
+    %has_dyn_code = MOV %t_flag_s
+    JUMP advance_pos
 
     LABEL check_store
-    # Check if line has STORE_STR
+    # 3. Check if line has STORE_STR
     %is_store = CALL str_starts_with %src_buf %start %p_store
     %not_store = EQ bool %is_store %false_b
-    BR_IF %not_store line_done
+    BR_IF %not_store advance_pos
 
     # Find first quote (ASCII 34 = '"')
     %quote_char = CONST i64 34
     %q1 = CALL find_char_from %src_buf %start %quote_char
     %no_q1 = GTE i64 %q1 %nl
-    BR_IF %no_q1 line_done
+    BR_IF %no_q1 advance_pos
 
     %q1_plus_1 = ADD i64 %q1 1
     %q2 = CALL find_char_from %src_buf %q1_plus_1 %quote_char
     %no_q2 = GTE i64 %q2 %nl
-    BR_IF %no_q2 line_done
+    BR_IF %no_q2 advance_pos
 
     # Copy string bytes unescaped into elf_buf starting at offset 176
     %dest_off = CONST i64 176
@@ -469,7 +631,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %true_b = CONST bool true
     %has_string = MOV %true_b
 
-    LABEL line_done
+    LABEL advance_pos
 
     # Advance to next line (after \n)
     %one = CONST i64 1
@@ -477,6 +639,19 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %pos = MOV %next_pos
   END_LOOP parse_file_loop
 
+  # 1. Check if we emitted dynamic instructions
+  %false_dyn = CONST bool false
+  %not_dyn = EQ bool %has_dyn_code %false_dyn
+  BR_IF %not_dyn check_str_or_plain
+
+  # Bounded dynamic code check (120..1000)
+  %c_120 = CONST i64 120
+  %dyn_code_len = SUB i64 %cur_code_pos %c_120
+  %hdr_dyn = CALL emit_elf_header %elf_buf %dyn_code_len
+  %res_dyn = CALL fs_write_file_bytes out_path %elf_buf %cur_code_pos
+  RET %res_dyn
+
+  LABEL check_str_or_plain
   # Ensure exit code is valid u8 (0..255)
   %c_255 = CONST i64 255
   %exit_too_high = GT i64 %parsed_exit %c_255
@@ -526,16 +701,16 @@ FUNC main() -> i64
   %dummy1 = CALL std_print_slice %msg %msg_len
 
   %src_path = ALLOC slice<u8> 16
-  STORE_STR %src_path "test_hello.lit\0"
+  STORE_STR %src_path "test_calc.lit\0"
 
   %out_path = ALLOC slice<u8> 16
-  STORE_STR %out_path "hello.bin\0"
+  STORE_STR %out_path "calc.bin\0"
 
-  # Compile test_hello.lit -> hello.bin!
+  # Compile test_calc.lit -> calc.bin!
   %compile_res = CALL compile_file %src_path %out_path
 
   %success_msg = ALLOC slice<u8> 64
-  STORE_STR %success_msg "🎉 Successfully compiled test_hello.lit -> hello.bin!\n"
+  STORE_STR %success_msg "🎉 Successfully compiled test_calc.lit -> calc.bin!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 
