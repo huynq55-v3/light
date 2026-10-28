@@ -401,6 +401,38 @@ impl Parser {
             });
         }
 
+        // --- ĐIỀU KHIỂN LUỒNG PHẲNG (FLAT SSA BRANCHING) ---
+        if parts[0] == "LABEL" {
+            if parts.len() < 2 {
+                return Err(ParseError {
+                    line_no,
+                    message: "Syntax: LABEL <name>".into(),
+                });
+            }
+            return Ok(Instruction::Label(parts[1].to_string()));
+        }
+        if parts[0] == "JUMP" {
+            if parts.len() < 2 {
+                return Err(ParseError {
+                    line_no,
+                    message: "Syntax: JUMP <label>".into(),
+                });
+            }
+            return Ok(Instruction::Jump(parts[1].to_string()));
+        }
+        if parts[0] == "BR_IF" {
+            if parts.len() < 3 {
+                return Err(ParseError {
+                    line_no,
+                    message: "Syntax: BR_IF %cond <label>".into(),
+                });
+            }
+            return Ok(Instruction::BrIf {
+                cond: parts[1].to_string(),
+                target: parts[2].to_string(),
+            });
+        }
+
         // --- ĐIỀU KHIỂN VÒNG LẶP ---
         if parts[0] == "LOOP" {
             let label = parts.get(1).unwrap_or(&"loop").to_string();

@@ -123,32 +123,91 @@ FUNC emit_exit_code(buf: slice<u8>, exit_code: i64) -> i64
   RET %total_len
 END_FUNC
 
-# Main compiler entry point: compiles a standalone ELF binary into out.bin
+# Compile input .lit file and emit standalone ELF binary
+FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
+  REQUIRE len(src_path) > 0 && len(out_path) > 0
+
+  # Read source file
+  %src_buf = ALLOC slice<u8> 1024
+  %bytes_read = CALL fs_read_file src_path %src_buf
+
+  %zero = CONST i64 0
+  %read_err = LTE i64 %bytes_read %zero
+  RET_IF %read_err %bytes_read
+
+  %pos = CONST i64 0
+  %parsed_exit = CONST i64 0
+
+  # Allocate prefix slice for "RET "
+  %p_ret = ALLOC slice<u8> 4
+  STORE_STR %p_ret "RET "
+
+  # Scan lines
+  LOOP parse_file_loop
+    INVARIANT %pos >= 0 && %pos <= len(src_buf)
+
+    %done = GTE i64 %pos %bytes_read
+    BREAK_IF %done
+
+    # Skip whitespace
+    %start = CALL skip_whitespace %src_buf %pos
+
+    %at_eof = GTE i64 %start %bytes_read
+    BREAK_IF %at_eof
+
+    # Find end of current line (ASCII 10 = '\n')
+    %nl_char = CONST i64 10
+    %nl = CALL find_char_from %src_buf %start %nl_char
+
+    # Check if line starts with "RET "
+    %is_ret = CALL str_starts_with %src_buf %start %p_ret
+    %false_b = CONST bool false
+    %not_ret = EQ bool %is_ret %false_b
+    BR_IF %not_ret skip_ret_val
+
+    # Parse integer after "RET "
+    %ret_len = CONST i64 4
+    %val_start = ADD i64 %start %ret_len
+    %val = CALL parse_int_from %src_buf %val_start %nl
+    %parsed_exit = MOV %val
+
+    LABEL skip_ret_val
+
+    # Advance to next line (after \n)
+    %one = CONST i64 1
+    %next_pos = ADD i64 %nl %one
+    %pos = MOV %next_pos
+  END_LOOP parse_file_loop
+
+  # Emit ELF binary with parsed exit code
+  %elf_buf = ALLOC slice<u8> 512
+  %code_len = CONST i64 16
+  %hdr_len = CALL emit_elf_header %elf_buf %code_len
+  %bin_sz = CALL emit_exit_code %elf_buf %parsed_exit
+
+  # Write binary to disk
+  %res = CALL fs_write_file out_path %elf_buf
+  RET %res
+END_FUNC
+
+# Compiler main entry point
 FUNC main() -> i64
   %msg = ALLOC slice<u8> 80
-  STORE_STR %msg "🚀 Light Self-Hosting Compiler v0.1 emitting standalone ELF...\n"
+  STORE_STR %msg "🚀 Light Self-Hosting Compiler v0.1 starting compilation...\n"
   %msg_len = SLICE_LEN %msg
   %dummy1 = CALL std_print_slice %msg %msg_len
 
-  # 1. Allocate ELF binary buffer (512 bytes)
-  %elf_buf = ALLOC slice<u8> 512
+  %src_path = ALLOC slice<u8> 16
+  STORE_STR %src_path "test_input.lit\0"
 
-  # 2. Emit ELF Header with 16 bytes of machine code
-  %code_len = CONST i64 16
-  %hdr_len = CALL emit_elf_header %elf_buf %code_len
-
-  # 3. Emit Exit Machine Code with exit code 42
-  %exit_val = CONST i64 42
-  %bin_sz = CALL emit_exit_code %elf_buf %exit_val
-
-  # 4. Write standalone ELF executable to disk
   %out_path = ALLOC slice<u8> 16
-  STORE_STR %out_path "out.bin\0"
+  STORE_STR %out_path "test_prog.bin\0"
 
-  %bytes_written = CALL fs_write_file %out_path %elf_buf
+  # Compile test_input.lit -> test_prog.bin!
+  %compile_res = CALL compile_file %src_path %out_path
 
   %success_msg = ALLOC slice<u8> 64
-  STORE_STR %success_msg "🎉 Successfully emitted standalone ELF: out.bin!\n"
+  STORE_STR %success_msg "🎉 Successfully compiled test_input.lit -> test_prog.bin!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 

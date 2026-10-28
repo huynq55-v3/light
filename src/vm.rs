@@ -126,6 +126,13 @@ impl VirtualMachine {
             self.registers.insert(param.name.clone(), arg.clone());
         }
 
+        let mut labels = HashMap::new();
+        for (i, si) in func.instructions.iter().enumerate() {
+            if let Instruction::Label(name) = &si.inst {
+                labels.insert(name.clone(), i);
+            }
+        }
+
         let mut pc = 0;
         let mut loop_stack: Vec<(String, usize)> = Vec::new(); // (label, start_pc)
 
@@ -459,6 +466,36 @@ impl VirtualMachine {
                         }
                     }
                     pc += 1;
+                }
+
+                Instruction::Label(_) => {
+                    pc += 1;
+                }
+
+                Instruction::Jump(target) => {
+                    if let Some(&target_pc) = labels.get(target) {
+                        pc = target_pc + 1;
+                    } else {
+                        return Err(format!("Undefined label: {}", target));
+                    }
+                }
+
+                Instruction::BrIf { cond, target } => {
+                    let should_branch = match self.registers.get(cond) {
+                        Some(Value::Bool(b)) => *b,
+                        Some(Value::I64(n)) => *n != 0,
+                        Some(Value::U64(n)) => *n != 0,
+                        _ => false,
+                    };
+                    if should_branch {
+                        if let Some(&target_pc) = labels.get(target) {
+                            pc = target_pc + 1;
+                        } else {
+                            return Err(format!("Undefined label: {}", target));
+                        }
+                    } else {
+                        pc += 1;
+                    }
                 }
 
                 // Giao tiếp hệ điều hành Linux: SYSCALL

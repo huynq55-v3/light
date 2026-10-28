@@ -1,0 +1,4 @@
+# Test file with custom exit code 123
+FUNC main() -> i64
+  RET 123
+END_FUNC

@@ -221,7 +221,7 @@ impl Verifier {
         // 4. Hoare Logic Verification for Loops
         if !invariants.is_empty() {
             let base_goal = format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name);
-            let base_query = Self::build_base_case_query(func, &requires, &invariants);
+            let base_query = Self::build_base_case_query(func, &requires, &invariants, &buffer_sizes);
             let stack = vec![StackFrame {
                 file: func.file.clone(),
                 line: func.start_line,
@@ -232,7 +232,7 @@ impl Verifier {
             results.push(Self::solve_query(&base_goal, &base_query, stack));
 
             let step_goal = format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name);
-            let step_query = Self::build_inductive_step_query(func, &requires, &invariants);
+            let step_query = Self::build_inductive_step_query(func, &requires, &invariants, &buffer_sizes);
             let stack2 = vec![StackFrame {
                 file: func.file.clone(),
                 line: func.start_line,
@@ -244,7 +244,7 @@ impl Verifier {
 
             if !ensures.is_empty() {
                 let exit_goal = format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name);
-                let exit_query = Self::build_exit_step_query(func, &requires, &invariants, &ensures);
+                let exit_query = Self::build_exit_step_query(func, &requires, &invariants, &ensures, &buffer_sizes);
                 let stack3 = vec![StackFrame {
                     file: func.file.clone(),
                     line: func.start_line,
@@ -599,7 +599,39 @@ impl Verifier {
         smt
     }
 
-    fn build_base_case_query(func: &Function, requires: &[Expr], invariants: &[Expr]) -> String {
+    fn find_loop_var(func: &Function, invariants: &[Expr]) -> String {
+        let mut inv_vars = std::collections::HashSet::new();
+        for inv in invariants {
+            Self::collect_vars(inv, &mut inv_vars);
+        }
+
+        if inv_vars.len() == 1 {
+            return inv_vars.into_iter().next().unwrap();
+        }
+
+        // Tìm biến được gán lại trong thân vòng lặp: %v = MOV ...
+        for si in &func.instructions {
+            if let Instruction::Mov { dest, .. } = &si.inst {
+                let clean = dest.trim_start_matches('%');
+                if inv_vars.contains(clean) {
+                    return clean.to_string();
+                }
+            }
+        }
+
+        if inv_vars.contains("i") {
+            "i".to_string()
+        } else {
+            inv_vars.into_iter().next().unwrap_or_else(|| "i".to_string())
+        }
+    }
+
+    fn build_base_case_query(
+        func: &Function,
+        requires: &[Expr],
+        invariants: &[Expr],
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+    ) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
 
@@ -607,14 +639,48 @@ impl Verifier {
         all_exprs.extend(invariants.iter());
         Self::declare_all_vars(func, &all_exprs, &mut smt);
 
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
         // Require đúng
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
         }
 
-        // Base case: giá trị khởi tạo của i=0, sum=0
-        smt.push_str("(assert (= i (_ bv0 64)))\n");
-        smt.push_str("(assert (= sum (_ bv0 64)))\n");
+        let loop_var = Self::find_loop_var(func, invariants);
+
+        // Khởi tạo các giá trị trước vòng lặp
+        let mut found_init = false;
+        for s_inst in &func.instructions {
+            if matches!(s_inst.inst, Instruction::Loop(_)) {
+                break;
+            }
+            match &s_inst.inst {
+                Instruction::AssignConst { dest, val: Value::I64(v), .. } => {
+                    let d = dest.trim_start_matches('%');
+                    if d == loop_var {
+                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                        found_init = true;
+                    }
+                }
+                Instruction::Mov { dest, src } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = src.trim_start_matches('%');
+                    if d == loop_var {
+                        smt.push_str(&format!("(assert (= {} {}))\n", d, s));
+                        found_init = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !found_init {
+            smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", loop_var));
+        }
 
         // Phủ định Invariant: nếu với khởi tạo mà Invariant sai -> tìm phản ví dụ
         let inv_terms: Vec<String> = invariants.iter().map(Self::expr_to_smt).collect();
@@ -647,13 +713,24 @@ impl Verifier {
         }
     }
 
-    fn build_inductive_step_query(func: &Function, requires: &[Expr], invariants: &[Expr]) -> String {
+    fn build_inductive_step_query(
+        func: &Function,
+        requires: &[Expr],
+        invariants: &[Expr],
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+    ) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
 
         let mut all_exprs: Vec<&Expr> = requires.iter().collect();
         all_exprs.extend(invariants.iter());
         Self::declare_all_vars(func, &all_exprs, &mut smt);
+
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
 
         // Giả sử Require & Invariant tại bước hiện tại là đúng
         for req in requires {
@@ -663,13 +740,13 @@ impl Verifier {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
         }
 
-        // Tự động tìm biến chỉ số lặp và các chặn trên
-        let loop_var = "i";
+        // Tự động tìm biến chỉ số lặp động
+        let loop_var = Self::find_loop_var(func, invariants);
         for inv in invariants {
-            Self::extract_loop_bounds(inv, loop_var, &mut smt);
+            Self::extract_loop_bounds(inv, &loop_var, &mut smt);
         }
 
-        // Bước nhảy tổng quát: next_i = loop_var + 1
+        // Bước nhảy tổng quát: next_var = loop_var + 1
         smt.push_str(&format!("(declare-const next_{} (_ BitVec 64))\n", loop_var));
         smt.push_str(&format!("(assert (= next_{} (bvadd {} (_ bv1 64))))\n", loop_var, loop_var));
 
@@ -692,6 +769,7 @@ impl Verifier {
         requires: &[Expr],
         invariants: &[Expr],
         ensures: &[Expr],
+        buffer_sizes: &std::collections::HashMap<String, usize>,
     ) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
@@ -701,6 +779,12 @@ impl Verifier {
         all_exprs.extend(ensures.iter());
         Self::declare_all_vars(func, &all_exprs, &mut smt);
 
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
         }
@@ -708,8 +792,58 @@ impl Verifier {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
         }
 
-        // Điều kiện thoát vòng lặp: i >= n
-        smt.push_str("(assert (bvsge i n))\n");
+        // Khai báo các biến cục bộ SSA trước vòng lặp (như len = s_len)
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::AssignConst { dest, val: Value::I64(v), .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                }
+                _ => {}
+            }
+        }
+
+        // Tìm điều kiện break trong vòng lặp: BREAK_IF %done
+        for s_inst in &func.instructions {
+            if let Instruction::BreakIf(cond) = &s_inst.inst {
+                let clean_c = cond.trim_start_matches('%');
+                for prev in &func.instructions {
+                    if let Instruction::Binary { op, dest, src1, src2, .. } = &prev.inst {
+                        if dest.trim_start_matches('%') == clean_c {
+                            let s1 = match src1 {
+                                Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                                Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                                _ => "(_ bv0 64)".into(),
+                            };
+                            let s2 = match src2 {
+                                Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                                Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                                _ => "(_ bv0 64)".into(),
+                            };
+                            match op {
+                                BinOp::Gte => {
+                                    smt.push_str(&format!("(assert (bvsge {} {}))\n", s1, s2));
+                                }
+                                BinOp::Gt => {
+                                    smt.push_str(&format!("(assert (bvsgt {} {}))\n", s1, s2));
+                                }
+                                BinOp::Eq => {
+                                    smt.push_str(&format!("(assert (= {} {}))\n", s1, s2));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Phủ định ENSURE để tìm phản ví dụ (Proof by contradiction)
         let ensure_terms: Vec<String> = ensures.iter().map(Self::expr_to_smt).collect();

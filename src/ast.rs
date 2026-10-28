@@ -166,6 +166,15 @@ pub enum Instruction {
     },
 
     // --- ĐIỀU KHIỂN LUỒNG CẤU TRÚC (STRUCTURED CONTROL FLOW - TURING COMPLETE) ---
+    /// Nhãn nhảy: LABEL <name>
+    Label(String),
+    /// Nhảy không điều kiện: JUMP <label>
+    Jump(String),
+    /// Nhảy có điều kiện: BR_IF %cond <label>
+    BrIf {
+        cond: String,
+        target: String,
+    },
     /// Bắt đầu vòng lặp: LOOP <label>
     Loop(String),
     /// Thoát vòng lặp nếu điều kiện đúng: BREAK_IF %cond

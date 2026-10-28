@@ -156,3 +156,132 @@ FUNC parse_i64(s: slice<u8>) -> i64
 
   RET %acc
 END_FUNC
+
+# Skip whitespace (Space=32, Tab=9) starting at start_idx
+FUNC skip_whitespace(s: slice<u8>, start_idx: i64) -> i64
+  REQUIRE start_idx >= 0 && start_idx <= len(s)
+
+  %len = SLICE_LEN s
+  %ptr = SLICE_PTR s
+  %idx = MOV start_idx
+  %c_space = CONST i64 32
+  %c_tab = CONST i64 9
+
+  LOOP skip_loop
+    INVARIANT %idx >= 0 && %idx <= len(s)
+
+    %done = GTE i64 %idx %len
+    BREAK_IF %done
+
+    %c = LOAD8 %ptr %idx
+    %not_sp = NEQ i64 %c %c_space
+    %not_tb = NEQ i64 %c %c_tab
+    %not_ws = AND bool %not_sp %not_tb
+    RET_IF %not_ws %idx
+
+    %next_idx = ADD i64 %idx 1
+    %idx = MOV %next_idx
+  END_LOOP skip_loop
+
+  ENSURE %idx >= start_idx && %idx <= len(s)
+  RET %idx
+END_FUNC
+
+# Check if slice s starting at offset starts with prefix
+FUNC str_starts_with(s: slice<u8>, offset: i64, prefix: slice<u8>) -> bool
+  REQUIRE offset >= 0 && offset <= len(s) && len(prefix) >= 0
+
+  %len_s = SLICE_LEN s
+  %len_p = SLICE_LEN prefix
+  %rem = SUB i64 %len_s offset
+  %too_short = LT i64 %rem %len_p
+  %false_val = CONST bool false
+  RET_IF %too_short %false_val
+
+  %ptr_s = SLICE_PTR s
+  %ptr_p = SLICE_PTR prefix
+  %i = CONST i64 0
+
+  LOOP match_loop
+    INVARIANT %i >= 0 && %i <= len(prefix)
+
+    %done = GTE i64 %i %len_p
+    BREAK_IF %done
+
+    %s_idx = ADD i64 offset %i
+    %c_s = LOAD8 %ptr_s %s_idx
+    %c_p = LOAD8 %ptr_p %i
+
+    %diff = NEQ i64 %c_s %c_p
+    RET_IF %diff %false_val
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP match_loop
+
+  %true_val = CONST bool true
+  RET %true_val
+END_FUNC
+
+# Search for target byte starting from start_idx. Returns index or len(s) if not found.
+FUNC find_char_from(s: slice<u8>, start_idx: i64, target: i64) -> i64
+  REQUIRE start_idx >= 0 && start_idx <= len(s) && target >= 0 && target <= 255
+
+  %len = SLICE_LEN s
+  %ptr = SLICE_PTR s
+  %i = MOV start_idx
+
+  LOOP find_loop
+    INVARIANT %i >= 0 && %i <= len(s)
+
+    %done = GTE i64 %i %len
+    BREAK_IF %done
+
+    %c = LOAD8 %ptr %i
+    %found = EQ i64 %c target
+    RET_IF %found %i
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP find_loop
+
+  ENSURE %i >= start_idx && %i <= len(s)
+  RET %i
+END_FUNC
+
+# Parse positive integer from slice between start and end
+FUNC parse_int_from(s: slice<u8>, start: i64, end: i64) -> i64
+  REQUIRE start >= 0 && start <= end && end <= len(s)
+
+  %ptr = SLICE_PTR s
+  %i = MOV start
+  %acc = CONST i64 0
+  %c_zero = CONST i64 48
+  %c_nine = CONST i64 57
+  %ten = CONST i64 10
+
+  LOOP parse_loop
+    INVARIANT %i >= 0 && %i <= end
+
+    %done = GTE i64 %i end
+    BREAK_IF %done
+
+    %c = LOAD8 %ptr %i
+    %is_ge = GTE i64 %c %c_zero
+    %is_le = LTE i64 %c %c_nine
+    %is_d = AND bool %is_ge %is_le
+    %false_b = CONST bool false
+    %is_not_digit = EQ bool %is_d %false_b
+    BREAK_IF %is_not_digit
+
+    %digit = SUB i64 %c %c_zero
+    %mul = MUL i64 %acc %ten
+    %next_acc = ADD i64 %mul %digit
+    %acc = MOV %next_acc
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP parse_loop
+
+  RET %acc
+END_FUNC
