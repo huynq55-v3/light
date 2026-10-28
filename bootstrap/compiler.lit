@@ -9,8 +9,8 @@ IMPORT "../stdlib/string.lit"
 IMPORT "../stdlib/fs.lit"
 
 # Emit 64-byte ELF64 Header and 56-byte Program Header into destination buffer
-FUNC emit_elf_header(buf: slice<u8>, code_len: i64) -> i64
-  REQUIRE len(buf) >= 120 && code_len >= 0
+FUNC emit_elf_header(buf: slice<u8>, code_len: i64, entry_offset: i64) -> i64
+  REQUIRE len(buf) >= 120 && code_len >= 0 && entry_offset >= 120
 
   %ptr = SLICE_PTR buf
 
@@ -41,8 +41,9 @@ FUNC emit_elf_header(buf: slice<u8>, code_len: i64) -> i64
   # e_version = 1 at offset 20
   STORE8 %ptr 20 %one
 
-  # e_entry = 0x400078 (4194424) at offset 24
-  %entry = CONST i64 4194424
+  # e_entry = 0x400000 + entry_offset at offset 24
+  %base_entry = CONST i64 4194304
+  %entry = ADD i64 %base_entry entry_offset
   STORE64 %ptr 24 %entry
 
   # e_phoff = 64 at offset 32
@@ -489,6 +490,97 @@ FUNC emit_ret_inst(buf: slice<u8>, pos: i64) -> i64
   RET %next_pos
 END_FUNC
 
+# Emit: push rbp; mov rbp, rsp (4 bytes: 55 48 89 e5)
+FUNC emit_func_prologue(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b_55 = CONST i64 85
+  STORE8 %ptr pos %b_55
+  %p1 = ADD i64 pos 1
+  %b_rex = CONST i64 72
+  STORE8 %ptr %p1 %b_rex
+  %p2 = ADD i64 pos 2
+  %b_89 = CONST i64 137
+  STORE8 %ptr %p2 %b_89
+  %p3 = ADD i64 pos 3
+  %b_e5 = CONST i64 229
+  STORE8 %ptr %p3 %b_e5
+  %next_pos = ADD i64 pos 4
+  ENSURE %next_pos == pos + 4
+  RET %next_pos
+END_FUNC
+
+# Emit: mov rsp, rbp; pop rbp; ret (5 bytes: 48 89 ec 5d c3)
+FUNC emit_func_epilogue(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 5 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_89 = CONST i64 137
+  STORE8 %ptr %p1 %b_89
+  %p2 = ADD i64 pos 2
+  %b_ec = CONST i64 236
+  STORE8 %ptr %p2 %b_ec
+  %p3 = ADD i64 pos 3
+  %b_5d = CONST i64 93
+  STORE8 %ptr %p3 %b_5d
+  %p4 = ADD i64 pos 4
+  %b_c3 = CONST i64 195
+  STORE8 %ptr %p4 %b_c3
+  %next_pos = ADD i64 pos 5
+  ENSURE %next_pos == pos + 5
+  RET %next_pos
+END_FUNC
+
+# Emit: call rel32 (5 bytes: 0xE8, rel32)
+FUNC emit_call_inst(buf: slice<u8>, pos: i64, target_offset: i64) -> i64
+  REQUIRE pos >= 0 && pos + 5 <= len(buf) && target_offset >= 0
+  %ptr = SLICE_PTR buf
+  %b_e8 = CONST i64 232
+  STORE8 %ptr pos %b_e8
+
+  %next_inst = ADD i64 pos 5
+  %rel = SUB i64 target_offset %next_inst
+  %zero = CONST i64 0
+  %is_neg = LT i64 %rel %zero
+  %false_b = CONST bool false
+  %not_neg = EQ bool %is_neg %false_b
+  BR_IF %not_neg call_pos_rel
+
+  %c_2pow32 = CONST i64 4294967296
+  %rel_u32_n = ADD i64 %rel %c_2pow32
+  %rel_val = MOV %rel_u32_n
+  JUMP call_emit_bytes
+
+  LABEL call_pos_rel
+  %rel_val = MOV %rel
+
+  LABEL call_emit_bytes
+  %b0 = MOD i64 %rel_val 256
+  %p1 = ADD i64 pos 1
+  STORE8 %ptr %p1 %b0
+
+  %v1 = DIV i64 %rel_val 256
+  %b1 = MOD i64 %v1 256
+  %p2 = ADD i64 pos 2
+  STORE8 %ptr %p2 %b1
+
+  %v2 = DIV i64 %v1 256
+  %b2 = MOD i64 %v2 256
+  %p3 = ADD i64 pos 3
+  STORE8 %ptr %p3 %b2
+
+  %v3 = DIV i64 %v2 256
+  %b3 = MOD i64 %v3 256
+  %p4 = ADD i64 pos 4
+  STORE8 %ptr %p4 %b3
+
+  %next_pos = ADD i64 pos 5
+  ENSURE %next_pos == pos + 5
+  RET %next_pos
+END_FUNC
+
 # Parse register name (%rax, %rcx, %rdx, %rbx, %rsi, %rdi, or %r0..%r7) into 0..7 ID
 FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   REQUIRE pos >= 0 && pos + 4 <= len(buf)
@@ -739,6 +831,21 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %str_len = CONST i64 0
   %has_dyn_code = CONST bool false
   %cur_code_pos = CONST i64 120
+  %in_main = CONST bool true
+  %main_offset = CONST i64 120
+  %helper_func_offset = CONST i64 120
+
+  # Allocate prefix slice for "FUNC "
+  %p_func = ALLOC slice<u8> 5
+  STORE_STR %p_func "FUNC "
+
+  # Allocate prefix slice for "CALL "
+  %p_call = ALLOC slice<u8> 5
+  STORE_STR %p_call "CALL "
+
+  # Allocate prefix slice for "main"
+  %p_main = ALLOC slice<u8> 4
+  STORE_STR %p_main "main"
 
   # Allocate prefix slice for "RET "
   %p_ret = ALLOC slice<u8> 4
@@ -844,7 +951,12 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %not_ret_reg = EQ bool %is_ret_reg %false_b
     BR_IF %not_ret_reg parse_imm_ret
 
-    # It is RET %reg -> emit mov rdi, ret_reg; mov rax, 60; syscall
+    # Check if in_main:
+    %false_im = CONST bool false
+    %not_im = EQ bool %in_main %false_im
+    BR_IF %not_im ret_helper_func
+
+    # It is RET %reg in main -> emit mov rdi, ret_reg; mov rax, 60; syscall
     %ret_reg = CALL parse_reg_id %src_buf %ret_arg_p
     %c1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %ret_reg
     %c2 = CALL emit_mov_imm %elf_buf %c1 0 60
@@ -852,6 +964,16 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %cur_code_pos = MOV %c3
     %t_flag = CONST bool true
     %has_dyn_code = MOV %t_flag
+    JUMP advance_pos
+
+    LABEL ret_helper_func
+    # In helper function: mov rax, ret_reg; emit_func_epilogue
+    %ret_reg_h = CALL parse_reg_id %src_buf %ret_arg_p
+    %c_h1 = CALL emit_mov_rr %elf_buf %cur_code_pos 0 %ret_reg_h
+    %c_h2 = CALL emit_func_epilogue %elf_buf %c_h1
+    %cur_code_pos = MOV %c_h2
+    %t_h = CONST bool true
+    %has_dyn_code = MOV %t_h
     JUMP advance_pos
 
     LABEL parse_imm_ret
@@ -866,7 +988,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %c_start = LOAD8 %src_raw_ptr %start
     %is_pct = EQ i64 %c_start %c_pct_val
     %not_pct = EQ bool %is_pct %false_b
-    BR_IF %not_pct check_syscall
+    BR_IF %not_pct check_func
 
     %dst_reg = CALL parse_reg_id %src_buf %start
     %eq_char = CONST i64 61
@@ -1064,7 +1186,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # 2i. Check if rhs is "SLICE_PTR "
     %is_sptr = CALL str_starts_with %src_buf %rhs_pos %p_sptr
     %not_sptr = EQ bool %is_sptr %false_b
-    BR_IF %not_sptr advance_pos
+    BR_IF %not_sptr check_call
 
     %buf_arg_p = ADD i64 %rhs_pos 10
     %buf_r_chk = ADD i64 %buf_arg_p 4
@@ -1076,6 +1198,77 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %cur_code_pos = MOV %next_pos_sp
     %t_sp = CONST bool true
     %has_dyn_code = MOV %t_sp
+    JUMP advance_pos
+
+    LABEL check_call
+    # 2j. Check if rhs is "CALL "
+    %is_call = CALL str_starts_with %src_buf %rhs_pos %p_call
+    %not_call = EQ bool %is_call %false_b
+    BR_IF %not_call advance_pos
+
+    # Find space after func_name
+    %fn_nm_p = ADD i64 %rhs_pos 5
+    %sp_call_1 = CALL find_char_from %src_buf %fn_nm_p %sp_c
+    %arg1_p = CALL skip_whitespace %src_buf %sp_call_1
+
+    # Check if arg1 is present (before end of line)
+    %has_arg1 = LT i64 %arg1_p %nl
+    %not_has_arg1 = EQ bool %has_arg1 %false_b
+    BR_IF %not_has_arg1 do_raw_call
+
+    # Ensure buffer bounds for arg1_p
+    %arg1_chk = ADD i64 %arg1_p 4
+    %arg1_near = GT i64 %arg1_chk %bytes_read
+    BR_IF %arg1_near do_raw_call
+
+    # Parse arg1 register: move to rdi (reg 7)
+    %arg1_r = CALL parse_reg_id %src_buf %arg1_p
+    %c_arg1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %arg1_r
+    %call_pos = MOV %c_arg1
+    JUMP emit_the_call
+
+    LABEL do_raw_call
+    %call_pos = MOV %cur_code_pos
+
+    LABEL emit_the_call
+    %c_call = CALL emit_call_inst %elf_buf %call_pos %helper_func_offset
+    # Return value from rax (0) into dst_reg
+    %c_ret_v = CALL emit_mov_rr %elf_buf %c_call %dst_reg 0
+    %cur_code_pos = MOV %c_ret_v
+    %t_call = CONST bool true
+    %has_dyn_code = MOV %t_call
+    JUMP advance_pos
+
+    LABEL check_func
+    # Check if line is "FUNC "
+    %is_fn = CALL str_starts_with %src_buf %start %p_func
+    %not_fn = EQ bool %is_fn %false_b
+    BR_IF %not_fn check_syscall
+
+    %fn_near_chk = ADD i64 %start 16
+    %fn_near = GT i64 %fn_near_chk %bytes_read
+    BR_IF %fn_near advance_pos
+
+    %fn_name_p = ADD i64 %start 5
+    %is_fn_main = CALL str_starts_with %src_buf %fn_name_p %p_main
+    %not_fn_main = EQ bool %is_fn_main %false_b
+    BR_IF %not_fn_main setup_helper_fn
+
+    # It is FUNC main:
+    %t_im = CONST bool true
+    %in_main = MOV %t_im
+    %main_offset = MOV %cur_code_pos
+    JUMP advance_pos
+
+    LABEL setup_helper_fn
+    # It is a helper function:
+    %f_im = CONST bool false
+    %in_main = MOV %f_im
+    %helper_func_offset = MOV %cur_code_pos
+    %c_pro = CALL emit_func_prologue %elf_buf %cur_code_pos
+    %cur_code_pos = MOV %c_pro
+    %t_fn = CONST bool true
+    %has_dyn_code = MOV %t_fn
     JUMP advance_pos
 
     LABEL check_syscall
@@ -1254,7 +1447,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   # Dynamic code + string: total payload = 392 + str_len
   %c_392 = CONST i64 392
   %dyn_str_payload = ADD i64 %c_392 %str_len
-  %hdr_dyn_str = CALL emit_elf_header %elf_buf %dyn_str_payload
+  %hdr_dyn_str = CALL emit_elf_header %elf_buf %dyn_str_payload %main_offset
   %c_512 = CONST i64 512
   %total_dyn_sz = ADD i64 %c_512 %str_len
   %res_dyn_str = CALL fs_write_file_bytes out_path %elf_buf %total_dyn_sz
@@ -1264,7 +1457,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   # Bounded dynamic code check (120..1000)
   %c_120 = CONST i64 120
   %dyn_code_len = SUB i64 %cur_code_pos %c_120
-  %hdr_dyn = CALL emit_elf_header %elf_buf %dyn_code_len
+  %hdr_dyn = CALL emit_elf_header %elf_buf %dyn_code_len %main_offset
   %res_dyn = CALL fs_write_file_bytes out_path %elf_buf %cur_code_pos
   RET %res_dyn
 
@@ -1291,9 +1484,10 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
   # Emit ELF header for print + exit
   # Payload = 56 bytes machine code + str_len bytes data
+  %c_120_def = CONST i64 120
   %code_payload = CONST i64 56
   %total_payload = ADD i64 %code_payload %str_len
-  %hdr_len = CALL emit_elf_header %elf_buf %total_payload
+  %hdr_len = CALL emit_elf_header %elf_buf %total_payload %c_120_def
   %code_end = CALL emit_print_and_exit %elf_buf %str_len %parsed_exit
   %total_bin_sz = ADD i64 176 %str_len
 
@@ -1302,8 +1496,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   RET %res1
 
   LABEL emit_plain_exit
+  %c_120_def2 = CONST i64 120
   %code_len = CONST i64 16
-  %hdr_len2 = CALL emit_elf_header %elf_buf %code_len
+  %hdr_len2 = CALL emit_elf_header %elf_buf %code_len %c_120_def2
   %bin_sz = CALL emit_exit_code %elf_buf %parsed_exit
   %exact_sz = CONST i64 136
   %res2 = CALL fs_write_file_bytes out_path %elf_buf %exact_sz
@@ -1352,8 +1547,15 @@ FUNC main() -> i64
   STORE_STR %out4 "mem64.bin\0"
   %res4 = CALL compile_file %src4 %out4
 
+  # 6. Compile test_func.lit -> func.bin
+  %src5 = ALLOC slice<u8> 16
+  STORE_STR %src5 "test_func.lit\0"
+  %out5 = ALLOC slice<u8> 16
+  STORE_STR %out5 "func.bin\0"
+  %res5 = CALL compile_file %src5 %out5
+
   %success_msg = ALLOC slice<u8> 80
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64)!\n"
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 

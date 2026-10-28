@@ -1,0 +1,12 @@
+# Multi-Function & Function Call Test for Light Self-Hosting Compiler
+FUNC add_ten(x: i64) -> i64
+  %rsi = CONST i64 10
+  %rdi = ADD i64 %rdi %rsi
+  RET %rdi
+END_FUNC
+
+FUNC main() -> i64
+  %rdi = CONST i64 32
+  %rax = CALL add_ten %rdi
+  RET %rax
+END_FUNC
