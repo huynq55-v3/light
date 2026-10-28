@@ -1,0 +1,16 @@
+# Ví dụ 3 (ĐÃ SỬA LỖI): Chặn n > 0 thay vì n >= 0
+# Nhờ phản ví dụ từ Z3, AI thêm điều kiện n > 0
+
+FUNC calculate_ratio(val: i64, n: i64) -> i64
+  # ĐÃ SỬA: Bắt buộc n phải lớn hơn hẳn 0!
+  REQUIRE n > 0
+
+  # Giờ đây Z3 sẽ chứng minh 100% không bao giờ chia cho 0
+  %res = DIV i64 val n
+  RET %res
+END_FUNC
+
+FUNC main() -> i64
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC

@@ -1,0 +1,22 @@
+# Ví dụ 1: In ra terminal bằng Syscall Linux (x86_64)
+# Không cần libc, không phụ thuộc C runtime!
+
+FUNC main() -> i64
+  # Cấp phát 24 bytes buffer
+  ALLOC %buffer 24
+  STORE_STR %buffer 0 "Hello from Light Lang!\n"
+
+  # Linux Syscall sys_write(fd=1, buf=%buffer, count=23)
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %buffer
+  %rdx = CONST i64 23
+  SYSCALL %rax %rdi %rsi %rdx
+
+  # sys_exit(0)
+  %exit_rax = CONST i64 60
+  %exit_code = CONST i64 0
+  SYSCALL %exit_rax %exit_code %exit_code %exit_code
+
+  RET %exit_code
+END_FUNC

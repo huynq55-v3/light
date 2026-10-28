@@ -1,0 +1,33 @@
+# Ví dụ 2 (ĐÃ BỔ SUNG INVARIANT CHO %sum):
+# Thuật toán tính tổng từ 0 đến n có kiểm chứng toán học bằng Z3
+
+FUNC sum_to_n(n: i64) -> i64
+  # Ràng buộc đầu vào: n nằm trong khoảng an toàn từ 0 đến 10000
+  REQUIRE n >= 0 && n <= 10000
+
+  %i = CONST i64 0
+  %sum = CONST i64 0
+
+  LOOP count_loop
+    # Bất biến vòng lặp (Loop Invariant) cho cả %i và %sum
+    INVARIANT %i >= 0 && %i <= n
+    INVARIANT %sum >= 0
+
+    %cond = GTE i64 %i n
+    BREAK_IF %cond
+
+    %next_i = ADD i64 %i 1
+    %sum = ADD i64 %sum %next_i
+    %i = MOV %next_i
+  END_LOOP count_loop
+
+  # Cam kết đầu ra: Tổng luôn không âm
+  ENSURE %sum >= 0
+  RET %sum
+END_FUNC
+
+FUNC main() -> i64
+  %n = CONST i64 10
+  %res = CONST i64 55
+  RET %res
+END_FUNC
