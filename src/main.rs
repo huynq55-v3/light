@@ -126,12 +126,10 @@ fn execute_jit(file_path: &str) {
         std::process::exit(1);
     }
 
-    println!("\n⚡ [JIT] Đang phát sinh mã máy x86_64 thô vào RAM...");
-    let main_func = program.functions.iter().find(|f| f.name == "main").expect("Hàm main");
+    println!("\n⚡ [JIT] Đang phát sinh mã máy x86_64 cho toàn bộ hàm...");
     let mut emitter = MachineCodeEmitter::new();
-    // Địa chỉ data ảo trong RAM JIT
     let data_vaddr = emitter.data_section.as_ptr() as u64;
-    emitter.compile_function(main_func, data_vaddr).expect("Compile x86_64");
+    emitter.compile_program(&program, data_vaddr).expect("Compile program");
 
     println!("🔥 Đã sinh {} bytes mã máy x86_64!", emitter.code.len());
     println!("🚀 Đang gọi CPU thực thi trực tiếp qua mmap PROT_EXEC...");
@@ -159,18 +157,16 @@ fn build_elf(file_path: &str, output_path: &str) {
     }
 
     println!("\n🛠️ [Codegen] Đang đóng gói file thực thi ELF64 Linux...");
-    let main_func = program.functions.iter().find(|f| f.name == "main").expect("Hàm main");
     let mut emitter = MachineCodeEmitter::new();
     
-    // Đo độ dài code ước lượng để đặt địa chỉ ảo data ngay sau code: 0x400000 + 120 + code_len
-    // Biên dịch pass 1 để tính kích thước code
-    let _ = emitter.compile_function(main_func, 0x400000 + 120);
+    // Đo độ dài code ước lượng: Pass 1
+    let _ = emitter.compile_program(&program, 0x400000 + 120);
     let code_len = emitter.code.len();
 
     // Reset và compile pass 2 với địa chỉ data chính xác
     let mut emitter = MachineCodeEmitter::new();
     let elf_data_vaddr = 0x400000u64 + 120u64 + (code_len as u64);
-    emitter.compile_function(main_func, elf_data_vaddr).expect("Compile x86_64");
+    emitter.compile_program(&program, elf_data_vaddr).expect("Compile program");
 
     emitter.emit_elf64(output_path).expect("Emit ELF");
     let metadata = fs::metadata(output_path).expect("Metadata");

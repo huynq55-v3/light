@@ -5,18 +5,16 @@
 # ==============================================================================
 
 # In một buffer chuỗi ra stdout (fd = 1)
-# Yêu cầu toán học: Độ dài len phải lớn hơn 0 và nhỏ hơn 1MB (chống tấn công DoS/OOM)
 FUNC std_print(buf: ptr, len: i64) -> i64
   REQUIRE len > 0 && len <= 1048576
 
-  # sys_write(1, buf, len)
+  # Lưu len vào rdx trước (vì len nằm trong rsi), sau đó mới chuyển buf vào rsi!
+  %rdx = MOV len
+  %rsi = MOV buf
   %rax = CONST i64 1
   %rdi = CONST i64 1
-  %rsi = MOV buf
-  %rdx = MOV len
   SYSCALL %rax %rdi %rsi %rdx
 
-  # sys_write trả về số byte đã ghi (hoặc âm nếu lỗi)
   %res = CONST i64 0
   ENSURE %res == 0
   RET %res

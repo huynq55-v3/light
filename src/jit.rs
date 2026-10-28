@@ -31,6 +31,8 @@ pub struct MachineCodeEmitter {
     pub code: Vec<u8>,
     pub data_section: Vec<u8>,
     pub reg_map: HashMap<String, X86Reg>,
+    pub func_offsets: HashMap<String, usize>,
+    pub call_fixups: Vec<(usize, String)>, // (vị trí cần điền rel32, tên hàm gọi)
 }
 
 impl MachineCodeEmitter {
@@ -49,6 +51,8 @@ impl MachineCodeEmitter {
             code: Vec::new(),
             data_section: Vec::new(),
             reg_map,
+            func_offsets: HashMap::new(),
+            call_fixups: Vec::new(),
         }
     }
 
@@ -117,14 +121,99 @@ impl MachineCodeEmitter {
         self.code.push(0xc3);
     }
 
+    /// Biên dịch toàn bộ chương trình (tất cả các hàm và link các lệnh CALL)
+    pub fn compile_program(&mut self, program: &Program, base_data_vaddr: u64) -> Result<usize, String> {
+        // Đặt hàm main ở đầu hoặc ghi nhận offset
+        // Đưa các hàm con lên trước, hàm main lên đầu để entry point vào thẳng main
+        let main_func = program
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .ok_or_else(|| "Không tìm thấy hàm 'main'".to_string())?;
+
+        // 1. Biên dịch hàm main trước (nằm ngay tại entry point offset 0)
+        let main_offset = self.code.len();
+        self.func_offsets.insert("main".into(), main_offset);
+        self.compile_function(main_func, base_data_vaddr)?;
+
+        // 2. Biên dịch các hàm còn lại
+        for func in &program.functions {
+            if func.name != "main" {
+                let offset = self.code.len();
+                self.func_offsets.insert(func.name.clone(), offset);
+                self.compile_function(func, base_data_vaddr)?;
+            }
+        }
+
+        // 3. Linker / Fixup tất cả các lệnh CALL: rel32 = target_offset - (call_site + 4)
+        for (call_site, func_name) in &self.call_fixups {
+            let target_offset = self
+                .func_offsets
+                .get(func_name)
+                .ok_or_else(|| format!("Liên kết thất bại: Không tìm thấy hàm '{}'", func_name))?;
+
+            let rel32 = (*target_offset as i64) - ((*call_site + 4) as i64);
+            let rel32_bytes = (rel32 as i32).to_le_bytes();
+            self.code[*call_site..*call_site + 4].copy_from_slice(&rel32_bytes);
+        }
+
+        Ok(main_offset)
+    }
+
     /// Biên dịch một hàm Light sang mã máy x86_64
     pub fn compile_function(&mut self, func: &Function, base_data_vaddr: u64) -> Result<(), String> {
         let mut buffer_offsets: HashMap<String, usize> = HashMap::new();
+
+        // Ánh xạ tham số hàm theo System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9
+        let abi_param_regs = [X86Reg::Rdi, X86Reg::Rsi, X86Reg::Rdx, X86Reg::Rcx, X86Reg::R8, X86Reg::R9];
+        for (i, p) in func.params.iter().enumerate() {
+            if i < abi_param_regs.len() {
+                self.reg_map.insert(p.name.clone(), abi_param_regs[i]);
+            }
+        }
 
         for inst in &func.instructions {
             match inst {
                 // Các chỉ thị kiểm chứng chỉ dùng cho Z3 ở bước trước, không sinh mã máy
                 Instruction::Require(_) | Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Assert(_) => {}
+
+                Instruction::Call { dest, func_name, args } => {
+                    // System V AMD64 ABI: arg 1 = rdi, arg 2 = rsi, arg 3 = rdx, arg 4 = rcx
+                    let arg_regs = [X86Reg::Rdi, X86Reg::Rsi, X86Reg::Rdx, X86Reg::Rcx];
+                    for (i, arg) in args.iter().enumerate() {
+                        if i >= arg_regs.len() { break; }
+                        let target_reg = arg_regs[i];
+                        match arg {
+                            Operand::Const(Value::I64(n)) => self.emit_mov_reg_imm64(target_reg, *n),
+                            Operand::Reg(r) => {
+                                if let Some(buf_offset) = buffer_offsets.get(r) {
+                                    let vaddr = base_data_vaddr + (*buf_offset as u64);
+                                    self.emit_mov_reg_imm64(target_reg, vaddr as i64);
+                                } else {
+                                    let src_reg = self.get_reg(r);
+                                    if src_reg != target_reg {
+                                        self.emit_mov_reg_reg(target_reg, src_reg);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Emit: call rel32 (E8 xx xx xx xx)
+                    self.code.push(0xe8);
+                    let fixup_pos = self.code.len();
+                    self.code.extend_from_slice(&[0u8; 4]); // Chờ fixup
+                    self.call_fixups.push((fixup_pos, func_name.clone()));
+
+                    // Kết quả trả về của hàm nằm trong rax
+                    if let Some(d) = dest {
+                        let dst_reg = self.get_reg(d);
+                        if dst_reg != X86Reg::Rax {
+                            self.emit_mov_reg_reg(dst_reg, X86Reg::Rax);
+                        }
+                    }
+                }
 
                 Instruction::Alloc { dest, size } => {
                     let offset = self.data_section.len();
