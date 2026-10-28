@@ -1,3 +1,6 @@
 /target
 hello_bin
 *.out
+*.bin
+lightc*
+

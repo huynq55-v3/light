@@ -200,11 +200,9 @@ FUNC emit_print_and_exit(buf: slice<u8>, str_len: i64, exit_code: i64) -> i64
 END_FUNC
 
 # Copy string between start and end from src into dst at dst_start, unescaping \n
-FUNC copy_str_unescaped(src: slice<u8>, start: i64, end: i64, dst: slice<u8>, dst_start: i64) -> i64
-  REQUIRE start >= 0 && start <= end && end <= len(src) && dst_start >= 0 && dst_start <= len(dst)
+FUNC copy_str_unescaped(src_ptr: i64, start: i64, end: i64, dst_ptr: i64, dst_start: i64) -> i64
+  REQUIRE start >= 0 && start <= end && dst_start >= 0
 
-  %src_ptr = SLICE_PTR src
-  %dst_ptr = SLICE_PTR dst
   %len_s = SUB i64 end start
 
   %i = CONST i64 0
@@ -220,7 +218,7 @@ FUNC copy_str_unescaped(src: slice<u8>, start: i64, end: i64, dst: slice<u8>, ds
     BREAK_IF %done
 
     %cur_src = ADD i64 start %i
-    %c = LOAD8 %src_ptr %cur_src
+    %c = LOAD8 src_ptr %cur_src
 
     %is_bs = EQ i64 %c %backslash
     %false_b = CONST bool false
@@ -234,13 +232,13 @@ FUNC copy_str_unescaped(src: slice<u8>, start: i64, end: i64, dst: slice<u8>, ds
     BR_IF %not_has_next copy_normal
 
     %next_src = ADD i64 start %next_i
-    %c_next = LOAD8 %src_ptr %next_src
+    %c_next = LOAD8 src_ptr %next_src
     %is_n = EQ i64 %c_next %c_n
     %not_n = EQ bool %is_n %false_b
     BR_IF %not_n copy_normal
 
     # It is \n: store newline byte 10
-    STORE8 %dst_ptr %out_idx %nl_byte
+    STORE8 dst_ptr %out_idx %nl_byte
     %next_out = ADD i64 %out_idx 1
     %out_idx = MOV %next_out
     %step2 = ADD i64 %i 2
@@ -248,7 +246,7 @@ FUNC copy_str_unescaped(src: slice<u8>, start: i64, end: i64, dst: slice<u8>, ds
     JUMP step_done
 
     LABEL copy_normal
-    STORE8 %dst_ptr %out_idx %c
+    STORE8 dst_ptr %out_idx %c
     %next_out2 = ADD i64 %out_idx 1
     %out_idx = MOV %next_out2
     %step1 = ADD i64 %i 1
@@ -339,7 +337,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Copy string bytes unescaped into elf_buf starting at offset 176
     %dest_off = CONST i64 176
-    %copied = CALL copy_str_unescaped %src_buf %q1_plus_1 %q2 %elf_buf %dest_off
+    %src_raw = SLICE_PTR %src_buf
+    %dst_raw = SLICE_PTR %elf_buf
+    %copied = CALL copy_str_unescaped %src_raw %q1_plus_1 %q2 %dst_raw %dest_off
     %str_len = MOV %copied
     %true_b = CONST bool true
     %has_string = MOV %true_b

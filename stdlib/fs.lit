@@ -89,7 +89,7 @@ FUNC fs_write_file(path: slice<u8>, content: slice<u8>) -> i64
   REQUIRE len(path) > 0 && len(content) >= 0
 
   %flags = CONST i64 577
-  %mode = CONST i64 420
+  %mode = CONST i64 493
   %fd = CALL sys_open path %flags %mode
 
   %zero = CONST i64 0
@@ -109,7 +109,7 @@ FUNC fs_write_file_bytes(path: slice<u8>, content: slice<u8>, count: i64) -> i64
   REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
 
   %flags = CONST i64 577
-  %mode = CONST i64 420
+  %mode = CONST i64 493
   %fd = CALL sys_open path %flags %mode
 
   %zero = CONST i64 0
