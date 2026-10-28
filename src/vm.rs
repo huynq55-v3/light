@@ -176,18 +176,32 @@ impl VirtualMachine {
                     self.buffers.insert(dest.clone(), buf);
                     let ptr_val = self.next_ptr_addr;
                     self.next_ptr_addr += (len + 63) & !63;
-                    self.registers.insert(dest.clone(), Value::Ptr(ptr_val));
+                    self.registers.insert(
+                        dest.clone(),
+                        Value::Slice {
+                            ptr: ptr_val,
+                            len: *len,
+                            buf_name: dest.clone(),
+                        },
+                    );
                     pc += 1;
                 }
 
                 Instruction::SlicePtr { dest, slice } => {
-                    let ptr_val = self.registers.get(slice).cloned().unwrap_or(Value::Ptr(0));
+                    let ptr_val = match self.registers.get(slice) {
+                        Some(Value::Slice { ptr, .. }) => Value::Ptr(*ptr),
+                        Some(Value::Ptr(p)) => Value::Ptr(*p),
+                        _ => Value::Ptr(0),
+                    };
                     self.registers.insert(dest.clone(), ptr_val);
                     pc += 1;
                 }
 
                 Instruction::SliceLen { dest, slice } => {
-                    let len = self.buffers.get(slice).map(|b| b.data.len() as i64).unwrap_or(0);
+                    let len = match self.registers.get(slice) {
+                        Some(Value::Slice { len, .. }) => *len as i64,
+                        _ => self.buffers.get(slice).map(|b| b.data.len() as i64).unwrap_or(0),
+                    };
                     self.registers.insert(dest.clone(), Value::I64(len));
                     pc += 1;
                 }
@@ -272,14 +286,18 @@ impl VirtualMachine {
                     offset,
                     content,
                 } => {
+                    let actual_name = match self.registers.get(buf) {
+                        Some(Value::Slice { buf_name, .. }) => buf_name.clone(),
+                        _ => buf.clone(),
+                    };
                     let buffer = self
                         .buffers
-                        .get_mut(buf)
-                        .ok_or_else(|| format!("Buffer '{}' không tồn tại", buf))?;
+                        .get_mut(&actual_name)
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf))?;
                     let bytes = content.as_bytes();
                     if *offset + bytes.len() > buffer.data.len() {
                         return Err(format!(
-                            "Lỗi ghi chuỗi: Chuỗi dài {} bytes không vừa vào buffer '{}' tại offset {}",
+                            "String store error: String length {} bytes exceeds buffer '{}' capacity at offset {}",
                             bytes.len(),
                             buf,
                             offset
@@ -387,19 +405,28 @@ impl VirtualMachine {
         &mut self,
         sys_id: i64,
         arg1: i64,
-        _arg2: &Value,
+        arg2: &Value,
         arg3: i64,
     ) -> Result<(), String> {
         match sys_id {
             // sys_write: (fd = arg1, buf = arg2, count = arg3)
             1 => {
                 let count = arg3 as usize;
-                // Tìm buffer tương ứng với arg2
+                // Tìm buffer khớp với arg2
                 let mut found_data: Option<&[u8]> = None;
-                for buf in self.buffers.values() {
-                    if count <= buf.data.len() {
-                        found_data = Some(&buf.data[..count]);
-                        break;
+                if let Value::Slice { buf_name, .. } = arg2 {
+                    if let Some(buf) = self.buffers.get(buf_name) {
+                        if count <= buf.data.len() {
+                            found_data = Some(&buf.data[..count]);
+                        }
+                    }
+                }
+                if found_data.is_none() {
+                    for buf in self.buffers.values() {
+                        if count <= buf.data.len() {
+                            found_data = Some(&buf.data[..count]);
+                            break;
+                        }
                     }
                 }
 
@@ -413,7 +440,7 @@ impl VirtualMachine {
                         eprint!("{}", text);
                     }
                 } else {
-                    return Err(format!("sys_write: Không tìm thấy buffer hợp lệ kích thước {} bytes", count));
+                    return Err(format!("sys_write: Cannot find valid buffer of size {} bytes", count));
                 }
                 Ok(())
             }

@@ -4,13 +4,11 @@
 # ==============================================================================
 
 # In chuỗi an toàn từ slice<u8> với độ dài len chỉ định
-# HỢP ĐỒNG BẢO MẬT: len phải lớn hơn 0 VÀ KHÔNG ĐƯỢC VƯỢT QUÁ len(s)!
 FUNC std_print_slice(s: slice<u8>, len: i64) -> i64
   REQUIRE len > 0 && len <= len(s)
 
-  %ptr = SLICE_PTR s
   %rdx = MOV len
-  %rsi = MOV %ptr
+  %rsi = MOV s
   %rax = CONST i64 1
   %rdi = CONST i64 1
   SYSCALL %rax %rdi %rsi %rdx
@@ -20,12 +18,12 @@ FUNC std_print_slice(s: slice<u8>, len: i64) -> i64
   RET %res
 END_FUNC
 
-# In toàn bộ slice<u8> (tự động lấy đúng len(s))
+# In toàn bộ slice<u8> (tự động đọc chính xác độ dài slice)
 FUNC std_print_all(s: slice<u8>) -> i64
   REQUIRE len(s) > 0
 
-  %ptr = SLICE_PTR s
   %len = SLICE_LEN s
+  %ptr = SLICE_PTR s
   %rdx = MOV %len
   %rsi = MOV %ptr
   %rax = CONST i64 1

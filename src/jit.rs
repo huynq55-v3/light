@@ -163,6 +163,7 @@ impl MachineCodeEmitter {
     /// Biên dịch một hàm Light sang mã máy x86_64
     pub fn compile_function(&mut self, func: &Function, base_data_vaddr: u64) -> Result<(), String> {
         let mut buffer_offsets: HashMap<String, usize> = HashMap::new();
+        let mut slice_capacities: HashMap<String, usize> = HashMap::new();
 
         // Ánh xạ tham số hàm theo System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9
         let abi_param_regs = [X86Reg::Rdi, X86Reg::Rsi, X86Reg::Rdx, X86Reg::Rcx, X86Reg::R8, X86Reg::R9];
@@ -189,6 +190,12 @@ impl MachineCodeEmitter {
                                 if let Some(buf_offset) = buffer_offsets.get(r) {
                                     let vaddr = base_data_vaddr + (*buf_offset as u64);
                                     self.emit_mov_reg_imm64(target_reg, vaddr as i64);
+                                    // Slice Fat Pointer ABI: tự động nạp len vào Rsi khi truyền 1 slice
+                                    if args.len() == 1 {
+                                        if let Some(&cap) = slice_capacities.get(r) {
+                                            self.emit_mov_reg_imm64(X86Reg::Rsi, cap as i64);
+                                        }
+                                    }
                                 } else {
                                     let src_reg = self.get_reg(r);
                                     if src_reg != target_reg {
@@ -225,19 +232,32 @@ impl MachineCodeEmitter {
                     let offset = self.data_section.len();
                     self.data_section.resize(offset + len, 0);
                     buffer_offsets.insert(dest.clone(), offset);
+                    slice_capacities.insert(dest.clone(), *len);
                 }
 
                 Instruction::SlicePtr { dest, slice } => {
                     let reg = self.get_reg(dest);
-                    let buf_offset = buffer_offsets.get(slice).cloned().unwrap_or(0);
-                    let vaddr = base_data_vaddr + (buf_offset as u64);
-                    self.emit_mov_reg_imm64(reg, vaddr as i64);
+                    if let Some(buf_offset) = buffer_offsets.get(slice) {
+                        let vaddr = base_data_vaddr + (*buf_offset as u64);
+                        self.emit_mov_reg_imm64(reg, vaddr as i64);
+                    } else if func.params.iter().any(|p| &p.name == slice) {
+                        // Nếu là tham số slice được truyền vào: ptr nằm trong Rdi
+                        if reg != X86Reg::Rdi {
+                            self.emit_mov_reg_reg(reg, X86Reg::Rdi);
+                        }
+                    }
                 }
 
                 Instruction::SliceLen { dest, slice } => {
                     let reg = self.get_reg(dest);
-                    let len = buffer_offsets.get(slice).map(|_| self.data_section.len()).unwrap_or(0);
-                    self.emit_mov_reg_imm64(reg, len as i64);
+                    if let Some(len) = slice_capacities.get(slice) {
+                        self.emit_mov_reg_imm64(reg, *len as i64);
+                    } else if func.params.iter().any(|p| &p.name == slice) {
+                        // Nếu là tham số slice được truyền vào: len nằm trong Rsi
+                        if reg != X86Reg::Rsi {
+                            self.emit_mov_reg_reg(reg, X86Reg::Rsi);
+                        }
+                    }
                 }
 
                 Instruction::StoreStr { buf, offset, content } => {
@@ -257,6 +277,7 @@ impl MachineCodeEmitter {
                         Value::U64(n) => self.emit_mov_reg_imm64(reg, *n as i64),
                         Value::Bool(b) => self.emit_mov_reg_imm64(reg, if *b { 1 } else { 0 }),
                         Value::Ptr(p) => self.emit_mov_reg_imm64(reg, *p as i64),
+                        Value::Slice { ptr, .. } => self.emit_mov_reg_imm64(reg, *ptr as i64),
                         Value::F64(_) => return Err("f64 JIT đang trong quá trình phát triển".into()),
                     }
                 }
@@ -319,6 +340,12 @@ impl MachineCodeEmitter {
                                 if let Some(buf_offset) = buffer_offsets.get(r) {
                                     let vaddr = base_data_vaddr + (*buf_offset as u64);
                                     self.emit_mov_reg_imm64(target_reg, vaddr as i64);
+                                    // Slice Fat Pointer ABI: tự động nạp len vào Rsi khi truyền 1 slice
+                                    if args.len() == 1 {
+                                        if let Some(&cap) = slice_capacities.get(r) {
+                                            self.emit_mov_reg_imm64(X86Reg::Rsi, cap as i64);
+                                        }
+                                    }
                                 } else {
                                     let src_reg = self.get_reg(r);
                                     if src_reg != target_reg {

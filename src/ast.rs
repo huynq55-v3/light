@@ -22,6 +22,12 @@ pub enum Value {
     F64(f64),
     Bool(bool),
     Ptr(usize),
+    /// Slice Fat Pointer: con trỏ, độ dài, và tên buffer gốc
+    Slice {
+        ptr: usize,
+        len: usize,
+        buf_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

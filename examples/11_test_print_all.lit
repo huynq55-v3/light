@@ -1,0 +1,13 @@
+# Example 11: TEST std_print_all
+IMPORT "../stdlib/io.lit"
+
+FUNC main() -> i64
+  %msg = ALLOC slice<u8> 18
+  STORE_STR %msg "Hello Print All!\n"
+
+  # Gọi trực tiếp std_print_all (hàm tự lấy độ dài qua SLICE_LEN)
+  %res = CALL std_print_all %msg
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC
