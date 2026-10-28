@@ -54,7 +54,86 @@ impl Verifier {
             }
         }
 
-        // 3. Nếu có LOOP + INVARIANT + ENSURE: Kiểm chứng Hoare Logic 3 bước
+        // 3. Kiểm tra ngầm: An toàn bộ nhớ & Buffer Overflow cho chuỗi và Syscall sys_write
+        let mut buffer_sizes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for inst in &func.instructions {
+            if let Instruction::Alloc { dest, size } = inst {
+                buffer_sizes.insert(dest.clone(), *size);
+            }
+        }
+
+        for (idx, inst) in func.instructions.iter().enumerate() {
+            match inst {
+                Instruction::StoreStr { buf, offset, content } => {
+                    let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
+                    let goal_name = format!("Hàm '{}' - Dòng lệnh #{}: Ghi chuỗi không vượt quá kích thước buffer '{}'", func.name, idx + 1, buf);
+                    let req_size = *offset + content.len();
+                    if req_size > buf_size {
+                        results.push(VerificationResult::Failed {
+                            goal_name,
+                            reason: format!(
+                                "Tràn bộ nhớ tĩnh! Chuỗi yêu cầu {} bytes (offset {} + len {}), nhưng buffer '{}' chỉ có {} bytes",
+                                req_size, offset, content.len(), buf, buf_size
+                            ),
+                            counter_example: Some(format!(
+                                "Buffer: {} bytes\nGhi vượt quá: {} bytes",
+                                buf_size,
+                                req_size - buf_size
+                            )),
+                        });
+                    } else {
+                        results.push(VerificationResult::Verified { goal_name });
+                    }
+                }
+                Instruction::Syscall { rax, rsi, rdx, .. } => {
+                    // Kiểm tra sys_write (rax = 1)
+                    let mut actual_rax = rax.clone();
+                    let mut actual_rsi = rsi.clone();
+                    let mut actual_rdx = rdx.clone();
+
+                    // Tìm giá trị thanh ghi được gán gần nhất trước đó
+                    for prev_inst in func.instructions[..idx].iter().rev() {
+                        if let Instruction::AssignConst { dest, val, .. } = prev_inst {
+                            if let Operand::Reg(r) = &actual_rax {
+                                if r == dest { actual_rax = Operand::Const(val.clone()); }
+                            }
+                            if let Operand::Reg(r) = &actual_rdx {
+                                if r == dest { actual_rdx = Operand::Const(val.clone()); }
+                            }
+                        }
+                        if let Instruction::Mov { dest, src } = prev_inst {
+                            if let Operand::Reg(r) = &actual_rsi {
+                                if r == dest { actual_rsi = Operand::Reg(src.clone()); }
+                            }
+                        }
+                    }
+
+                    let is_sys_write = match actual_rax {
+                        Operand::Const(Value::I64(1)) => true,
+                        Operand::Reg(r) => r == "%rax" || r == "rax",
+                        _ => false,
+                    };
+
+                    if is_sys_write {
+                        let buf_name = match actual_rsi {
+                            Operand::Reg(r) => r,
+                            _ => "".to_string(),
+                        };
+                        let buf_size = buffer_sizes.get(&buf_name).cloned().unwrap_or(0);
+                        let goal_name = format!(
+                            "Hàm '{}' - Dòng lệnh #{}: sys_write count không vượt quá buffer '{}'",
+                            func.name, idx + 1, buf_name
+                        );
+
+                        let query = Self::build_buffer_overflow_query(func, &requires, &actual_rdx, buf_size, &buf_name);
+                        results.push(Self::solve_query(&goal_name, &query));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 4. Nếu có LOOP + INVARIANT + ENSURE: Kiểm chứng Hoare Logic 3 bước
         if !invariants.is_empty() {
             // Bước 1: Base Case (Khởi tạo thỏa Invariant)
             let base_goal = format!("Hàm '{}' - Bước 1: Base Case (Khởi tạo vòng lặp)", func.name);
@@ -153,6 +232,44 @@ impl Verifier {
                 }
             }
         }
+    }
+
+    fn build_buffer_overflow_query(
+        func: &Function,
+        requires: &[Expr],
+        count_op: &Operand,
+        buf_size: usize,
+        _buf_name: &str,
+    ) -> String {
+        let mut smt = String::new();
+        smt.push_str("(set-logic QF_BV)\n");
+
+        for p in &func.params {
+            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
+        }
+
+        for req in requires {
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+        }
+
+        // Khai báo biến count
+        let count_str = match count_op {
+            Operand::Const(Value::I64(v)) => format!("(_ bv{} 64)", v),
+            Operand::Reg(r) => {
+                let name = r.trim_start_matches('%');
+                smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                name.to_string()
+            }
+            _ => "(_ bv0 64)".to_string(),
+        };
+
+        // Hỏi Z3: Có trường hợp nào count > buf_size hoặc count < 0 không?
+        smt.push_str(&format!(
+            "(assert (or (bvsgt {} (_ bv{} 64)) (bvslt {} (_ bv0 64))))\n",
+            count_str, buf_size, count_str
+        ));
+        smt.push_str("(check-sat)\n(get-model)\n");
+        smt
     }
 
     fn build_div_zero_query(func: &Function, requires: &[Expr], divisor: &Operand) -> String {

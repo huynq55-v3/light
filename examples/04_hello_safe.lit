@@ -1,0 +1,24 @@
+# Ví dụ 4: An toàn bộ nhớ tuyệt đối
+# Buffer 24 bytes, in chuỗi 23 bytes (chuỗi "Hello from Light Lang!\n")
+
+FUNC main() -> i64
+  # Cấp phát 24 bytes
+  ALLOC %buffer 24
+
+  # Ghi chuỗi 23 bytes (Z3 kiểm tra: 0 + 23 <= 24 -> PASS)
+  STORE_STR %buffer 0 "Hello from Light Lang!\n"
+
+  # sys_write: in đúng 23 bytes (Z3 kiểm tra: 23 <= 24 -> PASS)
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %buffer
+  %rdx = CONST i64 23
+  SYSCALL %rax %rdi %rsi %rdx
+
+  # sys_exit(0)
+  %exit_rax = CONST i64 60
+  %exit_code = CONST i64 0
+  SYSCALL %exit_rax %exit_code %exit_code %exit_code
+
+  RET %exit_code
+END_FUNC

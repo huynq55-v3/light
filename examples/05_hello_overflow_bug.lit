@@ -1,0 +1,22 @@
+# Ví dụ 5: Lỗi tràn bộ nhớ (Buffer Overflow Bug)!
+# Buffer chỉ cấp phát 10 bytes, nhưng cố in 23 bytes
+
+FUNC main() -> i64
+  # LỖI: Cấp phát chỉ 10 bytes
+  ALLOC %buffer 10
+
+  # LỖI GHI TRÀN BỘ NHỚ: Chuỗi dài 23 bytes không vừa trong 10 bytes!
+  STORE_STR %buffer 0 "Hello from Light Lang!\n"
+
+  # LỖI ĐỌC TRÀN BỘ NHỚ: sys_write đòi đọc 23 bytes từ buffer 10 bytes!
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %buffer
+  %rdx = CONST i64 23
+  SYSCALL %rax %rdi %rsi %rdx
+
+  %exit_rax = CONST i64 60
+  %exit_code = CONST i64 0
+  SYSCALL %exit_rax %exit_code %exit_code %exit_code
+  RET %exit_code
+END_FUNC
