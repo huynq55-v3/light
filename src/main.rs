@@ -75,16 +75,8 @@ fn print_usage() {
 
 fn execute_file(file_path: &str, run_vm: bool) {
     println!("📂 Đang nạp mã nguồn: {}", file_path);
-    let source = match fs::read_to_string(file_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ Không thể đọc file: {}", e);
-            return;
-        }
-    };
-
-    println!("⚡ Đang phân tích cú pháp (Flat SSA Parser)...");
-    let program = match Parser::parse(&source) {
+    println!("⚡ Đang phân tích cú pháp & giải quyết IMPORT...");
+    let program = match Parser::parse_file(file_path) {
         Ok(p) => {
             println!("✅ Cú pháp hợp lệ! Đã phát hiện {} hàm.", p.functions.len());
             p
@@ -122,17 +114,15 @@ fn execute_file(file_path: &str, run_vm: bool) {
 
 fn execute_jit(file_path: &str) {
     println!("📂 Đang nạp mã nguồn JIT: {}", file_path);
-    let source = match fs::read_to_string(file_path) {
-        Ok(s) => s,
+    let program = match Parser::parse_file(file_path) {
+        Ok(p) => p,
         Err(e) => {
-            eprintln!("❌ Không thể đọc file: {}", e);
+            eprintln!("❌ {}", e);
             return;
         }
     };
-
-    let program = Parser::parse(&source).expect("Parse code");
     if !run_verification(&program) {
-        eprintln!("\n❌ BIÊN DỊCH THẤT BẠI: Phát hiện lỗi logic/bộ nhớ! Trình biên dịch từ chối xuất file thực thi.");
+        eprintln!("\n❌ JIT THẤT BẠI: Phát hiện lỗi logic/bộ nhớ! Trình biên dịch từ chối phát mã máy.");
         std::process::exit(1);
     }
 
@@ -155,8 +145,13 @@ fn execute_jit(file_path: &str) {
 
 fn build_elf(file_path: &str, output_path: &str) {
     println!("📂 Đang biên dịch Standalone ELF64: {}", file_path);
-    let source = fs::read_to_string(file_path).expect("Read file");
-    let program = Parser::parse(&source).expect("Parse code");
+    let program = match Parser::parse_file(file_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            return;
+        }
+    };
 
     if !run_verification(&program) {
         eprintln!("\n❌ BIÊN DỊCH THẤT BẠI: Phát hiện lỗi logic/bộ nhớ! Trình biên dịch từ chối xuất file thực thi.");

@@ -57,15 +57,9 @@ impl MachineCodeEmitter {
         if let Some(r) = self.reg_map.get(name) {
             return *r;
         }
-        // Tự động phân bổ vào một trong các thanh ghi đa dụng
-        let allocated = match self.reg_map.len() % 6 {
-            0 => X86Reg::Rax,
-            1 => X86Reg::Rdi,
-            2 => X86Reg::Rsi,
-            3 => X86Reg::Rdx,
-            4 => X86Reg::Rbx,
-            _ => X86Reg::R10,
-        };
+        // Phân bổ vào các thanh ghi đa dụng an toàn (tránh đè thanh ghi syscall)
+        let general_regs = [X86Reg::Rbx, X86Reg::R10, X86Reg::R8, X86Reg::R9, X86Reg::Rcx];
+        let allocated = general_regs[self.reg_map.len() % general_regs.len()];
         self.reg_map.insert(name.to_string(), allocated);
         allocated
     }
@@ -201,30 +195,32 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::Syscall { rax, rdi, rsi, rdx } => {
-                    // Chuẩn bị thanh ghi cho lệnh gọi syscall của Linux x86_64:
-                    // rax = syscall_nr, rdi = arg1, rsi = arg2, rdx = arg3
-                    let load_arg = |emitter: &mut Self, op: &Operand, target_reg: X86Reg| {
+                    // Để tránh việc nạp thanh ghi này làm đè mất giá trị của thanh ghi kia:
+                    // Ta nạp lần lượt: rdx, rsi, rdi, rax (ngược lại từ sau ra trước)
+                    let args = [
+                        (rdx, X86Reg::Rdx),
+                        (rsi, X86Reg::Rsi),
+                        (rdi, X86Reg::Rdi),
+                        (rax, X86Reg::Rax),
+                    ];
+
+                    for (op, target_reg) in args {
                         match op {
-                            Operand::Const(Value::I64(n)) => emitter.emit_mov_reg_imm64(target_reg, *n),
+                            Operand::Const(Value::I64(n)) => self.emit_mov_reg_imm64(target_reg, *n),
                             Operand::Reg(r) => {
                                 if let Some(buf_offset) = buffer_offsets.get(r) {
                                     let vaddr = base_data_vaddr + (*buf_offset as u64);
-                                    emitter.emit_mov_reg_imm64(target_reg, vaddr as i64);
+                                    self.emit_mov_reg_imm64(target_reg, vaddr as i64);
                                 } else {
-                                    let src_reg = emitter.get_reg(r);
+                                    let src_reg = self.get_reg(r);
                                     if src_reg != target_reg {
-                                        emitter.emit_mov_reg_reg(target_reg, src_reg);
+                                        self.emit_mov_reg_reg(target_reg, src_reg);
                                     }
                                 }
                             }
                             _ => {}
                         }
-                    };
-
-                    load_arg(self, rax, X86Reg::Rax);
-                    load_arg(self, rdi, X86Reg::Rdi);
-                    load_arg(self, rsi, X86Reg::Rsi);
-                    load_arg(self, rdx, X86Reg::Rdx);
+                    }
 
                     self.emit_syscall();
                 }
@@ -242,7 +238,16 @@ impl MachineCodeEmitter {
                             _ => {}
                         }
                     }
-                    self.emit_ret();
+                    if func.name == "main" {
+                        // Với Standalone ELF64, hàm main kết thúc bằng sys_exit(rax) để hệ điều hành thoát an toàn
+                        // mov rdi, rax
+                        self.emit_mov_reg_reg(X86Reg::Rdi, X86Reg::Rax);
+                        // mov rax, 60 (sys_exit)
+                        self.emit_mov_reg_imm64(X86Reg::Rax, 60);
+                        self.emit_syscall();
+                    } else {
+                        self.emit_ret();
+                    }
                 }
 
                 _ => {}

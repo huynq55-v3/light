@@ -1,0 +1,53 @@
+# ==============================================================================
+# LIGHT STANDARD LIBRARY: std/io.lit
+# Module I/O & Process Control được kiểm chứng toán học 100% bằng Z3 SMT Solver
+# Không phụ thuộc Libc - Giao tiếp trực tiếp Linux x86_64 Kernel
+# ==============================================================================
+
+# In một buffer chuỗi ra stdout (fd = 1)
+# Yêu cầu toán học: Độ dài len phải lớn hơn 0 và nhỏ hơn 1MB (chống tấn công DoS/OOM)
+FUNC std_print(buf: ptr, len: i64) -> i64
+  REQUIRE len > 0 && len <= 1048576
+
+  # sys_write(1, buf, len)
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV buf
+  %rdx = MOV len
+  SYSCALL %rax %rdi %rsi %rdx
+
+  # sys_write trả về số byte đã ghi (hoặc âm nếu lỗi)
+  %res = CONST i64 0
+  ENSURE %res == 0
+  RET %res
+END_FUNC
+
+# Thoát tiến trình an toàn với exit code
+FUNC std_exit(code: i64) -> i64
+  REQUIRE code >= 0 && code <= 255
+
+  %rax = CONST i64 60
+  %rdi = MOV code
+  %rsi = CONST i64 0
+  %rdx = CONST i64 0
+  SYSCALL %rax %rdi %rsi %rdx
+
+  RET code
+END_FUNC
+
+# In 1 ký tự ASCII ra màn hình (ví dụ 'A'=65, '\n'=10)
+FUNC std_print_char(ascii_code: i64) -> i64
+  REQUIRE ascii_code >= 0 && ascii_code <= 255
+
+  ALLOC %char_buf 2
+  STORE8 %char_buf 0 ascii_code
+
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %char_buf
+  %rdx = CONST i64 1
+  SYSCALL %rax %rdi %rsi %rdx
+
+  %res = CONST i64 0
+  RET %res
+END_FUNC

@@ -2,6 +2,9 @@
 //! Thiết kế tối giản, tốc độ cao, hỗ trợ 6 kiểu dữ liệu và chỉ thị kiểm chứng Z3.
 
 use crate::ast::*;
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct ParseError {
@@ -18,6 +21,132 @@ impl std::fmt::Display for ParseError {
 pub struct Parser;
 
 impl Parser {
+    /// Nạp và parse file gốc kèm tất cả các file được IMPORT đệ quy
+    pub fn parse_file<P: AsRef<Path>>(file_path: P) -> Result<Program, ParseError> {
+        let mut visited = HashSet::new();
+        let mut all_functions = Vec::new();
+        Self::parse_file_recursive(file_path.as_ref(), &mut visited, &mut all_functions)?;
+        Ok(Program {
+            functions: all_functions,
+        })
+    }
+
+    fn parse_file_recursive(
+        path: &Path,
+        visited: &mut HashSet<PathBuf>,
+        all_functions: &mut Vec<Function>,
+    ) -> Result<(), ParseError> {
+        let canonical = fs::canonicalize(path).map_err(|e| ParseError {
+            line_no: 0,
+            message: format!("Không thể tìm thấy file import '{}': {}", path.display(), e),
+        })?;
+
+        // Nếu đã import file này rồi thì bỏ qua (chống lặp và chống vòng lặp vô hạn)
+        if visited.contains(&canonical) {
+            return Ok(());
+        }
+        visited.insert(canonical.clone());
+
+        let source = fs::read_to_string(&canonical).map_err(|e| ParseError {
+            line_no: 0,
+            message: format!("Không thể đọc file '{}': {}", canonical.display(), e),
+        })?;
+
+        let parent_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
+
+        let mut current_func: Option<Function> = None;
+
+        for (idx, raw_line) in source.lines().enumerate() {
+            let line_no = idx + 1;
+            let line = raw_line.trim();
+
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let clean_line = Self::strip_inline_comment(line);
+            let trimmed = clean_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+
+            // Xử lý chỉ thị IMPORT "relative/path.lit"
+            if parts[0] == "IMPORT" {
+                if current_func.is_some() {
+                    return Err(ParseError {
+                        line_no,
+                        message: "Lệnh IMPORT phải đặt ở đầu file ngoài phạm vi hàm".into(),
+                    });
+                }
+                let first_quote = trimmed.find('"').ok_or_else(|| ParseError {
+                    line_no,
+                    message: "Cú pháp IMPORT yêu cầu dấu nháy kép: IMPORT \"file.lit\"".into(),
+                })?;
+                let last_quote = trimmed.rfind('"').ok_or_else(|| ParseError {
+                    line_no,
+                    message: "Thiếu dấu đóng nháy kép trong IMPORT".into(),
+                })?;
+                let import_rel_path = &trimmed[first_quote + 1..last_quote];
+                let resolved_path = parent_dir.join(import_rel_path);
+
+                Self::parse_file_recursive(&resolved_path, visited, all_functions)?;
+                continue;
+            }
+
+            if parts[0] == "FUNC" {
+                if current_func.is_some() {
+                    return Err(ParseError {
+                        line_no,
+                        message: "Không được lồng định nghĩa hàm bên trong hàm khác".into(),
+                    });
+                }
+                let func = Self::parse_func_signature(trimmed, line_no)?;
+                current_func = Some(func);
+                continue;
+            }
+
+            if parts[0] == "END_FUNC" {
+                if let Some(func) = current_func.take() {
+                    // Kiểm tra trùng tên hàm
+                    if all_functions.iter().any(|f| f.name == func.name) {
+                        return Err(ParseError {
+                            line_no,
+                            message: format!("Trùng lặp tên hàm: '{}' đã được định nghĩa", func.name),
+                        });
+                    }
+                    all_functions.push(func);
+                } else {
+                    return Err(ParseError {
+                        line_no,
+                        message: "Gặp END_FUNC nhưng không có hàm nào đang mở".into(),
+                    });
+                }
+                continue;
+            }
+
+            let func = current_func.as_mut().ok_or_else(|| ParseError {
+                line_no,
+                message: format!("Lệnh '{}' phải nằm bên trong khối FUNC ... END_FUNC", parts[0]),
+            })?;
+
+            let inst = Self::parse_instruction(trimmed, line_no)?;
+            func.instructions.push(inst);
+        }
+
+        if let Some(func) = current_func {
+            return Err(ParseError {
+                line_no: 0,
+                message: format!("Hàm '{}' chưa được đóng bằng END_FUNC", func.name),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Parse từ chuỗi (không kèm import ngoài)
+    #[allow(dead_code)]
     pub fn parse(source: &str) -> Result<Program, ParseError> {
         let mut functions = Vec::new();
         let mut current_func: Option<Function> = None;

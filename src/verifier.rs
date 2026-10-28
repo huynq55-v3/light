@@ -91,19 +91,24 @@ impl Verifier {
                     let mut actual_rsi = rsi.clone();
                     let mut actual_rdx = rdx.clone();
 
-                    // Tìm giá trị thanh ghi được gán gần nhất trước đó
-                    for prev_inst in func.instructions[..idx].iter().rev() {
-                        if let Instruction::AssignConst { dest, val, .. } = prev_inst {
-                            if let Operand::Reg(r) = &actual_rax {
-                                if r == dest { actual_rax = Operand::Const(val.clone()); }
+                    // Tìm giá trị thanh ghi được gán gần nhất trước đó (hỗ trợ chuỗi MOV liên tiếp)
+                    for _ in 0..4 {
+                        for prev_inst in func.instructions[..idx].iter().rev() {
+                            if let Instruction::AssignConst { dest, val, .. } = prev_inst {
+                                if let Operand::Reg(r) = &actual_rax {
+                                    if r == dest { actual_rax = Operand::Const(val.clone()); }
+                                }
+                                if let Operand::Reg(r) = &actual_rdx {
+                                    if r == dest { actual_rdx = Operand::Const(val.clone()); }
+                                }
                             }
-                            if let Operand::Reg(r) = &actual_rdx {
-                                if r == dest { actual_rdx = Operand::Const(val.clone()); }
-                            }
-                        }
-                        if let Instruction::Mov { dest, src } = prev_inst {
-                            if let Operand::Reg(r) = &actual_rsi {
-                                if r == dest { actual_rsi = Operand::Reg(src.clone()); }
+                            if let Instruction::Mov { dest, src } = prev_inst {
+                                if let Operand::Reg(r) = &actual_rsi {
+                                    if r == dest { actual_rsi = Operand::Reg(src.clone()); }
+                                }
+                                if let Operand::Reg(r) = &actual_rdx {
+                                    if r == dest { actual_rdx = Operand::Reg(src.clone()); }
+                                }
                             }
                         }
                     }
@@ -119,14 +124,16 @@ impl Verifier {
                             Operand::Reg(r) => r,
                             _ => "".to_string(),
                         };
-                        let buf_size = buffer_sizes.get(&buf_name).cloned().unwrap_or(0);
-                        let goal_name = format!(
-                            "Hàm '{}' - Dòng lệnh #{}: sys_write count không vượt quá buffer '{}'",
-                            func.name, idx + 1, buf_name
-                        );
+                        // Nếu là buffer cục bộ (ALLOC) thì kiểm tra giới hạn kích thước buffer
+                        if let Some(&buf_size) = buffer_sizes.get(&buf_name) {
+                            let goal_name = format!(
+                                "Hàm '{}' - Dòng lệnh #{}: sys_write count không vượt quá buffer '{}'",
+                                func.name, idx + 1, buf_name
+                            );
 
-                        let query = Self::build_buffer_overflow_query(func, &requires, &actual_rdx, buf_size, &buf_name);
-                        results.push(Self::solve_query(&goal_name, &query));
+                            let query = Self::build_buffer_overflow_query(func, &requires, &actual_rdx, buf_size, &buf_name);
+                            results.push(Self::solve_query(&goal_name, &query));
+                        }
                     }
                 }
                 _ => {}
@@ -400,8 +407,18 @@ impl Verifier {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
 
-        for p in &func.params {
-            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
+        let mut all_exprs: Vec<&Expr> = requires.iter().collect();
+        all_exprs.extend(ensures.iter());
+        Self::declare_all_vars(func, &all_exprs, &mut smt);
+
+        // Khởi tạo các giá trị gán trong hàm
+        for inst in &func.instructions {
+            if let Instruction::AssignConst { dest, val, .. } = inst {
+                let name = dest.trim_start_matches('%');
+                if let Value::I64(n) = val {
+                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, n));
+                }
+            }
         }
 
         for req in requires {
