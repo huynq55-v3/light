@@ -230,6 +230,7 @@ impl Parser {
         match s {
             "i64" => Ok(Type::I64),
             "u64" => Ok(Type::U64),
+            "u8" => Ok(Type::U8),
             "f64" => Ok(Type::F64),
             "bool" => Ok(Type::Bool),
             "ptr" => Ok(Type::Ptr),
@@ -472,16 +473,21 @@ impl Parser {
             let unescaped = raw_str.replace("\\n", "\n").replace("\\t", "\t");
             let prefix = line[..first_quote].trim();
             let p_parts: Vec<&str> = prefix.split_whitespace().collect();
-            if p_parts.len() < 3 {
+            let offset = if p_parts.len() == 2 {
+                // STORE_STR %buf "string" (mặc định offset = 0)
+                0
+            } else if p_parts.len() >= 3 {
+                // STORE_STR %buf offset "string"
+                p_parts[2].parse::<usize>().map_err(|_| ParseError {
+                    line_no,
+                    message: "Offset của chuỗi phải là số nguyên".into(),
+                })?
+            } else {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: STORE_STR %buf offset \"string\"".into(),
+                    message: "Cú pháp: STORE_STR %buf [offset] \"string\"".into(),
                 });
-            }
-            let offset = p_parts[2].parse::<usize>().map_err(|_| ParseError {
-                line_no,
-                message: "Offset của chuỗi phải là số nguyên".into(),
-            })?;
+            };
             return Ok(Instruction::StoreStr {
                 buf: p_parts[1].to_string(),
                 offset,
@@ -516,6 +522,61 @@ impl Parser {
             let op = parts[2];
 
             match op {
+                "ALLOC" => {
+                    // %dest = ALLOC slice<T> <len>
+                    if parts.len() < 5 {
+                        return Err(ParseError {
+                            line_no,
+                            message: "Cú pháp: %dest = ALLOC slice<T> <len>".into(),
+                        });
+                    }
+                    let ty = Self::parse_type(parts[3], line_no)?;
+                    let len = parts[4].parse::<usize>().map_err(|_| ParseError {
+                        line_no,
+                        message: format!("Độ dài slice phải là số nguyên: {}", parts[4]),
+                    })?;
+                    match ty {
+                        Type::Slice(elem) => {
+                            return Ok(Instruction::AllocSlice {
+                                dest,
+                                elem_ty: *elem,
+                                len,
+                            });
+                        }
+                        _ => {
+                            return Err(ParseError {
+                                line_no,
+                                message: "Cú pháp ALLOC yêu cầu kiểu slice<T>".into(),
+                            });
+                        }
+                    }
+                }
+                "SLICE_PTR" => {
+                    // %ptr = SLICE_PTR %slice
+                    if parts.len() < 4 {
+                        return Err(ParseError {
+                            line_no,
+                            message: "Cú pháp: %ptr = SLICE_PTR %slice".into(),
+                        });
+                    }
+                    return Ok(Instruction::SlicePtr {
+                        dest,
+                        slice: parts[3].to_string(),
+                    });
+                }
+                "SLICE_LEN" => {
+                    // %len = SLICE_LEN %slice
+                    if parts.len() < 4 {
+                        return Err(ParseError {
+                            line_no,
+                            message: "Cú pháp: %len = SLICE_LEN %slice".into(),
+                        });
+                    }
+                    return Ok(Instruction::SliceLen {
+                        dest,
+                        slice: parts[3].to_string(),
+                    });
+                }
                 "CALL" => {
                     if parts.len() < 4 {
                         return Err(ParseError {
@@ -548,6 +609,10 @@ impl Parser {
                             line_no,
                             message: format!("Không thể parse u64: {}", parts[4]),
                         })?),
+                        Type::U8 => Value::U64(parts[4].parse::<u8>().map_err(|_| ParseError {
+                            line_no,
+                            message: format!("Không thể parse u8: {}", parts[4]),
+                        })? as u64),
                         Type::F64 => Value::F64(parts[4].parse::<f64>().map_err(|_| ParseError {
                             line_no,
                             message: format!("Không thể parse f64: {}", parts[4]),

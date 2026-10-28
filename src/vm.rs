@@ -169,6 +169,29 @@ impl VirtualMachine {
                     pc += 1;
                 }
 
+                Instruction::AllocSlice { dest, len, .. } => {
+                    let buf = MemoryBuffer {
+                        data: vec![0u8; *len],
+                    };
+                    self.buffers.insert(dest.clone(), buf);
+                    let ptr_val = self.next_ptr_addr;
+                    self.next_ptr_addr += (len + 63) & !63;
+                    self.registers.insert(dest.clone(), Value::Ptr(ptr_val));
+                    pc += 1;
+                }
+
+                Instruction::SlicePtr { dest, slice } => {
+                    let ptr_val = self.registers.get(slice).cloned().unwrap_or(Value::Ptr(0));
+                    self.registers.insert(dest.clone(), ptr_val);
+                    pc += 1;
+                }
+
+                Instruction::SliceLen { dest, slice } => {
+                    let len = self.buffers.get(slice).map(|b| b.data.len() as i64).unwrap_or(0);
+                    self.registers.insert(dest.clone(), Value::I64(len));
+                    pc += 1;
+                }
+
                 Instruction::Store8 { buf, offset, val } => {
                     let off = self.get_i64(offset)? as usize;
                     let byte_val = self.get_i64(val)? as u8;

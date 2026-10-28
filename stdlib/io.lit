@@ -1,22 +1,38 @@
 # ==============================================================================
 # LIGHT STANDARD LIBRARY: std/io.lit
 # Module I/O & Process Control được kiểm chứng toán học 100% bằng Z3 SMT Solver
-# Không phụ thuộc Libc - Giao tiếp trực tiếp Linux x86_64 Kernel
 # ==============================================================================
 
-# In một buffer chuỗi ra stdout (fd = 1)
-FUNC std_print(buf: ptr, len: i64) -> i64
-  REQUIRE len > 0 && len <= 1048576
+# In chuỗi an toàn từ slice<u8> với độ dài len chỉ định
+# HỢP ĐỒNG BẢO MẬT: len phải lớn hơn 0 VÀ KHÔNG ĐƯỢC VƯỢT QUÁ len(s)!
+FUNC std_print_slice(s: slice<u8>, len: i64) -> i64
+  REQUIRE len > 0 && len <= len(s)
 
-  # Lưu len vào rdx trước (vì len nằm trong rsi), sau đó mới chuyển buf vào rsi!
+  %ptr = SLICE_PTR s
   %rdx = MOV len
-  %rsi = MOV buf
+  %rsi = MOV %ptr
   %rax = CONST i64 1
   %rdi = CONST i64 1
   SYSCALL %rax %rdi %rsi %rdx
 
   %res = CONST i64 0
   ENSURE %res == 0
+  RET %res
+END_FUNC
+
+# In toàn bộ slice<u8> (tự động lấy đúng len(s))
+FUNC std_print_all(s: slice<u8>) -> i64
+  REQUIRE len(s) > 0
+
+  %ptr = SLICE_PTR s
+  %len = SLICE_LEN s
+  %rdx = MOV %len
+  %rsi = MOV %ptr
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  SYSCALL %rax %rdi %rsi %rdx
+
+  %res = CONST i64 0
   RET %res
 END_FUNC
 
@@ -31,21 +47,4 @@ FUNC std_exit(code: i64) -> i64
   SYSCALL %rax %rdi %rsi %rdx
 
   RET code
-END_FUNC
-
-# In 1 ký tự ASCII ra màn hình (ví dụ 'A'=65, '\n'=10)
-FUNC std_print_char(ascii_code: i64) -> i64
-  REQUIRE ascii_code >= 0 && ascii_code <= 255
-
-  ALLOC %char_buf 2
-  STORE8 %char_buf 0 ascii_code
-
-  %rax = CONST i64 1
-  %rdi = CONST i64 1
-  %rsi = MOV %char_buf
-  %rdx = CONST i64 1
-  SYSCALL %rax %rdi %rsi %rdx
-
-  %res = CONST i64 0
-  RET %res
 END_FUNC

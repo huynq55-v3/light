@@ -1,0 +1,17 @@
+# Ví dụ 8: GỌI HÀM AN TOÀN VỚI SLICE
+# len = 27 <= len(%greeting) (28 bytes) -> Z3 PASS!
+
+IMPORT "../stdlib/io.lit"
+
+FUNC main() -> i64
+  # Khởi tạo slice 28 bytes
+  %greeting = ALLOC slice<u8> 28
+  STORE_STR %greeting "Welcome to Light Standard!\n"
+
+  # HỢP LỆ: In 27 bytes (27 <= 28)
+  %len = CONST i64 27
+  %res = CALL std_print_slice %greeting %len
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC

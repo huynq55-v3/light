@@ -5,12 +5,13 @@
 pub enum Type {
     I64,
     U64,
+    U8,
     F64,
     Bool,
     Ptr,
     /// Mảng cố định phần tử với kích thước biết trước: arr<i64, 10>
     Array(Box<Type>, usize),
-    /// Con trỏ mảng động kèm độ dài: slice<i64>
+    /// Con trỏ mảng động kèm độ dài: slice<u8>
     Slice(Box<Type>),
 }
 
@@ -106,6 +107,22 @@ pub enum Instruction {
     },
 
     // --- BỘ NHỚ AN TOÀN (BUFFER, ARRAYS & SLICES) ---
+    /// Cấp phát slice an toàn: %dest = ALLOC slice<T> <len>
+    AllocSlice {
+        dest: String,
+        elem_ty: Type,
+        len: usize,
+    },
+    /// Lấy con trỏ thô từ slice: %ptr = SLICE_PTR %slice
+    SlicePtr {
+        dest: String,
+        slice: String,
+    },
+    /// Lấy độ dài của slice: %len = SLICE_LEN %slice
+    SliceLen {
+        dest: String,
+        slice: String,
+    },
     /// Cấp phát bộ nhớ cục bộ an toàn: ALLOC %buf size
     Alloc {
         dest: String,

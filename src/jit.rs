@@ -221,6 +221,25 @@ impl MachineCodeEmitter {
                     buffer_offsets.insert(dest.clone(), offset);
                 }
 
+                Instruction::AllocSlice { dest, len, .. } => {
+                    let offset = self.data_section.len();
+                    self.data_section.resize(offset + len, 0);
+                    buffer_offsets.insert(dest.clone(), offset);
+                }
+
+                Instruction::SlicePtr { dest, slice } => {
+                    let reg = self.get_reg(dest);
+                    let buf_offset = buffer_offsets.get(slice).cloned().unwrap_or(0);
+                    let vaddr = base_data_vaddr + (buf_offset as u64);
+                    self.emit_mov_reg_imm64(reg, vaddr as i64);
+                }
+
+                Instruction::SliceLen { dest, slice } => {
+                    let reg = self.get_reg(dest);
+                    let len = buffer_offsets.get(slice).map(|_| self.data_section.len()).unwrap_or(0);
+                    self.emit_mov_reg_imm64(reg, len as i64);
+                }
+
                 Instruction::StoreStr { buf, offset, content } => {
                     let buf_offset = buffer_offsets.get(buf).cloned().unwrap_or(0);
                     let target_offset = buf_offset + offset;

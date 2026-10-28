@@ -5,7 +5,7 @@ IMPORT "../stdlib/io.lit"
 
 FUNC main() -> i64
   # Chuẩn bị thông điệp
-  ALLOC %greeting 28
+  ALLOC %greeting 27
   STORE_STR %greeting 0 "Welcome to Light Standard!\n"
 
   # GỌI HÀM THƯ VIỆN CHUẨN THỰC THỤ: std_print(buf, len)

@@ -1,0 +1,18 @@
+# Ví dụ 7: CỐ TÌNH TRUYỀN LEN = 35 VÀO SLICE 28 BYTES
+# Z3 PHẢI CHẶN ĐỨNG VÀ BÁO LỖI NGAY TẠI ĐIỂM GỌI HÀM!
+
+IMPORT "../stdlib/io.lit"
+
+FUNC main() -> i64
+  # Khởi tạo slice 28 bytes
+  %greeting = ALLOC slice<u8> 28
+  STORE_STR %greeting "Welcome to Light Standard!\n"
+
+  # LỖI BẢO MẬT: Slice chỉ có 28 bytes nhưng cố in 35 bytes!
+  # Hàm std_print_slice có REQUIRE: len <= len(s)
+  %len = CONST i64 35
+  %res = CALL std_print_slice %greeting %len
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC

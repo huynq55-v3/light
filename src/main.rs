@@ -177,7 +177,7 @@ fn build_elf(file_path: &str, output_path: &str) {
 fn run_verification(program: &ast::Program) -> bool {
     let mut has_failure = false;
     for func in &program.functions {
-        let results = Verifier::verify_function(func);
+        let results = Verifier::verify_function(func, Some(program));
         for res in results {
             match res {
                 VerificationResult::Verified { goal_name } => {

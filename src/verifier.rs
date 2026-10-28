@@ -28,7 +28,7 @@ pub struct Verifier;
 
 impl Verifier {
     /// Kiểm tra tính đúng đắn toán học của toàn bộ hàm trong chương trình
-    pub fn verify_function(func: &Function) -> Vec<VerificationResult> {
+    pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
         let mut results = Vec::new();
 
         // 1. Thu thập các mệnh đề kiểm chứng
@@ -54,11 +54,17 @@ impl Verifier {
             }
         }
 
-        // 3. Kiểm tra ngầm: An toàn bộ nhớ & Buffer Overflow cho chuỗi và Syscall sys_write
+        // 3. Kiểm tra ngầm: An toàn bộ nhớ & Buffer Overflow cho chuỗi, Slice và Syscall sys_write
         let mut buffer_sizes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for inst in &func.instructions {
-            if let Instruction::Alloc { dest, size } = inst {
-                buffer_sizes.insert(dest.clone(), *size);
+            match inst {
+                Instruction::Alloc { dest, size } => {
+                    buffer_sizes.insert(dest.clone(), *size);
+                }
+                Instruction::AllocSlice { dest, len, .. } => {
+                    buffer_sizes.insert(dest.clone(), *len);
+                }
+                _ => {}
             }
         }
 
@@ -83,6 +89,29 @@ impl Verifier {
                         });
                     } else {
                         results.push(VerificationResult::Verified { goal_name });
+                    }
+                }
+                Instruction::Call { func_name, args, .. } => {
+                    // Kiểm chứng liên hàm tại điểm gọi (Call-Site Contract Verification)
+                    if let Some(prog) = program {
+                        if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
+                            for (_c_idx, c_inst) in callee.instructions.iter().enumerate() {
+                                if let Instruction::Require(req_expr) = c_inst {
+                                    let goal_name = format!(
+                                        "Hàm '{}' - Dòng lệnh #{}: Kiểm chứng REQUIRE của hàm '{}'",
+                                        func.name, idx + 1, func_name
+                                    );
+                                    let query = Self::build_callsite_require_query(
+                                        func,
+                                        callee,
+                                        req_expr,
+                                        args,
+                                        &buffer_sizes,
+                                    );
+                                    results.push(Self::solve_query(&goal_name, &query));
+                                }
+                            }
+                        }
                     }
                 }
                 Instruction::Syscall { rax, rsi, rdx, .. } => {
@@ -239,6 +268,53 @@ impl Verifier {
                 }
             }
         }
+    }
+
+    fn build_callsite_require_query(
+        caller: &Function,
+        callee: &Function,
+        req_expr: &Expr,
+        args: &[Operand],
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+    ) -> String {
+        let mut smt = String::new();
+        smt.push_str("(set-logic QF_BV)\n");
+
+        for p in &callee.params {
+            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", p.name));
+        }
+
+        // Ánh xạ đối số tại điểm gọi vào tham số của callee
+        for (i, p) in callee.params.iter().enumerate() {
+            if i >= args.len() { break; }
+            match &args[i] {
+                Operand::Const(Value::I64(v)) => {
+                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", p.name, v));
+                }
+                Operand::Reg(r) => {
+                    // Nếu là slice, gán độ dài của slice
+                    if let Some(&size) = buffer_sizes.get(r) {
+                        smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", p.name, size));
+                    }
+                    // Tìm giá trị hằng số của r nếu có
+                    for inst in caller.instructions.iter().rev() {
+                        if let Instruction::AssignConst { dest, val: Value::I64(v), .. } = inst {
+                            if dest == r {
+                                smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", p.name, v));
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Phủ định điều kiện REQUIRE của callee: nếu có trường hợp làm REQUIRE sai -> FAIL
+        smt.push_str(&format!("(assert (not {}))\n", Self::expr_to_smt(req_expr)));
+        smt.push_str("(check-sat)\n(get-model)\n");
+        smt
     }
 
     fn build_buffer_overflow_query(
