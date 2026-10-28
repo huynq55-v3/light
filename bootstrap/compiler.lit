@@ -91,6 +91,131 @@ FUNC emit_elf_header(buf: slice<u8>, code_len: i64) -> i64
   RET %hdr_len
 END_FUNC
 
+# Emit single byte into buffer at pos
+FUNC emit_byte(buf: slice<u8>, pos: i64, b: i64) -> i64
+  REQUIRE pos >= 0 && pos < len(buf) && b >= 0 && b <= 255
+  %ptr = SLICE_PTR buf
+  STORE8 %ptr pos b
+  %next_pos = ADD i64 pos 1
+  ENSURE %next_pos == pos + 1
+  RET %next_pos
+END_FUNC
+
+# Emit 64-bit integer into buffer at pos (little-endian)
+FUNC emit_u64(buf: slice<u8>, pos: i64, val: i64) -> i64
+  REQUIRE pos >= 0 && pos + 8 <= len(buf)
+  %ptr = SLICE_PTR buf
+  STORE64 %ptr pos val
+  %next_pos = ADD i64 pos 8
+  ENSURE %next_pos == pos + 8
+  RET %next_pos
+END_FUNC
+
+# Emit: mov reg, imm64 (10 bytes: 0x48, 0xB8+reg, imm64)
+FUNC emit_mov_imm(buf: slice<u8>, pos: i64, reg: i64, imm: i64) -> i64
+  REQUIRE pos >= 0 && pos + 10 <= len(buf) && reg >= 0 && reg <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_base = CONST i64 184
+  %opcode = ADD i64 %b_base reg
+  STORE8 %ptr %p1 %opcode
+  %p2 = ADD i64 pos 2
+  STORE64 %ptr %p2 imm
+  %next_pos = ADD i64 pos 10
+  ENSURE %next_pos == pos + 10
+  RET %next_pos
+END_FUNC
+
+# Emit: mov dst, src (3 bytes: 0x48, 0x89, 0xC0 | (src<<3) | dst)
+FUNC emit_mov_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_89 = CONST i64 137
+  STORE8 %ptr %p1 %b_89
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %src_sh = MUL i64 src %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %src_sh
+  %modrm = ADD i64 %tmp dst
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: add dst, src (3 bytes: 0x48, 0x01, 0xC0 | (src<<3) | dst)
+FUNC emit_add_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_01 = CONST i64 1
+  STORE8 %ptr %p1 %b_01
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %src_sh = MUL i64 src %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %src_sh
+  %modrm = ADD i64 %tmp dst
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: sub dst, src (3 bytes: 0x48, 0x29, 0xC0 | (src<<3) | dst)
+FUNC emit_sub_rr(buf: slice<u8>, pos: i64, dst: i64, src: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && dst >= 0 && dst <= 7 && src >= 0 && src <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_29 = CONST i64 41
+  STORE8 %ptr %p1 %b_29
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %src_sh = MUL i64 src %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %src_sh
+  %modrm = ADD i64 %tmp dst
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: syscall (2 bytes: 0x0F, 0x05)
+FUNC emit_syscall_inst(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 2 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b_0f = CONST i64 15
+  STORE8 %ptr pos %b_0f
+  %p1 = ADD i64 pos 1
+  %b_05 = CONST i64 5
+  STORE8 %ptr %p1 %b_05
+  %next_pos = ADD i64 pos 2
+  ENSURE %next_pos == pos + 2
+  RET %next_pos
+END_FUNC
+
+# Emit: ret (1 byte: 0xC3)
+FUNC emit_ret_inst(buf: slice<u8>, pos: i64) -> i64
+  REQUIRE pos >= 0 && pos + 1 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %b_c3 = CONST i64 195
+  STORE8 %ptr pos %b_c3
+  %next_pos = ADD i64 pos 1
+  ENSURE %next_pos == pos + 1
+  RET %next_pos
+END_FUNC
+
 # Emit standalone exit machine code at offset 120
 FUNC emit_exit_code(buf: slice<u8>, exit_code: i64) -> i64
   REQUIRE len(buf) >= 136 && exit_code >= 0 && exit_code <= 255
