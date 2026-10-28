@@ -97,7 +97,8 @@ fn execute_file(file_path: &str, run_vm: bool) {
 
     println!("\n🧠 Đang kiểm chứng toán học bằng Z3 SMT Solver...");
     if !run_verification(&program) {
-        return;
+        eprintln!("\n❌ BIÊN DỊCH THẤT BẠI: Phát hiện lỗi logic/bộ nhớ! Trình biên dịch từ chối thực thi.");
+        std::process::exit(1);
     }
 
     if run_vm {
@@ -131,7 +132,8 @@ fn execute_jit(file_path: &str) {
 
     let program = Parser::parse(&source).expect("Parse code");
     if !run_verification(&program) {
-        return;
+        eprintln!("\n❌ BIÊN DỊCH THẤT BẠI: Phát hiện lỗi logic/bộ nhớ! Trình biên dịch từ chối xuất file thực thi.");
+        std::process::exit(1);
     }
 
     println!("\n⚡ [JIT] Đang phát sinh mã máy x86_64 thô vào RAM...");
@@ -157,7 +159,8 @@ fn build_elf(file_path: &str, output_path: &str) {
     let program = Parser::parse(&source).expect("Parse code");
 
     if !run_verification(&program) {
-        return;
+        eprintln!("\n❌ BIÊN DỊCH THẤT BẠI: Phát hiện lỗi logic/bộ nhớ! Trình biên dịch từ chối xuất file thực thi.");
+        std::process::exit(1);
     }
 
     println!("\n🛠️ [Codegen] Đang đóng gói file thực thi ELF64 Linux...");
