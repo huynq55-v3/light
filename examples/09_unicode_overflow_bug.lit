@@ -1,0 +1,19 @@
+# Example 9: UNICODE BUFFER OVERFLOW BUG
+# "Nguyễn Quang Huy" has 16 display characters, but takes 18 UTF-8 bytes!
+# Allocating only 16 bytes WILL TRIGGER Z3 BUFFER OVERFLOW ERROR!
+
+IMPORT "../stdlib/io.lit"
+
+FUNC main() -> i64
+  # BUG: Allocating only 16 bytes assuming ASCII
+  %name = ALLOC slice<u8> 16
+
+  # ERROR: "Nguyễn Quang Huy" requires 18 bytes in UTF-8 ('ễ' is 3 bytes)
+  STORE_STR %name "Nguyễn Quang Huy"
+
+  %len = CONST i64 16
+  %res = CALL std_print_slice %name %len
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC

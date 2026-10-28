@@ -49,7 +49,7 @@ impl VirtualMachine {
                 .registers
                 .get(name)
                 .cloned()
-                .ok_or_else(|| format!("Thanh ghi chưa được khởi tạo: {}", name)),
+                .ok_or_else(|| format!("Uninitialized register: {}", name)),
         }
     }
 
@@ -58,7 +58,7 @@ impl VirtualMachine {
             Value::I64(v) => Ok(v),
             Value::U64(v) => Ok(v as i64),
             Value::Ptr(v) => Ok(v as i64),
-            other => Err(format!("Yêu cầu kiểu i64, nhận được {:?}", other)),
+            other => Err(format!("Expected i64, found {:?}", other)),
         }
     }
 
@@ -66,14 +66,14 @@ impl VirtualMachine {
     pub fn get_bool(&self, op: &Operand) -> Result<bool, String> {
         match self.get_operand_val(op)? {
             Value::Bool(b) => Ok(b),
-            other => Err(format!("Yêu cầu kiểu bool, nhận được {:?}", other)),
+            other => Err(format!("Expected bool, found {:?}", other)),
         }
     }
 
     pub fn run_function(&mut self, func: &Function, args: &[Value]) -> Result<Option<Value>, String> {
         if func.params.len() != args.len() {
             return Err(format!(
-                "Hàm '{}' yêu cầu {} tham số, nhận được {}",
+                "Function '{}' expects {} arguments, but received {}",
                 func.name,
                 func.params.len(),
                 args.len()
@@ -139,7 +139,7 @@ impl VirtualMachine {
                         .registers
                         .get(src)
                         .cloned()
-                        .ok_or_else(|| format!("Thanh ghi nguồn chưa gán: {}", src))?;
+                        .ok_or_else(|| format!("Source register not set: {}", src))?;
                     self.registers.insert(dest.clone(), val);
                     pc += 1;
                 }
@@ -198,10 +198,10 @@ impl VirtualMachine {
                     let buffer = self
                         .buffers
                         .get_mut(buf)
-                        .ok_or_else(|| format!("Buffer '{}' không tồn tại", buf))?;
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf))?;
                     if off >= buffer.data.len() {
                         return Err(format!(
-                            "Lỗi Runtime Bounds Check: Truy cập vượt biên ghi byte tại offset {} (buffer len: {})",
+                            "Runtime Bounds Error: Out of bounds byte store at offset {} (buffer len: {})",
                             off,
                             buffer.data.len()
                         ));
@@ -215,10 +215,10 @@ impl VirtualMachine {
                     let buffer = self
                         .buffers
                         .get(buf)
-                        .ok_or_else(|| format!("Buffer '{}' không tồn tại", buf))?;
+                        .ok_or_else(|| format!("Buffer '{}' does not exist", buf))?;
                     if off >= buffer.data.len() {
                         return Err(format!(
-                            "Lỗi Runtime Bounds Check: Truy cập vượt biên đọc byte tại offset {} (buffer len: {})",
+                            "Runtime Bounds Error: Out of bounds byte load at offset {} (buffer len: {})",
                             off,
                             buffer.data.len()
                         ));
@@ -419,10 +419,10 @@ impl VirtualMachine {
             }
             // sys_exit: (status = arg1)
             60 => {
-                println!("\n[Hệ thống: Process Light thoát an toàn với mã exit code: {}]", arg1);
+                println!("\n[System: Light process exited safely with code: {}]", arg1);
                 Ok(())
             }
-            _ => Err(format!("Linux Syscall ID {} chưa được hỗ trợ trong phiên bản này", sys_id)),
+            _ => Err(format!("Linux Syscall ID {} is not supported in this runtime", sys_id)),
         }
     }
 
@@ -434,13 +434,13 @@ impl VirtualMachine {
                 BinOp::Mul => Ok(Value::I64(a.wrapping_mul(*b))),
                 BinOp::Div => {
                     if *b == 0 {
-                        return Err("Lỗi Runtime: Chia cho 0 (Division by zero)".into());
+                        return Err("Runtime Error: Division by zero".into());
                     }
                     Ok(Value::I64(a / b))
                 }
                 BinOp::Mod => {
                     if *b == 0 {
-                        return Err("Lỗi Runtime: Phép chia lấy dư cho 0".into());
+                        return Err("Runtime Error: Remainder by zero".into());
                     }
                     Ok(Value::I64(a % b))
                 }

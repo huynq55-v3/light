@@ -45,16 +45,16 @@ impl Verifier {
             }
         }
 
-        // 2. Kiểm tra ngầm: Có phép chia nào tiềm ẩn nguy cơ chia cho 0 không?
+        // 2. Implicit check: Division by Zero
         for (idx, inst) in func.instructions.iter().enumerate() {
             if let Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } = inst {
-                let div_zero_goal = format!("Hàm '{}' - Dòng lệnh #{}: An toàn phép chia (No Division By Zero)", func.name, idx + 1);
+                let div_zero_goal = format!("Function '{}' - Instruction #{}: Division-by-Zero safety", func.name, idx + 1);
                 let query = Self::build_div_zero_query(func, &requires, src2);
                 results.push(Self::solve_query(&div_zero_goal, &query));
             }
         }
 
-        // 3. Kiểm tra ngầm: An toàn bộ nhớ & Buffer Overflow cho chuỗi, Slice và Syscall sys_write
+        // 3. Implicit check: Memory bounds & buffer overflow for UTF-8 strings and syscalls
         let mut buffer_sizes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for inst in &func.instructions {
             match inst {
@@ -72,18 +72,21 @@ impl Verifier {
             match inst {
                 Instruction::StoreStr { buf, offset, content } => {
                     let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
-                    let goal_name = format!("Hàm '{}' - Dòng lệnh #{}: Ghi chuỗi không vượt quá kích thước buffer '{}'", func.name, idx + 1, buf);
-                    let req_size = *offset + content.len();
+                    let goal_name = format!("Function '{}' - Instruction #{}: String write within buffer '{}'", func.name, idx + 1, buf);
+                    // Đo chính xác số UTF-8 bytes thực tế
+                    let utf8_len = content.as_bytes().len();
+                    let req_size = *offset + utf8_len;
                     if req_size > buf_size {
                         results.push(VerificationResult::Failed {
                             goal_name,
                             reason: format!(
-                                "Tràn bộ nhớ tĩnh! Chuỗi yêu cầu {} bytes (offset {} + len {}), nhưng buffer '{}' chỉ có {} bytes",
-                                req_size, offset, content.len(), buf, buf_size
+                                "Static buffer overflow! UTF-8 string requires {} bytes (offset {} + {} bytes), but buffer '{}' has only {} bytes",
+                                req_size, offset, utf8_len, buf, buf_size
                             ),
                             counter_example: Some(format!(
-                                "Buffer: {} bytes\nGhi vượt quá: {} bytes",
+                                "Buffer capacity: {} bytes\nRequired bytes: {} (UTF-8 Overflow by {} bytes)",
                                 buf_size,
+                                req_size,
                                 req_size - buf_size
                             )),
                         });
@@ -92,13 +95,13 @@ impl Verifier {
                     }
                 }
                 Instruction::Call { func_name, args, .. } => {
-                    // Kiểm chứng liên hàm tại điểm gọi (Call-Site Contract Verification)
+                    // Call-site REQUIRE contract verification
                     if let Some(prog) = program {
                         if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
                             for (_c_idx, c_inst) in callee.instructions.iter().enumerate() {
                                 if let Instruction::Require(req_expr) = c_inst {
                                     let goal_name = format!(
-                                        "Hàm '{}' - Dòng lệnh #{}: Kiểm chứng REQUIRE của hàm '{}'",
+                                        "Function '{}' - Instruction #{}: Verify REQUIRE contract of '{}'",
                                         func.name, idx + 1, func_name
                                     );
                                     let query = Self::build_callsite_require_query(
@@ -115,12 +118,10 @@ impl Verifier {
                     }
                 }
                 Instruction::Syscall { rax, rsi, rdx, .. } => {
-                    // Kiểm tra sys_write (rax = 1)
                     let mut actual_rax = rax.clone();
                     let mut actual_rsi = rsi.clone();
                     let mut actual_rdx = rdx.clone();
 
-                    // Tìm giá trị thanh ghi được gán gần nhất trước đó (hỗ trợ chuỗi MOV liên tiếp)
                     for _ in 0..4 {
                         for prev_inst in func.instructions[..idx].iter().rev() {
                             if let Instruction::AssignConst { dest, val, .. } = prev_inst {
@@ -153,10 +154,9 @@ impl Verifier {
                             Operand::Reg(r) => r,
                             _ => "".to_string(),
                         };
-                        // Nếu là buffer cục bộ (ALLOC) thì kiểm tra giới hạn kích thước buffer
                         if let Some(&buf_size) = buffer_sizes.get(&buf_name) {
                             let goal_name = format!(
-                                "Hàm '{}' - Dòng lệnh #{}: sys_write count không vượt quá buffer '{}'",
+                                "Function '{}' - Instruction #{}: sys_write count within buffer '{}'",
                                 func.name, idx + 1, buf_name
                             );
 
@@ -169,27 +169,23 @@ impl Verifier {
             }
         }
 
-        // 4. Nếu có LOOP + INVARIANT + ENSURE: Kiểm chứng Hoare Logic 3 bước
+        // 4. Hoare Logic Verification for Loops
         if !invariants.is_empty() {
-            // Bước 1: Base Case (Khởi tạo thỏa Invariant)
-            let base_goal = format!("Hàm '{}' - Bước 1: Base Case (Khởi tạo vòng lặp)", func.name);
+            let base_goal = format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name);
             let base_query = Self::build_base_case_query(func, &requires, &invariants);
             results.push(Self::solve_query(&base_goal, &base_query));
 
-            // Bước 2: Inductive Step (Quy nạp vòng lặp)
-            let step_goal = format!("Hàm '{}' - Bước 2: Inductive Step (Bảo toàn Invariant)", func.name);
+            let step_goal = format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name);
             let step_query = Self::build_inductive_step_query(func, &requires, &invariants);
             results.push(Self::solve_query(&step_goal, &step_query));
 
-            // Bước 3: Exit Step -> Ensure
             if !ensures.is_empty() {
-                let exit_goal = format!("Hàm '{}' - Bước 3: Exit Step (Thỏa mãn cam kết ENSURE)", func.name);
+                let exit_goal = format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name);
                 let exit_query = Self::build_exit_step_query(func, &requires, &invariants, &ensures);
                 results.push(Self::solve_query(&exit_goal, &exit_query));
             }
         } else if !ensures.is_empty() {
-            // Nếu không có vòng lặp, kiểm tra trực tiếp Require -> Function Body -> Ensure
-            let func_goal = format!("Hàm '{}' - Kiểm chứng cam kết đầu ra ENSURE", func.name);
+            let func_goal = format!("Function '{}' - Verify ENSURE postcondition", func.name);
             let query = Self::build_straightline_query(func, &requires, &ensures);
             results.push(Self::solve_query(&func_goal, &query));
         }
@@ -544,7 +540,7 @@ impl Verifier {
             Err(e) => {
                 return VerificationResult::Failed {
                     goal_name: goal_name.to_string(),
-                    reason: format!("Lỗi khi chạy Z3: {}", e),
+                    reason: format!("Failed to spawn Z3 solver: {}", e),
                     counter_example: None,
                 };
             }
@@ -558,13 +554,13 @@ impl Verifier {
         } else if stdout.contains("sat") {
             VerificationResult::Failed {
                 goal_name: goal_name.to_string(),
-                reason: "Phát hiện lỗ hổng logic toán học!".to_string(),
+                reason: "Counter-example found: Mathematical/safety contract violated!".to_string(),
                 counter_example: Some(stdout.to_string()),
             }
         } else {
             VerificationResult::Failed {
                 goal_name: goal_name.to_string(),
-                reason: format!("Z3 trả lời không xác định: {}", stdout),
+                reason: format!("Z3 returned unknown/error status: {}", stdout),
                 counter_example: None,
             }
         }

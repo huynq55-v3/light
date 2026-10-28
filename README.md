@@ -1,33 +1,65 @@
 # 🌟 Light (.lit) Programming Language
 
-**Light** là một ngôn ngữ lập trình dòng phẳng (Flat SSA), Turing-complete, được thiết kế tối ưu riêng cho **AI Agents** kết hợp kiểm chứng toán học hình thức bằng **Z3 SMT Solver** và không phụ thuộc vào C Runtime (gọi trực tiếp Linux Syscalls).
+**Light** is an AI-native, line-oriented (Flat SSA / Three-Address Code) systems programming language featuring **formal mathematical verification with Z3 SMT Solver** and **zero C runtime dependencies** (direct Linux x86_64 syscalls).
 
 ---
 
-## 💎 Điểm Cốt Lõi
+## 💎 Core Highlights
 
-1. **AI-Native Grammar:** Mỗi dòng là một lệnh độc lập. Không ngoặc lồng `{ }`, không thụt đầu dòng, không ưu tiên toán tử rắc rối. AI chỉ cần đọc đặc tả 1 lần là viết code chuẩn 100%.
-2. **First-Class Z3 Verification:** Tích hợp sẵn 4 mệnh đề kiểm chứng toán học:
-   - `REQUIRE`: Ràng buộc điều kiện đầu vào (Precondition).
-   - `ENSURE`: Cam kết tính đúng đắn của kết quả đầu ra (Postcondition).
-   - `INVARIANT`: Bất biến vòng lặp (Loop Invariant) giúp cắt đứt Định lý Rice để quy nạp toán học.
-   - `ASSERT`: Kiểm tra tính chất trạng thái tại chỗ.
-   - **Tự động bắt lỗi ngầm:** Bắt trọn lỗi chia cho 0 (Division by zero) và tràn mảng (Bounds check).
-3. **Zero C Dependency:** Giao tiếp trực tiếp với Linux Kernel qua raw syscalls (x86_64: `sys_write`=1, `sys_exit`=60).
-4. **Đầy đủ 6 kiểu dữ liệu:** `i64`, `u64`, `f64`, `bool`, `ptr`, `arr<T, N>` và `slice<T>`.
+1. **AI-Native Grammar:** Exactly one instruction per line. Zero braces `{ }`, zero mandatory indentations, zero ambiguous operator precedence. An LLM understands the complete specification in under 500 tokens.
+2. **First-Class Z3 SMT Verification:**
+   - `REQUIRE`: Function preconditions.
+   - `ENSURE`: Function postconditions.
+   - `INVARIANT`: Loop invariants (enabling 2-step mathematical induction to bypass the Halting Problem).
+   - **Automatic Safety Checks:** Zero division and static memory bounds checks.
+   - **Call-Site Interprocedural Verification:** Z3 verifies that arguments at `CALL` sites strictly satisfy callee contracts (preventing buffer over-reads).
+   - **Precise UTF-8 Byte Counting:** Distinguishes between ASCII (1 byte) and multi-byte Unicode UTF-8 characters (e.g., Vietnamese diacritics).
+3. **Zero C Dependency:** Emits minimal standalone Linux ELF64 binaries (~300 bytes) without libc or external linkers.
+4. **Rich Type System:** `i64`, `u64`, `u8`, `f64`, `bool`, `ptr`, `arr<T, N>`, and `slice<T>` (Fat Pointers).
+5. **Modular Imports:** Recursive, cycle-safe `IMPORT "path.lit"` module resolution.
 
 ---
 
-## 🚀 Cách Sử Dụng
+## 🚀 Quick Start
 
+### 1. Build and Run via Safe VM
 ```bash
-# 1. Chạy demo có sẵn
-cargo run -- demo
-
-# 2. Kiểm chứng toán học và chạy file .lit
-cargo run -- run examples/01_hello.lit
-
-# 3. Chỉ kiểm chứng toán học (Z3 Verification)
-cargo run -- verify examples/02_verify_safe.lit
-cargo run -- verify examples/03_verify_bug.lit
+cargo run -- run examples/08_slice_safe.lit
 ```
+
+### 2. Verify Mathematical Contracts with Z3
+```bash
+cargo run -- verify examples/08_slice_safe.lit
+```
+
+### 3. Compile to Standalone Minimal ELF64 Executable
+```bash
+cargo run -- build examples/08_slice_safe.lit -o app_bin
+./app_bin
+```
+
+---
+
+## 📝 Syntax Overview
+
+```light
+IMPORT "stdlib/io.lit"
+
+FUNC main() -> i64
+  # Allocate an 18-byte slice for UTF-8 Vietnamese name
+  %name = ALLOC slice<u8> 18
+  STORE_STR %name "Nguyễn Quang Huy"
+
+  # Print slice safely via verified stdlib function
+  %len = CONST i64 18
+  %res = CALL std_print_slice %name %len
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC
+```
+
+---
+
+## 📜 License
+Apache-2.0 / MIT

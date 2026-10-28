@@ -14,7 +14,7 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Lỗi cú pháp tại dòng {}: {}", self.line_no, self.message)
+        write!(f, "Syntax error at line {}: {}", self.line_no, self.message)
     }
 }
 
@@ -38,10 +38,10 @@ impl Parser {
     ) -> Result<(), ParseError> {
         let canonical = fs::canonicalize(path).map_err(|e| ParseError {
             line_no: 0,
-            message: format!("Không thể tìm thấy file import '{}': {}", path.display(), e),
+            message: format!("Cannot find import file '{}': {}", path.display(), e),
         })?;
 
-        // Nếu đã import file này rồi thì bỏ qua (chống lặp và chống vòng lặp vô hạn)
+        // Deduplication & cycle prevention
         if visited.contains(&canonical) {
             return Ok(());
         }
@@ -49,7 +49,7 @@ impl Parser {
 
         let source = fs::read_to_string(&canonical).map_err(|e| ParseError {
             line_no: 0,
-            message: format!("Không thể đọc file '{}': {}", canonical.display(), e),
+            message: format!("Cannot read file '{}': {}", canonical.display(), e),
         })?;
 
         let parent_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
@@ -72,21 +72,21 @@ impl Parser {
 
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
 
-            // Xử lý chỉ thị IMPORT "relative/path.lit"
+            // Handle IMPORT "relative/path.lit"
             if parts[0] == "IMPORT" {
                 if current_func.is_some() {
                     return Err(ParseError {
                         line_no,
-                        message: "Lệnh IMPORT phải đặt ở đầu file ngoài phạm vi hàm".into(),
+                        message: "IMPORT directives must be placed at the file top-level outside functions".into(),
                     });
                 }
                 let first_quote = trimmed.find('"').ok_or_else(|| ParseError {
                     line_no,
-                    message: "Cú pháp IMPORT yêu cầu dấu nháy kép: IMPORT \"file.lit\"".into(),
+                    message: "IMPORT syntax requires double quotes: IMPORT \"file.lit\"".into(),
                 })?;
                 let last_quote = trimmed.rfind('"').ok_or_else(|| ParseError {
                     line_no,
-                    message: "Thiếu dấu đóng nháy kép trong IMPORT".into(),
+                    message: "Missing closing quote in IMPORT".into(),
                 })?;
                 let import_rel_path = &trimmed[first_quote + 1..last_quote];
                 let resolved_path = parent_dir.join(import_rel_path);
@@ -99,7 +99,7 @@ impl Parser {
                 if current_func.is_some() {
                     return Err(ParseError {
                         line_no,
-                        message: "Không được lồng định nghĩa hàm bên trong hàm khác".into(),
+                        message: "Nested function definitions are not allowed".into(),
                     });
                 }
                 let func = Self::parse_func_signature(trimmed, line_no)?;
@@ -109,18 +109,17 @@ impl Parser {
 
             if parts[0] == "END_FUNC" {
                 if let Some(func) = current_func.take() {
-                    // Kiểm tra trùng tên hàm
                     if all_functions.iter().any(|f| f.name == func.name) {
                         return Err(ParseError {
                             line_no,
-                            message: format!("Trùng lặp tên hàm: '{}' đã được định nghĩa", func.name),
+                            message: format!("Duplicate function definition: '{}'", func.name),
                         });
                     }
                     all_functions.push(func);
                 } else {
                     return Err(ParseError {
                         line_no,
-                        message: "Gặp END_FUNC nhưng không có hàm nào đang mở".into(),
+                        message: "Encountered END_FUNC without an active function block".into(),
                     });
                 }
                 continue;
@@ -128,7 +127,7 @@ impl Parser {
 
             let func = current_func.as_mut().ok_or_else(|| ParseError {
                 line_no,
-                message: format!("Lệnh '{}' phải nằm bên trong khối FUNC ... END_FUNC", parts[0]),
+                message: format!("Instruction '{}' must be placed inside a FUNC ... END_FUNC block", parts[0]),
             })?;
 
             let inst = Self::parse_instruction(trimmed, line_no)?;
@@ -138,7 +137,7 @@ impl Parser {
         if let Some(func) = current_func {
             return Err(ParseError {
                 line_no: 0,
-                message: format!("Hàm '{}' chưa được đóng bằng END_FUNC", func.name),
+                message: format!("Function '{}' was not closed with END_FUNC", func.name),
             });
         }
 
@@ -242,13 +241,13 @@ impl Parser {
                     if parts.len() != 2 {
                         return Err(ParseError {
                             line_no,
-                            message: format!("Kiểu mảng sai cú pháp: '{}'. Chuẩn: arr<type, size>", s),
+                            message: format!("Malformed array type: '{}'. Expected: arr<type, size>", s),
                         });
                     }
                     let elem_ty = Self::parse_type(parts[0].trim(), line_no)?;
                     let size = parts[1].trim().parse::<usize>().map_err(|_| ParseError {
                         line_no,
-                        message: format!("Kích thước mảng phải là số nguyên: {}", parts[1]),
+                        message: format!("Array size must be a positive integer: {}", parts[1]),
                     })?;
                     return Ok(Type::Array(Box::new(elem_ty), size));
                 }
@@ -260,7 +259,7 @@ impl Parser {
                 }
                 Err(ParseError {
                     line_no,
-                    message: format!("Kiểu dữ liệu không hỗ trợ: '{}'. Chỉ chấp nhận: i64, u64, f64, bool, ptr, arr<T, N>, slice<T>", s),
+                    message: format!("Unsupported type: '{}'. Supported: i64, u64, u8, f64, bool, ptr, arr<T, N>, slice<T>", s),
                 })
             }
         }
@@ -270,18 +269,18 @@ impl Parser {
         let line = line.strip_prefix("FUNC").unwrap().trim();
         let paren_start = line.find('(').ok_or_else(|| ParseError {
             line_no,
-            message: "Thiếu dấu '(' trong khai báo FUNC".into(),
+            message: "Missing '(' in FUNC signature".into(),
         })?;
         let paren_end = line.find(')').ok_or_else(|| ParseError {
             line_no,
-            message: "Thiếu dấu ')' trong khai báo FUNC".into(),
+            message: "Missing ')' in FUNC signature".into(),
         })?;
 
         let name = line[..paren_start].trim().to_string();
         if name.is_empty() {
             return Err(ParseError {
                 line_no,
-                message: "Tên hàm không được để trống".into(),
+                message: "Function name cannot be empty".into(),
             });
         }
 
@@ -293,7 +292,7 @@ impl Parser {
                 if p_parts.len() != 2 {
                     return Err(ParseError {
                         line_no,
-                        message: format!("Tham số '{}' sai định dạng (chuẩn: name: type)", param_item),
+                        message: format!("Malformed parameter declaration '{}' (expected: name: type)", param_item),
                     });
                 }
                 let p_name = p_parts[0].trim().to_string();
@@ -398,7 +397,7 @@ impl Parser {
             if parts.len() < 2 {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: BREAK_IF %cond".into(),
+                    message: "Syntax: BREAK_IF %cond".into(),
                 });
             }
             return Ok(Instruction::BreakIf(parts[1].to_string()));
@@ -407,24 +406,24 @@ impl Parser {
             if parts.len() < 2 {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: CONTINUE_IF %cond".into(),
+                    message: "Syntax: CONTINUE_IF %cond".into(),
                 });
             }
             return Ok(Instruction::ContinueIf(parts[1].to_string()));
         }
 
-        // --- BỘ NHỚ ---
+        // --- MEMORY OPERATIONS ---
         if parts[0] == "ALLOC" {
             if parts.len() < 3 {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: ALLOC %buf size".into(),
+                    message: "Syntax: ALLOC %buf size".into(),
                 });
             }
             let dest = parts[1].to_string();
             let size = parts[2].parse::<usize>().map_err(|_| ParseError {
                 line_no,
-                message: format!("Kích thước bộ nhớ phải là số nguyên dương: {}", parts[2]),
+                message: format!("Allocation size must be a positive integer: {}", parts[2]),
             })?;
             return Ok(Instruction::Alloc { dest, size });
         }
@@ -432,7 +431,7 @@ impl Parser {
             if parts.len() < 4 {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: STORE8 %buf offset val".into(),
+                    message: "Syntax: STORE8 %buf offset val".into(),
                 });
             }
             return Ok(Instruction::Store8 {
@@ -445,7 +444,7 @@ impl Parser {
             if parts.len() < 4 {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: STORE64 %buf offset val".into(),
+                    message: "Syntax: STORE64 %buf offset val".into(),
                 });
             }
             return Ok(Instruction::Store64 {
@@ -457,16 +456,16 @@ impl Parser {
         if parts[0] == "STORE_STR" {
             let first_quote = line.find('"').ok_or_else(|| ParseError {
                 line_no,
-                message: "Thiếu chuỗi nháy kép trong STORE_STR".into(),
+                message: "Missing double quote in STORE_STR".into(),
             })?;
             let last_quote = line.rfind('"').ok_or_else(|| ParseError {
                 line_no,
-                message: "Thiếu đóng nháy kép trong STORE_STR".into(),
+                message: "Missing closing quote in STORE_STR".into(),
             })?;
             if first_quote >= last_quote {
                 return Err(ParseError {
                     line_no,
-                    message: "Chuỗi ký tự trong STORE_STR không hợp lệ".into(),
+                    message: "Invalid string literal in STORE_STR".into(),
                 });
             }
             let raw_str = &line[first_quote + 1..last_quote];
@@ -474,18 +473,16 @@ impl Parser {
             let prefix = line[..first_quote].trim();
             let p_parts: Vec<&str> = prefix.split_whitespace().collect();
             let offset = if p_parts.len() == 2 {
-                // STORE_STR %buf "string" (mặc định offset = 0)
                 0
             } else if p_parts.len() >= 3 {
-                // STORE_STR %buf offset "string"
                 p_parts[2].parse::<usize>().map_err(|_| ParseError {
                     line_no,
-                    message: "Offset của chuỗi phải là số nguyên".into(),
+                    message: "String offset must be an integer".into(),
                 })?
             } else {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: STORE_STR %buf [offset] \"string\"".into(),
+                    message: "Syntax: STORE_STR %buf [offset] \"string\"".into(),
                 });
             };
             return Ok(Instruction::StoreStr {
@@ -500,7 +497,7 @@ impl Parser {
             if parts.len() < 5 {
                 return Err(ParseError {
                     line_no,
-                    message: "Cú pháp: SYSCALL rax rdi rsi rdx".into(),
+                    message: "Syntax: SYSCALL rax rdi rsi rdx".into(),
                 });
             }
             return Ok(Instruction::Syscall {
@@ -527,13 +524,13 @@ impl Parser {
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %dest = ALLOC slice<T> <len>".into(),
+                            message: "Syntax: %dest = ALLOC slice<T> <len>".into(),
                         });
                     }
                     let ty = Self::parse_type(parts[3], line_no)?;
                     let len = parts[4].parse::<usize>().map_err(|_| ParseError {
                         line_no,
-                        message: format!("Độ dài slice phải là số nguyên: {}", parts[4]),
+                        message: format!("Slice length must be an integer: {}", parts[4]),
                     })?;
                     match ty {
                         Type::Slice(elem) => {
@@ -546,17 +543,16 @@ impl Parser {
                         _ => {
                             return Err(ParseError {
                                 line_no,
-                                message: "Cú pháp ALLOC yêu cầu kiểu slice<T>".into(),
+                                message: "ALLOC expects a slice<T> type".into(),
                             });
                         }
                     }
                 }
                 "SLICE_PTR" => {
-                    // %ptr = SLICE_PTR %slice
                     if parts.len() < 4 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %ptr = SLICE_PTR %slice".into(),
+                            message: "Syntax: %ptr = SLICE_PTR %slice".into(),
                         });
                     }
                     return Ok(Instruction::SlicePtr {
@@ -565,11 +561,10 @@ impl Parser {
                     });
                 }
                 "SLICE_LEN" => {
-                    // %len = SLICE_LEN %slice
                     if parts.len() < 4 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %len = SLICE_LEN %slice".into(),
+                            message: "Syntax: %len = SLICE_LEN %slice".into(),
                         });
                     }
                     return Ok(Instruction::SliceLen {
@@ -581,7 +576,7 @@ impl Parser {
                     if parts.len() < 4 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %dest = CALL func_name arg1 arg2 ...".into(),
+                            message: "Syntax: %dest = CALL func_name arg1 arg2 ...".into(),
                         });
                     }
                     let func_name = parts[3].to_string();
@@ -596,43 +591,43 @@ impl Parser {
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %dest = CONST <type> <val>".into(),
+                            message: "Syntax: %dest = CONST <type> <val>".into(),
                         });
                     }
                     let ty = Self::parse_type(parts[3], line_no)?;
                     let val = match ty {
                         Type::I64 => Value::I64(parts[4].parse::<i64>().map_err(|_| ParseError {
                             line_no,
-                            message: format!("Không thể parse i64: {}", parts[4]),
+                            message: format!("Cannot parse i64: {}", parts[4]),
                         })?),
                         Type::U64 => Value::U64(parts[4].parse::<u64>().map_err(|_| ParseError {
                             line_no,
-                            message: format!("Không thể parse u64: {}", parts[4]),
+                            message: format!("Cannot parse u64: {}", parts[4]),
                         })?),
                         Type::U8 => Value::U64(parts[4].parse::<u8>().map_err(|_| ParseError {
                             line_no,
-                            message: format!("Không thể parse u8: {}", parts[4]),
+                            message: format!("Cannot parse u8: {}", parts[4]),
                         })? as u64),
                         Type::F64 => Value::F64(parts[4].parse::<f64>().map_err(|_| ParseError {
                             line_no,
-                            message: format!("Không thể parse f64: {}", parts[4]),
+                            message: format!("Cannot parse f64: {}", parts[4]),
                         })?),
                         Type::Bool => Value::Bool(match parts[4] {
                             "true" => true,
                             "false" => false,
                             _ => return Err(ParseError {
                                 line_no,
-                                message: format!("Giá trị bool phải là true hoặc false: {}", parts[4]),
+                                message: format!("Boolean must be true or false: {}", parts[4]),
                             }),
                         }),
                         Type::Ptr => Value::Ptr(parts[4].parse::<usize>().map_err(|_| ParseError {
                             line_no,
-                            message: format!("Địa chỉ Ptr phải là số nguyên dương: {}", parts[4]),
+                            message: format!("Pointer address must be an integer: {}", parts[4]),
                         })?),
                         Type::Array(..) | Type::Slice(..) => {
                             return Err(ParseError {
                                 line_no,
-                                message: "Không thể gán trực tiếp CONST cho Array/Slice. Dùng ALLOC".into(),
+                                message: "Cannot assign CONST directly to Array/Slice. Use ALLOC".into(),
                             });
                         }
                     };
@@ -642,7 +637,7 @@ impl Parser {
                     if parts.len() < 4 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %dest = MOV %src".into(),
+                            message: "Syntax: %dest = MOV %src".into(),
                         });
                     }
                     return Ok(Instruction::Mov {
@@ -654,7 +649,7 @@ impl Parser {
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %dest = LOAD8 %buf %offset".into(),
+                            message: "Syntax: %dest = LOAD8 %buf %offset".into(),
                         });
                     }
                     return Ok(Instruction::Load8 {
@@ -667,7 +662,7 @@ impl Parser {
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Cú pháp: %dest = LOAD64 %buf %offset".into(),
+                            message: "Syntax: %dest = LOAD64 %buf %offset".into(),
                         });
                     }
                     return Ok(Instruction::Load64 {
@@ -681,7 +676,7 @@ impl Parser {
                     if parts.len() < 6 {
                         return Err(ParseError {
                             line_no,
-                            message: format!("Cú pháp: %dest = {} <type> src1 src2", op),
+                            message: format!("Syntax: %dest = {} <type> src1 src2", op),
                         });
                     }
                     let bin_op = match op {
@@ -717,7 +712,7 @@ impl Parser {
 
         Err(ParseError {
             line_no,
-            message: format!("Lệnh không xác định: '{}'", line),
+            message: format!("Unrecognized instruction: '{}'", line),
         })
     }
 

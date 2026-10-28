@@ -129,14 +129,14 @@ impl MachineCodeEmitter {
             .functions
             .iter()
             .find(|f| f.name == "main")
-            .ok_or_else(|| "Không tìm thấy hàm 'main'".to_string())?;
+            .ok_or_else(|| "Missing 'main' function".to_string())?;
 
-        // 1. Biên dịch hàm main trước (nằm ngay tại entry point offset 0)
+        // 1. Compile main function first
         let main_offset = self.code.len();
         self.func_offsets.insert("main".into(), main_offset);
         self.compile_function(main_func, base_data_vaddr)?;
 
-        // 2. Biên dịch các hàm còn lại
+        // 2. Compile remaining functions
         for func in &program.functions {
             if func.name != "main" {
                 let offset = self.code.len();
@@ -145,12 +145,12 @@ impl MachineCodeEmitter {
             }
         }
 
-        // 3. Linker / Fixup tất cả các lệnh CALL: rel32 = target_offset - (call_site + 4)
+        // 3. Linker / Fixup rel32 for CALLs
         for (call_site, func_name) in &self.call_fixups {
             let target_offset = self
                 .func_offsets
                 .get(func_name)
-                .ok_or_else(|| format!("Liên kết thất bại: Không tìm thấy hàm '{}'", func_name))?;
+                .ok_or_else(|| format!("Link error: Unresolved symbol '{}'", func_name))?;
 
             let rel32 = (*target_offset as i64) - ((*call_site + 4) as i64);
             let rel32_bytes = (rel32 as i32).to_le_bytes();

@@ -1,0 +1,17 @@
+# Example 10: SAFE UNICODE UTF-8 EXECUTION
+# Allocating 19 bytes for "Nguyễn Quang Huy\n" (18 bytes name + 1 byte newline)
+
+IMPORT "../stdlib/io.lit"
+
+FUNC main() -> i64
+  # EXACT ALLOCATION: 18 UTF-8 bytes for "Nguyễn Quang Huy" + 1 byte '\n' = 19 bytes
+  %name = ALLOC slice<u8> 19
+  STORE_STR %name "Nguyễn Quang Huy\n"
+
+  # Pass exact UTF-8 byte length (19 <= 19)
+  %len = CONST i64 19
+  %res = CALL std_print_slice %name %len
+
+  %exit_code = CONST i64 0
+  RET %exit_code
+END_FUNC
