@@ -1,0 +1,8 @@
+# Memory Operations Test for Light Self-Hosting Compiler
+FUNC main() -> i64
+  %rsi = ALLOC slice<u8> 64
+  %rdi = CONST i64 88
+  STORE8 %rsi 5 %rdi
+  %rbx = LOAD8 %rsi 5
+  RET %rbx
+END_FUNC

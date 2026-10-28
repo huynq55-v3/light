@@ -81,8 +81,9 @@ FUNC emit_elf_header(buf: slice<u8>, code_len: i64) -> i64
   # p_filesz at offset 96
   STORE64 %ptr 96 %total_sz
 
-  # p_memsz at offset 104
-  STORE64 %ptr 104 %total_sz
+  # p_memsz at offset 104: 64KB virtual memory allocation for code + data segment + heap
+  %min_memsz = CONST i64 65536
+  STORE64 %ptr 104 %min_memsz
 
   # p_align = 4096 at offset 112
   %align = CONST i64 4096
@@ -403,6 +404,66 @@ FUNC emit_store64_idx(buf: slice<u8>, pos: i64) -> i64
   RET %next_pos
 END_FUNC
 
+# Emit: test reg, reg (3 bytes: 0x48, 0x85, 0xC0 | (reg<<3) | reg)
+FUNC emit_test_rr(buf: slice<u8>, pos: i64, reg: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && reg >= 0 && reg <= 7
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_85 = CONST i64 133
+  STORE8 %ptr %p1 %b_85
+  %p2 = ADD i64 pos 2
+  %eight = CONST i64 8
+  %reg_sh = MUL i64 reg %eight
+  %c0 = CONST i64 192
+  %tmp = ADD i64 %c0 %reg_sh
+  %modrm = ADD i64 %tmp reg
+  STORE8 %ptr %p2 %modrm
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: jmp short rel8 (2 bytes: 0xEB, rel8)
+FUNC emit_jmp_rel8(buf: slice<u8>, pos: i64, rel8: i64) -> i64
+  REQUIRE pos >= 0 && pos + 2 <= len(buf) && rel8 >= 0 && rel8 <= 255
+  %ptr = SLICE_PTR buf
+  %b_eb = CONST i64 235
+  STORE8 %ptr pos %b_eb
+  %p1 = ADD i64 pos 1
+  STORE8 %ptr %p1 rel8
+  %next_pos = ADD i64 pos 2
+  ENSURE %next_pos == pos + 2
+  RET %next_pos
+END_FUNC
+
+# Emit: jz short rel8 (2 bytes: 0x74, rel8)
+FUNC emit_jz_rel8(buf: slice<u8>, pos: i64, rel8: i64) -> i64
+  REQUIRE pos >= 0 && pos + 2 <= len(buf) && rel8 >= 0 && rel8 <= 255
+  %ptr = SLICE_PTR buf
+  %b_74 = CONST i64 116
+  STORE8 %ptr pos %b_74
+  %p1 = ADD i64 pos 1
+  STORE8 %ptr %p1 rel8
+  %next_pos = ADD i64 pos 2
+  ENSURE %next_pos == pos + 2
+  RET %next_pos
+END_FUNC
+
+# Emit: jnz short rel8 (2 bytes: 0x75, rel8)
+FUNC emit_jnz_rel8(buf: slice<u8>, pos: i64, rel8: i64) -> i64
+  REQUIRE pos >= 0 && pos + 2 <= len(buf) && rel8 >= 0 && rel8 <= 255
+  %ptr = SLICE_PTR buf
+  %b_75 = CONST i64 117
+  STORE8 %ptr pos %b_75
+  %p1 = ADD i64 pos 1
+  STORE8 %ptr %p1 rel8
+  %next_pos = ADD i64 pos 2
+  ENSURE %next_pos == pos + 2
+  RET %next_pos
+END_FUNC
+
 # Emit: syscall (2 bytes: 0x0F, 0x05)
 FUNC emit_syscall_inst(buf: slice<u8>, pos: i64) -> i64
   REQUIRE pos >= 0 && pos + 2 <= len(buf)
@@ -711,6 +772,30 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %p_sys = ALLOC slice<u8> 7
   STORE_STR %p_sys "SYSCALL"
 
+  # Allocate prefix slice for "STORE8 "
+  %p_s8 = ALLOC slice<u8> 7
+  STORE_STR %p_s8 "STORE8 "
+
+  # Allocate prefix slice for "LOAD8 "
+  %p_l8 = ALLOC slice<u8> 6
+  STORE_STR %p_l8 "LOAD8 "
+
+  # Allocate prefix slice for "STORE64 "
+  %p_s64 = ALLOC slice<u8> 8
+  STORE_STR %p_s64 "STORE64 "
+
+  # Allocate prefix slice for "LOAD64 "
+  %p_l64 = ALLOC slice<u8> 7
+  STORE_STR %p_l64 "LOAD64 "
+
+  # Allocate prefix slice for "ALLOC "
+  %p_alloc = ALLOC slice<u8> 6
+  STORE_STR %p_alloc "ALLOC "
+
+  # Allocate prefix slice for "SLICE_PTR "
+  %p_sptr = ALLOC slice<u8> 10
+  STORE_STR %p_sptr "SLICE_PTR "
+
   # Allocate ELF binary buffer (2048 bytes)
   %elf_buf = ALLOC slice<u8> 2048
   %src_raw_ptr = SLICE_PTR %src_buf
@@ -872,7 +957,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # 2e. Check if rhs is "MOV "
     %is_mov = CALL str_starts_with %src_buf %rhs_pos %p_mov
     %not_mov = EQ bool %is_mov %false_b
-    BR_IF %not_mov advance_pos
+    BR_IF %not_mov check_load8
 
     %r_src_p = ADD i64 %rhs_pos 4
     %r_src_check = ADD i64 %r_src_p 4
@@ -886,16 +971,233 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %has_dyn_code = MOV %t_flag_mov
     JUMP advance_pos
 
+    LABEL check_load8
+    # 2f. Check if rhs is "LOAD8 "
+    %is_l8 = CALL str_starts_with %src_buf %rhs_pos %p_l8
+    %not_l8 = EQ bool %is_l8 %false_b
+    BR_IF %not_l8 check_load64
+
+    %l8_near_check = ADD i64 %rhs_pos 16
+    %l8_near = GT i64 %l8_near_check %bytes_read
+    BR_IF %l8_near advance_pos
+
+    %ptr_l8_p = ADD i64 %rhs_pos 6
+    %ptr_l8_r = CALL parse_reg_id %src_buf %ptr_l8_p
+    %cl0 = CALL emit_mov_rr %elf_buf %cur_code_pos 0 %ptr_l8_r
+
+    %sp_l8 = CALL find_char_from %src_buf %ptr_l8_p %sp_c
+    %off_l8_p = CALL skip_whitespace %src_buf %sp_l8
+
+    %c_off_l8 = LOAD8 %src_raw_ptr %off_l8_p
+    %is_off_l8_r = EQ i64 %c_off_l8 %c_pct_val
+    %not_off_l8_r = EQ bool %is_off_l8_r %false_b
+    BR_IF %not_off_l8_r l8_imm_off
+
+    %off_l8_r = CALL parse_reg_id %src_buf %off_l8_p
+    %cl1 = CALL emit_mov_rr %elf_buf %cl0 1 %off_l8_r
+    JUMP l8_emit_load
+
+    LABEL l8_imm_off
+    %off_l8_imm = CALL parse_int_from %src_buf %off_l8_p %nl
+    %cl1 = CALL emit_mov_imm %elf_buf %cl0 1 %off_l8_imm
+
+    LABEL l8_emit_load
+    %cl3 = CALL emit_load8_idx %elf_buf %cl1
+    %cl4 = CALL emit_mov_rr %elf_buf %cl3 %dst_reg 0
+    %cur_code_pos = MOV %cl4
+    %t_l8 = CONST bool true
+    %has_dyn_code = MOV %t_l8
+    JUMP advance_pos
+
+    LABEL check_load64
+    # 2g. Check if rhs is "LOAD64 "
+    %is_l64 = CALL str_starts_with %src_buf %rhs_pos %p_l64
+    %not_l64 = EQ bool %is_l64 %false_b
+    BR_IF %not_l64 check_alloc
+
+    %l64_near_chk = ADD i64 %rhs_pos 16
+    %l64_near = GT i64 %l64_near_chk %bytes_read
+    BR_IF %l64_near advance_pos
+
+    %ptr_l64_p = ADD i64 %rhs_pos 7
+    %ptr_l64_r = CALL parse_reg_id %src_buf %ptr_l64_p
+    %cl64_0 = CALL emit_mov_rr %elf_buf %cur_code_pos 0 %ptr_l64_r
+
+    %sp_l64 = CALL find_char_from %src_buf %ptr_l64_p %sp_c
+    %off_l64_p = CALL skip_whitespace %src_buf %sp_l64
+
+    %c_off_l64 = LOAD8 %src_raw_ptr %off_l64_p
+    %is_off_l64_r = EQ i64 %c_off_l64 %c_pct_val
+    %not_off_l64_r = EQ bool %is_off_l64_r %false_b
+    BR_IF %not_off_l64_r l64_imm_off
+
+    %off_l64_r = CALL parse_reg_id %src_buf %off_l64_p
+    %cl64_1 = CALL emit_mov_rr %elf_buf %cl64_0 1 %off_l64_r
+    JUMP l64_emit_load
+
+    LABEL l64_imm_off
+    %off_l64_imm = CALL parse_int_from %src_buf %off_l64_p %nl
+    %cl64_1 = CALL emit_mov_imm %elf_buf %cl64_0 1 %off_l64_imm
+
+    LABEL l64_emit_load
+    %cl64_3 = CALL emit_load64_idx %elf_buf %cl64_1
+    %cl64_4 = CALL emit_mov_rr %elf_buf %cl64_3 %dst_reg 0
+    %cur_code_pos = MOV %cl64_4
+    %t_l64 = CONST bool true
+    %has_dyn_code = MOV %t_l64
+    JUMP advance_pos
+
+    LABEL check_alloc
+    # 2h. Check if rhs is "ALLOC "
+    %is_alloc = CALL str_starts_with %src_buf %rhs_pos %p_alloc
+    %not_alloc = EQ bool %is_alloc %false_b
+    BR_IF %not_alloc check_sptr
+
+    %data_vaddr = CONST i64 4194816
+    %next_pos_al = CALL emit_mov_imm %elf_buf %cur_code_pos %dst_reg %data_vaddr
+    %cur_code_pos = MOV %next_pos_al
+    %t_al = CONST bool true
+    %has_dyn_code = MOV %t_al
+    JUMP advance_pos
+
+    LABEL check_sptr
+    # 2i. Check if rhs is "SLICE_PTR "
+    %is_sptr = CALL str_starts_with %src_buf %rhs_pos %p_sptr
+    %not_sptr = EQ bool %is_sptr %false_b
+    BR_IF %not_sptr advance_pos
+
+    %buf_arg_p = ADD i64 %rhs_pos 10
+    %buf_r_chk = ADD i64 %buf_arg_p 4
+    %buf_r_near = GT i64 %buf_r_chk %bytes_read
+    BR_IF %buf_r_near advance_pos
+
+    %buf_r = CALL parse_reg_id %src_buf %buf_arg_p
+    %next_pos_sp = CALL emit_mov_rr %elf_buf %cur_code_pos %dst_reg %buf_r
+    %cur_code_pos = MOV %next_pos_sp
+    %t_sp = CONST bool true
+    %has_dyn_code = MOV %t_sp
+    JUMP advance_pos
+
     LABEL check_syscall
     # Check if line is "SYSCALL"
     %is_sys = CALL str_starts_with %src_buf %start %p_sys
     %not_sys = EQ bool %is_sys %false_b
-    BR_IF %not_sys check_store
+    BR_IF %not_sys check_store8
 
     %next_pos_sys = CALL emit_syscall_inst %elf_buf %cur_code_pos
     %cur_code_pos = MOV %next_pos_sys
     %t_flag_sys = CONST bool true
     %has_dyn_code = MOV %t_flag_sys
+    JUMP advance_pos
+
+    LABEL check_store8
+    # Check if line is "STORE8 "
+    %is_s8 = CALL str_starts_with %src_buf %start %p_s8
+    %not_s8 = EQ bool %is_s8 %false_b
+    BR_IF %not_s8 check_store64
+
+    %s8_near_chk = ADD i64 %start 16
+    %s8_near = GT i64 %s8_near_chk %bytes_read
+    BR_IF %s8_near advance_pos
+
+    %ptr_s8_p = ADD i64 %start 7
+    %ptr_s8_r = CALL parse_reg_id %src_buf %ptr_s8_p
+    %cs0 = CALL emit_mov_rr %elf_buf %cur_code_pos 0 %ptr_s8_r
+
+    %sp_s8_1 = CALL find_char_from %src_buf %ptr_s8_p %sp_c
+    %off_s8_p = CALL skip_whitespace %src_buf %sp_s8_1
+
+    %c_off_s8 = LOAD8 %src_raw_ptr %off_s8_p
+    %is_off_s8_r = EQ i64 %c_off_s8 %c_pct_val
+    %not_off_s8_r = EQ bool %is_off_s8_r %false_b
+    BR_IF %not_off_s8_r s8_imm_off
+
+    %off_s8_r = CALL parse_reg_id %src_buf %off_s8_p
+    %cs1 = CALL emit_mov_rr %elf_buf %cs0 1 %off_s8_r
+    JUMP s8_parse_val
+
+    LABEL s8_imm_off
+    %sp_s8_2 = CALL find_char_from %src_buf %off_s8_p %sp_c
+    %off_s8_imm = CALL parse_int_from %src_buf %off_s8_p %sp_s8_2
+    %cs1 = CALL emit_mov_imm %elf_buf %cs0 1 %off_s8_imm
+
+    LABEL s8_parse_val
+    %sp_s8_3 = CALL find_char_from %src_buf %off_s8_p %sp_c
+    %val_s8_p = CALL skip_whitespace %src_buf %sp_s8_3
+
+    %c_val_s8 = LOAD8 %src_raw_ptr %val_s8_p
+    %is_val_s8_r = EQ i64 %c_val_s8 %c_pct_val
+    %not_val_s8_r = EQ bool %is_val_s8_r %false_b
+    BR_IF %not_val_s8_r s8_imm_val
+
+    %val_s8_r = CALL parse_reg_id %src_buf %val_s8_p
+    %cs2 = CALL emit_mov_rr %elf_buf %cs1 2 %val_s8_r
+    JUMP s8_emit_store
+
+    LABEL s8_imm_val
+    %val_s8_imm = CALL parse_int_from %src_buf %val_s8_p %nl
+    %cs2 = CALL emit_mov_imm %elf_buf %cs1 2 %val_s8_imm
+
+    LABEL s8_emit_store
+    %cs4 = CALL emit_store8_idx %elf_buf %cs2
+    %cur_code_pos = MOV %cs4
+    %t_s8 = CONST bool true
+    %has_dyn_code = MOV %t_s8
+    JUMP advance_pos
+
+    LABEL check_store64
+    # Check if line is "STORE64 "
+    %is_s64 = CALL str_starts_with %src_buf %start %p_s64
+    %not_s64 = EQ bool %is_s64 %false_b
+    BR_IF %not_s64 check_store
+
+    %s64_near_chk = ADD i64 %start 16
+    %s64_near = GT i64 %s64_near_chk %bytes_read
+    BR_IF %s64_near advance_pos
+
+    %ptr_s64_p = ADD i64 %start 8
+    %ptr_s64_r = CALL parse_reg_id %src_buf %ptr_s64_p
+    %cs64_0 = CALL emit_mov_rr %elf_buf %cur_code_pos 0 %ptr_s64_r
+
+    %sp_s64_1 = CALL find_char_from %src_buf %ptr_s64_p %sp_c
+    %off_s64_p = CALL skip_whitespace %src_buf %sp_s64_1
+
+    %c_off_s64 = LOAD8 %src_raw_ptr %off_s64_p
+    %is_off_s64_r = EQ i64 %c_off_s64 %c_pct_val
+    %not_off_s64_r = EQ bool %is_off_s64_r %false_b
+    BR_IF %not_off_s64_r s64_imm_off
+
+    %off_s64_r = CALL parse_reg_id %src_buf %off_s64_p
+    %cs64_1 = CALL emit_mov_rr %elf_buf %cs64_0 1 %off_s64_r
+    JUMP s64_parse_val
+
+    LABEL s64_imm_off
+    %sp_s64_2 = CALL find_char_from %src_buf %off_s64_p %sp_c
+    %off_s64_imm = CALL parse_int_from %src_buf %off_s64_p %sp_s64_2
+    %cs64_1 = CALL emit_mov_imm %elf_buf %cs64_0 1 %off_s64_imm
+
+    LABEL s64_parse_val
+    %sp_s64_3 = CALL find_char_from %src_buf %off_s64_p %sp_c
+    %val_s64_p = CALL skip_whitespace %src_buf %sp_s64_3
+
+    %c_val_s64 = LOAD8 %src_raw_ptr %val_s64_p
+    %is_val_s64_r = EQ i64 %c_val_s64 %c_pct_val
+    %not_val_s64_r = EQ bool %is_val_s64_r %false_b
+    BR_IF %not_val_s64_r s64_imm_val
+
+    %val_s64_r = CALL parse_reg_id %src_buf %val_s64_p
+    %cs64_2 = CALL emit_mov_rr %elf_buf %cs64_1 2 %val_s64_r
+    JUMP s64_emit_store
+
+    LABEL s64_imm_val
+    %val_s64_imm = CALL parse_int_from %src_buf %val_s64_p %nl
+    %cs64_2 = CALL emit_mov_imm %elf_buf %cs64_1 2 %val_s64_imm
+
+    LABEL s64_emit_store
+    %cs64_4 = CALL emit_store64_idx %elf_buf %cs64_2
+    %cur_code_pos = MOV %cs64_4
+    %t_s64 = CONST bool true
+    %has_dyn_code = MOV %t_s64
     JUMP advance_pos
 
     LABEL check_store
@@ -1036,8 +1338,22 @@ FUNC main() -> i64
   STORE_STR %out2 "calc.bin\0"
   %res2 = CALL compile_file %src2 %out2
 
+  # 4. Compile test_mem.lit -> mem.bin
+  %src3 = ALLOC slice<u8> 16
+  STORE_STR %src3 "test_mem.lit\0"
+  %out3 = ALLOC slice<u8> 16
+  STORE_STR %out3 "mem.bin\0"
+  %res3 = CALL compile_file %src3 %out3
+
+  # 5. Compile test_mem64.lit -> mem64.bin
+  %src4 = ALLOC slice<u8> 16
+  STORE_STR %src4 "test_mem64.lit\0"
+  %out4 = ALLOC slice<u8> 16
+  STORE_STR %out4 "mem64.bin\0"
+  %res4 = CALL compile_file %src4 %out4
+
   %success_msg = ALLOC slice<u8> 80
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, advanced, calc)!\n"
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 
