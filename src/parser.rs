@@ -849,12 +849,64 @@ impl Parser {
         })
     }
 
+    /// Kiểm tra xem cặp ngoặc đơn đầu và cuối chuỗi có bao trọn toàn bộ biểu thức hay không
+    fn is_wrapped_in_parens(s: &str) -> bool {
+        if !s.starts_with('(') || !s.ends_with(')') {
+            return false;
+        }
+        let mut depth = 0i32;
+        for (i, ch) in s.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 && i < s.len() - 1 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        depth == 0
+    }
+
+    /// Tìm vị trí xuất hiện đầu tiên của chuỗi con `pat` ở cấp độ ngoài ngoặc đơn (depth == 0)
+    fn find_top_level(s: &str, pat: &str) -> Option<usize> {
+        let mut depth = 0i32;
+        let bytes = s.as_bytes();
+        let pat_bytes = pat.as_bytes();
+        if pat_bytes.is_empty() || bytes.len() < pat_bytes.len() {
+            return None;
+        }
+        let mut i = 0;
+        while i + pat_bytes.len() <= bytes.len() {
+            let ch = bytes[i] as char;
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+            } else if depth == 0 && &bytes[i..i + pat_bytes.len()] == pat_bytes {
+                // Tránh bắt nhầm '<' hoặc '>' khi nó là một phần của '<=' hoặc '>='
+                if (pat == "<" || pat == ">") && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    i += 1;
+                    continue;
+                }
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    }
+
     /// Parser biểu thức toán học cho REQUIRE, ENSURE, INVARIANT, ASSERT
     pub fn parse_expr(s: &str, line_no: usize) -> Result<Expr, ParseError> {
-        let s = s.trim();
+        let mut s = s.trim();
+        while Self::is_wrapped_in_parens(s) {
+            s = s[1..s.len() - 1].trim();
+        }
 
         // 1. Phép logic Or: ||
-        if let Some(pos) = s.find("||") {
+        if let Some(pos) = Self::find_top_level(s, "||") {
             let lhs = Self::parse_expr(&s[..pos], line_no)?;
             let rhs = Self::parse_expr(&s[pos + 2..], line_no)?;
             return Ok(Expr::Binary {
@@ -865,7 +917,7 @@ impl Parser {
         }
 
         // 2. Phép logic And: &&
-        if let Some(pos) = s.find("&&") {
+        if let Some(pos) = Self::find_top_level(s, "&&") {
             let lhs = Self::parse_expr(&s[..pos], line_no)?;
             let rhs = Self::parse_expr(&s[pos + 2..], line_no)?;
             return Ok(Expr::Binary {
@@ -886,7 +938,7 @@ impl Parser {
         ];
 
         for (sym, op) in comparisons {
-            if let Some(pos) = s.find(sym) {
+            if let Some(pos) = Self::find_top_level(s, sym) {
                 let lhs = Self::parse_expr(&s[..pos], line_no)?;
                 let rhs = Self::parse_expr(&s[pos + sym.len()..], line_no)?;
                 return Ok(Expr::Binary {
@@ -899,8 +951,19 @@ impl Parser {
 
         // 4. Phép cộng / trừ: +, - (Quét từ phải sang trái để giữ tính kết hợp trái, bỏ qua dấu âm unary)
         let bytes = s.as_bytes();
+        let mut depth = 0i32;
         for i in (1..bytes.len()).rev() {
             let ch = bytes[i] as char;
+            if ch == ')' {
+                depth += 1;
+                continue;
+            } else if ch == '(' {
+                depth -= 1;
+                continue;
+            }
+            if depth != 0 {
+                continue;
+            }
             if ch == '+' || ch == '-' {
                 let left_part = s[..i].trim();
                 // Nếu bên trái kết thúc bằng một toán tử khác (vd: "%y - -5"), thì dấu '-' tại i là dấu âm unary
@@ -930,8 +993,19 @@ impl Parser {
         }
 
         // 5. Phép nhân / chia / chia dư: *, /, % (Quét từ phải sang trái, tránh ký tự '%' của tên thanh ghi %reg)
+        let mut depth = 0i32;
         for i in (1..bytes.len()).rev() {
             let ch = bytes[i] as char;
+            if ch == ')' {
+                depth += 1;
+                continue;
+            } else if ch == '(' {
+                depth -= 1;
+                continue;
+            }
+            if depth != 0 {
+                continue;
+            }
             if ch == '*' || ch == '/' || ch == '%' {
                 let left_part = s[..i].trim();
                 let right_part = s[i + 1..].trim();

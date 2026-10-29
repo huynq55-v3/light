@@ -672,3 +672,201 @@ fn test_v20_parser_operator_precedence_and_unary_minus() {
     assert_eq!(smt3, "(bvmul x y)");
 }
 
+#[test]
+fn test_v21_post_loop_safety_out_of_bounds_fails() {
+    // V21: Post-loop safety checks (find_loops_before).
+    // Buffer has capacity 10, loop progresses %i to 15.
+    // Memory access on %buf with %i AFTER END_LOOP must fail!
+    let code = r#"
+FUNC test_post_loop_oob() -> i64
+  ALLOC %buf 10
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 15
+    DECREASES 15 - %i
+    %done = EQ i64 %i 15
+    BREAK_IF %done
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP l1
+  %x = LOAD8 %buf %i
+  RET %x
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V21");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_bounds = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check on '%buf'")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_bounds,
+        "V21 test failed: Post-loop out-of-bounds on %buf (capacity 10, %i == 15) must be caught! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v22_mid_ret_violating_ensure_fails() {
+    // V22: Mid-function RET must be verified against ENSURE postcondition.
+    // If %cond is true, returning -1 violates ENSURE %res >= 0.
+    let code = r#"
+FUNC test_mid_ret(x: i64) -> i64
+  %cond = LT i64 x 0
+  BR_IF %cond .neg_branch
+  %res = CONST i64 100
+  RET %res
+  LABEL .neg_branch
+  %bad_res = CONST i64 -1
+  RET %bad_res
+  ENSURE %res >= 0
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V22");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_ret = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE on branch return (RET)")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_ret,
+        "V22 test failed: Mid-function RET with bad postcondition (-1 >= 0) must fail! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v23_branch_before_ret_does_not_pollute_later_labels() {
+    // V23: Path terminated by RET must not merge dead state into following LABEL
+    let code = r#"
+FUNC test_dead_path(c: bool) -> i64
+  BR_IF c .branch_true
+  %res = CONST i64 42
+  RET %res
+  LABEL .branch_true
+  %res2 = CONST i64 99
+  ASSERT %res2 == 99
+  RET %res2
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V23");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let passed_assert = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
+        }
+        _ => false,
+    });
+
+    assert!(
+        passed_assert,
+        "V23 test failed: Label .branch_true after RET should verify independently! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v24_in_loop_branching_phi_node() {
+    // V24: Loop transition with inner branching (BR_IF + JUMP + LABEL).
+    // In each iteration, if %even is true, %acc is incremented by 2, else by 1.
+    // Invariant %acc >= %i preserved inductively.
+    let code = r#"
+FUNC test_loop_branching(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 1000
+  %i = CONST i64 0
+  %acc = CONST i64 0
+  LOOP branch_loop
+    INVARIANT %i >= 0 && %i <= n && %acc >= %i && %acc <= %i * 2
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %rem = MOD i64 %i 2
+    %even = EQ i64 %rem 0
+    BR_IF %even .is_even
+    %acc = ADD i64 %acc 1
+    JUMP .join
+    LABEL .is_even
+    %acc = ADD i64 %acc 2
+    LABEL .join
+    %i = ADD i64 %i 1
+  END_LOOP branch_loop
+  RET %acc
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V24");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let inductive_passed = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Inductive && goal_name.contains("Step 2: Inductive Step")
+        }
+        _ => false,
+    });
+
+    assert!(
+        inductive_passed,
+        "V24 test failed: In-loop branch Phi-node inductive step must PASS! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v25_call_with_constant_args_propagates_ensure() {
+    // V25: CALL with constant arguments (Operand::Const) substitutes callee params correctly in ENSURE
+    let code = r#"
+FUNC square(x: i64) -> i64
+  REQUIRE x >= 0
+  %sq = MUL i64 x x
+  ENSURE %sq >= 0
+  RET %sq
+END_FUNC
+
+FUNC caller() -> i64
+  %val = CALL square 5
+  ASSERT %val >= 0
+  RET %val
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V25");
+    let results = Verifier::verify_function(&program.functions[1], Some(&program));
+
+    let assert_passed = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
+        }
+        _ => false,
+    });
+
+    assert!(
+        assert_passed,
+        "V25 test failed: CALL with constant argument 5 must propagate ENSURE %sq >= 0 to ASSERT %val >= 0! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v26_parenthesized_expressions_in_contracts() {
+    // V26: Complex parenthesized expressions parsed with proper precedence
+    let expr1 = Parser::parse_expr("(%a + %b) * 2 == %res", 1).expect("parse expr1");
+    let smt1 = Verifier::expr_to_smt(&expr1);
+    assert_eq!(smt1, "(= (bvmul (bvadd a b) (_ bv2 64)) res)");
+
+    let expr2 = Parser::parse_expr("(%x > 0 && %y > 0) || %z == 0", 1).expect("parse expr2");
+    let smt2_bool = Verifier::expr_to_smt_bool(&expr2);
+    assert_eq!(smt2_bool, "(or (and (bvsgt x (_ bv0 64)) (bvsgt y (_ bv0 64))) (= z (_ bv0 64)))");
+}
+
