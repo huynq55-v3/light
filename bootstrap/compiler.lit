@@ -581,6 +581,144 @@ FUNC emit_call_inst(buf: slice<u8>, pos: i64, target_offset: i64) -> i64
   RET %next_pos
 END_FUNC
 
+# Emit: setcc %al (3 bytes: 0x0F, cc, 0xC0)
+FUNC emit_setcc(buf: slice<u8>, pos: i64, cc: i64) -> i64
+  REQUIRE pos >= 0 && pos + 3 <= len(buf) && cc >= 0 && cc <= 255
+  %ptr = SLICE_PTR buf
+  %b_0f = CONST i64 15
+  STORE8 %ptr pos %b_0f
+  %p1 = ADD i64 pos 1
+  STORE8 %ptr %p1 cc
+  %p2 = ADD i64 pos 2
+  %b_c0 = CONST i64 192
+  STORE8 %ptr %p2 %b_c0
+  %next_pos = ADD i64 pos 3
+  ENSURE %next_pos == pos + 3
+  RET %next_pos
+END_FUNC
+
+# Emit: movzx dst_reg, %al (4 bytes: 0x48, 0x0F, 0xB6, 0xC0 | (dst << 3))
+FUNC emit_movzx_reg_al(buf: slice<u8>, pos: i64, dst: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf) && dst >= 0 && dst <= 7
+  %ptr = SLICE_PTR buf
+  %b_48 = CONST i64 72
+  STORE8 %ptr pos %b_48
+  %p1 = ADD i64 pos 1
+  %b_0f = CONST i64 15
+  STORE8 %ptr %p1 %b_0f
+  %p2 = ADD i64 pos 2
+  %b_b6 = CONST i64 182
+  STORE8 %ptr %p2 %b_b6
+  %p3 = ADD i64 pos 3
+  %c_192 = CONST i64 192
+  %c_8 = CONST i64 8
+  %dst_sh = MUL i64 dst %c_8
+  %modrm = ADD i64 %c_192 %dst_sh
+  STORE8 %ptr %p3 %modrm
+  %next_pos = ADD i64 pos 4
+  ENSURE %next_pos == pos + 4
+  RET %next_pos
+END_FUNC
+
+# Emit: jmp rel32 (5 bytes: 0xE9, rel32)
+FUNC emit_jmp_rel32(buf: slice<u8>, pos: i64, target_offset: i64) -> i64
+  REQUIRE pos >= 0 && pos + 5 <= len(buf) && target_offset >= 0
+  %ptr = SLICE_PTR buf
+  %b_e9 = CONST i64 233
+  STORE8 %ptr pos %b_e9
+
+  %next_inst = ADD i64 pos 5
+  %rel = SUB i64 target_offset %next_inst
+  %zero = CONST i64 0
+  %is_neg = LT i64 %rel %zero
+  %false_b = CONST bool false
+  %not_neg = EQ bool %is_neg %false_b
+  BR_IF %not_neg jmp_pos_rel
+
+  %c_2pow32 = CONST i64 4294967296
+  %rel_u32_n = ADD i64 %rel %c_2pow32
+  %rel_val = MOV %rel_u32_n
+  JUMP jmp_emit_bytes
+
+  LABEL jmp_pos_rel
+  %rel_val = MOV %rel
+
+  LABEL jmp_emit_bytes
+  %b0 = MOD i64 %rel_val 256
+  %p1 = ADD i64 pos 1
+  STORE8 %ptr %p1 %b0
+
+  %v1 = DIV i64 %rel_val 256
+  %b1 = MOD i64 %v1 256
+  %p2 = ADD i64 pos 2
+  STORE8 %ptr %p2 %b1
+
+  %v2 = DIV i64 %v1 256
+  %b2 = MOD i64 %v2 256
+  %p3 = ADD i64 pos 3
+  STORE8 %ptr %p3 %b2
+
+  %v3 = DIV i64 %v2 256
+  %b3 = MOD i64 %v3 256
+  %p4 = ADD i64 pos 4
+  STORE8 %ptr %p4 %b3
+
+  %next_pos = ADD i64 pos 5
+  ENSURE %next_pos == pos + 5
+  RET %next_pos
+END_FUNC
+
+# Emit: jnz rel32 (6 bytes: 0x0F, 0x85, rel32)
+FUNC emit_jnz_rel32(buf: slice<u8>, pos: i64, target_offset: i64) -> i64
+  REQUIRE pos >= 0 && pos + 6 <= len(buf) && target_offset >= 0
+  %ptr = SLICE_PTR buf
+  %b_0f = CONST i64 15
+  STORE8 %ptr pos %b_0f
+  %p1 = ADD i64 pos 1
+  %b_85 = CONST i64 133
+  STORE8 %ptr %p1 %b_85
+
+  %next_inst = ADD i64 pos 6
+  %rel = SUB i64 target_offset %next_inst
+  %zero = CONST i64 0
+  %is_neg = LT i64 %rel %zero
+  %false_b = CONST bool false
+  %not_neg = EQ bool %is_neg %false_b
+  BR_IF %not_neg jnz_pos_rel
+
+  %c_2pow32 = CONST i64 4294967296
+  %rel_u32_n = ADD i64 %rel %c_2pow32
+  %rel_val = MOV %rel_u32_n
+  JUMP jnz_emit_bytes
+
+  LABEL jnz_pos_rel
+  %rel_val = MOV %rel
+
+  LABEL jnz_emit_bytes
+  %b0 = MOD i64 %rel_val 256
+  %p2 = ADD i64 pos 2
+  STORE8 %ptr %p2 %b0
+
+  %v1 = DIV i64 %rel_val 256
+  %b1 = MOD i64 %v1 256
+  %p3 = ADD i64 pos 3
+  STORE8 %ptr %p3 %b1
+
+  %v2 = DIV i64 %v1 256
+  %b2 = MOD i64 %v2 256
+  %p4 = ADD i64 pos 4
+  STORE8 %ptr %p4 %b2
+
+  %v3 = DIV i64 %v2 256
+  %b3 = MOD i64 %v3 256
+  %p5 = ADD i64 pos 5
+  STORE8 %ptr %p5 %b3
+
+  %next_pos = ADD i64 pos 6
+  ENSURE %next_pos == pos + 6
+  RET %next_pos
+END_FUNC
+
 # Parse register name (%rax, %rcx, %rdx, %rbx, %rsi, %rdi, or %r0..%r7) into 0..7 ID
 FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   REQUIRE pos >= 0 && pos + 4 <= len(buf)
@@ -826,6 +964,164 @@ FUNC copy_str_unescaped(src_ptr: i64, start: i64, end: i64, dst_ptr: i64, dst_st
   RET %total_written
 END_FUNC
 
+# Copy label name into a clean 16-byte zero-padded buffer
+FUNC copy_label_name(src_buf: slice<u8>, start: i64, nl: i64, out_buf: slice<u8>) -> i64
+  REQUIRE start >= 0 && start <= len(src_buf) && nl >= start && nl <= len(src_buf) && len(out_buf) >= 16
+
+  %src_ptr = SLICE_PTR src_buf
+  %out_ptr = SLICE_PTR out_buf
+  %zero = CONST i64 0
+
+  # Clear out_buf (16 bytes) to 0
+  STORE64 %out_ptr 0 %zero
+  STORE64 %out_ptr 8 %zero
+
+  # Copy up to 16 bytes
+  %i = CONST i64 0
+  %max_16 = CONST i64 16
+  %len_raw = SUB i64 nl start
+
+  LOOP copy_lbl_loop
+    INVARIANT %i >= 0 && %i <= 16
+
+    %done_16 = GTE i64 %i %max_16
+    BREAK_IF %done_16
+    %done_str = GTE i64 %i %len_raw
+    BREAK_IF %done_str
+
+    %src_idx = ADD i64 start %i
+    %ch = LOAD8 %src_ptr %src_idx
+    # Stop at space (ASCII 32) or \r (13)
+    %c_sp = CONST i64 32
+    %is_sp = EQ i64 %ch %c_sp
+    BREAK_IF %is_sp
+    %c_cr = CONST i64 13
+    %is_cr = EQ i64 %ch %c_cr
+    BREAK_IF %is_cr
+
+    STORE8 %out_ptr %i %ch
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP copy_lbl_loop
+
+  RET %zero
+END_FUNC
+
+# Search label table for matching 16-byte label name and return code offset
+FUNC find_label_offset(tables: slice<u8>, lbl_count: i64, target_p1: i64, target_p2: i64) -> i64
+  REQUIRE len(tables) >= 4096 && lbl_count >= 0 && lbl_count <= 80
+  %ptr = SLICE_PTR tables
+  %li = CONST i64 0
+  %c_24 = CONST i64 24
+  %zero = CONST i64 0
+
+  LOOP find_lbl_loop
+    INVARIANT %li >= 0 && %li <= lbl_count
+
+    %done = GTE i64 %li lbl_count
+    BREAK_IF %done
+
+    %off = MUL i64 %li %c_24
+    %cand_p1 = LOAD64 %ptr %off
+    %off8 = ADD i64 %off 8
+    %cand_p2 = LOAD64 %ptr %off8
+
+    %m1 = EQ i64 %cand_p1 target_p1
+    %m2 = EQ i64 %cand_p2 target_p2
+    %matched = AND bool %m1 %m2
+    %false_b = CONST bool false
+    %not_m = EQ bool %matched %false_b
+    BR_IF %not_m next_entry
+
+    %off16 = ADD i64 %off 16
+    %target_off = LOAD64 %ptr %off16
+    RET %target_off
+
+    LABEL next_entry
+    %next_li = ADD i64 %li 1
+    %li = MOV %next_li
+  END_LOOP find_lbl_loop
+
+  RET %zero
+END_FUNC
+
+# Resolve all branch and jump fixups by writing 4-byte rel32 offsets into ELF buffer
+FUNC resolve_jump_fixups(elf_buf: slice<u8>, tables: slice<u8>, fix_count: i64, lbl_count: i64) -> i64
+  REQUIRE len(elf_buf) >= 65536 && len(tables) >= 4096 && fix_count >= 0 && fix_count <= 80 && lbl_count >= 0 && lbl_count <= 80
+
+  %tbl_ptr = SLICE_PTR tables
+  %c_2048 = CONST i64 2048
+  %fix_ptr = ADD i64 %tbl_ptr %c_2048
+  %elf_ptr = SLICE_PTR elf_buf
+  %i = CONST i64 0
+  %c_24 = CONST i64 24
+
+  LOOP fix_loop
+    INVARIANT %i >= 0 && %i <= fix_count
+
+    %done = GTE i64 %i fix_count
+    BREAK_IF %done
+
+    %off = MUL i64 %i %c_24
+    %disp_site = LOAD64 %fix_ptr %off
+    %off8 = ADD i64 %off 8
+    %target_p1 = LOAD64 %fix_ptr %off8
+    %off16 = ADD i64 %off 16
+    %target_p2 = LOAD64 %fix_ptr %off16
+
+    # Call find_label_offset
+    %target_off = CALL find_label_offset tables lbl_count %target_p1 %target_p2
+
+    # Compute rel32 = target_off - (disp_site + 4)
+    %next_after_disp = ADD i64 %disp_site 4
+    %rel = SUB i64 %target_off %next_after_disp
+    %zero = CONST i64 0
+    %is_neg = LT i64 %rel %zero
+    %false_b = CONST bool false
+    %not_neg = EQ bool %is_neg %false_b
+    BR_IF %not_neg jmp_rel_pos
+
+    %c_2pow32 = CONST i64 4294967296
+    %rel_val = ADD i64 %rel %c_2pow32
+    JUMP write_rel_bytes
+
+    LABEL jmp_rel_pos
+    %rel_val = MOV %rel
+
+    LABEL write_rel_bytes
+    # Check disp_site is within buffer
+    %c_60000 = CONST i64 60000
+    %disp_ok = LT i64 %disp_site %c_60000
+    %not_ok = EQ bool %disp_ok %false_b
+    BR_IF %not_ok next_fix_entry
+
+    %b0 = MOD i64 %rel_val 256
+    STORE8 %elf_ptr %disp_site %b0
+
+    %v1 = DIV i64 %rel_val 256
+    %b1 = MOD i64 %v1 256
+    %dp1 = ADD i64 %disp_site 1
+    STORE8 %elf_ptr %dp1 %b1
+
+    %v2 = DIV i64 %v1 256
+    %b2 = MOD i64 %v2 256
+    %dp2 = ADD i64 %disp_site 2
+    STORE8 %elf_ptr %dp2 %b2
+
+    %v3 = DIV i64 %v2 256
+    %b3 = MOD i64 %v3 256
+    %dp3 = ADD i64 %disp_site 3
+    STORE8 %elf_ptr %dp3 %b3
+
+    LABEL next_fix_entry
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP fix_loop
+
+  %zero_ret = CONST i64 0
+  RET %zero_ret
+END_FUNC
+
 
 # Compile input .lit file and emit standalone ELF binary
 FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
@@ -917,8 +1213,46 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %p_sptr = ALLOC slice<u8> 10
   STORE_STR %p_sptr "SLICE_PTR "
 
+  # Allocate prefix slice for "LT bool "
+  %p_lt = ALLOC slice<u8> 8
+  STORE_STR %p_lt "LT bool "
+
+  # Allocate prefix slice for "EQ bool "
+  %p_eq = ALLOC slice<u8> 8
+  STORE_STR %p_eq "EQ bool "
+
+  # Allocate prefix slice for "GT bool "
+  %p_gt = ALLOC slice<u8> 8
+  STORE_STR %p_gt "GT bool "
+
+  # Allocate prefix slice for "LABEL "
+  %p_label = ALLOC slice<u8> 6
+  STORE_STR %p_label "LABEL "
+
+  # Allocate prefix slice for "JUMP "
+  %p_jump = ALLOC slice<u8> 5
+  STORE_STR %p_jump "JUMP "
+
+  # Allocate prefix slice for "BR_IF "
+  %p_brif = ALLOC slice<u8> 6
+  STORE_STR %p_brif "BR_IF "
+
+  # Allocate unified tables buffer (4KB: 0..2048 for labels, 2048..4096 for fixups)
+  %tables = ALLOC slice<u8> 4096
+  %lbl_ptr = SLICE_PTR %tables
+  %lbl_count = CONST i64 0
+
+  %c_2048 = CONST i64 2048
+  %fix_ptr = ADD i64 %lbl_ptr %c_2048
+  %fix_count = CONST i64 0
+
+  # Allocate temporary 16-byte buffer for label name normalization
+  %lbl_tmp = ALLOC slice<u8> 16
+  %lbl_tmp_ptr = SLICE_PTR %lbl_tmp
+
   # Allocate ELF binary buffer (64KB)
   %elf_buf = ALLOC slice<u8> 65536
+  %elf_raw_ptr = SLICE_PTR %elf_buf
   %src_raw_ptr = SLICE_PTR %src_buf
   %c_pct_val = CONST i64 37
   %t_flag = CONST bool true
@@ -1218,7 +1552,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # 2j. Check if rhs is "CALL "
     %is_call = CALL str_starts_with %src_buf %rhs_pos %p_call
     %not_call = EQ bool %is_call %false_b
-    BR_IF %not_call advance_pos
+    BR_IF %not_call check_cmp
 
     # Find space after func_name
     %fn_nm_p = ADD i64 %rhs_pos 5
@@ -1350,6 +1684,60 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %cur_code_pos = MOV %c_ret_v
     %t_call = CONST bool true
     %has_dyn_code = MOV %t_call
+    JUMP advance_pos
+
+    LABEL check_cmp
+    # 2k. Check if rhs is "LT bool "
+    %is_lt = CALL str_starts_with %src_buf %rhs_pos %p_lt
+    %not_lt = EQ bool %is_lt %false_b
+    BR_IF %not_lt check_eq
+
+    # cc = 156 (0x9C = setl)
+    %cc_lt = CONST i64 156
+    %op_len_lt = CONST i64 8
+    JUMP do_emit_cmp
+
+    LABEL check_eq
+    # 2l. Check if rhs is "EQ bool "
+    %is_eq = CALL str_starts_with %src_buf %rhs_pos %p_eq
+    %not_eq = EQ bool %is_eq %false_b
+    BR_IF %not_eq check_gt
+
+    # cc = 148 (0x94 = sete)
+    %cc_lt = CONST i64 148
+    %op_len_lt = CONST i64 8
+    JUMP do_emit_cmp
+
+    LABEL check_gt
+    # 2m. Check if rhs is "GT bool "
+    %is_gt = CALL str_starts_with %src_buf %rhs_pos %p_gt
+    %not_gt = EQ bool %is_gt %false_b
+    BR_IF %not_gt advance_pos
+
+    # cc = 159 (0x9F = setg)
+    %cc_lt = CONST i64 159
+    %op_len_lt = CONST i64 8
+
+    LABEL do_emit_cmp
+    %r1_cmp_p = ADD i64 %rhs_pos %op_len_lt
+    %r1_cmp_chk = ADD i64 %r1_cmp_p 4
+    %r1_cmp_near = GT i64 %r1_cmp_chk %bytes_read
+    BR_IF %r1_cmp_near advance_pos
+
+    %r1_cmp = CALL parse_reg_id %src_buf %r1_cmp_p
+    %sp_cmp = CALL find_char_from %src_buf %r1_cmp_p %sp_c
+    %r2_cmp_p = CALL skip_whitespace %src_buf %sp_cmp
+    %r2_cmp_chk = ADD i64 %r2_cmp_p 4
+    %r2_cmp_near = GT i64 %r2_cmp_chk %bytes_read
+    BR_IF %r2_cmp_near advance_pos
+
+    %r2_cmp = CALL parse_reg_id %src_buf %r2_cmp_p
+    %c_cmp1 = CALL emit_cmp_rr %elf_buf %cur_code_pos %r1_cmp %r2_cmp
+    %c_cmp2 = CALL emit_setcc %elf_buf %c_cmp1 %cc_lt
+    %c_cmp3 = CALL emit_movzx_reg_al %elf_buf %c_cmp2 %dst_reg
+    %cur_code_pos = MOV %c_cmp3
+    %t_cmp = CONST bool true
+    %has_dyn_code = MOV %t_cmp
     JUMP advance_pos
 
     LABEL check_func
@@ -1510,7 +1898,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # 3. Check if line has STORE_STR
     %is_store = CALL str_starts_with %src_buf %start %p_store
     %not_store = EQ bool %is_store %false_b
-    BR_IF %not_store advance_pos
+    BR_IF %not_store check_label
 
     # Find first quote (ASCII 34 = '"')
     %quote_char = CONST i64 34
@@ -1531,6 +1919,118 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %str_len = MOV %copied
     %true_b = CONST bool true
     %has_string = MOV %true_b
+    JUMP advance_pos
+
+    LABEL check_label
+    # Check if line is "LABEL "
+    %is_lbl = CALL str_starts_with %src_buf %start %p_label
+    %not_lbl = EQ bool %is_lbl %false_b
+    BR_IF %not_lbl check_jump
+
+    %name_p_l = ADD i64 %start 6
+    %nl_too_short_l = LT i64 %nl %name_p_l
+    BR_IF %nl_too_short_l advance_pos
+
+    %dummy_l = CALL copy_label_name %src_buf %name_p_l %nl %lbl_tmp
+    %part1_l = LOAD64 %lbl_tmp_ptr 0
+    %part2_l = LOAD64 %lbl_tmp_ptr 8
+
+    # Check lbl_count bounds (0..70)
+    %max_lbl_lim = CONST i64 70
+    %lbl_ovf = GTE i64 %lbl_count %max_lbl_lim
+    BR_IF %lbl_ovf advance_pos
+
+    %c_24 = CONST i64 24
+    %l_entry = MUL i64 %lbl_count %c_24
+    STORE64 %lbl_ptr %l_entry %part1_l
+    %l_e8 = ADD i64 %l_entry 8
+    STORE64 %lbl_ptr %l_e8 %part2_l
+    %l_e16 = ADD i64 %l_entry 16
+    STORE64 %lbl_ptr %l_e16 %cur_code_pos
+    %next_lbl_cnt = ADD i64 %lbl_count 1
+    %lbl_count = MOV %next_lbl_cnt
+    JUMP advance_pos
+
+    LABEL check_jump
+    # Check if line is "JUMP "
+    %is_jmp = CALL str_starts_with %src_buf %start %p_jump
+    %not_jmp = EQ bool %is_jmp %false_b
+    BR_IF %not_jmp check_brif
+
+    %name_p_j = ADD i64 %start 5
+    %nl_too_short_j = LT i64 %nl %name_p_j
+    BR_IF %nl_too_short_j advance_pos
+
+    %dummy_j = CALL copy_label_name %src_buf %name_p_j %nl %lbl_tmp
+    %part1_j = LOAD64 %lbl_tmp_ptr 0
+    %part2_j = LOAD64 %lbl_tmp_ptr 8
+
+    # Check fix_count bounds (0..70)
+    %max_fix_lim = CONST i64 70
+    %fix_ovf_j = GTE i64 %fix_count %max_fix_lim
+    BR_IF %fix_ovf_j advance_pos
+
+    %next_code_j = CALL emit_jmp_rel32 %elf_buf %cur_code_pos 0
+    %disp_pos_j = ADD i64 %cur_code_pos 1
+
+    %c_24_j = CONST i64 24
+    %f_entry_j = MUL i64 %fix_count %c_24_j
+    STORE64 %fix_ptr %f_entry_j %disp_pos_j
+    %fj_e8 = ADD i64 %f_entry_j 8
+    STORE64 %fix_ptr %fj_e8 %part1_j
+    %fj_e16 = ADD i64 %f_entry_j 16
+    STORE64 %fix_ptr %fj_e16 %part2_j
+    %next_fix_cnt_j = ADD i64 %fix_count 1
+    %fix_count = MOV %next_fix_cnt_j
+    %cur_code_pos = MOV %next_code_j
+    %t_jmp = CONST bool true
+    %has_dyn_code = MOV %t_jmp
+    JUMP advance_pos
+
+    LABEL check_brif
+    # Check if line is "BR_IF "
+    %is_br = CALL str_starts_with %src_buf %start %p_brif
+    %not_br = EQ bool %is_br %false_b
+    BR_IF %not_br advance_pos
+
+    %cond_p_br = ADD i64 %start 6
+    %cond_chk_br = ADD i64 %cond_p_br 4
+    %near_cond_br = GT i64 %cond_chk_br %bytes_read
+    BR_IF %near_cond_br advance_pos
+
+    %cond_r_br = CALL parse_reg_id %src_buf %cond_p_br
+    %c_test_br = CALL emit_test_rr %elf_buf %cur_code_pos %cond_r_br
+
+    %sp_br = CALL find_char_from %src_buf %cond_p_br %sp_c
+    %name_p_br = CALL skip_whitespace %src_buf %sp_br
+    %nl_too_short_br = LT i64 %nl %name_p_br
+    BR_IF %nl_too_short_br advance_pos
+
+    %dummy_br = CALL copy_label_name %src_buf %name_p_br %nl %lbl_tmp
+    %part1_br = LOAD64 %lbl_tmp_ptr 0
+    %part2_br = LOAD64 %lbl_tmp_ptr 8
+
+    # Check fix_count bounds (0..70)
+    %max_fix_lim2 = CONST i64 70
+    %fix_ovf_br = GTE i64 %fix_count %max_fix_lim2
+    BR_IF %fix_ovf_br advance_pos
+
+    %next_code_br = CALL emit_jnz_rel32 %elf_buf %c_test_br 0
+    %disp_pos_br = ADD i64 %c_test_br 2
+
+    %c_24_br = CONST i64 24
+    %fb_entry = MUL i64 %fix_count %c_24_br
+    STORE64 %fix_ptr %fb_entry %disp_pos_br
+    %fb_e8 = ADD i64 %fb_entry 8
+    STORE64 %fix_ptr %fb_e8 %part1_br
+    %fb_e16 = ADD i64 %fb_entry 16
+    STORE64 %fix_ptr %fb_e16 %part2_br
+    %next_fix_cnt_br = ADD i64 %fix_count 1
+    %fix_count = MOV %next_fix_cnt_br
+    %cur_code_pos = MOV %next_code_br
+    %t_br = CONST bool true
+    %has_dyn_code = MOV %t_br
+    JUMP advance_pos
 
     LABEL advance_pos
 
@@ -1539,6 +2039,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %next_pos = ADD i64 %nl %one
     %pos = MOV %next_pos
   END_LOOP parse_file_loop
+
+  # Resolve all jump and branch fixups
+  %res_fix = CALL resolve_jump_fixups %elf_buf %tables %fix_count %lbl_count
 
   # 1. Check if we emitted dynamic instructions
   %false_dyn = CONST bool false
@@ -1674,8 +2177,15 @@ FUNC main() -> i64
   STORE_STR %out6 "args.bin\0"
   %res6 = CALL compile_file %src6 %out6
 
-  %success_msg = ALLOC slice<u8> 80
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args)!\n"
+  # 8. Compile test_branch.lit -> branch.bin
+  %src7 = ALLOC slice<u8> 16
+  STORE_STR %src7 "test_branch.lit\0"
+  %out7 = ALLOC slice<u8> 16
+  STORE_STR %out7 "branch.bin\0"
+  %res7 = CALL compile_file %src7 %out7
+
+  %success_msg = ALLOC slice<u8> 90
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 

@@ -1,0 +1,16 @@
+# Branching & Comparison Test for Light Self-Hosting Compiler
+FUNC main() -> i64
+  %rdi = CONST i64 10
+  %rsi = CONST i64 20
+  %cond = LT bool %rdi %rsi
+
+  BR_IF %cond is_less
+
+  # Fallthrough (not jumped) -> exit 10
+  RET %rdi
+
+  LABEL is_less
+  # Jump target reached -> exit 42
+  %rax = CONST i64 42
+  RET %rax
+END_FUNC
