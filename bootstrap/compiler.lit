@@ -280,7 +280,7 @@ FUNC find_char_from(s: slice<u8>, start_idx: i64, target: i64) -> i64
   %ptr = SLICE_PTR s
   %i = MOV start_idx
 
-  LOOP find_loop
+  LOOP find_from_loop
     INVARIANT %i >= 0 && %i <= len(s)
 
     %done = GTE i64 %i %len
@@ -292,7 +292,7 @@ FUNC find_char_from(s: slice<u8>, start_idx: i64, target: i64) -> i64
 
     %next_i = ADD i64 %i 1
     %i = MOV %next_i
-  END_LOOP find_loop
+  END_LOOP find_from_loop
 
   ENSURE %i >= start_idx && %i <= len(s)
   RET %i
@@ -309,7 +309,7 @@ FUNC parse_int_from(s: slice<u8>, start: i64, end: i64) -> i64
   %c_nine = CONST i64 57
   %ten = CONST i64 10
 
-  LOOP parse_loop
+  LOOP parse_from_loop
     INVARIANT %i >= 0 && %i <= end
 
     %done = GTE i64 %i end
@@ -330,7 +330,7 @@ FUNC parse_int_from(s: slice<u8>, start: i64, end: i64) -> i64
 
     %next_i = ADD i64 %i 1
     %i = MOV %next_i
-  END_LOOP parse_loop
+  END_LOOP parse_from_loop
 
   RET %acc
 END_FUNC
@@ -347,10 +347,10 @@ END_FUNC
 FUNC sys_open(path: slice<u8>, flags: i64, mode: i64) -> i64
   REQUIRE len(path) > 0
 
-  %rax = CONST i64 2
   %rdi = SLICE_PTR path
   %rsi = MOV flags
   %rdx = MOV mode
+  %rax = CONST i64 2
   %fd = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %fd >= -1
@@ -362,10 +362,10 @@ END_FUNC
 FUNC sys_read(fd: i64, buf: slice<u8>, count: i64) -> i64
   REQUIRE fd >= 0 && count >= 0 && count <= len(buf)
 
-  %rax = CONST i64 0
   %rdi = MOV fd
   %rsi = SLICE_PTR buf
   %rdx = MOV count
+  %rax = CONST i64 0
   %bytes_read = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %bytes_read >= -1 && %bytes_read <= count
@@ -377,10 +377,10 @@ END_FUNC
 FUNC sys_write(fd: i64, buf: slice<u8>, count: i64) -> i64
   REQUIRE fd >= 0 && count >= 0 && count <= len(buf)
 
-  %rax = CONST i64 1
   %rdi = MOV fd
   %rsi = SLICE_PTR buf
   %rdx = MOV count
+  %rax = CONST i64 1
   %bytes_written = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %bytes_written >= -1 && %bytes_written <= count
@@ -391,19 +391,33 @@ END_FUNC
 FUNC sys_close(fd: i64) -> i64
   REQUIRE fd >= 0
 
-  %rax = CONST i64 3
   %rdi = MOV fd
   %rsi = CONST i64 0
   %rdx = CONST i64 0
+  %rax = CONST i64 3
   %res = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %res >= -1
   RET %res
 END_FUNC
 
+# Linux sys_unlink: delete a name and possibly the file it refers to
+FUNC sys_unlink(path: slice<u8>) -> i64
+  REQUIRE len(path) > 0
+
+  %rdi = SLICE_PTR path
+  %rsi = CONST i64 0
+  %rdx = CONST i64 0
+  %rax = CONST i64 87
+  %res = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %res >= -4096
+  RET %res
+END_FUNC
+
 # High-level file reading: read file into destination buffer
-FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>) -> i64
-  REQUIRE len(path) > 0 && len(out_buf) > 0
+FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count > 0 && count <= len(out_buf)
 
   %flags = CONST i64 0
   %mode = CONST i64 0
@@ -413,11 +427,10 @@ FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>) -> i64
   %is_err = LT i64 %fd %zero
   RET_IF %is_err %fd
 
-  %cap = SLICE_LEN out_buf
-  %bytes = CALL sys_read %fd out_buf %cap
+  %bytes = CALL sys_read %fd out_buf count
   %dummy = CALL sys_close %fd
 
-  ENSURE %bytes >= -1 && %bytes <= len(out_buf)
+  ENSURE %bytes >= -1 && %bytes <= count
   RET %bytes
 END_FUNC
 
@@ -444,6 +457,9 @@ END_FUNC
 # High-level file writing: write exact count bytes from buffer to file
 FUNC fs_write_file_bytes(path: slice<u8>, content: slice<u8>, count: i64) -> i64
   REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
+
+  # Unlink file first to prevent ETXTBSY if overwriting a running executable
+  %dummy_ul = CALL sys_unlink path
 
   %flags = CONST i64 577
   %mode = CONST i64 493
@@ -1076,8 +1092,8 @@ FUNC emit_func_prologue(buf: slice<u8>, pos: i64) -> i64
   %b_00 = CONST i64 0
   STORE8 %ptr %p7 %b_00
   %p8 = ADD i64 pos 8
-  %b_10 = CONST i64 16
-  STORE8 %ptr %p8 %b_10
+  %b_80 = CONST i64 128
+  STORE8 %ptr %p8 %b_80
   %p9 = ADD i64 pos 9
   STORE8 %ptr %p9 %b_00
   %p10 = ADD i64 pos 10
@@ -1112,7 +1128,7 @@ END_FUNC
 
 # Emit: mov [rbp - slot], src (7 bytes: 48 89 modrm b0 b1 b2 b3)
 FUNC emit_store_stack(buf: slice<u8>, pos: i64, src: i64, slot: i64) -> i64
-  REQUIRE pos >= 0 && pos + 7 <= len(buf) && src >= 0 && src <= 7 && slot >= 0 && slot <= 4096
+  REQUIRE pos >= 0 && pos + 7 <= len(buf) && src >= 0 && src <= 7 && slot >= 0 && slot <= 32768
   %ptr = SLICE_PTR buf
   %b_rex = CONST i64 72
   STORE8 %ptr pos %b_rex
@@ -1154,7 +1170,7 @@ END_FUNC
 
 # Emit: mov dst, [rbp - slot] (7 bytes: 48 8B modrm b0 b1 b2 b3)
 FUNC emit_load_stack(buf: slice<u8>, pos: i64, dst: i64, slot: i64) -> i64
-  REQUIRE pos >= 0 && pos + 7 <= len(buf) && dst >= 0 && dst <= 7 && slot >= 0 && slot <= 4096
+  REQUIRE pos >= 0 && pos + 7 <= len(buf) && dst >= 0 && dst <= 7 && slot >= 0 && slot <= 32768
   %ptr = SLICE_PTR buf
   %b_rex = CONST i64 72
   STORE8 %ptr pos %b_rex
@@ -1475,9 +1491,17 @@ FUNC is_named_var(buf: slice<u8>, pos: i64) -> bool
   %true_b = CONST bool true
   RET_IF %not_r %true_b
 
-  # c1 is 'r'. Check if c2 is digit '0'..'7'
+  # c1 is 'r'.
   %p2 = ADD i64 pos 2
   %c2 = LOAD8 %ptr %p2
+  %p3 = ADD i64 pos 3
+  %c3 = LOAD8 %ptr %p3
+
+  # Common delimiters
+  %c_sp = CONST i64 32
+  %c_eq = CONST i64 61
+
+  # Check if c2 is digit '0'..'7'
   %c_0 = CONST i64 48
   %c_7 = CONST i64 55
   %is_d_low = GTE i64 %c2 %c_0
@@ -1487,11 +1511,7 @@ FUNC is_named_var(buf: slice<u8>, pos: i64) -> bool
   BR_IF %not_digit check_named_abcds
 
   # It is %r0..%r7 -> check if length is 3 (delimiter at pos+3)
-  %p3 = ADD i64 pos 3
-  %c3 = LOAD8 %ptr %p3
-  %c_sp = CONST i64 32
   %is_sp = LTE i64 %c3 %c_sp
-  %c_eq = CONST i64 61
   %is_eq = EQ i64 %c3 %c_eq
   %is_end3 = OR bool %is_sp %is_eq
   %is_phys_r = AND bool %is_digit %is_end3
@@ -1499,10 +1519,13 @@ FUNC is_named_var(buf: slice<u8>, pos: i64) -> bool
   RET %true_b
 
   LABEL check_named_abcds
+  # Physical register like %rax, %rcx, %rdx, %rbx, %rsp, %rbp, %rsi, %rdi
+  # Check if pos+4 is within buffer
   %p4 = ADD i64 pos 4
-  %p4_safe = LTE i64 %p4 len(buf)
-  %not_p4_safe = EQ bool %p4_safe %false_b
-  RET_IF %not_p4_safe %false_b
+  %len_b = SLICE_LEN buf
+  %has_p4 = LT i64 %p4 %len_b
+  %not_has_p4 = EQ bool %has_p4 %false_b
+  RET_IF %not_has_p4 %true_b
 
   # Check if delimiter at pos+4
   %c4 = LOAD8 %ptr %p4
@@ -1699,14 +1722,14 @@ FUNC emit_print_and_exit(buf: slice<u8>, str_len: i64, exit_code: i64) -> i64
   RET %code_end
 END_FUNC
 
-# Copy string between start and end from src into dst at dst_start, unescaping \n
-FUNC copy_str_unescaped(src_ptr: i64, start: i64, end: i64, dst_ptr: i64, dst_start: i64) -> i64
-  REQUIRE start >= 0 && start <= end && dst_start >= 0
+# Copy string between start and end from src into dst, unescaping \n
+FUNC copy_str_unescaped(src_ptr: i64, start: i64, end: i64, dst_ptr: i64) -> i64
+  REQUIRE start >= 0 && start <= end
 
   %len_s = SUB i64 end start
 
   %i = CONST i64 0
-  %out_idx = MOV dst_start
+  %out_idx = CONST i64 0
   %backslash = CONST i64 92
   %c_n = CONST i64 110
   %nl_byte = CONST i64 10
@@ -1770,8 +1793,7 @@ FUNC copy_str_unescaped(src_ptr: i64, start: i64, end: i64, dst_ptr: i64, dst_st
     LABEL step_done
   END_LOOP unescape_loop
 
-  %total_written = SUB i64 %out_idx dst_start
-  RET %total_written
+  RET %out_idx
 END_FUNC
 
 # Copy label name into a clean 16-byte zero-padded buffer
@@ -1822,7 +1844,7 @@ END_FUNC
 
 # Look up or allocate local variable stack slot (returns slot offset 8, 16, 24, ...)
 FUNC find_or_add_var(var_table: slice<u8>, var_count: i64, name_p1: i64, name_p2: i64) -> i64
-  REQUIRE len(var_table) >= 4096 && var_count >= 0 && var_count <= 150
+  REQUIRE len(var_table) >= 65536 && var_count >= 0 && var_count <= 2600
   %ptr = SLICE_PTR var_table
   %vi = CONST i64 0
   %c_24 = CONST i64 24
@@ -1992,7 +2014,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
   # Read source file (512KB buffer)
   %src_buf = ALLOC slice<u8> 524288
-  %bytes_read = CALL fs_read_file src_path %src_buf
+  %buf_cap = CONST i64 524288
+  %bytes_read = CALL fs_read_file src_path %src_buf %buf_cap
 
   %zero = CONST i64 0
   %read_err = LTE i64 %bytes_read %zero
@@ -2006,7 +2029,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %cur_code_pos = CONST i64 120
   %in_main = CONST bool true
   %main_offset = CONST i64 120
-  %helper_func_offset = CONST i64 120
+  %help_fn_offset = CONST i64 120
   %data_bump = CONST i64 6291456
 
   # Allocate prefix slice for "FUNC "
@@ -2156,7 +2179,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %lbl_tmp_ptr = SLICE_PTR %lbl_tmp
 
   # Allocate local variable table (4KB)
-  %var_table = ALLOC slice<u8> 4096
+  %var_table = ALLOC slice<u8> 65536
   %var_count = CONST i64 0
 
   # Allocate ELF binary buffer (1MB)
@@ -2343,13 +2366,13 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # In main: load into rdi (7), mov rax, 60, syscall
     %c_rv1 = CALL emit_load_stack %elf_buf %body_start 7 %val_slot
     %c_rv2 = CALL emit_mov_imm %elf_buf %c_rv1 0 60
-    %pos_after_ret_block = CALL emit_syscall_inst %elf_buf %c_rv2
+    %pos_aft_ret_blk = CALL emit_syscall_inst %elf_buf %c_rv2
     JUMP rif_patch_jz
 
     LABEL rif_named_helper
     # In helper: load into rax (0), epilogue
     %c_rv1_h = CALL emit_load_stack %elf_buf %body_start 0 %val_slot
-    %pos_after_ret_block = CALL emit_func_epilogue %elf_buf %c_rv1_h
+    %pos_aft_ret_blk = CALL emit_func_epilogue %elf_buf %c_rv1_h
     JUMP rif_patch_jz
 
     LABEL rif_check_phys
@@ -2366,13 +2389,13 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # In main: mov rdi, v_reg; mov rax, 60; syscall
     %c_rv1_p = CALL emit_mov_rr %elf_buf %body_start 7 %v_reg
     %c_rv2_p = CALL emit_mov_imm %elf_buf %c_rv1_p 0 60
-    %pos_after_ret_block = CALL emit_syscall_inst %elf_buf %c_rv2_p
+    %pos_aft_ret_blk = CALL emit_syscall_inst %elf_buf %c_rv2_p
     JUMP rif_patch_jz
 
     LABEL rif_phys_helper
     # In helper: mov rax, v_reg; epilogue
     %c_rv1_ph = CALL emit_mov_rr %elf_buf %body_start 0 %v_reg
-    %pos_after_ret_block = CALL emit_func_epilogue %elf_buf %c_rv1_ph
+    %pos_aft_ret_blk = CALL emit_func_epilogue %elf_buf %c_rv1_ph
     JUMP rif_patch_jz
 
     LABEL rif_val_imm
@@ -2384,18 +2407,18 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # In main: mov rdi, imm; mov rax, 60; syscall
     %c_rv1_i = CALL emit_mov_imm %elf_buf %body_start 7 %v_imm
     %c_rv2_i = CALL emit_mov_imm %elf_buf %c_rv1_i 0 60
-    %pos_after_ret_block = CALL emit_syscall_inst %elf_buf %c_rv2_i
+    %pos_aft_ret_blk = CALL emit_syscall_inst %elf_buf %c_rv2_i
     JUMP rif_patch_jz
 
     LABEL rif_imm_helper
     # In helper: mov rax, imm; epilogue
     %c_rv1_ih = CALL emit_mov_imm %elf_buf %body_start 0 %v_imm
-    %pos_after_ret_block = CALL emit_func_epilogue %elf_buf %c_rv1_ih
+    %pos_aft_ret_blk = CALL emit_func_epilogue %elf_buf %c_rv1_ih
 
     LABEL rif_patch_jz
-    %rel8 = SUB i64 %pos_after_ret_block %body_start
+    %rel8 = SUB i64 %pos_aft_ret_blk %body_start
     STORE8 %elf_raw_ptr %jz_imm_pos %rel8
-    %cur_code_pos = MOV %pos_after_ret_block
+    %cur_code_pos = MOV %pos_aft_ret_blk
     %t_rif = CONST bool true
     %has_dyn_code = MOV %t_rif
     JUMP advance_pos
@@ -2425,7 +2448,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %false_nv = CONST bool false
     %not_new_var = EQ bool %is_new_var %false_nv
     BR_IF %not_new_var done_alloc_var
-    %max_var_lim = CONST i64 140
+    %max_var_lim = CONST i64 2500
     %var_ovf = GTE i64 %var_count %max_var_lim
     BR_IF %var_ovf done_alloc_var
     %next_var_cnt = ADD i64 %var_count 1
@@ -2559,16 +2582,16 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result
     %not_dst_n_add = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_add store_dst_phys_add
+    BR_IF %not_dst_n_add st_dst_phys_add
 
     # Store rdi (7) into dst_slot
-    %pos_after_store = CALL emit_store_stack %elf_buf %pos_after_add 7 %dst_slot
-    %cur_code_pos = MOV %pos_after_store
+    %pos_aft_st_add = CALL emit_store_stack %elf_buf %pos_after_add 7 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_add
     %t_add_n = CONST bool true
     %has_dyn_code = MOV %t_add_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_add
+    LABEL st_dst_phys_add
     %pos_after_phys = CALL emit_mov_rr %elf_buf %pos_after_add %dst_reg 7
     %cur_code_pos = MOV %pos_after_phys
     %t_add_p = CONST bool true
@@ -2638,17 +2661,17 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result
     %not_dst_n_sub = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_sub store_dst_phys_sub
+    BR_IF %not_dst_n_sub st_dst_phys_sub
 
-    %pos_after_store_s = CALL emit_store_stack %elf_buf %pos_after_sub 7 %dst_slot
-    %cur_code_pos = MOV %pos_after_store_s
+    %pos_aft_st_sub = CALL emit_store_stack %elf_buf %pos_after_sub 7 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_sub
     %t_sub_n = CONST bool true
     %has_dyn_code = MOV %t_sub_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_sub
-    %pos_after_phys_s = CALL emit_mov_rr %elf_buf %pos_after_sub %dst_reg 7
-    %cur_code_pos = MOV %pos_after_phys_s
+    LABEL st_dst_phys_sub
+    %pos_aft_ph_sub = CALL emit_mov_rr %elf_buf %pos_after_sub %dst_reg 7
+    %cur_code_pos = MOV %pos_aft_ph_sub
     %t_sub_p = CONST bool true
     %has_dyn_code = MOV %t_sub_p
     JUMP advance_pos
@@ -2716,17 +2739,17 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result
     %not_dst_n_mul = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_mul store_dst_phys_mul
+    BR_IF %not_dst_n_mul st_dst_phys_mul
 
-    %pos_after_store_m = CALL emit_store_stack %elf_buf %pos_after_mul 7 %dst_slot
-    %cur_code_pos = MOV %pos_after_store_m
+    %pos_aft_st_mul = CALL emit_store_stack %elf_buf %pos_after_mul 7 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_mul
     %t_mul_n = CONST bool true
     %has_dyn_code = MOV %t_mul_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_mul
-    %pos_after_phys_m = CALL emit_mov_rr %elf_buf %pos_after_mul %dst_reg 7
-    %cur_code_pos = MOV %pos_after_phys_m
+    LABEL st_dst_phys_mul
+    %pos_aft_ph_mul = CALL emit_mov_rr %elf_buf %pos_after_mul %dst_reg 7
+    %cur_code_pos = MOV %pos_aft_ph_mul
     %t_mul_p = CONST bool true
     %has_dyn_code = MOV %t_mul_p
     JUMP advance_pos
@@ -2795,17 +2818,17 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result from rax (0)
     %not_dst_n_div = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_div store_dst_phys_div
+    BR_IF %not_dst_n_div st_dst_phys_div
 
-    %pos_after_store_d = CALL emit_store_stack %elf_buf %pos_after_div 0 %dst_slot
-    %cur_code_pos = MOV %pos_after_store_d
+    %pos_aft_st_div = CALL emit_store_stack %elf_buf %pos_after_div 0 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_div
     %t_div_n = CONST bool true
     %has_dyn_code = MOV %t_div_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_div
-    %pos_after_phys_d = CALL emit_mov_rr %elf_buf %pos_after_div %dst_reg 0
-    %cur_code_pos = MOV %pos_after_phys_d
+    LABEL st_dst_phys_div
+    %pos_aft_ph_div = CALL emit_mov_rr %elf_buf %pos_after_div %dst_reg 0
+    %cur_code_pos = MOV %pos_aft_ph_div
     %t_div_p = CONST bool true
     %has_dyn_code = MOV %t_div_p
     JUMP advance_pos
@@ -2874,17 +2897,17 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result from rax (0)
     %not_dst_n_mod = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_mod store_dst_phys_mod
+    BR_IF %not_dst_n_mod st_dst_phys_mod
 
-    %pos_after_store_mod = CALL emit_store_stack %elf_buf %pos_after_mod 0 %dst_slot
-    %cur_code_pos = MOV %pos_after_store_mod
+    %pos_aft_st_mod = CALL emit_store_stack %elf_buf %pos_after_mod 0 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_mod
     %t_mod_n = CONST bool true
     %has_dyn_code = MOV %t_mod_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_mod
-    %pos_after_phys_mod = CALL emit_mov_rr %elf_buf %pos_after_mod %dst_reg 0
-    %cur_code_pos = MOV %pos_after_phys_mod
+    LABEL st_dst_phys_mod
+    %pos_aft_ph_mod = CALL emit_mov_rr %elf_buf %pos_after_mod %dst_reg 0
+    %cur_code_pos = MOV %pos_aft_ph_mod
     %t_mod_p = CONST bool true
     %has_dyn_code = MOV %t_mod_p
     JUMP advance_pos
@@ -2952,17 +2975,17 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result
     %not_dst_n_and = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_and store_dst_phys_and
+    BR_IF %not_dst_n_and st_dst_phys_and
 
-    %pos_after_store_and = CALL emit_store_stack %elf_buf %pos_after_and 7 %dst_slot
-    %cur_code_pos = MOV %pos_after_store_and
+    %pos_aft_st_and = CALL emit_store_stack %elf_buf %pos_after_and 7 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_and
     %t_and_n = CONST bool true
     %has_dyn_code = MOV %t_and_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_and
-    %pos_after_phys_and = CALL emit_mov_rr %elf_buf %pos_after_and %dst_reg 7
-    %cur_code_pos = MOV %pos_after_phys_and
+    LABEL st_dst_phys_and
+    %pos_aft_ph_and = CALL emit_mov_rr %elf_buf %pos_after_and %dst_reg 7
+    %cur_code_pos = MOV %pos_aft_ph_and
     %t_and_p = CONST bool true
     %has_dyn_code = MOV %t_and_p
     JUMP advance_pos
@@ -3030,17 +3053,17 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Store result
     %not_dst_n_or = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_n_or store_dst_phys_or
+    BR_IF %not_dst_n_or st_dst_phys_or
 
-    %pos_after_store_or = CALL emit_store_stack %elf_buf %pos_after_or 7 %dst_slot
-    %cur_code_pos = MOV %pos_after_store_or
+    %pos_aft_st_or = CALL emit_store_stack %elf_buf %pos_after_or 7 %dst_slot
+    %cur_code_pos = MOV %pos_aft_st_or
     %t_or_n = CONST bool true
     %has_dyn_code = MOV %t_or_n
     JUMP advance_pos
 
-    LABEL store_dst_phys_or
-    %pos_after_phys_or = CALL emit_mov_rr %elf_buf %pos_after_or %dst_reg 7
-    %cur_code_pos = MOV %pos_after_phys_or
+    LABEL st_dst_phys_or
+    %pos_aft_ph_or = CALL emit_mov_rr %elf_buf %pos_after_or %dst_reg 7
+    %cur_code_pos = MOV %pos_aft_ph_or
     %t_or_p = CONST bool true
     %has_dyn_code = MOV %t_or_p
     JUMP advance_pos
@@ -3282,8 +3305,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %alloc_size = CALL parse_int_from %src_buf %size_p %nl
     %c_16 = CONST i64 16
     %size_aligned = ADD i64 %alloc_size %c_16
-    %not_dst_named_al = EQ bool %is_dst_named %false_b
-    BR_IF %not_dst_named_al emit_alloc_phys
+    %not_dst_n_al = EQ bool %is_dst_named %false_b
+    BR_IF %not_dst_n_al emit_alloc_phys
 
     # Named destination: emit mov rax, data_bump; emit_store_stack dst_slot
     %al_pos1 = CALL emit_mov_imm %elf_buf %cur_code_pos 0 %data_bump
@@ -3374,20 +3397,20 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     LABEL slen_call_strlen
     # emit inline strlen on rax -> leaves length in rax (0)
-    %pos_after_strlen = CALL emit_inline_strlen %elf_buf %pos_after_slen
+    %pos_aft_strlen = CALL emit_inline_strlen %elf_buf %pos_after_slen
 
     # Store result
     %not_dst_sl_n = EQ bool %is_dst_named %false_b
     BR_IF %not_dst_sl_n slen_store_phys
 
-    %next_pos_sl = CALL emit_store_stack %elf_buf %pos_after_strlen 0 %dst_slot
+    %next_pos_sl = CALL emit_store_stack %elf_buf %pos_aft_strlen 0 %dst_slot
     %cur_code_pos = MOV %next_pos_sl
     %t_sl = CONST bool true
     %has_dyn_code = MOV %t_sl
     JUMP advance_pos
 
     LABEL slen_store_phys
-    %next_pos_sl2 = CALL emit_mov_rr %elf_buf %pos_after_strlen %dst_reg 0
+    %next_pos_sl2 = CALL emit_mov_rr %elf_buf %pos_aft_strlen %dst_reg 0
     %cur_code_pos = MOV %next_pos_sl2
     %t_sl2 = CONST bool true
     %has_dyn_code = MOV %t_sl2
@@ -3659,7 +3682,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # Check "EQ "
     %is_eq = CALL str_starts_with %src_buf %rhs_pos %p_eq
     %not_eq = EQ bool %is_eq %false_b
-    BR_IF %not_eq advance_pos
+    BR_IF %not_eq chk_rhs_sys
     %cc_cmp = CONST i64 148
     %op_len_cmp = CONST i64 3
 
@@ -3746,6 +3769,31 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %cur_code_pos = MOV %c_cmp_m
     %t_cmp = CONST bool true
     %has_dyn_code = MOV %t_cmp
+    JUMP advance_pos
+
+    LABEL chk_rhs_sys
+    # Check if rhs is "SYSCALL"
+    %is_rhs_sys = CALL str_starts_with %src_buf %rhs_pos %p_sys
+    %not_rhs_sys = EQ bool %is_rhs_sys %false_b
+    BR_IF %not_rhs_sys advance_pos
+
+    %c_sys_inst = CALL emit_syscall_inst %elf_buf %cur_code_pos
+
+    # Result of syscall is in rax (0). Store to dst_slot or dst_reg
+    %not_dst_sys_n = EQ bool %is_dst_named %false_b
+    BR_IF %not_dst_sys_n sys_store_phys
+
+    %c_sys_ret = CALL emit_store_stack %elf_buf %c_sys_inst 0 %dst_slot
+    %cur_code_pos = MOV %c_sys_ret
+    %t_sys_n = CONST bool true
+    %has_dyn_code = MOV %t_sys_n
+    JUMP advance_pos
+
+    LABEL sys_store_phys
+    %c_sys_ret2 = CALL emit_mov_rr %elf_buf %c_sys_inst %dst_reg 0
+    %cur_code_pos = MOV %c_sys_ret2
+    %t_sys_p = CONST bool true
+    %has_dyn_code = MOV %t_sys_p
     JUMP advance_pos
 
     LABEL check_func
@@ -3884,24 +3932,6 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %var_count = MOV %next_vc3
     %c_st_p3 = CALL emit_store_stack %elf_buf %cur_code_pos 1 %slot_p3
     %cur_code_pos = MOV %c_st_p3
-
-    # Check for Param 4 (r8 = 8)
-    %com4 = CALL find_char_from %src_buf %p3_colon %c_44_com
-    %has_com4 = LT i64 %com4 %fn_rp
-    %not_has_com4 = EQ bool %has_com4 %false_b
-    BR_IF %not_has_com4 fn_params_done
-
-    %p4_raw = ADD i64 %com4 1
-    %p4_start = CALL skip_whitespace %src_buf %p4_raw
-    %p4_colon = CALL find_char_from %src_buf %p4_start %c_58_col
-    %dummy_p4 = CALL copy_label_name %src_buf %p4_start %p4_colon %lbl_tmp
-    %p4_p1 = LOAD64 %lbl_tmp_ptr 0
-    %p4_p2 = LOAD64 %lbl_tmp_ptr 8
-    %slot_p4 = CALL find_or_add_var %var_table %var_count %p4_p1 %p4_p2
-    %next_vc4 = ADD i64 %var_count 1
-    %var_count = MOV %next_vc4
-    %c_st_p4 = CALL emit_store_stack %elf_buf %cur_code_pos 8 %slot_p4
-    %cur_code_pos = MOV %c_st_p4
 
     LABEL fn_params_done
     %t_fn = CONST bool true
@@ -4153,7 +4183,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Unescape string into str_tmp buffer
     %zero_st = CONST i64 0
-    %copied = CALL copy_str_unescaped %src_raw_ptr %q1_plus_1 %q2 %str_tmp_ptr %zero_st
+    %copied = CALL copy_str_unescaped %src_raw_ptr %q1_plus_1 %q2 %str_tmp_ptr
 
     # Bounds check on string length: 0 <= copied <= 128
     %c_128_st = CONST i64 128
@@ -4348,8 +4378,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     BR_IF %near_cond_bk advance_pos
 
     # Check if condition is named variable or physical register
-    %is_cond_bk_named = CALL is_named_var %src_buf %cond_p_bk
-    %not_cbkn = EQ bool %is_cond_bk_named %false_b
+    %is_cnd_bk_named = CALL is_named_var %src_buf %cond_p_bk
+    %not_cbkn = EQ bool %is_cnd_bk_named %false_b
     BR_IF %not_cbkn test_cond_bk_phys
 
     %dummy_cbkn = CALL copy_label_name %src_buf %cond_p_bk %nl %lbl_tmp

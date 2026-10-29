@@ -10,10 +10,10 @@
 FUNC sys_open(path: slice<u8>, flags: i64, mode: i64) -> i64
   REQUIRE len(path) > 0
 
-  %rax = CONST i64 2
   %rdi = SLICE_PTR path
   %rsi = MOV flags
   %rdx = MOV mode
+  %rax = CONST i64 2
   %fd = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %fd >= -1
@@ -25,10 +25,10 @@ END_FUNC
 FUNC sys_read(fd: i64, buf: slice<u8>, count: i64) -> i64
   REQUIRE fd >= 0 && count >= 0 && count <= len(buf)
 
-  %rax = CONST i64 0
   %rdi = MOV fd
   %rsi = SLICE_PTR buf
   %rdx = MOV count
+  %rax = CONST i64 0
   %bytes_read = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %bytes_read >= -1 && %bytes_read <= count
@@ -40,10 +40,10 @@ END_FUNC
 FUNC sys_write(fd: i64, buf: slice<u8>, count: i64) -> i64
   REQUIRE fd >= 0 && count >= 0 && count <= len(buf)
 
-  %rax = CONST i64 1
   %rdi = MOV fd
   %rsi = SLICE_PTR buf
   %rdx = MOV count
+  %rax = CONST i64 1
   %bytes_written = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %bytes_written >= -1 && %bytes_written <= count
@@ -54,19 +54,33 @@ END_FUNC
 FUNC sys_close(fd: i64) -> i64
   REQUIRE fd >= 0
 
-  %rax = CONST i64 3
   %rdi = MOV fd
   %rsi = CONST i64 0
   %rdx = CONST i64 0
+  %rax = CONST i64 3
   %res = SYSCALL %rax %rdi %rsi %rdx
 
   ENSURE %res >= -1
   RET %res
 END_FUNC
 
+# Linux sys_unlink: delete a name and possibly the file it refers to
+FUNC sys_unlink(path: slice<u8>) -> i64
+  REQUIRE len(path) > 0
+
+  %rdi = SLICE_PTR path
+  %rsi = CONST i64 0
+  %rdx = CONST i64 0
+  %rax = CONST i64 87
+  %res = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %res >= -4096
+  RET %res
+END_FUNC
+
 # High-level file reading: read file into destination buffer
-FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>) -> i64
-  REQUIRE len(path) > 0 && len(out_buf) > 0
+FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count > 0 && count <= len(out_buf)
 
   %flags = CONST i64 0
   %mode = CONST i64 0
@@ -76,11 +90,10 @@ FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>) -> i64
   %is_err = LT i64 %fd %zero
   RET_IF %is_err %fd
 
-  %cap = SLICE_LEN out_buf
-  %bytes = CALL sys_read %fd out_buf %cap
+  %bytes = CALL sys_read %fd out_buf count
   %dummy = CALL sys_close %fd
 
-  ENSURE %bytes >= -1 && %bytes <= len(out_buf)
+  ENSURE %bytes >= -1 && %bytes <= count
   RET %bytes
 END_FUNC
 
@@ -107,6 +120,9 @@ END_FUNC
 # High-level file writing: write exact count bytes from buffer to file
 FUNC fs_write_file_bytes(path: slice<u8>, content: slice<u8>, count: i64) -> i64
   REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
+
+  # Unlink file first to prevent ETXTBSY if overwriting a running executable
+  %dummy_ul = CALL sys_unlink path
 
   %flags = CONST i64 577
   %mode = CONST i64 493

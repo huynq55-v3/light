@@ -281,7 +281,18 @@ impl MachineCodeEmitter {
                 Operand::Const(Value::Bool(b)) => emitter.emit_mov_reg_imm64(target, if *b { 1 } else { 0 }),
                 Operand::Const(Value::Ptr(p)) => emitter.emit_mov_reg_imm64(target, *p as i64),
                 Operand::Reg(r) => {
-                    if let Some(&buf_off) = emitter.buffer_offsets.get(r) {
+                    if r.starts_with("len(") && r.ends_with(')') {
+                        let inner = &r[4..r.len() - 1].trim();
+                        let clean = inner.trim_start_matches('%');
+                        let len_name = format!("{}_len", clean);
+                        if let Some(&slot) = slots.get(&len_name) {
+                            emitter.emit_load_stack(target, slot);
+                        } else if let Some(&cap) = emitter.slice_capacities.get(*inner) {
+                            emitter.emit_mov_reg_imm64(target, cap as i64);
+                        } else {
+                            emitter.emit_mov_reg_imm64(target, 0);
+                        }
+                    } else if let Some(&buf_off) = emitter.buffer_offsets.get(r) {
                         let vaddr = base_data_vaddr + (buf_off as u64);
                         emitter.emit_mov_reg_imm64(target, vaddr as i64);
                     } else {
