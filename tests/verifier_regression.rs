@@ -1,3 +1,4 @@
+use light::ast::Expr;
 use light::parser::Parser;
 use light::verifier::{PropertyCategory, VerificationResult, Verifier};
 
@@ -1058,5 +1059,139 @@ END_FUNC
         "V32 test failed: Both branch RETs must verify against ENSURE! Got: {:?}",
         results
     );
+}
+
+#[test]
+fn test_v33_pre_loop_intermediate_binary_chain() {
+    // V33: Chained binary operations before loop with intermediate variables
+    let code = r#"
+FUNC loop_with_pre_chain(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 10
+  %one = CONST i64 1
+  %two = CONST i64 2
+  %tmp = ADD i64 n %one
+  %limit = MUL i64 %tmp %two
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= %limit
+    DECREASES %limit - %i
+    %done = GTE i64 %i %limit
+    BREAK_IF %done
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %i == %limit
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V33");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V33 test failed: Intermediate pre-loop binary chain must verify all loop steps! Got: {:?}", results);
+}
+
+#[test]
+fn test_v34_loop_with_continue_if_verifies() {
+    // V34: Loop containing CONTINUE_IF verified inductively without unsupported error
+    let code = r#"
+FUNC loop_with_continue(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 10
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %skip = LT i64 %i 0
+    CONTINUE_IF %skip
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %i == n
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V34");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V34 test failed: CONTINUE_IF in loop must be supported and verify! Got: {:?}", results);
+}
+
+#[test]
+fn test_v35_subst_expr_vars_len_preserves_length() {
+    // V35: subst_expr_vars directly maps Expr::Len to {arr}_len without fabricating invalid names
+    let mut map = std::collections::HashMap::new();
+    map.insert("buf_len".to_string(), "buf_length_val".to_string());
+    map.insert("buf".to_string(), "buf_ptr_v0".to_string());
+
+    let expr = Expr::Len("buf".to_string());
+    let substituted = Verifier::subst_expr_vars(&expr, &map);
+    assert_eq!(substituted, Expr::Var("buf_length_val".to_string()));
+
+    let smt = Verifier::expr_to_smt(&substituted);
+    assert_eq!(smt, "buf_length_val");
+}
+
+#[test]
+fn test_v36_both_branches_different_ret_registers_straightline() {
+    // V36: Both branches return different registers and ENSURE references canonical %ret
+    let code = r#"
+FUNC max_simple(a: i64, b: i64) -> i64
+  ENSURE %ret >= a && %ret >= b
+  %gt = GT i64 a b
+  BR_IF %gt .is_a
+  %b_val = MOV b
+  RET %b_val
+  LABEL .is_a
+  %ret = MOV a
+  RET %ret
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V36");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V36 test failed: Branches with different RET registers must verify against ENSURE %ret! Got: {:?}", results);
+}
+
+#[test]
+fn test_v37_post_loop_slicelen_and_load8() {
+    // V37: SLICE_LEN and LOAD8 executed post-loop correctly tracked in Exit Step
+    let code = r#"
+FUNC post_loop_memory() -> i64
+  %buf = ALLOC slice<u8> 10
+  %zero = CONST i64 0
+  %ten = CONST i64 10
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= %ten
+    DECREASES %ten - %i
+    %done = GTE i64 %i %ten
+    BREAK_IF %done
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  %len = SLICE_LEN %buf
+  %byte = LOAD8 %buf %zero
+  ENSURE %len == 10 && %byte >= 0 && %byte <= 255
+  RET %len
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V37");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V37 test failed: Post-loop SLICE_LEN and LOAD8 must be tracked in Exit Step! Got: {:?}", results);
+}
+
+#[test]
+fn test_v38_straightline_with_const_ret() {
+    // V38: Straightline function returning immediate constant 0 satisfies ENSURE %ret == 0
+    let code = r#"
+FUNC returns_zero(x: i64) -> i64
+  REQUIRE x >= 0
+  ENSURE %ret == 0
+  RET 0
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V38");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V38 test failed: Function returning constant 0 must satisfy ENSURE %ret == 0! Got: {:?}", results);
 }
 

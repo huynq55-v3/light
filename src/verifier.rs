@@ -1218,6 +1218,18 @@ impl Verifier {
                 }
                 Instruction::BrIf { cond, target } => {
                     let c_smt = Self::resolve_operand(&Operand::Reg(cond.clone()), &current_val);
+                    if let Some((_, l_end, _, _)) = active_loops.iter().find(|(s, e, _, _)| idx > *s && idx < *e) {
+                        if let Some(&tgt_pos) = label_positions.get(target) {
+                            if tgt_pos > *l_end {
+                                if limit <= *l_end {
+                                    smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c_smt));
+                                } else {
+                                    active_loop_breaks.push((format!("(distinct {} (_ bv0 64))", c_smt), current_val.clone()));
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     if let Some(&tgt_pos) = label_positions.get(target) {
                         if tgt_pos <= limit {
                             // Mục tiêu kiểm chứng nằm ở hoặc sau nhãn đích `target`:
@@ -1454,7 +1466,10 @@ impl Verifier {
             Expr::BoolConst(c) => Expr::BoolConst(*c),
             Expr::Len(v) => {
                 let clean = v.trim_start_matches('%');
-                if let Some(repl) = map.get(clean) {
+                let len_key = format!("{}_len", clean);
+                if let Some(len_repl) = map.get(&len_key) {
+                    Expr::Var(len_repl.clone())
+                } else if let Some(repl) = map.get(clean) {
                     Expr::Len(repl.clone())
                 } else {
                     Expr::Len(v.clone())
@@ -1527,6 +1542,7 @@ impl Verifier {
         let mut declared_steps = std::collections::HashSet::new();
         let mut pending_incoming: std::collections::HashMap<String, Vec<(String, std::collections::HashMap<String, String>)>> = std::collections::HashMap::new();
         let mut skip_until_label: Option<(String, std::collections::HashMap<String, String>)> = None;
+        let mut continue_points: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
 
         for (idx, s_inst) in func.instructions[loop_start_idx + 1..loop_end_idx].iter().enumerate() {
             if let Some((ref target, ref pre_jump_state)) = skip_until_label {
@@ -1607,6 +1623,12 @@ impl Verifier {
                     let val = current_val.get(s).cloned().unwrap_or_else(|| s.to_string());
                     current_val.insert(d.to_string(), val);
                 }
+                Instruction::ContinueIf(cond) => {
+                    let c = cond.trim_start_matches('%');
+                    let val = current_val.get(c).cloned().unwrap_or_else(|| c.to_string());
+                    let cont_cond = format!("(distinct {} (_ bv0 64))", val);
+                    continue_points.push((cont_cond, current_val.clone()));
+                }
                 Instruction::BreakIf(cond) => {
                     let c = cond.trim_start_matches('%');
                     let val = current_val.get(c).cloned().unwrap_or_else(|| c.to_string());
@@ -1677,7 +1699,25 @@ impl Verifier {
 
         let mut next_state = std::collections::HashMap::new();
         for v in known_vars {
-            let nxt = current_val.get(v).cloned().unwrap_or_else(|| v.clone());
+            let mut nxt = current_val.get(v).cloned().unwrap_or_else(|| v.clone());
+            if !continue_points.is_empty() {
+                let all_same = continue_points.iter().all(|(_, st)| {
+                    st.get(v).cloned().unwrap_or_else(|| v.clone()) == nxt
+                });
+                if !all_same {
+                    let cont_merge = format!("{}_cont_next", v);
+                    if declared_steps.insert(cont_merge.clone()) {
+                        smt_body.push_str(&format!("(declare-const {} (_ BitVec 64))\n", cont_merge));
+                    }
+                    let mut ite_expr = nxt;
+                    for (c_cond, st) in continue_points.iter().rev() {
+                        let c_val = st.get(v).cloned().unwrap_or_else(|| v.clone());
+                        ite_expr = format!("(ite {} {} {})", c_cond, c_val, ite_expr);
+                    }
+                    smt_body.push_str(&format!("(assert (= {} {}))\n", cont_merge, ite_expr));
+                    nxt = cont_merge;
+                }
+            }
             next_state.insert(v.clone(), nxt);
         }
 
@@ -1697,59 +1737,97 @@ impl Verifier {
         transition: &LoopTransition,
         declared_vars: &mut std::collections::HashSet<String>,
         smt: &mut String,
-    ) {
-        for s_inst in &func.instructions[..loop_start_idx] {
+    ) -> std::collections::HashMap<String, String> {
+        let mut pre_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for p in &func.params {
+            let clean = p.name.trim_start_matches('%').to_string();
+            pre_map.insert(clean.clone(), clean);
+        }
+        for (idx, s_inst) in func.instructions[..loop_start_idx].iter().enumerate() {
             match &s_inst.inst {
                 Instruction::AssignConst { dest, val, .. } => {
                     let d = dest.trim_start_matches('%');
+                    let ver = format!("{}_pre_{}", d, idx);
+                    if declared_vars.insert(ver.clone()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", ver));
+                    }
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", ver, Self::smt_bv64(*v))),
+                        Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", ver, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", ver, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
+                    pre_map.insert(d.to_string(), ver.clone());
                     if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
                         if declared_vars.insert(d.to_string()) {
                             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                         }
-                        match val {
-                            Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", d, Self::smt_bv64(*v))),
-                            Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
-                            Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
-                            _ => {}
-                        }
+                        smt.push_str(&format!("(assert (= {} {}))\n", d, ver));
                     }
                 }
                 Instruction::Mov { dest, src } => {
                     let d = dest.trim_start_matches('%');
                     let s = src.trim_start_matches('%');
+                    let s_resolved = pre_map.get(s).cloned().unwrap_or_else(|| {
+                        if declared_vars.insert(s.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", s));
+                        }
+                        s.to_string()
+                    });
+                    pre_map.insert(d.to_string(), s_resolved.clone());
                     if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
                         if declared_vars.insert(d.to_string()) {
                             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                         }
-                        if declared_vars.insert(s.to_string()) {
-                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", s));
-                        }
-                        smt.push_str(&format!("(assert (= {} {}))\n", d, s));
+                        smt.push_str(&format!("(assert (= {} {}))\n", d, s_resolved));
                     }
                 }
                 Instruction::Binary { op, dest, src1, src2, .. } => {
                     let d = dest.trim_start_matches('%');
+                    if let Operand::Reg(r1) = src1 {
+                        let c1 = r1.trim_start_matches('%');
+                        if !pre_map.contains_key(c1) && declared_vars.insert(c1.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", c1));
+                        }
+                    }
+                    if let Operand::Reg(r2) = src2 {
+                        let c2 = r2.trim_start_matches('%');
+                        if !pre_map.contains_key(c2) && declared_vars.insert(c2.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", c2));
+                        }
+                    }
+                    let s1 = Self::resolve_operand(src1, &pre_map);
+                    let s2 = Self::resolve_operand(src2, &pre_map);
+                    let ver = format!("{}_pre_{}", d, idx);
+                    if declared_vars.insert(ver.clone()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", ver));
+                    }
+                    smt.push_str(&format!("(assert (= {} {}))\n", ver, Self::binop_to_smt(op, &s1, &s2)));
+                    pre_map.insert(d.to_string(), ver.clone());
                     if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
                         if declared_vars.insert(d.to_string()) {
                             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                         }
-                        let empty_map = std::collections::HashMap::new();
-                        let s1 = Self::resolve_operand(src1, &empty_map);
-                        let s2 = Self::resolve_operand(src2, &empty_map);
-                        smt.push_str(&format!("(assert (= {} {}))\n", d, Self::binop_to_smt(op, &s1, &s2)));
+                        smt.push_str(&format!("(assert (= {} {}))\n", d, ver));
                     }
                 }
                 Instruction::SliceLen { dest, slice } => {
                     let d = dest.trim_start_matches('%');
                     let s = slice.trim_start_matches('%');
+                    let slen = format!("{}_len", s);
+                    if declared_vars.insert(slen.clone()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", slen));
+                    }
                     if declared_vars.insert(d.to_string()) {
                         smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                     }
                     smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                    pre_map.insert(d.to_string(), d.to_string());
                 }
                 _ => {}
             }
         }
+        pre_map
     }
 
     fn build_inductive_step_query(
@@ -1837,7 +1915,7 @@ impl Verifier {
         }
 
         // Point 4: Pre-loop constants and slice lengths preservation into Exit Step
-        Self::emit_pre_loop_invariants(func, loop_start_idx, transition, &mut declared_vars, &mut smt);
+        let pre_loop_map = Self::emit_pre_loop_invariants(func, loop_start_idx, transition, &mut declared_vars, &mut smt);
 
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
@@ -1859,15 +1937,10 @@ impl Verifier {
         // Point 5: Multi-break exit state merging using ite chains
         let mut current_val: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-        // Seed with pre-loop constants
-        for s_inst in &func.instructions[..loop_start_idx] {
-            match &s_inst.inst {
-                Instruction::AssignConst { dest, .. }
-                | Instruction::SliceLen { dest, .. } => {
-                    let d = dest.trim_start_matches('%');
-                    current_val.insert(d.to_string(), d.to_string());
-                }
-                _ => {}
+        // Seed with all pre-loop invariants (including Mov and Binary)
+        for (k, v) in pre_loop_map {
+            if !transition.next_state.contains_key(&k) || transition.next_state.get(&k) == Some(&k) {
+                current_val.insert(k, v);
             }
         }
 
@@ -1946,6 +2019,29 @@ impl Verifier {
                         smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", ver));
                     }
                     smt.push_str(&format!("(assert (= {} {}))\n", ver, expr_str));
+                    current_val.insert(d.to_string(), ver);
+                }
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    let ver = format!("{}_post_{}", d, idx);
+                    if declared_vars.insert(ver.clone()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", ver));
+                    }
+                    if let Some(&size) = buffer_sizes.get(slice) {
+                        smt.push_str(&format!("(assert (= {} {}))\n", ver, Self::smt_usize(size)));
+                    } else {
+                        smt.push_str(&format!("(assert (= {} {}_len))\n", ver, s));
+                    }
+                    current_val.insert(d.to_string(), ver);
+                }
+                Instruction::Load8 { dest, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    let ver = format!("{}_post_{}", d, idx);
+                    if declared_vars.insert(ver.clone()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", ver));
+                    }
+                    smt.push_str(&format!("(assert (and (bvsge {} (_ bv0 64)) (bvsle {} (_ bv255 64))))\n", ver, ver));
                     current_val.insert(d.to_string(), ver);
                 }
                 _ => {}
@@ -2068,11 +2164,42 @@ impl Verifier {
         smt
     }
 
-    /// Tìm tên biến trả về ở lệnh RET cuối cùng của hàm (thường được dùng trong mệnh đề ENSURE)
+    /// Tìm tên biến đại diện cho giá trị trả về của hàm trong ENSURE
     fn find_canonical_ret_var(func: &Function) -> Option<String> {
+        let mut ensure_vars = std::collections::HashSet::new();
+        for si in &func.instructions {
+            if let Instruction::Ensure(e) = &si.inst {
+                Self::collect_vars(e, &mut ensure_vars);
+            }
+        }
+        // Ưu tiên thanh ghi ở lệnh RET nào có xuất hiện trực tiếp trong ENSURE
+        for s_inst in func.instructions.iter().rev() {
+            if let Instruction::Ret(Some(Operand::Reg(r))) = &s_inst.inst {
+                let clean = r.trim_start_matches('%');
+                if ensure_vars.contains(clean) {
+                    return Some(clean.to_string());
+                }
+            }
+        }
         for s_inst in func.instructions.iter().rev() {
             if let Instruction::Ret(Some(Operand::Reg(r))) = &s_inst.inst {
                 return Some(r.trim_start_matches('%').to_string());
+            }
+        }
+        // Nếu các lệnh RET trả về hằng số (ví dụ RET 0), tìm biến trong ENSURE không phải là param của hàm
+        let param_names: std::collections::HashSet<String> = func
+            .params
+            .iter()
+            .map(|p| p.name.trim_start_matches('%').to_string())
+            .collect();
+        for ev in &ensure_vars {
+            if !param_names.contains(ev) && (ev == "ret" || ev == "res" || ev == "result") {
+                return Some(ev.clone());
+            }
+        }
+        for ev in &ensure_vars {
+            if !param_names.contains(ev) {
+                return Some(ev.clone());
             }
         }
         None
@@ -2183,14 +2310,32 @@ impl Verifier {
         program: Option<&Program>,
     ) -> String {
         let mut smt = String::from("(set-logic QF_BV)\n");
-        let current_val = Self::emit_symbolic_prefix(
+        let last_ret_idx = func
+            .instructions
+            .iter()
+            .rposition(|s| matches!(s.inst, Instruction::Ret(_)))
+            .unwrap_or(func.instructions.len());
+
+        let mut current_val = Self::emit_symbolic_prefix(
             func,
-            func.instructions.len(),
+            last_ret_idx,
             requires,
             buffer_sizes,
             program,
             &mut smt,
         );
+
+        if last_ret_idx < func.instructions.len() {
+            if let Instruction::Ret(Some(op)) = &func.instructions[last_ret_idx].inst {
+                if let Some(canon_ret) = Self::find_canonical_ret_var(func) {
+                    let final_smt_val = Self::resolve_operand(op, &current_val);
+                    let alias_var = format!("{}_final_ret", canon_ret);
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", alias_var));
+                    smt.push_str(&format!("(assert (= {} {}))\n", alias_var, final_smt_val));
+                    current_val.insert(canon_ret, alias_var);
+                }
+            }
+        }
 
         let ensure_terms: Vec<String> = ensures
             .iter()
