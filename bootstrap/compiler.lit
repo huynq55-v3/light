@@ -82,8 +82,8 @@ FUNC emit_elf_header(buf: slice<u8>, code_len: i64, entry_offset: i64) -> i64
   # p_filesz at offset 96
   STORE64 %ptr 96 %total_sz
 
-  # p_memsz at offset 104: 64KB virtual memory allocation for code + data segment + heap
-  %min_memsz = CONST i64 65536
+  # p_memsz at offset 104: 1MB virtual memory allocation for code + data segment + heap
+  %min_memsz = CONST i64 1048576
   STORE64 %ptr 104 %min_memsz
 
   # p_align = 4096 at offset 112
@@ -591,14 +591,28 @@ FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   %p3 = ADD i64 pos 3
   %c3 = LOAD8 %ptr %p3
 
-  # Check if %r0 .. %r7 (ASCII 48 .. 55)
+  # Check if %r0 .. %r3 (ASCII 48 .. 51) -> rax (0), rcx (1), rdx (2), rbx (3)
   %c_0 = CONST i64 48
-  %c_7 = CONST i64 55
+  %c_3 = CONST i64 51
   %is_digit_low = GTE i64 %c2 %c_0
-  %is_digit_high = LTE i64 %c2 %c_7
-  %is_r_num = AND bool %is_digit_low %is_digit_high
+  %is_digit_3 = LTE i64 %c2 %c_3
+  %is_r0_r3 = AND bool %is_digit_low %is_digit_3
   %digit_id = SUB i64 %c2 %c_0
-  RET_IF %is_r_num %digit_id
+  RET_IF %is_r0_r3 %digit_id
+
+  # %r4 -> rsi (6)
+  %c_4 = CONST i64 52
+  %is_r4 = EQ i64 %c2 %c_4
+  %six_reg = CONST i64 6
+  RET_IF %is_r4 %six_reg
+
+  # %r5 .. %r7 -> rdi (7)
+  %c_7 = CONST i64 55
+  %is_r5_low = GTE i64 %c2 %c_4
+  %is_r5_high = LTE i64 %c2 %c_7
+  %is_r5_r7 = AND bool %is_r5_low %is_r5_high
+  %seven_reg = CONST i64 7
+  RET_IF %is_r5_r7 %seven_reg
 
   # Check 'a' (97) -> rax = 0
   %c_a = CONST i64 97
@@ -817,8 +831,8 @@ END_FUNC
 FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   REQUIRE len(src_path) > 0 && len(out_path) > 0
 
-  # Read source file
-  %src_buf = ALLOC slice<u8> 1024
+  # Read source file (64KB buffer)
+  %src_buf = ALLOC slice<u8> 65536
   %bytes_read = CALL fs_read_file src_path %src_buf
 
   %zero = CONST i64 0
@@ -903,8 +917,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %p_sptr = ALLOC slice<u8> 10
   STORE_STR %p_sptr "SLICE_PTR "
 
-  # Allocate ELF binary buffer (2048 bytes)
-  %elf_buf = ALLOC slice<u8> 2048
+  # Allocate ELF binary buffer (64KB)
+  %elf_buf = ALLOC slice<u8> 65536
   %src_raw_ptr = SLICE_PTR %src_buf
   %c_pct_val = CONST i64 37
   %t_flag = CONST bool true
@@ -933,7 +947,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     BR_IF %near_eof advance_pos
 
     # Bound check for current code buffer position
-    %max_pos = CONST i64 500
+    %max_pos = CONST i64 60000
     %code_overflow = GT i64 %cur_code_pos %max_pos
     %err_ovf = CONST i64 -2
     RET_IF %code_overflow %err_ovf
@@ -1175,7 +1189,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %not_alloc = EQ bool %is_alloc %false_b
     BR_IF %not_alloc check_sptr
 
-    %data_vaddr = CONST i64 4194816
+    %data_vaddr = CONST i64 4259840
     %next_pos_al = CALL emit_mov_imm %elf_buf %cur_code_pos %dst_reg %data_vaddr
     %cur_code_pos = MOV %next_pos_al
     %t_al = CONST bool true
@@ -1214,20 +1228,119 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # Check if arg1 is present (before end of line)
     %has_arg1 = LT i64 %arg1_p %nl
     %not_has_arg1 = EQ bool %has_arg1 %false_b
-    BR_IF %not_has_arg1 do_raw_call
+    BR_IF %not_has_arg1 emit_the_call_noparams
 
     # Ensure buffer bounds for arg1_p
     %arg1_chk = ADD i64 %arg1_p 4
     %arg1_near = GT i64 %arg1_chk %bytes_read
-    BR_IF %arg1_near do_raw_call
+    BR_IF %arg1_near emit_the_call_noparams
 
-    # Parse arg1 register: move to rdi (reg 7)
+    # Parse arg1 register (or imm) -> move to rdi (reg 7)
+    %c_arg1_ch = LOAD8 %src_raw_ptr %arg1_p
+    %is_arg1_r = EQ i64 %c_arg1_ch %c_pct_val
+    %not_arg1_r = EQ bool %is_arg1_r %false_b
+    BR_IF %not_arg1_r arg1_imm_lbl
+
     %arg1_r = CALL parse_reg_id %src_buf %arg1_p
     %c_arg1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %arg1_r
+    JUMP check_arg2
+
+    LABEL arg1_imm_lbl
+    %arg1_imm = CALL parse_int_from %src_buf %arg1_p %nl
+    %c_arg1 = CALL emit_mov_imm %elf_buf %cur_code_pos 7 %arg1_imm
+
+    LABEL check_arg2
+    %sp_call_2 = CALL find_char_from %src_buf %arg1_p %sp_c
+    %arg2_p = CALL skip_whitespace %src_buf %sp_call_2
+    %has_arg2 = LT i64 %arg2_p %nl
+    %not_has_arg2 = EQ bool %has_arg2 %false_b
+    BR_IF %not_has_arg2 call_after_arg1
+
+    %arg2_chk = ADD i64 %arg2_p 4
+    %arg2_near = GT i64 %arg2_chk %bytes_read
+    BR_IF %arg2_near call_after_arg1
+
+    # Parse arg2 -> move to rsi (reg 6)
+    %c_arg2_ch = LOAD8 %src_raw_ptr %arg2_p
+    %is_arg2_r = EQ i64 %c_arg2_ch %c_pct_val
+    %not_arg2_r = EQ bool %is_arg2_r %false_b
+    BR_IF %not_arg2_r arg2_imm_lbl
+
+    %arg2_r = CALL parse_reg_id %src_buf %arg2_p
+    %c_arg2 = CALL emit_mov_rr %elf_buf %c_arg1 6 %arg2_r
+    JUMP check_arg3
+
+    LABEL arg2_imm_lbl
+    %arg2_imm = CALL parse_int_from %src_buf %arg2_p %nl
+    %c_arg2 = CALL emit_mov_imm %elf_buf %c_arg1 6 %arg2_imm
+
+    LABEL check_arg3
+    %sp_call_3 = CALL find_char_from %src_buf %arg2_p %sp_c
+    %arg3_p = CALL skip_whitespace %src_buf %sp_call_3
+    %has_arg3 = LT i64 %arg3_p %nl
+    %not_has_arg3 = EQ bool %has_arg3 %false_b
+    BR_IF %not_has_arg3 call_after_arg2
+
+    %arg3_chk = ADD i64 %arg3_p 4
+    %arg3_near = GT i64 %arg3_chk %bytes_read
+    BR_IF %arg3_near call_after_arg2
+
+    # Parse arg3 -> move to rdx (reg 2)
+    %c_arg3_ch = LOAD8 %src_raw_ptr %arg3_p
+    %is_arg3_r = EQ i64 %c_arg3_ch %c_pct_val
+    %not_arg3_r = EQ bool %is_arg3_r %false_b
+    BR_IF %not_arg3_r arg3_imm_lbl
+
+    %arg3_r = CALL parse_reg_id %src_buf %arg3_p
+    %c_arg3 = CALL emit_mov_rr %elf_buf %c_arg2 2 %arg3_r
+    JUMP check_arg4
+
+    LABEL arg3_imm_lbl
+    %arg3_imm = CALL parse_int_from %src_buf %arg3_p %nl
+    %c_arg3 = CALL emit_mov_imm %elf_buf %c_arg2 2 %arg3_imm
+
+    LABEL check_arg4
+    %sp_call_4 = CALL find_char_from %src_buf %arg3_p %sp_c
+    %arg4_p = CALL skip_whitespace %src_buf %sp_call_4
+    %has_arg4 = LT i64 %arg4_p %nl
+    %not_has_arg4 = EQ bool %has_arg4 %false_b
+    BR_IF %not_has_arg4 call_after_arg3
+
+    %arg4_chk = ADD i64 %arg4_p 4
+    %arg4_near = GT i64 %arg4_chk %bytes_read
+    BR_IF %arg4_near call_after_arg3
+
+    # Parse arg4 -> move to rcx (reg 1)
+    %c_arg4_ch = LOAD8 %src_raw_ptr %arg4_p
+    %is_arg4_r = EQ i64 %c_arg4_ch %c_pct_val
+    %not_arg4_r = EQ bool %is_arg4_r %false_b
+    BR_IF %not_arg4_r arg4_imm_lbl
+
+    %arg4_r = CALL parse_reg_id %src_buf %arg4_p
+    %c_arg4 = CALL emit_mov_rr %elf_buf %c_arg3 1 %arg4_r
+    JUMP call_after_arg4
+
+    LABEL arg4_imm_lbl
+    %arg4_imm = CALL parse_int_from %src_buf %arg4_p %nl
+    %c_arg4 = CALL emit_mov_imm %elf_buf %c_arg3 1 %arg4_imm
+
+    LABEL call_after_arg4
+    %call_pos = MOV %c_arg4
+    JUMP emit_the_call
+
+    LABEL call_after_arg3
+    %call_pos = MOV %c_arg3
+    JUMP emit_the_call
+
+    LABEL call_after_arg2
+    %call_pos = MOV %c_arg2
+    JUMP emit_the_call
+
+    LABEL call_after_arg1
     %call_pos = MOV %c_arg1
     JUMP emit_the_call
 
-    LABEL do_raw_call
+    LABEL emit_the_call_noparams
     %call_pos = MOV %cur_code_pos
 
     LABEL emit_the_call
@@ -1554,8 +1667,15 @@ FUNC main() -> i64
   STORE_STR %out5 "func.bin\0"
   %res5 = CALL compile_file %src5 %out5
 
+  # 7. Compile test_args.lit -> args.bin
+  %src6 = ALLOC slice<u8> 16
+  STORE_STR %src6 "test_args.lit\0"
+  %out6 = ALLOC slice<u8> 16
+  STORE_STR %out6 "args.bin\0"
+  %res6 = CALL compile_file %src6 %out6
+
   %success_msg = ALLOC slice<u8> 80
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func)!\n"
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 

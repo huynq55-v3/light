@@ -1,0 +1,12 @@
+# Multi-Argument Function Call Test (System V ABI: rdi, rsi, rdx, rcx)
+FUNC add_four(a: i64, b: i64, c: i64, d: i64) -> i64
+  %rdi = ADD i64 %rdi %rsi
+  %rdi = ADD i64 %rdi %rdx
+  %rdi = ADD i64 %rdi %rcx
+  RET %rdi
+END_FUNC
+
+FUNC main() -> i64
+  %rax = CALL add_four 10 20 5 7
+  RET %rax
+END_FUNC
