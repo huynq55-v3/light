@@ -1383,5 +1383,138 @@ END_FUNC
     assert!(has_unknown, "IVL Engine phải trả về Unknown khi có SYSCALL trong thân vòng lặp! Got: {:?}", results);
 }
 
+#[test]
+fn test_ivl_on_v13_branching() {
+    let code = r#"
+FUNC test_branch() -> i64
+  %cond = CONST bool false
+  BR_IF %cond .then_branch
+  %res = CONST i64 100
+  JUMP .end_branch
+  LABEL .then_branch
+  %res = CONST i64 200
+  LABEL .end_branch
+  ASSERT %res == 100
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V13");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V13 trên IVL phải PASS! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_v17_join_phi() {
+    let code = r#"
+FUNC test_join(cond: bool) -> i64
+  BR_IF cond .then_branch
+  %x = CONST i64 10
+  JUMP .join
+  LABEL .then_branch
+  %x = CONST i64 -999
+  LABEL .join
+  ASSERT %x > 0
+  RET %x
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V17");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
+    assert!(failed, "V17 trên IVL phải bắt được lỗi x=-999! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_v22_mid_ret() {
+    let code = r#"
+FUNC test_mid_ret(x: i64) -> i64
+  %cond = LT i64 x 0
+  BR_IF %cond .neg_branch
+  %res = CONST i64 100
+  RET %res
+  LABEL .neg_branch
+  %bad_res = CONST i64 -1
+  RET %bad_res
+  ENSURE %res >= 0
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V22");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
+    assert!(failed, "V22 trên IVL phải bắt được lỗi RET -1! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_v32_both_branches_end_in_ret() {
+    let code = r#"
+FUNC max_val(a: i64, b: i64) -> i64
+  %cmp = GT i64 a b
+  BR_IF %cmp .is_a
+  %res1 = MOV b
+  ENSURE %res >= a && %res >= b
+  RET %res1
+  LABEL .is_a
+  %res = MOV a
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V32");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V32 trên IVL phải PASS! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_v36_both_branches_diff_ret() {
+    let code = r#"
+FUNC max_simple(a: i64, b: i64) -> i64
+  ENSURE %ret >= a && %ret >= b
+  %gt = GT i64 a b
+  BR_IF %gt .is_a
+  %b_val = MOV b
+  RET %b_val
+  LABEL .is_a
+  %ret = MOV a
+  RET %ret
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V36");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V36 trên IVL phải PASS! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_v24_in_loop_branching() {
+    let code = r#"
+FUNC test_loop_branching(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 1000
+  %i = CONST i64 0
+  %acc = CONST i64 0
+  LOOP branch_loop
+    INVARIANT %i >= 0 && %i <= n && %acc >= %i && %acc <= %i * 2
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %rem = MOD i64 %i 2
+    %even = EQ i64 %rem 0
+    BR_IF %even .is_even
+    %acc = ADD i64 %acc 1
+    JUMP .join
+    LABEL .is_even
+    %acc = ADD i64 %acc 2
+    LABEL .join
+    %i = ADD i64 %i 1
+  END_LOOP branch_loop
+  RET %acc
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V24");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V24 trên IVL phải PASS! Got: {:?}", results);
+}
+
+
 
 
