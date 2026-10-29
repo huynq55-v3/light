@@ -4506,72 +4506,72 @@ FUNC main() -> i64
   %msg_len = SLICE_LEN %msg
   %dummy1 = CALL std_print_slice %msg %msg_len
 
-  # 1. Compile test_syscall.lit -> syscall.bin
-  %src0 = ALLOC slice<u8> 20
-  STORE_STR %src0 "test_syscall.lit\0"
+  # 1. Compile tests/test_syscall.lit -> syscall.bin
+  %src0 = ALLOC slice<u8> 32
+  STORE_STR %src0 "tests/test_syscall.lit\0"
   %out0 = ALLOC slice<u8> 16
   STORE_STR %out0 "syscall.bin\0"
   %res0 = CALL compile_file %src0 %out0
 
-  # 2. Compile test_advanced.lit -> advanced.bin
-  %src1 = ALLOC slice<u8> 20
-  STORE_STR %src1 "test_advanced.lit\0"
+  # 2. Compile tests/test_advanced.lit -> advanced.bin
+  %src1 = ALLOC slice<u8> 32
+  STORE_STR %src1 "tests/test_advanced.lit\0"
   %out1 = ALLOC slice<u8> 16
   STORE_STR %out1 "advanced.bin\0"
   %res1 = CALL compile_file %src1 %out1
 
-  # 3. Compile test_calc.lit -> calc.bin
-  %src2 = ALLOC slice<u8> 16
-  STORE_STR %src2 "test_calc.lit\0"
+  # 3. Compile tests/test_calc.lit -> calc.bin
+  %src2 = ALLOC slice<u8> 32
+  STORE_STR %src2 "tests/test_calc.lit\0"
   %out2 = ALLOC slice<u8> 16
   STORE_STR %out2 "calc.bin\0"
   %res2 = CALL compile_file %src2 %out2
 
-  # 4. Compile test_mem.lit -> mem.bin
-  %src3 = ALLOC slice<u8> 16
-  STORE_STR %src3 "test_mem.lit\0"
+  # 4. Compile tests/test_mem.lit -> mem.bin
+  %src3 = ALLOC slice<u8> 32
+  STORE_STR %src3 "tests/test_mem.lit\0"
   %out3 = ALLOC slice<u8> 16
   STORE_STR %out3 "mem.bin\0"
   %res3 = CALL compile_file %src3 %out3
 
-  # 5. Compile test_mem64.lit -> mem64.bin
-  %src4 = ALLOC slice<u8> 16
-  STORE_STR %src4 "test_mem64.lit\0"
+  # 5. Compile tests/test_mem64.lit -> mem64.bin
+  %src4 = ALLOC slice<u8> 32
+  STORE_STR %src4 "tests/test_mem64.lit\0"
   %out4 = ALLOC slice<u8> 16
   STORE_STR %out4 "mem64.bin\0"
   %res4 = CALL compile_file %src4 %out4
 
-  # 6. Compile test_func.lit -> func.bin
-  %src5 = ALLOC slice<u8> 16
-  STORE_STR %src5 "test_func.lit\0"
+  # 6. Compile tests/test_func.lit -> func.bin
+  %src5 = ALLOC slice<u8> 32
+  STORE_STR %src5 "tests/test_func.lit\0"
   %out5 = ALLOC slice<u8> 16
   STORE_STR %out5 "func.bin\0"
   %res5 = CALL compile_file %src5 %out5
 
-  # 7. Compile test_args.lit -> args.bin
-  %src6 = ALLOC slice<u8> 16
-  STORE_STR %src6 "test_args.lit\0"
+  # 7. Compile tests/test_args.lit -> args.bin
+  %src6 = ALLOC slice<u8> 32
+  STORE_STR %src6 "tests/test_args.lit\0"
   %out6 = ALLOC slice<u8> 16
   STORE_STR %out6 "args.bin\0"
   %res6 = CALL compile_file %src6 %out6
 
-  # 8. Compile test_branch.lit -> branch.bin
-  %src7 = ALLOC slice<u8> 16
-  STORE_STR %src7 "test_branch.lit\0"
+  # 8. Compile tests/test_branch.lit -> branch.bin
+  %src7 = ALLOC slice<u8> 32
+  STORE_STR %src7 "tests/test_branch.lit\0"
   %out7 = ALLOC slice<u8> 16
   STORE_STR %out7 "branch.bin\0"
   %res7 = CALL compile_file %src7 %out7
 
-  # 9. Compile test_multi.lit -> multi.bin
-  %src8 = ALLOC slice<u8> 16
-  STORE_STR %src8 "test_multi.lit\0"
+  # 9. Compile tests/test_multi.lit -> multi.bin
+  %src8 = ALLOC slice<u8> 32
+  STORE_STR %src8 "tests/test_multi.lit\0"
   %out8 = ALLOC slice<u8> 16
   STORE_STR %out8 "multi.bin\0"
   %res8 = CALL compile_file %src8 %out8
 
-  # 10. Compile test_vars.lit -> vars.bin
-  %src9 = ALLOC slice<u8> 16
-  STORE_STR %src9 "test_vars.lit\0"
+  # 10. Compile tests/test_vars.lit -> vars.bin
+  %src9 = ALLOC slice<u8> 32
+  STORE_STR %src9 "tests/test_vars.lit\0"
   %out9 = ALLOC slice<u8> 16
   STORE_STR %out9 "vars.bin\0"
   %res9 = CALL compile_file %src9 %out9

@@ -1,0 +1,10 @@
+# Test modern clean syntax (type inference for CONST and ADD, concise ALLOC)
+FUNC main() -> i64
+  %a = CONST 20
+  %b = CONST 22
+  %sum = ADD %a %b
+  %buf = ALLOC 64
+  STORE8 %buf 0 %sum
+  %res = LOAD8 %buf 0
+  RET %res
+END_FUNC

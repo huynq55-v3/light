@@ -1,117 +1,181 @@
-# SYSTEM PROMPT: LIGHT PROGRAMMING LANGUAGE SPECIFICATION (.lit)
+# 🌟 LIGHT PROGRAMMING LANGUAGE SPECIFICATION (.lit)
+## The AI-Native, Formally Verified Flat SSA Systems Language
 
-You are an expert compiler engineer writing code in **Light**, a line-oriented, flat Three-Address Code (TAC/SSA) language designed for 100% verifiable software without C dependencies.
+> **Target Audience:** AI Models (LLMs), Code Generators, and Systems Engineers.  
+> **Design Principle:** One instruction per line. Flat Three-Address Code (TAC/SSA). Zero nested syntax. 100% mathematically verifiable with Z3 SMT Solver before code generation. Zero C runtime dependency (Direct Linux x86_64 Syscalls).
 
 ---
 
-## 1. CORE SYNTAX RULES
-1. **One instruction per line.** No semicolons `;`, no braces `{ }`, no mandatory indentation.
-2. **Registers & Variables:** Start with `%` (e.g., `%res`, `%i`, `%sum`).
-3. **Constants:** Written directly (e.g., `10`, `true`, `false`).
-4. **Comments:** Start with `#`.
+## 1. CORE SYNTAX & FORMATTING RULES
+1. **One instruction per line.** No semicolons `;`, no curly braces `{ }`, no mandatory indentation.
+2. **Registers & Variables:** Always start with `%` (e.g., `%res`, `%i`, `%msg`, `%ptr`).
+3. **Single Assignment & Rebinding:** Each temporary is assigned once. Inside loops, state is updated at the loop latch via `%var = MOV %next_var`.
+4. **Comments:** Single-line comments start with `#`.
+5. **Function Definitions:**
+   ```light
+   FUNC func_name(param1: type1, param2: type2) -> return_type
+     # Instructions...
+     RET %result
+   END_FUNC
+   ```
 
 ---
 
 ## 2. DATA TYPES
-- `i64`: 64-bit signed integer.
+- `i64`: 64-bit signed integer (default register arithmetic type).
 - `u64`: 64-bit unsigned integer.
-- `f64`: 64-bit floating point.
+- `u8`: 8-bit unsigned integer (byte operations).
 - `bool`: `true` or `false`.
-- `ptr`: 64-bit memory address.
-- `arr<T, N>` / `slice<T>`: Fixed arrays and dynamically-sized slices.
+- `ptr`: 64-bit raw memory address.
+- `slice<u8>`: Fat pointer slice with pointer and length.
 
 ---
 
-## 3. VERIFICATION DIRECTIVES (Z3 SMT PROOF)
-Place these at the top of functions or loops. The compiler verifies them via Z3 before emitting code:
-- `REQUIRE <expr>`: Precondition on function arguments.
-- `ENSURE <expr>`: Postcondition guaranteed on the return value.
-- `INVARIANT <expr>`: Loop invariant maintained across every iteration (required for all unbounded loops).
-- `ASSERT <expr>`: Inline condition check.
+## 3. THE 16 CANONICAL CORE INSTRUCTIONS
 
-Expressions support: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`.
+### I. Mathematical Verification (Z3 SMT Directives)
+Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at compile time:
+- `REQUIRE <expr>`: Preconditions that caller arguments MUST satisfy.
+- `ENSURE <expr>`: Postconditions guaranteed by the function on its return value.
+- `INVARIANT <expr>`: Loop invariant maintained across every iteration (enables 2-step mathematical induction).
+- `ASSERT <expr>`: Static assertion at a specific execution point.
+
+*Supported expressions in contracts:* `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, `len(%slice)`.
+
+### II. Constants & Value Movement
+- `%dest = CONST <val>`: Load integer or boolean constant (`%x = CONST 42`, `%flag = CONST true`).
+- `%dest = MOV %src`: Copy value between registers/variables.
+
+### III. Arithmetic & Logic Operations (Flat TAC)
+Binary operations take exactly 2 operands (no nested expressions):
+- `%dest = ADD %a %b`: Addition
+- `%dest = SUB %a %b`: Subtraction
+- `%dest = MUL %a %b`: Multiplication
+- `%dest = DIV %a %b`: Signed integer division (automatically checked for division by zero)
+- `%dest = MOD %a %b`: Signed modulo
+- `%dest = EQ %a %b`: Equal (`bool` result)
+- `%dest = NEQ %a %b`: Not equal (`bool` result)
+- `%dest = LT %a %b`: Less than
+- `%dest = LTE %a %b`: Less than or equal
+- `%dest = GT %a %b`: Greater than
+- `%dest = GTE %a %b`: Greater than or equal
+- `%dest = AND %a %b`: Logical AND
+- `%dest = OR %a %b`: Logical OR
+
+### IV. Functions & Control Flow
+- `%dest = CALL <func_name> [arg1 arg2 ...]`: Call function with positional arguments.
+- `RET %val`: Return value from function (in `FUNC main()`, terminates process with exit code).
+- `LOOP <label>` ... `END_LOOP <label>`: Structured loop block.
+- `BREAK_IF %cond`: Exit innermost loop when `%cond` is true.
+- `LABEL <name>`: Branch target label.
+- `JUMP <name>`: Unconditional jump.
+- `BR_IF %cond <name>`: Conditional jump when `%cond` is true.
+
+### V. Memory & Slices (Safe Zero-Overhead Memory)
+- `%buf = ALLOC <size_in_bytes>`: Allocate contiguous memory on the stack/BSS.
+- `STORE8 %buf %offset %val`: Store 1 byte (0..255) at `%buf + %offset`.
+- `%dest = LOAD8 %buf %offset`: Read 1 byte from `%buf + %offset`.
+- `STORE64 %buf %offset %val`: Store 8 bytes (i64) at `%buf + %offset`.
+- `%dest = LOAD64 %buf %offset`: Read 8 bytes (i64) from `%buf + %offset`.
+- `STORE_STR %buf "string\n"`: Store null-terminated string literal into `%buf`.
+- `%len = SLICE_LEN %buf`: Get length in bytes.
+- `%ptr = SLICE_PTR %buf`: Get raw memory pointer.
+
+### VI. Linux Bare-Metal Syscall (Zero libc)
+- `%res = SYSCALL %rax %rdi %rsi %rdx`: Direct Linux x86_64 kernel syscall.
+  - `sys_read`: `%rax = 0`, `%rdi = fd`, `%rsi = buf_ptr`, `%rdx = count`
+  - `sys_write`: `%rax = 1`, `%rdi = fd (1=stdout)`, `%rsi = buf_ptr`, `%rdx = count`
+  - `sys_open`: `%rax = 2`, `%rdi = path_ptr`, `%rsi = flags`, `%rdx = mode`
+  - `sys_close`: `%rax = 3`, `%rdi = fd`
+  - `sys_exit`: `%rax = 60`, `%rdi = exit_code`
 
 ---
 
-## 4. INSTRUCTION SET (ISA)
+## 4. CANONICAL CODE PATTERNS
 
-### Assignment & Arithmetic
-- `%dest = CONST <type> <val>`  (e.g., `%a = CONST i64 10`)
-- `%dest = MOV %src`            (Copy value)
-- `%dest = CALL func_name arg1 arg2 ...` (Function invocation)
-- `%dest = ADD|SUB|MUL|DIV|MOD <type> %src1 %src2`
-- `%dest = EQ|NEQ|LT|LTE|GT|GTE|AND|OR <type> %src1 %src2`
-
-### Safe Memory & Strings
-- `ALLOC %buf <size_in_bytes>`
-- `STORE_STR %buf <offset> "string\n"`
-- `STORE8 %buf %offset %val`
-- `%dest = LOAD8 %buf %offset`
-- `STORE64 %buf %offset %val`
-- `%dest = LOAD64 %buf %offset`
-
-### Structured Control Flow (Turing-Complete)
-- `LOOP <label>`
-- `BREAK_IF %bool_cond`
-- `CONTINUE_IF %bool_cond`
-- `END_LOOP <label>`
-
-### Linux x86_64 Syscalls & Return
-- `SYSCALL %rax %rdi %rsi %rdx`
-  - Linux `sys_write`: `%rax=1`, `%rdi=1` (stdout), `%rsi=%buf`, `%rdx=count`
-  - Linux `sys_exit`: `%rax=60`, `%rdi=code`
-- `RET %reg` or `RET <const>`
-
----
-
-## 5. COMPLETE CODE EXAMPLES
-
-### Example 1: Hello World via Raw Linux Syscall
-```light
-FUNC main() -> i64
-  ALLOC %msg 14
-  STORE_STR %msg 0 "Hello, World!\n"
-
-  # sys_write(stdout=1, buf=%msg, count=14)
-  %rax = CONST i64 1
-  %rdi = CONST i64 1
-  %rsi = MOV %msg
-  %rdx = CONST i64 14
-  SYSCALL %rax %rdi %rsi %rdx
-
-  # sys_exit(0)
-  %exit_rax = CONST i64 60
-  %exit_code = CONST i64 0
-  SYSCALL %exit_rax %exit_code %exit_code %exit_code
-
-  RET %exit_code
-END_FUNC
-```
-
-### Example 2: Verified Summation with Loop Invariant
+### Pattern 1: Loop with State Mutation (Rebinding)
 ```light
 FUNC sum_to_n(n: i64) -> i64
-  REQUIRE n >= 0 && n <= 10000
+  REQUIRE n >= 0 && n <= 1000
 
-  %i = CONST i64 0
-  %sum = CONST i64 0
+  %i = CONST 0
+  %acc = CONST 0
 
-  LOOP count_loop
+  LOOP sum_loop
     INVARIANT %i >= 0 && %i <= n
-    INVARIANT %sum >= 0
+    INVARIANT %acc >= 0
 
-    %cond = GTE i64 %i n
-    BREAK_IF %cond
+    %done = GTE %i n
+    BREAK_IF %done
 
-    %next_i = ADD i64 %i 1
-    %sum = ADD i64 %sum %next_i
+    %next_i = ADD %i 1
+    %acc = ADD %acc %next_i
+
+    # Rebind loop state for next iteration
     %i = MOV %next_i
-  END_LOOP count_loop
+  END_LOOP sum_loop
 
-  ENSURE %sum >= 0
-  RET %sum
+  ENSURE %acc >= 0
+  RET %acc
+END_FUNC
+```
+
+### Pattern 2: Bare-Metal Console Print via Linux Syscall
+```light
+FUNC main() -> i64
+  %msg = ALLOC 32
+  STORE_STR %msg "Hello from Light Flat SSA!\n"
+  %len = SLICE_LEN %msg
+  %ptr = SLICE_PTR %msg
+
+  # Linux sys_write(stdout=1, ptr, len)
+  %rax = CONST 1
+  %rdi = CONST 1
+  %rsi = MOV %ptr
+  %rdx = MOV %len
+  SYSCALL %rax %rdi %rsi %rdx
+
+  # Return code 0 (exits via sys_exit 60)
+  %zero = CONST 0
+  RET %zero
+END_FUNC
+```
+
+### Pattern 3: Array / Buffer Processing
+```light
+FUNC fill_buffer(buf: slice<u8>, count: i64) -> i64
+  REQUIRE count >= 0 && count <= len(buf)
+
+  %i = CONST 0
+  %char_a = CONST 65   # ASCII 'A'
+
+  LOOP fill_loop
+    INVARIANT %i >= 0 && %i <= count
+
+    %done = GTE %i count
+    BREAK_IF %done
+
+    STORE8 buf %i %char_a
+
+    %next_i = ADD %i 1
+    %i = MOV %next_i
+  END_LOOP fill_loop
+
+  RET count
 END_FUNC
 ```
 
 ---
-**ALWAYS adhere strictly to the 1-instruction-per-line SSA format. Do not use C syntax.**
+
+## 5. ANTI-PATTERNS (WHAT NEVER TO DO)
+❌ **NEVER** write nested expressions: `res = (a + b) * c`  
+✔️ **ALWAYS** break into atomic TAC lines:
+```light
+%t1 = ADD %a %b
+%res = MUL %t1 %c
+```
+
+❌ **NEVER** write C-style control structures: `if (x) { ... }` or `for (i=0; i<n; i++)`  
+✔️ **ALWAYS** use `BR_IF` or `LOOP` / `BREAK_IF` / `END_LOOP`.
+
+❌ **NEVER** omit `%` for variables or temporary registers.

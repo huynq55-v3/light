@@ -591,11 +591,22 @@ impl Parser {
 
             match op {
                 "ALLOC" => {
-                    // %dest = ALLOC slice<T> <len>
+                    // %dest = ALLOC slice<T> <len> OR %dest = ALLOC <len>
+                    if parts.len() == 4 {
+                        let len = parts[3].parse::<usize>().map_err(|_| ParseError {
+                            line_no,
+                            message: format!("Allocation size must be an integer: {}", parts[3]),
+                        })?;
+                        return Ok(Instruction::AllocSlice {
+                            dest,
+                            elem_ty: Type::U8,
+                            len,
+                        });
+                    }
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Syntax: %dest = ALLOC slice<T> <len>".into(),
+                            message: "Syntax: %dest = ALLOC <size> or %dest = ALLOC slice<T> <len>".into(),
                         });
                     }
                     let ty = Self::parse_type(parts[3], line_no)?;
@@ -614,7 +625,7 @@ impl Parser {
                         _ => {
                             return Err(ParseError {
                                 line_no,
-                                message: "ALLOC expects a slice<T> type".into(),
+                                message: "ALLOC expects a slice<T> type or direct size".into(),
                             });
                         }
                     }
@@ -659,10 +670,26 @@ impl Parser {
                     });
                 }
                 "CONST" => {
+                    if parts.len() == 4 {
+                        // %dest = CONST <val>
+                        let raw = parts[3];
+                        let (ty, val) = if raw == "true" {
+                            (Type::Bool, Value::Bool(true))
+                        } else if raw == "false" {
+                            (Type::Bool, Value::Bool(false))
+                        } else {
+                            let n = raw.parse::<i64>().map_err(|_| ParseError {
+                                line_no,
+                                message: format!("Cannot parse integer constant: {}", raw),
+                            })?;
+                            (Type::I64, Value::I64(n))
+                        };
+                        return Ok(Instruction::AssignConst { dest, ty, val });
+                    }
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Syntax: %dest = CONST <type> <val>".into(),
+                            message: "Syntax: %dest = CONST <val> or %dest = CONST <type> <val>".into(),
                         });
                     }
                     let ty = Self::parse_type(parts[3], line_no)?;
@@ -759,12 +786,6 @@ impl Parser {
                 }
                 "ADD" | "SUB" | "MUL" | "DIV" | "MOD" | "EQ" | "NEQ" | "LT" | "LTE" | "GT" | "GTE"
                 | "AND" | "OR" => {
-                    if parts.len() < 6 {
-                        return Err(ParseError {
-                            line_no,
-                            message: format!("Syntax: %dest = {} <type> src1 src2", op),
-                        });
-                    }
                     let bin_op = match op {
                         "ADD" => BinOp::Add,
                         "SUB" => BinOp::Sub,
@@ -781,9 +802,21 @@ impl Parser {
                         "OR" => BinOp::Or,
                         _ => unreachable!(),
                     };
-                    let ty = Self::parse_type(parts[3], line_no)?;
-                    let src1 = Self::parse_operand(parts[4]);
-                    let src2 = Self::parse_operand(parts[5]);
+                    let (ty, src1, src2) = if parts.len() == 5 {
+                        let default_ty = match bin_op {
+                            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::And | BinOp::Or => Type::Bool,
+                            _ => Type::I64,
+                        };
+                        (default_ty, Self::parse_operand(parts[3]), Self::parse_operand(parts[4]))
+                    } else if parts.len() >= 6 {
+                        let t = Self::parse_type(parts[3], line_no)?;
+                        (t, Self::parse_operand(parts[4]), Self::parse_operand(parts[5]))
+                    } else {
+                        return Err(ParseError {
+                            line_no,
+                            message: format!("Syntax: %dest = {} src1 src2 or %dest = {} <type> src1 src2", op, op),
+                        });
+                    };
                     return Ok(Instruction::Binary {
                         op: bin_op,
                         ty,
