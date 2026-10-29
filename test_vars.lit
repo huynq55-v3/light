@@ -1,0 +1,7 @@
+# Named Local Variable Stack Spill Test
+FUNC main() -> i64
+  %alpha = CONST i64 10
+  %beta = CONST i64 32
+  %gamma = ADD i64 %alpha %beta
+  RET %gamma
+END_FUNC

@@ -490,9 +490,9 @@ FUNC emit_ret_inst(buf: slice<u8>, pos: i64) -> i64
   RET %next_pos
 END_FUNC
 
-# Emit: push rbp; mov rbp, rsp (4 bytes: 55 48 89 e5)
+# Emit: push rbp; mov rbp, rsp; sub rsp, 4096 (11 bytes: 55 48 89 e5 48 81 ec 00 10 00 00)
 FUNC emit_func_prologue(buf: slice<u8>, pos: i64) -> i64
-  REQUIRE pos >= 0 && pos + 4 <= len(buf)
+  REQUIRE pos >= 0 && pos + 11 <= len(buf)
   %ptr = SLICE_PTR buf
   %b_55 = CONST i64 85
   STORE8 %ptr pos %b_55
@@ -505,8 +505,26 @@ FUNC emit_func_prologue(buf: slice<u8>, pos: i64) -> i64
   %p3 = ADD i64 pos 3
   %b_e5 = CONST i64 229
   STORE8 %ptr %p3 %b_e5
-  %next_pos = ADD i64 pos 4
-  ENSURE %next_pos == pos + 4
+  %p4 = ADD i64 pos 4
+  STORE8 %ptr %p4 %b_rex
+  %p5 = ADD i64 pos 5
+  %b_81 = CONST i64 129
+  STORE8 %ptr %p5 %b_81
+  %p6 = ADD i64 pos 6
+  %b_ec = CONST i64 236
+  STORE8 %ptr %p6 %b_ec
+  %p7 = ADD i64 pos 7
+  %b_00 = CONST i64 0
+  STORE8 %ptr %p7 %b_00
+  %p8 = ADD i64 pos 8
+  %b_10 = CONST i64 16
+  STORE8 %ptr %p8 %b_10
+  %p9 = ADD i64 pos 9
+  STORE8 %ptr %p9 %b_00
+  %p10 = ADD i64 pos 10
+  STORE8 %ptr %p10 %b_00
+  %next_pos = ADD i64 pos 11
+  ENSURE %next_pos == pos + 11
   RET %next_pos
 END_FUNC
 
@@ -530,6 +548,90 @@ FUNC emit_func_epilogue(buf: slice<u8>, pos: i64) -> i64
   STORE8 %ptr %p4 %b_c3
   %next_pos = ADD i64 pos 5
   ENSURE %next_pos == pos + 5
+  RET %next_pos
+END_FUNC
+
+# Emit: mov [rbp - slot], src (7 bytes: 48 89 modrm b0 b1 b2 b3)
+FUNC emit_store_stack(buf: slice<u8>, pos: i64, src: i64, slot: i64) -> i64
+  REQUIRE pos >= 0 && pos + 7 <= len(buf) && src >= 0 && src <= 7 && slot >= 0 && slot <= 4096
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_op = CONST i64 137
+  STORE8 %ptr %p1 %b_op
+  %p2 = ADD i64 pos 2
+  %c_src_mul = MUL i64 src 8
+  %c_133 = CONST i64 133
+  %modrm = ADD i64 %c_133 %c_src_mul
+  STORE8 %ptr %p2 %modrm
+
+  %c_2pow32 = CONST i64 4294967296
+  %disp = SUB i64 %c_2pow32 slot
+
+  %b0 = MOD i64 %disp 256
+  %p3 = ADD i64 pos 3
+  STORE8 %ptr %p3 %b0
+
+  %v1 = DIV i64 %disp 256
+  %b1 = MOD i64 %v1 256
+  %p4 = ADD i64 pos 4
+  STORE8 %ptr %p4 %b1
+
+  %v2 = DIV i64 %v1 256
+  %b2 = MOD i64 %v2 256
+  %p5 = ADD i64 pos 5
+  STORE8 %ptr %p5 %b2
+
+  %v3 = DIV i64 %v2 256
+  %b3 = MOD i64 %v3 256
+  %p6 = ADD i64 pos 6
+  STORE8 %ptr %p6 %b3
+
+  %next_pos = ADD i64 pos 7
+  ENSURE %next_pos == pos + 7
+  RET %next_pos
+END_FUNC
+
+# Emit: mov dst, [rbp - slot] (7 bytes: 48 8B modrm b0 b1 b2 b3)
+FUNC emit_load_stack(buf: slice<u8>, pos: i64, dst: i64, slot: i64) -> i64
+  REQUIRE pos >= 0 && pos + 7 <= len(buf) && dst >= 0 && dst <= 7 && slot >= 0 && slot <= 4096
+  %ptr = SLICE_PTR buf
+  %b_rex = CONST i64 72
+  STORE8 %ptr pos %b_rex
+  %p1 = ADD i64 pos 1
+  %b_op = CONST i64 139
+  STORE8 %ptr %p1 %b_op
+  %p2 = ADD i64 pos 2
+  %c_dst_mul = MUL i64 dst 8
+  %c_133 = CONST i64 133
+  %modrm = ADD i64 %c_133 %c_dst_mul
+  STORE8 %ptr %p2 %modrm
+
+  %c_2pow32 = CONST i64 4294967296
+  %disp = SUB i64 %c_2pow32 slot
+
+  %b0 = MOD i64 %disp 256
+  %p3 = ADD i64 pos 3
+  STORE8 %ptr %p3 %b0
+
+  %v1 = DIV i64 %disp 256
+  %b1 = MOD i64 %v1 256
+  %p4 = ADD i64 pos 4
+  STORE8 %ptr %p4 %b1
+
+  %v2 = DIV i64 %v1 256
+  %b2 = MOD i64 %v2 256
+  %p5 = ADD i64 pos 5
+  STORE8 %ptr %p5 %b2
+
+  %v3 = DIV i64 %v2 256
+  %b3 = MOD i64 %v3 256
+  %p6 = ADD i64 pos 6
+  STORE8 %ptr %p6 %b3
+
+  %next_pos = ADD i64 pos 7
+  ENSURE %next_pos == pos + 7
   RET %next_pos
 END_FUNC
 
@@ -796,6 +898,63 @@ FUNC parse_reg_id(buf: slice<u8>, pos: i64) -> i64
   RET %two
 END_FUNC
 
+# Check if operand at pos is a named variable (not a standard physical register)
+FUNC is_named_var(buf: slice<u8>, pos: i64) -> bool
+  REQUIRE pos >= 0 && pos + 4 <= len(buf)
+  %ptr = SLICE_PTR buf
+  %p0 = LOAD8 %ptr pos
+  %c_pct = CONST i64 37
+  %is_pct = EQ i64 %p0 %c_pct
+  %false_b = CONST bool false
+  %not_pct = EQ bool %is_pct %false_b
+  RET_IF %not_pct %false_b
+
+  %p1 = ADD i64 pos 1
+  %c1 = LOAD8 %ptr %p1
+  %c_r = CONST i64 114
+  %not_r = NEQ i64 %c1 %c_r
+  %true_b = CONST bool true
+  RET_IF %not_r %true_b
+
+  # c1 is 'r'. Check if c2 is digit '0'..'7'
+  %p2 = ADD i64 pos 2
+  %c2 = LOAD8 %ptr %p2
+  %c_0 = CONST i64 48
+  %c_7 = CONST i64 55
+  %is_d_low = GTE i64 %c2 %c_0
+  %is_d_high = LTE i64 %c2 %c_7
+  %is_digit = AND bool %is_d_low %is_d_high
+  %not_digit = EQ bool %is_digit %false_b
+  BR_IF %not_digit check_named_abcds
+
+  # It is %r0..%r7 -> check if length is 3 (delimiter at pos+3)
+  %p3 = ADD i64 pos 3
+  %c3 = LOAD8 %ptr %p3
+  %c_sp = CONST i64 32
+  %is_sp = LTE i64 %c3 %c_sp
+  %c_eq = CONST i64 61
+  %is_eq = EQ i64 %c3 %c_eq
+  %is_end3 = OR bool %is_sp %is_eq
+  %is_phys_r = AND bool %is_digit %is_end3
+  RET_IF %is_phys_r %false_b
+  RET %true_b
+
+  LABEL check_named_abcds
+  %p4 = ADD i64 pos 4
+  %p4_safe = LTE i64 %p4 len(buf)
+  %not_p4_safe = EQ bool %p4_safe %false_b
+  RET_IF %not_p4_safe %false_b
+
+  # Check if delimiter at pos+4
+  %c4 = LOAD8 %ptr %p4
+  %is_sp4 = LTE i64 %c4 %c_sp
+  %is_eq4 = EQ i64 %c4 %c_eq
+  %is_end4 = OR bool %is_sp4 %is_eq4
+  RET_IF %is_end4 %false_b
+
+  RET %true_b
+END_FUNC
+
 # Emit standalone exit machine code at offset 120
 FUNC emit_exit_code(buf: slice<u8>, exit_code: i64) -> i64
   REQUIRE len(buf) >= 136 && exit_code >= 0 && exit_code <= 255
@@ -1008,6 +1167,56 @@ FUNC copy_label_name(src_buf: slice<u8>, start: i64, nl: i64, out_buf: slice<u8>
   END_LOOP copy_lbl_loop
 
   RET %zero
+END_FUNC
+
+# Look up or allocate local variable stack slot (returns slot offset 8, 16, 24, ...)
+FUNC find_or_add_var(var_table: slice<u8>, var_count: i64, name_p1: i64, name_p2: i64) -> i64
+  REQUIRE len(var_table) >= 4096 && var_count >= 0 && var_count <= 150
+  %ptr = SLICE_PTR var_table
+  %vi = CONST i64 0
+  %c_24 = CONST i64 24
+
+  LOOP find_var_loop
+    INVARIANT %vi >= 0 && %vi <= var_count
+
+    %done = GTE i64 %vi var_count
+    BREAK_IF %done
+
+    %off = MUL i64 %vi %c_24
+    %cand_p1 = LOAD64 %ptr %off
+    %off8 = ADD i64 %off 8
+    %cand_p2 = LOAD64 %ptr %off8
+
+    %m1 = EQ i64 %cand_p1 name_p1
+    %m2 = EQ i64 %cand_p2 name_p2
+    %matched = AND bool %m1 %m2
+    %false_b = CONST bool false
+    %not_m = EQ bool %matched %false_b
+    BR_IF %not_m next_var_entry
+
+    %off16 = ADD i64 %off 16
+    %existing_slot = LOAD64 %ptr %off16
+    RET %existing_slot
+
+    LABEL next_var_entry
+    %next_vi = ADD i64 %vi 1
+    %vi = MOV %next_vi
+  END_LOOP find_var_loop
+
+  # Variable not found, allocate new slot: slot = (var_count + 1) * 8
+  %one = CONST i64 1
+  %v_idx = ADD i64 var_count %one
+  %c_8 = CONST i64 8
+  %new_slot = MUL i64 %v_idx %c_8
+
+  %new_off = MUL i64 var_count %c_24
+  STORE64 %ptr %new_off name_p1
+  %new_off8 = ADD i64 %new_off 8
+  STORE64 %ptr %new_off8 name_p2
+  %new_off16 = ADD i64 %new_off 16
+  STORE64 %ptr %new_off16 %new_slot
+
+  RET %new_slot
 END_FUNC
 
 # Search label table for matching 16-byte label name and return code offset
@@ -1254,6 +1463,10 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %lbl_tmp = ALLOC slice<u8> 16
   %lbl_tmp_ptr = SLICE_PTR %lbl_tmp
 
+  # Allocate local variable table (4KB)
+  %var_table = ALLOC slice<u8> 4096
+  %var_count = CONST i64 0
+
   # Allocate ELF binary buffer (256KB)
   %elf_buf = ALLOC slice<u8> 262144
   %elf_raw_ptr = SLICE_PTR %elf_buf
@@ -1303,6 +1516,40 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %not_ret_reg = EQ bool %is_ret_reg %false_b
     BR_IF %not_ret_reg parse_imm_ret
 
+    # Check if named variable or physical register
+    %ret_named = CALL is_named_var %src_buf %ret_arg_p
+    %not_ret_named = EQ bool %ret_named %false_b
+    BR_IF %not_ret_named ret_phys_reg
+
+    # Named variable return: load from stack
+    %dummy_rn = CALL copy_label_name %src_buf %ret_arg_p %nl %lbl_tmp
+    %rn_p1 = LOAD64 %lbl_tmp_ptr 0
+    %rn_p2 = LOAD64 %lbl_tmp_ptr 8
+    %rn_slot = CALL find_or_add_var %var_table %var_count %rn_p1 %rn_p2
+
+    # Check if in_main
+    %not_im_named = EQ bool %in_main %false_b
+    BR_IF %not_im_named ret_named_helper
+
+    # In main: load into rdi (7), exit 60
+    %c_r1 = CALL emit_load_stack %elf_buf %cur_code_pos 7 %rn_slot
+    %c_r2 = CALL emit_mov_imm %elf_buf %c_r1 0 60
+    %c_r3 = CALL emit_syscall_inst %elf_buf %c_r2
+    %cur_code_pos = MOV %c_r3
+    %t_rn = CONST bool true
+    %has_dyn_code = MOV %t_rn
+    JUMP advance_pos
+
+    LABEL ret_named_helper
+    # In helper: load into rax (0), epilogue
+    %c_rh1 = CALL emit_load_stack %elf_buf %cur_code_pos 0 %rn_slot
+    %c_rh2 = CALL emit_func_epilogue %elf_buf %c_rh1
+    %cur_code_pos = MOV %c_rh2
+    %t_rnh = CONST bool true
+    %has_dyn_code = MOV %t_rnh
+    JUMP advance_pos
+
+    LABEL ret_phys_reg
     # Check if in_main:
     %false_im = CONST bool false
     %not_im = EQ bool %in_main %false_im
@@ -1336,13 +1583,45 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     JUMP advance_pos
 
     LABEL check_reg_line
-    # 2. Check if line defines a register: starts with '%'
+    # 2. Check if line defines a register or variable: starts with '%'
     %c_start = LOAD8 %src_raw_ptr %start
     %is_pct = EQ i64 %c_start %c_pct_val
     %not_pct = EQ bool %is_pct %false_b
     BR_IF %not_pct check_func
 
+    %is_dst_named = CALL is_named_var %src_buf %start
+    %dst_slot = CONST i64 0
+    %not_dst_named = EQ bool %is_dst_named %false_b
+    BR_IF %not_dst_named reg_dst_phys
+
+    # Named destination variable: look up or add slot
+    %dummy_dst_n = CALL copy_label_name %src_buf %start %nl %lbl_tmp
+    %dn_p1 = LOAD64 %lbl_tmp_ptr 0
+    %dn_p2 = LOAD64 %lbl_tmp_ptr 8
+    %slot_alloc = CALL find_or_add_var %var_table %var_count %dn_p1 %dn_p2
+    %dst_slot = MOV %slot_alloc
+    # If slot was newly allocated: (var_count + 1) * 8
+    %c_8_v = CONST i64 8
+    %cur_expected = MUL i64 %var_count %c_8_v
+    %is_new_var = GT i64 %dst_slot %cur_expected
+    %false_nv = CONST bool false
+    %not_new_var = EQ bool %is_new_var %false_nv
+    BR_IF %not_new_var done_alloc_var
+    %max_var_lim = CONST i64 140
+    %var_ovf = GTE i64 %var_count %max_var_lim
+    BR_IF %var_ovf done_alloc_var
+    %next_var_cnt = ADD i64 %var_count 1
+    %var_count = MOV %next_var_cnt
+
+    LABEL done_alloc_var
+    # Use rax (0) as scratch register for evaluating RHS
+    %dst_reg = CONST i64 0
+    JUMP parse_eq_rhs
+
+    LABEL reg_dst_phys
     %dst_reg = CALL parse_reg_id %src_buf %start
+
+    LABEL parse_eq_rhs
     %eq_char = CONST i64 61
     %eq_pos = CALL find_char_from %src_buf %start %eq_char
     %no_eq = GTE i64 %eq_pos %nl
@@ -1357,6 +1636,18 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     %c_val_p = ADD i64 %rhs_pos 10
     %c_val = CALL parse_int_from %src_buf %c_val_p %nl
+    %not_named_c = EQ bool %is_dst_named %false_b
+    BR_IF %not_named_c emit_const_phys
+
+    # Named destination: emit mov rax, c_val; emit_store_stack dst_slot
+    %c_pos1 = CALL emit_mov_imm %elf_buf %cur_code_pos 0 %c_val
+    %c_pos2 = CALL emit_store_stack %elf_buf %c_pos1 0 %dst_slot
+    %cur_code_pos = MOV %c_pos2
+    %t_nc = CONST bool true
+    %has_dyn_code = MOV %t_nc
+    JUMP advance_pos
+
+    LABEL emit_const_phys
     %next_pos_c = CALL emit_mov_imm %elf_buf %cur_code_pos %dst_reg %c_val
     %cur_code_pos = MOV %next_pos_c
     %t_flag_c = CONST bool true
@@ -1374,15 +1665,63 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     BR_IF %r1_near_eof advance_pos
 
     %r1_pos = ADD i64 %rhs_pos 8
-    %r1 = CALL parse_reg_id %src_buf %r1_pos
     %sp_c = CONST i64 32
     %sp_pos = CALL find_char_from %src_buf %r1_pos %sp_c
     %r2_pos = CALL skip_whitespace %src_buf %sp_pos
+
+    # Load operand 1 into rdi (7)
+    %is_r1_named = CALL is_named_var %src_buf %r1_pos
+    %not_r1_n = EQ bool %is_r1_named %false_b
+    BR_IF %not_r1_n load_r1_phys
+
+    %dummy_r1n = CALL copy_label_name %src_buf %r1_pos %sp_pos %lbl_tmp
+    %r1n_p1 = LOAD64 %lbl_tmp_ptr 0
+    %r1n_p2 = LOAD64 %lbl_tmp_ptr 8
+    %r1n_slot = CALL find_or_add_var %var_table %var_count %r1n_p1 %r1n_p2
+    %pos_after_r1 = CALL emit_load_stack %elf_buf %cur_code_pos 7 %r1n_slot
+    JUMP load_op2
+
+    LABEL load_r1_phys
+    %r1 = CALL parse_reg_id %src_buf %r1_pos
+    %pos_after_r1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %r1
+
+    LABEL load_op2
+    # Load operand 2 into rsi (6)
+    %is_r2_named = CALL is_named_var %src_buf %r2_pos
+    %not_r2_n = EQ bool %is_r2_named %false_b
+    BR_IF %not_r2_n load_r2_phys
+
+    %dummy_r2n = CALL copy_label_name %src_buf %r2_pos %nl %lbl_tmp
+    %r2n_p1 = LOAD64 %lbl_tmp_ptr 0
+    %r2n_p2 = LOAD64 %lbl_tmp_ptr 8
+    %r2n_slot = CALL find_or_add_var %var_table %var_count %r2n_p1 %r2n_p2
+    %pos_after_r2 = CALL emit_load_stack %elf_buf %pos_after_r1 6 %r2n_slot
+    JUMP do_add_op
+
+    LABEL load_r2_phys
     %r2 = CALL parse_reg_id %src_buf %r2_pos
-    %next_pos_a = CALL emit_add_rr %elf_buf %cur_code_pos %r1 %r2
-    %cur_code_pos = MOV %next_pos_a
-    %t_flag_a = CONST bool true
-    %has_dyn_code = MOV %t_flag_a
+    %pos_after_r2 = CALL emit_mov_rr %elf_buf %pos_after_r1 6 %r2
+
+    LABEL do_add_op
+    # emit add rdi, rsi (rdi = 7, rsi = 6)
+    %pos_after_add = CALL emit_add_rr %elf_buf %pos_after_r2 7 6
+
+    # Store result
+    %not_dst_n_add = EQ bool %is_dst_named %false_b
+    BR_IF %not_dst_n_add store_dst_phys_add
+
+    # Store rdi (7) into dst_slot
+    %pos_after_store = CALL emit_store_stack %elf_buf %pos_after_add 7 %dst_slot
+    %cur_code_pos = MOV %pos_after_store
+    %t_add_n = CONST bool true
+    %has_dyn_code = MOV %t_add_n
+    JUMP advance_pos
+
+    LABEL store_dst_phys_add
+    %pos_after_phys = CALL emit_mov_rr %elf_buf %pos_after_add %dst_reg 7
+    %cur_code_pos = MOV %pos_after_phys
+    %t_add_p = CONST bool true
+    %has_dyn_code = MOV %t_add_p
     JUMP advance_pos
 
     LABEL check_sub
@@ -1775,6 +2114,16 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %c_cmp1 = CALL emit_cmp_rr %elf_buf %cur_code_pos %r1_cmp %r2_cmp
     %c_cmp2 = CALL emit_setcc %elf_buf %c_cmp1 %cc_lt
     %c_cmp3 = CALL emit_movzx_reg_al %elf_buf %c_cmp2 %dst_reg
+
+    %not_dst_n_cmp = EQ bool %is_dst_named %false_b
+    BR_IF %not_dst_n_cmp cmp_done_store
+    %c_cmp4 = CALL emit_store_stack %elf_buf %c_cmp3 0 %dst_slot
+    %cur_code_pos = MOV %c_cmp4
+    %t_cmp_s = CONST bool true
+    %has_dyn_code = MOV %t_cmp_s
+    JUMP advance_pos
+
+    LABEL cmp_done_store
     %cur_code_pos = MOV %c_cmp3
     %t_cmp = CONST bool true
     %has_dyn_code = MOV %t_cmp
@@ -1798,13 +2147,21 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # It is FUNC main:
     %t_im = CONST bool true
     %in_main = MOV %t_im
+    %zero_vc_m = CONST i64 0
+    %var_count = MOV %zero_vc_m
     %main_offset = MOV %cur_code_pos
+    %c_pro_m = CALL emit_func_prologue %elf_buf %cur_code_pos
+    %cur_code_pos = MOV %c_pro_m
+    %t_fn_m = CONST bool true
+    %has_dyn_code = MOV %t_fn_m
     JUMP advance_pos
 
     LABEL setup_helper_fn
     # It is a helper function:
     %f_im = CONST bool false
     %in_main = MOV %f_im
+    %zero_vc_h = CONST i64 0
+    %var_count = MOV %zero_vc_h
 
     # Record function entry point into symbol table (%lbl_ptr)
     %dummy_fn_def = CALL copy_label_name %src_buf %fn_name_p %nl %lbl_tmp
@@ -2058,9 +2415,25 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %near_cond_br = GT i64 %cond_chk_br %bytes_read
     BR_IF %near_cond_br advance_pos
 
+    # Check if condition is named variable or physical register
+    %is_cond_named = CALL is_named_var %src_buf %cond_p_br
+    %not_cn = EQ bool %is_cond_named %false_b
+    BR_IF %not_cn test_cond_phys
+
+    %dummy_cn = CALL copy_label_name %src_buf %cond_p_br %nl %lbl_tmp
+    %cn_p1 = LOAD64 %lbl_tmp_ptr 0
+    %cn_p2 = LOAD64 %lbl_tmp_ptr 8
+    %cn_slot = CALL find_or_add_var %var_table %var_count %cn_p1 %cn_p2
+    # Load into rax (0), test rax, rax
+    %c_load_cn = CALL emit_load_stack %elf_buf %cur_code_pos 0 %cn_slot
+    %c_test_br = CALL emit_test_rr %elf_buf %c_load_cn 0
+    JUMP find_br_target
+
+    LABEL test_cond_phys
     %cond_r_br = CALL parse_reg_id %src_buf %cond_p_br
     %c_test_br = CALL emit_test_rr %elf_buf %cur_code_pos %cond_r_br
 
+    LABEL find_br_target
     %sp_br = CALL find_char_from %src_buf %cond_p_br %sp_c
     %name_p_br = CALL skip_whitespace %src_buf %sp_br
     %nl_too_short_br = LT i64 %nl %name_p_br
@@ -2251,8 +2624,15 @@ FUNC main() -> i64
   STORE_STR %out8 "multi.bin\0"
   %res8 = CALL compile_file %src8 %out8
 
+  # 10. Compile test_vars.lit -> vars.bin
+  %src9 = ALLOC slice<u8> 16
+  STORE_STR %src9 "test_vars.lit\0"
+  %out9 = ALLOC slice<u8> 16
+  STORE_STR %out9 "vars.bin\0"
+  %res9 = CALL compile_file %src9 %out9
+
   %success_msg = ALLOC slice<u8> 128
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch, multi)!\n"
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch, multi, vars)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 
