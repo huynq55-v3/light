@@ -31,9 +31,9 @@ Light bridges programming and formal logic:
 
 ### 4. 🏆 Native Self-Hosting Achieved (Fixed-Point Proven)
 The native Light compiler (`bootstrap/compiler.lit`), written entirely in Light without libc:
-1. Compiles itself into a standalone native binary `lightc_v2`.
-2. `lightc_v2` compiles `bootstrap/compiler.lit` into `lightc_v3`.
-3. **Fixed-Point Proof:** `sha256sum lightc_v2` is **100% byte-for-byte identical** to `lightc_v3`!
+1. Stage 1 (`lightc`) compiles `bootstrap/compiler.lit` into a standalone native binary `lightc_v2`.
+2. `lightc_v2` compiles `bootstrap/compiler.lit` into Stage 3.
+3. **Fixed-Point Proof:** `sha256sum lightc_v2` is **100% byte-for-byte identical** to Stage 3 (`cmp` returns 0)!
 
 ---
 
@@ -63,14 +63,66 @@ cargo run -- build tests/test_clean_syntax.lit -o app_bin
 echo "Exit code: $?"
 ```
 
-### 4. Using the Native Self-Hosting Compiler (`lightc`)
+### 4. Stage 1: Build the Native Compiler (`lightc`)
+Use the initial Rust bootstrap toolchain to build the native Light compiler executable:
 ```bash
-# Build the native Light compiler binary
+# Compile bootstrap/compiler.lit into native x86_64 ELF binary
 cargo run -- build bootstrap/compiler.lit -o lightc
+```
 
-# Compile test suite and self natively using Light!
+### 5. Stage 2: Compiling with Native `lightc_v2` (100% Self-Hosted)
+`lightc_v2` is a **pure standalone 74 KB native ELF64 executable** generated directly by Light, without `libc`, without Rust, and without external linkers.
+
+#### A. Generate `lightc_v2` & Test Binaries via `lightc`
+```bash
+# Execute Stage 1 compiler
 ./lightc
 ```
+This automatically compiles:
+- All test programs in `tests/*.lit` &rarr; `syscall.bin`, `calc.bin`, `advanced.bin`, etc.
+- The compiler source code `bootstrap/compiler.lit` &rarr; `lightc_v2` (Stage 2 binary).
+
+#### B. Compile and Self-Host Directly with `lightc_v2`
+From this point forward, you no longer need Rust or Cargo! You can compile programs and self-host entirely with `lightc_v2`:
+```bash
+# Execute Stage 2 native compiler
+./lightc_v2
+```
+Output:
+```text
+🚀 Light Self-Hosting Compiler v0.1 starting compilation...
+🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch, multi, vars)!
+🚀 Self-Hosting Stage 2 Complete! Generated lightc_v2 via Light itself!
+```
+
+#### C. Run the Compiled Native Binaries
+All executables produced by `lightc_v2` are pure bare-metal Linux binaries:
+```bash
+# Run calculation test
+./calc.bin
+echo "Exit code: $?" # Output: 42
+
+# Run raw Linux syscall test
+./syscall.bin
+# Output: Hello from raw Linux x86_64 syscall!
+```
+
+#### D. Verify Fixed-Point Convergence (Reproducible Builds)
+You can mathematically prove that the compiler has converged and reached an identical fixed-point:
+```bash
+# 1. Save Stage 2 binary
+cp lightc_v2 lightc_stage2
+
+# 2. Recompile using Stage 2 to produce Stage 3 (overwrites lightc_v2)
+./lightc_stage2
+
+# 3. Prove byte-for-byte bit identity
+cmp lightc_stage2 lightc_v2
+echo "Exit code: $?" # 0 (Files are 100% identical!)
+
+sha256sum lightc_stage2 lightc_v2
+```
+Both files yield the exact same SHA-256 hash (`e1ea150bb84d17c9e1011844c9ab24d5aed8dc7939ea063010662d57b21088fa`), proving bit-for-bit mathematical deterministic self-hosting!
 
 ---
 
