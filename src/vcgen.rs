@@ -46,7 +46,11 @@ impl VcGen {
         match expr {
             IvlExpr::Var(v) => {
                 let clean = v.trim_start_matches('%');
-                self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string())
+                if let Some(m) = self.current_mem.get(clean) {
+                    m.clone()
+                } else {
+                    self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string())
+                }
             }
             IvlExpr::IntConst(n) => Self::smt_bv64(*n),
             IvlExpr::BoolConst(b) => {
@@ -103,6 +107,10 @@ impl VcGen {
                 let s = self.expr_to_bv(e);
                 format!("(ite (= {} (_ bv0 64)) (_ bv1 64) (_ bv0 64))", s)
             }
+            IvlExpr::Mask8(e) => {
+                let s = self.expr_to_bv(e);
+                format!("(bvand {} (_ bv255 64))", s)
+            }
         }
     }
 
@@ -154,8 +162,10 @@ impl VcGen {
         match expr {
             IvlExpr::Var(v) => {
                 let clean = v.trim_start_matches('%');
-                let mapped = self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string());
-                vars.insert(mapped);
+                if !self.current_mem.contains_key(clean) && !self.declared_mems.contains(clean) {
+                    let mapped = self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string());
+                    vars.insert(mapped);
+                }
             }
             IvlExpr::Len(v) => {
                 let clean = v.trim_start_matches('%');
@@ -180,6 +190,7 @@ impl VcGen {
                 self.collect_scalar_vars(else_val, vars);
             }
             IvlExpr::Not(inner) => self.collect_scalar_vars(inner, vars),
+            IvlExpr::Mask8(inner) => self.collect_scalar_vars(inner, vars),
             _ => {}
         }
     }
@@ -205,6 +216,7 @@ impl VcGen {
                 Self::collect_mem_names(else_val, mems);
             }
             IvlExpr::Not(inner) => Self::collect_mem_names(inner, mems),
+            IvlExpr::Mask8(inner) => Self::collect_mem_names(inner, mems),
             _ => {}
         }
     }
@@ -222,15 +234,39 @@ impl VcGen {
             match stmt {
                 IvlStmt::Assign { dest, expr, is_memory } => {
                     let mut needed_vars = HashSet::new();
-                    self.collect_scalar_vars(expr, &mut needed_vars);
-                    for nv in needed_vars {
-                        self.declared_vars.insert(nv);
-                    }
                     let mut needed_mems = HashSet::new();
-                    Self::collect_mem_names(expr, &mut needed_mems);
+
+                    if *is_memory {
+                        if let IvlExpr::Ite { cond, then_val, else_val } = expr {
+                            self.collect_scalar_vars(cond, &mut needed_vars);
+                            if let IvlExpr::Var(m) = then_val.as_ref() {
+                                needed_mems.insert(m.trim_start_matches('%').to_string());
+                            } else {
+                                Self::collect_mem_names(then_val, &mut needed_mems);
+                            }
+                            if let IvlExpr::Var(m) = else_val.as_ref() {
+                                needed_mems.insert(m.trim_start_matches('%').to_string());
+                            } else {
+                                Self::collect_mem_names(else_val, &mut needed_mems);
+                            }
+                        } else {
+                            self.collect_scalar_vars(expr, &mut needed_vars);
+                            Self::collect_mem_names(expr, &mut needed_mems);
+                        }
+                    } else {
+                        self.collect_scalar_vars(expr, &mut needed_vars);
+                        Self::collect_mem_names(expr, &mut needed_mems);
+                    }
+
+                    for nv in needed_vars {
+                        if !self.declared_mems.contains(&nv) {
+                            self.declared_vars.insert(nv);
+                        }
+                    }
                     for nm in needed_mems {
                         if !self.current_mem.contains_key(&nm) {
-                            self.declared_mems.insert(nm);
+                            self.declared_mems.insert(nm.clone());
+                            self.current_mem.insert(nm.clone(), nm);
                         }
                     }
 
@@ -300,7 +336,9 @@ impl VcGen {
                         query.push_str(&format!("(declare-const {} (Array (_ BitVec 64) (_ BitVec 64)))\n", m));
                     }
                     for d in &self.declared_vars {
-                        query.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        if !self.declared_mems.contains(d) {
+                            query.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        }
                     }
                     for a in &self.assertions_smt {
                         query.push_str(a);

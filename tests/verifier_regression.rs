@@ -1515,6 +1515,355 @@ END_FUNC
     assert!(all_passed, "V24 trên IVL phải PASS! Got: {:?}", results);
 }
 
+#[test]
+fn test_v39_div_overflow_i64_min_neg1_fails() {
+    let code = r#"
+FUNC div_overflow(x: i64, y: i64) -> i64
+  REQUIRE x == -9223372036854775808 && y == -1
+  %ans = DIV i64 x y
+  RET %ans
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V39");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_div_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, category, .. } if *category == PropertyCategory::Safety && goal_name.contains("Division-by-Zero safety")));
+    assert!(has_div_fail, "Phải phát hiện lỗi tràn số i64::MIN / -1! Got: {:?}", results);
+}
+
+#[test]
+fn test_v40_z3_output_unsat_in_variable_name_not_confused() {
+    let code = r#"
+FUNC check_unsat_name(x: i64) -> i64
+  %is_unsat = CONST i64 1
+  ASSERT %is_unsat == 0
+  RET %is_unsat
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V40");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_assert_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
+    assert!(has_assert_fail, "ASSERT sai với biến tên '%is_unsat' phải BÁO LỖI (Failed), không được nhầm thành Verified! Got: {:?}", results);
+}
+
+#[test]
+fn test_v41_call_uninitialized_arg_fails_definite_assignment() {
+    let code = r#"
+FUNC helper(a: i64) -> i64
+  RET a
+END_FUNC
+
+FUNC caller() -> i64
+  %res = CALL helper %uninit
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V41");
+    let results = Verifier::verify_function(&program.functions[1], Some(&program));
+    let has_def_assign_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("SSA Definite Assignment")));
+    assert!(has_def_assign_fail, "Tham số chưa khởi tạo truyền vào CALL phải bị bắt lỗi Definite Assignment! Got: {:?}", results);
+}
+
+#[test]
+fn test_v42_memory_in_loop_havoc_prevents_unsound_pass() {
+    let code = r#"
+FUNC loop_memory_mutation(n: i64) -> i64
+  REQUIRE n > 0 && n <= 10
+  ALLOC %buf 16
+  STORE8 %buf 0 42
+  %i = CONST i64 0
+  LOOP l_mem
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    STORE8 %buf 0 99
+    %i = ADD i64 %i 1
+  END_LOOP l_mem
+  %val = LOAD8 %buf 0
+  ASSERT %val == 42
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V42");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
+    assert!(has_fail, "Sau loop làm biến đổi %buf, ASSERT %val == 42 phải FAIL vì bộ nhớ đã bị havoc! Got: {:?}", results);
+}
+
+#[test]
+fn test_v43_diamond_branch_assume_isolation() {
+    let code = r#"
+FUNC min_val(a: i64) -> i64
+  %cond = GT i64 a 0
+  BR_IF %cond .then
+  %x = CONST i64 -1
+  JUMP .join
+  LABEL .then
+  %x = CONST i64 1
+  LABEL .join
+  ASSERT %x == 0
+  RET %x
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V43");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
+    assert!(has_fail, "ASSERT sai sau điểm join không được pass do vacuous truth! Got: {:?}", results);
+}
+
+#[test]
+fn test_v44_load8_store8_no_vacuous_truth() {
+    let code = r#"
+FUNC test_load8_vacuous() -> i64
+  ALLOC %buf 8
+  STORE8 %buf 0 -1
+  %val = LOAD8 %buf 0
+  ASSERT %val == 0
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V44");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
+    assert!(has_fail, "STORE8 -1 sau đó LOAD8 không được gây Vacuous Truth làm ASSERT %val == 0 bị pass! Got: {:?}", results);
+}
+
+#[test]
+fn test_v45_diamond_branch_memory_phi() {
+    let code = r#"
+FUNC test_branch_mem(cond: i64) -> i64
+  ALLOC %buf 8
+  %c = GT i64 cond 0
+  BR_IF %c .then
+  STORE8 %buf 0 10
+  JUMP .join
+  LABEL .then
+  STORE8 %buf 0 20
+  LABEL .join
+  %val = LOAD8 %buf 0
+  ASSERT %val == 20
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V45");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
+    assert!(has_fail, "ASSERT %val == 20 phải FAIL vì khi cond <= 0, %buf[0] == 10! Got: {:?}", results);
+}
+
+#[test]
+fn test_v46_sequential_loops_both_verified() {
+    let code = r#"
+FUNC two_loops(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 100
+  %i = CONST i64 0
+  LOOP loop1
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %d1 = GTE i64 %i n
+    BREAK_IF %d1
+    %i = ADD i64 %i 1
+  END_LOOP loop1
+
+  %j = CONST i64 0
+  LOOP loop2
+    INVARIANT %j >= 100
+    DECREASES n - %j
+    %d2 = GTE i64 %j n
+    BREAK_IF %d2
+    %j = ADD i64 %j 1
+  END_LOOP loop2
+
+  RET %j
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V46");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Step 1")));
+    assert!(has_fail, "Vòng lặp thứ 2 có invariant sai (%j >= 100 khi %j == 0) phải bị phát hiện ở Step 1! Got: {:?}", results);
+}
+
+#[test]
+fn test_v47_call_undefined_or_arg_mismatch_fails() {
+    let code = r#"
+FUNC good_func(x: i64) -> i64
+  RET x
+END_FUNC
+
+FUNC test_bad_calls() -> i64
+  %a = CONST i64 1
+  %b = CONST i64 2
+  %r1 = CALL good_func %a %b
+  RET %r1
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V47");
+    let results = Verifier::verify_function(&program.functions[1], Some(&program));
+    let has_mismatch = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Call argument count mismatch")));
+    assert!(has_mismatch, "Gọi hàm thừa tham số phải bị bắt lỗi Safety! Got: {:?}", results);
+}
+
+#[test]
+fn test_v48_ensure_without_ret_fails() {
+    let code = r#"
+FUNC no_ret_func(x: i64) -> i64
+  ENSURE %ret > 0
+  %y = ADD i64 x 1
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V48");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_no_ret = results.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("has no RET")));
+    assert!(has_no_ret, "Hàm có ENSURE nhưng không có RET phải bị đánh dấu FAILED! Got: {:?}", results);
+}
+
+#[test]
+fn test_v49_diamond_one_branch_memory_mutation_no_sort_error() {
+    let code = r#"
+FUNC one_branch_mem(cond: i64) -> i64
+  ALLOC %buf 8
+  %c = GT i64 cond 0
+  BR_IF %c .then
+  %zero = CONST i64 0
+  JUMP .join
+  LABEL .then
+  STORE8 %buf 0 42
+  LABEL .join
+  RET cond
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V49");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let no_z3_error = results.iter().all(|r| !matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Z3 solver error") || reason.contains("sort")));
+    assert!(no_z3_error, "Z3 không được báo sort error khi chỉ 1 nhánh sửa đổi bộ nhớ! Got: {:?}", results);
+}
+
+#[test]
+fn test_v50_nested_loops_invariant_isolation() {
+    let code = r#"
+FUNC nested_loops_test(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 10
+  %i = CONST i64 0
+  LOOP outer
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %d1 = GTE i64 %i n
+    BREAK_IF %d1
+    %j = CONST i64 0
+    LOOP inner
+      INVARIANT %j >= 0 && %j <= 5
+      DECREASES 5 - %j
+      %d2 = GTE i64 %j 5
+      BREAK_IF %d2
+      %j = ADD i64 %j 1
+    END_LOOP inner
+    %i = ADD i64 %i 1
+  END_LOOP outer
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V50");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Vòng lặp lồng nhau phải verify thành công và không bị hút lẫn invariant! Got: {:?}", results);
+}
+
+#[test]
+fn test_v51_diamond_branch_with_call_and_store_str() {
+    let code = r#"
+FUNC helper_callee(v: i64) -> i64
+  ENSURE %ret == v + 1
+  %res = ADD i64 v 1
+  RET %res
+END_FUNC
+
+FUNC branch_call(c: i64) -> i64
+  ALLOC %buf 16
+  %cond = GT i64 c 0
+  BR_IF %cond .then
+  %val = CONST i64 0
+  STORE_STR %buf 0 "A"
+  JUMP .join
+  LABEL .then
+  %val = CALL helper_callee c
+  LABEL .join
+  %byte = LOAD8 %buf 0
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V51");
+    let results = Verifier::verify_function(&program.functions[1], Some(&program));
+    let no_error = results.iter().all(|r| !matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Z3 solver error")));
+    assert!(no_error, "Nhánh Diamond có CALL và STORE_STR phải verify trơn tru không lỗi solver! Got: {:?}", results);
+}
+
+#[test]
+fn test_v52_store_str_verified_by_load8() {
+    let code = r#"
+FUNC test_str() -> i64
+  ALLOC %buf 8
+  STORE_STR %buf 0 "Hello"
+  %ch = LOAD8 %buf 0
+  ASSERT %ch == 72
+  RET %ch
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V52");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "STORE_STR 'Hello' tại offset 0 phải đọc ra byte 72 ('H')! Got: {:?}", results);
+}
+
+#[test]
+fn test_v53_slice_ptr_buffer_aliasing() {
+    let code = r#"
+FUNC test_alias() -> i64
+  ALLOC %buf 16
+  %ptr = SLICE_PTR %buf
+  STORE8 %buf 0 42
+  %val = LOAD8 %ptr 0
+  ASSERT %val == 42
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V53");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Đọc từ %ptr phải thấy giá trị 42 ghi vào %buf do cơ chế buffer aliasing! Got: {:?}", results);
+}
+
+#[test]
+fn test_v54_multibreak_loop_state_merge() {
+    let code = r#"
+FUNC multibreak_loop(mode: i64) -> i64
+  REQUIRE mode >= 0 && mode <= 1
+  %i = CONST i64 0
+  %res = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 10
+    DECREASES 10 - %i
+    %b1 = EQ i64 mode 0
+    %res = CONST i64 100
+    BREAK_IF %b1
+    %res = CONST i64 200
+    %b2 = CONST bool true
+    BREAK_IF %b2
+  END_LOOP l1
+  ENSURE (mode == 0 && %res == 100) || (mode != 0 && %res == 200)
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V54");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Vòng lặp có 2 điểm BREAK_IF phân nhánh theo mode phải verify chính xác ENSURE postcondition! Got: {:?}", results);
+}
+
+
+
+
+
+
 
 
 

@@ -1,8 +1,8 @@
 # 🌟 LIGHT PROGRAMMING LANGUAGE SPECIFICATION (.lit)
-## The AI-Native, Formally Verified Flat SSA Systems Language
+## An Experimental, Formally Verified Flat SSA Systems Language
 
 > **Target Audience:** AI Models (LLMs), Code Generators, and Systems Engineers.  
-> **Design Principle:** One instruction per line. Flat Three-Address Code (TAC/SSA). Zero nested syntax. 100% mathematically verifiable with Z3 SMT Solver before code generation. Zero C runtime dependency (Direct Linux x86_64 Syscalls).
+> **Design Principle:** One instruction per line. Flat Three-Address Code (TAC/SSA). Zero nested syntax. Contract verification with Z3 SMT Solver before code generation. Direct Linux x86_64 Syscalls.
 
 ---
 
@@ -37,7 +37,7 @@
 Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at compile time:
 - `REQUIRE <expr>`: Preconditions that caller arguments MUST satisfy.
 - `ENSURE <expr>`: Postconditions guaranteed by the function on its return value.
-- `INVARIANT <expr>`: Loop invariant maintained across every iteration (enables 2-step mathematical induction).
+- `INVARIANT <expr>`: Loop invariant maintained across every iteration (inductive loop invariant).
 - `DECREASES <expr>`: Loop ranking function (expression strictly decreases towards 0, proving termination and avoiding infinite loops).
 - `ASSERT <expr>`: Static assertion at a specific execution point.
 
@@ -45,7 +45,7 @@ Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at comp
 
 ### II. Constants & Value Movement
 - `%dest = CONST <type> <val>`: Load typed constant (`%x = CONST i64 42`, `%flag = CONST bool true`).
-  > **Note for AI:** Always specify the type explicitly (`i64` or `bool`). The self-hosted native compiler requires explicit typing for deterministic assembly code generation.
+  > **Note for AI:** Always specify the type explicitly (`i64` or `bool`). The compiler requires explicit typing for deterministic assembly code generation.
 - `%dest = MOV %src`: Copy value between registers/variables.
 
 ### III. Arithmetic & Logic Operations (Flat TAC)

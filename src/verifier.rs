@@ -91,6 +91,7 @@ impl Verifier {
         func: &Function,
         s_inst: &SpannedInstruction,
         buffer_sizes: &std::collections::HashMap<String, usize>,
+        buffer_aliases: &std::collections::HashMap<String, String>,
         program: Option<&Program>,
     ) -> Vec<crate::ivl::IvlStmt> {
         let mut stmts = Vec::new();
@@ -104,7 +105,8 @@ impl Verifier {
                 });
             }
             Instruction::StoreStr { buf, offset, content } => {
-                let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
+                let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
+                let buf_size = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)).cloned().unwrap_or(0);
                 let req_size = *offset + content.as_bytes().len();
                 stmts.push(crate::ivl::IvlStmt::Assert {
                     cond: crate::ivl::IvlExpr::BoolConst(req_size <= buf_size),
@@ -112,23 +114,45 @@ impl Verifier {
                     category: PropertyCategory::Safety,
                     loc: s_inst.loc.clone(),
                 });
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
             }
-            Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } => {
+            Instruction::Binary { op: BinOp::Div | BinOp::Mod, src1, src2, .. } => {
+                let s1_expr = crate::ivl::IvlLowerer::operand_to_expr(src1);
                 let s2_expr = crate::ivl::IvlLowerer::operand_to_expr(src2);
-                stmts.push(crate::ivl::IvlStmt::Assert {
-                    cond: crate::ivl::IvlExpr::Binary {
-                        op: BinOp::Neq,
+                let div_zero = crate::ivl::IvlExpr::Binary {
+                    op: BinOp::Neq,
+                    lhs: Box::new(s2_expr.clone()),
+                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                };
+                let overflow_cond = crate::ivl::IvlExpr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(crate::ivl::IvlExpr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(s1_expr),
+                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(i64::MIN)),
+                    }),
+                    rhs: Box::new(crate::ivl::IvlExpr::Binary {
+                        op: BinOp::Eq,
                         lhs: Box::new(s2_expr),
-                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                    },
-                    goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety", func.name, s_inst.loc.line),
+                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(-1)),
+                    }),
+                };
+                let safe_div = crate::ivl::IvlExpr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(div_zero),
+                    rhs: Box::new(crate::ivl::IvlExpr::Not(Box::new(overflow_cond))),
+                };
+                stmts.push(crate::ivl::IvlStmt::Assert {
+                    cond: safe_div,
+                    goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety and Overflow check", func.name, s_inst.loc.line),
                     category: PropertyCategory::Safety,
                     loc: s_inst.loc.clone(),
                 });
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
             }
             Instruction::Load8 { buf, offset, .. } | Instruction::Store8 { buf, offset, .. } => {
-                if let Some(&sz) = buffer_sizes.get(buf) {
+                let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
+                if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
                     let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
                     let in_bounds = crate::ivl::IvlExpr::Binary {
                         op: BinOp::And,
@@ -150,10 +174,11 @@ impl Verifier {
                         loc: s_inst.loc.clone(),
                     });
                 }
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
             }
             Instruction::Load64 { buf, offset, .. } | Instruction::Store64 { buf, offset, .. } => {
-                if let Some(&sz) = buffer_sizes.get(buf) {
+                let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
+                if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
                     let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
                     let max_off = (sz as i64) - 8;
                     let in_bounds = if sz < 8 {
@@ -180,11 +205,19 @@ impl Verifier {
                         loc: s_inst.loc.clone(),
                     });
                 }
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
             }
             Instruction::Call { dest, func_name, args } => {
                 if let Some(prog) = program {
                     if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
+                        if args.len() != callee.params.len() {
+                            stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: crate::ivl::IvlExpr::BoolConst(false),
+                                goal_name: format!("Function '{}' - Line {}: Call argument count mismatch for '{}' (expected {}, got {})", func.name, s_inst.loc.line, func_name, callee.params.len(), args.len()),
+                                category: PropertyCategory::Safety,
+                                loc: s_inst.loc.clone(),
+                            });
+                        }
                         for c_si in &callee.instructions {
                             if let Instruction::Require(req) = &c_si.inst {
                                 let mut req_ivl = crate::ivl::IvlExpr::from(req);
@@ -223,11 +256,18 @@ impl Verifier {
                                 }
                             }
                         }
+                    } else {
+                        stmts.push(crate::ivl::IvlStmt::Assert {
+                            cond: crate::ivl::IvlExpr::BoolConst(false),
+                            goal_name: format!("Function '{}' - Line {}: Call to undefined function '{}'", func.name, s_inst.loc.line, func_name),
+                            category: PropertyCategory::Safety,
+                            loc: s_inst.loc.clone(),
+                        });
                     }
                 }
             }
             _ => {
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
             }
         }
         stmts
@@ -238,6 +278,7 @@ impl Verifier {
         func: &Function,
         slice: &[SpannedInstruction],
         buffer_sizes: &std::collections::HashMap<String, usize>,
+        buffer_aliases: &std::collections::HashMap<String, String>,
         program: Option<&Program>,
         vc: &mut crate::vcgen::VcGen,
         results: &mut Vec<VerificationResult>,
@@ -251,7 +292,12 @@ impl Verifier {
         while idx < slice.len() {
             let s_inst = &slice[idx];
             match &s_inst.inst {
-                Instruction::Require(_) | Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) => {}
+                Instruction::Require(req) => {
+                    stmts.push(crate::ivl::IvlStmt::Assume {
+                        cond: crate::ivl::IvlExpr::from(req),
+                    });
+                }
+                Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) => {}
                 Instruction::Label(_) | Instruction::Jump(_) => {}
                 Instruction::BrIf { cond, target } => {
                     let cond_clean = cond.trim_start_matches('%').to_string();
@@ -291,21 +337,31 @@ impl Verifier {
                             let then_mod = crate::ivl::IvlLowerer::collect_modified_vars(then_slice);
                             let all_mod: std::collections::HashSet<String> = else_mod.union(&then_mod).cloned().collect();
 
+                            let else_mems = crate::ivl::IvlLowerer::collect_modified_mems(else_slice, Some(buffer_aliases));
+                            let then_mems = crate::ivl::IvlLowerer::collect_modified_mems(then_slice, Some(buffer_aliases));
+                            let all_mems: std::collections::HashSet<String> = else_mems.union(&then_mems).cloned().collect();
+
                             let branch_id = idx;
 
                             // Hạ cấp nhánh Else: các biến bị gán được chuyển hướng sang {m}_belse_{branch_id}
                             let mut else_stmts = Vec::new();
                             let mut else_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                             for s in else_slice {
-                                let mut lowered = Self::lower_inst_with_checks(func, s, buffer_sizes, program);
+                                let mut lowered = Self::lower_inst_with_checks(func, s, buffer_sizes, buffer_aliases, program);
                                 for st in &mut lowered {
                                     match st {
-                                        crate::ivl::IvlStmt::Assign { dest, expr, .. } => {
+                                        crate::ivl::IvlStmt::Assign { dest, expr, is_memory } => {
                                             for (from, to) in &else_map {
                                                 *expr = crate::ivl::IvlLowerer::subst_expr(expr, from, &crate::ivl::IvlExpr::Var(to.clone()));
                                             }
                                             let clean = dest.trim_start_matches('%').to_string();
-                                            if all_mod.contains(&clean) {
+                                            if *is_memory {
+                                                if all_mems.contains(&clean) {
+                                                    let target_mem = format!("{}_belse_{}", clean, branch_id);
+                                                    else_map.insert(clean, target_mem.clone());
+                                                    *dest = target_mem;
+                                                }
+                                            } else if all_mod.contains(&clean) {
                                                 let target_var = format!("{}_belse_{}", clean, branch_id);
                                                 else_map.insert(clean, target_var.clone());
                                                 *dest = target_var;
@@ -325,6 +381,26 @@ impl Verifier {
                                             for (from, to) in &else_map {
                                                 *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
                                             }
+                                            // Gác điều kiện rẽ nhánh: !cond_expr => cond <=> cond_expr || cond
+                                            *cond = crate::ivl::IvlExpr::Binary {
+                                                op: BinOp::Or,
+                                                lhs: Box::new(cond_expr.clone()),
+                                                rhs: Box::new(cond.clone()),
+                                            };
+                                        }
+                                        crate::ivl::IvlStmt::Havoc { vars, is_memory } => {
+                                            for v in vars.iter_mut() {
+                                                let clean = v.trim_start_matches('%').to_string();
+                                                if !*is_memory && all_mod.contains(&clean) {
+                                                    let target_var = format!("{}_belse_{}", clean, branch_id);
+                                                    else_map.insert(clean, target_var.clone());
+                                                    *v = target_var;
+                                                } else if *is_memory && all_mems.contains(&clean) {
+                                                    let target_mem = format!("{}_belse_{}", clean, branch_id);
+                                                    else_map.insert(clean, target_mem.clone());
+                                                    *v = target_mem;
+                                                }
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -336,15 +412,21 @@ impl Verifier {
                             let mut then_stmts = Vec::new();
                             let mut then_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                             for s in then_slice {
-                                let mut lowered = Self::lower_inst_with_checks(func, s, buffer_sizes, program);
+                                let mut lowered = Self::lower_inst_with_checks(func, s, buffer_sizes, buffer_aliases, program);
                                 for st in &mut lowered {
                                     match st {
-                                        crate::ivl::IvlStmt::Assign { dest, expr, .. } => {
+                                        crate::ivl::IvlStmt::Assign { dest, expr, is_memory } => {
                                             for (from, to) in &then_map {
                                                 *expr = crate::ivl::IvlLowerer::subst_expr(expr, from, &crate::ivl::IvlExpr::Var(to.clone()));
                                             }
                                             let clean = dest.trim_start_matches('%').to_string();
-                                            if all_mod.contains(&clean) {
+                                            if *is_memory {
+                                                if all_mems.contains(&clean) {
+                                                    let target_mem = format!("{}_bthen_{}", clean, branch_id);
+                                                    then_map.insert(clean, target_mem.clone());
+                                                    *dest = target_mem;
+                                                }
+                                            } else if all_mod.contains(&clean) {
                                                 let target_var = format!("{}_bthen_{}", clean, branch_id);
                                                 then_map.insert(clean, target_var.clone());
                                                 *dest = target_var;
@@ -363,6 +445,26 @@ impl Verifier {
                                         crate::ivl::IvlStmt::Assume { cond } => {
                                             for (from, to) in &then_map {
                                                 *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                            }
+                                            // Gác điều kiện rẽ nhánh: cond_expr => cond <=> !cond_expr || cond
+                                            *cond = crate::ivl::IvlExpr::Binary {
+                                                op: BinOp::Or,
+                                                lhs: Box::new(crate::ivl::IvlExpr::Not(Box::new(cond_expr.clone()))),
+                                                rhs: Box::new(cond.clone()),
+                                            };
+                                        }
+                                        crate::ivl::IvlStmt::Havoc { vars, is_memory } => {
+                                            for v in vars.iter_mut() {
+                                                let clean = v.trim_start_matches('%').to_string();
+                                                if !*is_memory && all_mod.contains(&clean) {
+                                                    let target_var = format!("{}_bthen_{}", clean, branch_id);
+                                                    then_map.insert(clean, target_var.clone());
+                                                    *v = target_var;
+                                                } else if *is_memory && all_mems.contains(&clean) {
+                                                    let target_mem = format!("{}_bthen_{}", clean, branch_id);
+                                                    then_map.insert(clean, target_mem.clone());
+                                                    *v = target_mem;
+                                                }
                                             }
                                         }
                                         _ => {}
@@ -403,6 +505,35 @@ impl Verifier {
                                 });
                             }
 
+                            // Hợp nhất Phi-node cho cả các vùng nhớ (Memory Arrays)
+                            for m in &all_mems {
+                                let clean_m = m.trim_start_matches('%');
+                                let then_target = format!("{}_bthen_{}", clean_m, branch_id);
+                                let else_target = format!("{}_belse_{}", clean_m, branch_id);
+
+                                let then_expr = if then_mems.contains(clean_m) {
+                                    crate::ivl::IvlExpr::Var(then_target)
+                                } else {
+                                    crate::ivl::IvlExpr::Var(clean_m.to_string())
+                                };
+
+                                let else_expr = if else_mems.contains(clean_m) {
+                                    crate::ivl::IvlExpr::Var(else_target)
+                                } else {
+                                    crate::ivl::IvlExpr::Var(clean_m.to_string())
+                                };
+
+                                stmts.push(crate::ivl::IvlStmt::Assign {
+                                    dest: clean_m.to_string(),
+                                    expr: crate::ivl::IvlExpr::Ite {
+                                        cond: Box::new(cond_expr.clone()),
+                                        then_val: Box::new(then_expr),
+                                        else_val: Box::new(else_expr),
+                                    },
+                                    is_memory: true,
+                                });
+                            }
+
                             idx = join_idx + 1;
                             continue;
                         }
@@ -425,7 +556,7 @@ impl Verifier {
                                 cond: crate::ivl::IvlExpr::Not(Box::new(cond_expr.clone())),
                             });
                             for s in else_slice {
-                                else_stmts.extend(Self::lower_inst_with_checks(func, s, buffer_sizes, program));
+                                else_stmts.extend(Self::lower_inst_with_checks(func, s, buffer_sizes, buffer_aliases, program));
                             }
                             if let Some(op) = &ret_op {
                                 let op_expr = crate::ivl::IvlLowerer::operand_to_expr(op);
@@ -528,8 +659,290 @@ impl Verifier {
                         });
                     }
                 }
+                Instruction::Loop(_) => {
+                    let mut depth = 1;
+                    let mut l_end_opt = None;
+                    for (p, s) in slice[idx + 1..].iter().enumerate() {
+                        match &s.inst {
+                            Instruction::Loop(_) => depth += 1,
+                            Instruction::EndLoop(_) => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    l_end_opt = Some(idx + 1 + p);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let l_end = l_end_opt.unwrap_or(slice.len() - 1);
+                    let body_slice = &slice[idx + 1 .. l_end];
+
+                    if body_slice.iter().any(|si| matches!(si.inst, Instruction::Syscall { .. })) {
+                        results.push(VerificationResult::Unknown {
+                            goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
+                            category: PropertyCategory::Inductive,
+                            reason: "Unsupported instruction inside loop body: SYSCALL".into(),
+                            stack_trace: vec![StackFrame {
+                                file: func.file.clone(),
+                                line: slice[idx].loc.line,
+                                function: func.name.clone(),
+                                snippet: slice[idx].loc.text.clone(),
+                                role: "Unsupported instruction inside loop body: SYSCALL".into(),
+                            }],
+                        });
+                        return stmts;
+                    }
+
+                    let mut loop_invs = Vec::new();
+                    let mut loop_decs = Vec::new();
+                    let mut break_points = Vec::new();
+                    let mut inner_depth = 0usize;
+
+                    for (pos, b_si) in body_slice.iter().enumerate() {
+                        match &b_si.inst {
+                            Instruction::Loop(_) => inner_depth += 1,
+                            Instruction::EndLoop(_) => inner_depth = inner_depth.saturating_sub(1),
+                            Instruction::Invariant(e) if inner_depth == 0 => loop_invs.push(crate::ivl::IvlExpr::from(e)),
+                            Instruction::Decreases(e) if inner_depth == 0 => loop_decs.push(crate::ivl::IvlExpr::from(e)),
+                            Instruction::BreakIf(c) if inner_depth == 0 => {
+                                break_points.push((idx + 1 + pos, crate::ivl::IvlExpr::Var(c.trim_start_matches('%').to_string())));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Step 1: Base Case
+                    for inv in &loop_invs {
+                        stmts.push(crate::ivl::IvlStmt::Assert {
+                            cond: inv.clone(),
+                            goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
+                            category: PropertyCategory::Inductive,
+                            loc: slice[idx].loc.clone(),
+                        });
+                    }
+
+                    results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
+                    stmts.clear();
+
+                    let modified: Vec<String> = crate::ivl::IvlLowerer::collect_modified_vars(body_slice).into_iter().collect();
+                    let modified_mems: Vec<String> = crate::ivl::IvlLowerer::collect_modified_mems(body_slice, Some(buffer_aliases)).into_iter().collect();
+
+                    // Step 2 & Step 4: Inductive Step & Termination
+                    if !loop_invs.is_empty() || !loop_decs.is_empty() {
+                        let mut ind_stmts = Vec::new();
+                        ind_stmts.push(crate::ivl::IvlStmt::Havoc {
+                            vars: modified.clone(),
+                            is_memory: false,
+                        });
+                        if !modified_mems.is_empty() {
+                            ind_stmts.push(crate::ivl::IvlStmt::Havoc {
+                                vars: modified_mems.clone(),
+                                is_memory: true,
+                            });
+                        }
+                        for inv in &loop_invs {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
+                        }
+                        for (d_idx, dec) in loop_decs.iter().enumerate() {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assign {
+                                dest: format!("__rank_init_{}", d_idx),
+                                expr: dec.clone(),
+                                is_memory: false,
+                            });
+                        }
+                        let mut vc_ind = vc.clone();
+                        let mut cur_pos = idx + 1;
+                        for (b_pos, b_expr) in &break_points {
+                            ind_stmts.extend(Self::lower_slice(func, &slice[cur_pos .. *b_pos], buffer_sizes, buffer_aliases, program, &mut vc_ind, results, ensures, canon_ret, true));
+                            ind_stmts.push(crate::ivl::IvlStmt::Assume {
+                                cond: crate::ivl::IvlExpr::Not(Box::new(b_expr.clone())),
+                            });
+                            cur_pos = b_pos + 1;
+                        }
+                        ind_stmts.extend(Self::lower_slice(func, &slice[cur_pos .. l_end], buffer_sizes, buffer_aliases, program, &mut vc_ind, results, ensures, canon_ret, true));
+
+                        for inv in &loop_invs {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: inv.clone(),
+                                goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
+                                category: PropertyCategory::Inductive,
+                                loc: slice[idx].loc.clone(),
+                            });
+                        }
+                        for (d_idx, dec) in loop_decs.iter().enumerate() {
+                            let old_r = crate::ivl::IvlExpr::Var(format!("__rank_init_{}", d_idx));
+                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: crate::ivl::IvlExpr::Binary {
+                                    op: BinOp::Gte,
+                                    lhs: Box::new(old_r.clone()),
+                                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                                },
+                                goal_name: format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
+                                category: PropertyCategory::Termination,
+                                loc: slice[idx].loc.clone(),
+                            });
+                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: crate::ivl::IvlExpr::Binary {
+                                    op: BinOp::Lt,
+                                    lhs: Box::new(dec.clone()),
+                                    rhs: Box::new(old_r),
+                                },
+                                goal_name: format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
+                                category: PropertyCategory::Termination,
+                                loc: slice[idx].loc.clone(),
+                            });
+                        }
+                        results.extend(vc_ind.verify_sequence(&ind_stmts, &func.name, &func.file));
+                    }
+
+                    // Exit path (Step 3)
+                    stmts.push(crate::ivl::IvlStmt::Havoc {
+                        vars: modified.clone(),
+                        is_memory: false,
+                    });
+                    if !modified_mems.is_empty() {
+                        stmts.push(crate::ivl::IvlStmt::Havoc {
+                            vars: modified_mems.clone(),
+                            is_memory: true,
+                        });
+                    }
+                    for inv in &loop_invs {
+                        stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
+                    }
+
+                    if break_points.len() <= 1 {
+                        let (body_before, first_brk_expr) = if let Some((b_idx, brk)) = break_points.first() {
+                            (&slice[idx + 1 .. *b_idx], Some(brk.clone()))
+                        } else {
+                            (body_slice, None)
+                        };
+                        stmts.extend(Self::lower_slice(func, body_before, buffer_sizes, buffer_aliases, program, vc, results, ensures, canon_ret, true));
+                        if let Some(brk) = first_brk_expr {
+                            stmts.push(crate::ivl::IvlStmt::Assume { cond: brk });
+                        }
+                    } else {
+                        // Multi-break Ite Merging: Hạ cấp từng đoạn giữa các điểm BREAK_IF và hợp nhất trạng thái bằng Ite
+                        let first_b_idx = break_points[0].0;
+                        stmts.extend(Self::lower_slice(func, &slice[idx + 1 .. first_b_idx], buffer_sizes, buffer_aliases, program, vc, results, ensures, canon_ret, true));
+
+                        let mut accum_exit_cond = break_points[0].1.clone();
+                        let mut prev_b_idx = first_b_idx;
+
+                        for (j, (b_idx, brk_expr)) in break_points.iter().enumerate().skip(1) {
+                            let seg_slice = &slice[prev_b_idx + 1 .. *b_idx];
+                            let seg_mod = crate::ivl::IvlLowerer::collect_modified_vars(seg_slice);
+                            let seg_mems = crate::ivl::IvlLowerer::collect_modified_mems(seg_slice, Some(buffer_aliases));
+
+                            let mut seg_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                            for s in seg_slice {
+                                let mut lowered = Self::lower_inst_with_checks(func, s, buffer_sizes, buffer_aliases, program);
+                                for st in &mut lowered {
+                                    match st {
+                                        crate::ivl::IvlStmt::Assign { dest, expr, is_memory } => {
+                                            for (from, to) in &seg_map {
+                                                *expr = crate::ivl::IvlLowerer::subst_expr(expr, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                            }
+                                            let clean = dest.trim_start_matches('%').to_string();
+                                            if *is_memory {
+                                                if seg_mems.contains(&clean) {
+                                                    let target_mem = format!("{}_mb_{}", clean, j);
+                                                    seg_map.insert(clean, target_mem.clone());
+                                                    *dest = target_mem;
+                                                }
+                                            } else if seg_mod.contains(&clean) {
+                                                let target_var = format!("{}_mb_{}", clean, j);
+                                                seg_map.insert(clean, target_var.clone());
+                                                *dest = target_var;
+                                            }
+                                        }
+                                        crate::ivl::IvlStmt::Assert { cond, .. } => {
+                                            for (from, to) in &seg_map {
+                                                *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                            }
+                                            *cond = crate::ivl::IvlExpr::Binary {
+                                                op: BinOp::Or,
+                                                lhs: Box::new(accum_exit_cond.clone()),
+                                                rhs: Box::new(cond.clone()),
+                                            };
+                                        }
+                                        crate::ivl::IvlStmt::Assume { cond } => {
+                                            for (from, to) in &seg_map {
+                                                *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                            }
+                                            *cond = crate::ivl::IvlExpr::Binary {
+                                                op: BinOp::Or,
+                                                lhs: Box::new(accum_exit_cond.clone()),
+                                                rhs: Box::new(cond.clone()),
+                                            };
+                                        }
+                                        crate::ivl::IvlStmt::Havoc { vars, is_memory } => {
+                                            for v in vars.iter_mut() {
+                                                let clean = v.trim_start_matches('%').to_string();
+                                                if !*is_memory && seg_mod.contains(&clean) {
+                                                    let target_var = format!("{}_mb_{}", clean, j);
+                                                    seg_map.insert(clean, target_var.clone());
+                                                    *v = target_var;
+                                                } else if *is_memory && seg_mems.contains(&clean) {
+                                                    let target_mem = format!("{}_mb_{}", clean, j);
+                                                    seg_map.insert(clean, target_mem.clone());
+                                                    *v = target_mem;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                stmts.extend(lowered);
+                            }
+
+                            for m in &seg_mod {
+                                let mb_target = seg_map.get(m).cloned().unwrap_or_else(|| m.clone());
+                                stmts.push(crate::ivl::IvlStmt::Assign {
+                                    dest: m.clone(),
+                                    expr: crate::ivl::IvlExpr::Ite {
+                                        cond: Box::new(accum_exit_cond.clone()),
+                                        then_val: Box::new(crate::ivl::IvlExpr::Var(m.clone())),
+                                        else_val: Box::new(crate::ivl::IvlExpr::Var(mb_target)),
+                                    },
+                                    is_memory: false,
+                                });
+                            }
+                            for mem in &seg_mems {
+                                let mb_target = seg_map.get(mem).cloned().unwrap_or_else(|| mem.clone());
+                                stmts.push(crate::ivl::IvlStmt::Assign {
+                                    dest: mem.clone(),
+                                    expr: crate::ivl::IvlExpr::Ite {
+                                        cond: Box::new(accum_exit_cond.clone()),
+                                        then_val: Box::new(crate::ivl::IvlExpr::Var(mem.clone())),
+                                        else_val: Box::new(crate::ivl::IvlExpr::Var(mb_target)),
+                                    },
+                                    is_memory: true,
+                                });
+                            }
+
+                            let mut brk_subst = brk_expr.clone();
+                            for (from, to) in &seg_map {
+                                brk_subst = crate::ivl::IvlLowerer::subst_expr(&brk_subst, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                            }
+
+                            accum_exit_cond = crate::ivl::IvlExpr::Binary {
+                                op: BinOp::Or,
+                                lhs: Box::new(accum_exit_cond),
+                                rhs: Box::new(brk_subst),
+                            };
+                            prev_b_idx = *b_idx;
+                        }
+                        stmts.push(crate::ivl::IvlStmt::Assume { cond: accum_exit_cond });
+                    }
+
+                    idx = l_end + 1;
+                    continue;
+                }
+                Instruction::EndLoop(_) => {}
                 _other => {
-                    stmts.extend(Self::lower_inst_with_checks(func, s_inst, buffer_sizes, program));
+                    stmts.extend(Self::lower_inst_with_checks(func, s_inst, buffer_sizes, buffer_aliases, program));
                 }
             }
             idx += 1;
@@ -576,6 +989,19 @@ impl Verifier {
                     used_regs.push(cond);
                     if let Some(Operand::Reg(r)) = val { used_regs.push(r); }
                 }
+                Instruction::Call { args, .. } => {
+                    for a in args {
+                        if let Operand::Reg(r) = a {
+                            used_regs.push(r);
+                        }
+                    }
+                }
+                Instruction::Syscall { rax, rdi, rsi, rdx, .. } => {
+                    if let Operand::Reg(r) = rax { used_regs.push(r); }
+                    if let Operand::Reg(r) = rdi { used_regs.push(r); }
+                    if let Operand::Reg(r) = rsi { used_regs.push(r); }
+                    if let Operand::Reg(r) = rdx { used_regs.push(r); }
+                }
                 _ => {}
             }
             for u in used_regs {
@@ -618,6 +1044,7 @@ impl Verifier {
         }
 
         let buffer_sizes = crate::ivl::IvlLowerer::extract_buffer_sizes(func);
+        let buffer_aliases = crate::ivl::IvlLowerer::extract_buffer_aliases(func);
         let mut stmts = Vec::new();
 
         // 1. Khởi tạo và khai báo các tham số đầu vào của hàm
@@ -636,15 +1063,6 @@ impl Verifier {
             vc.current_val.insert(plen.clone(), plen);
         }
 
-        // 2. Nạp các tiền điều kiện REQUIRE vào tiền đề Assume
-        for s_inst in &func.instructions {
-            if let Instruction::Require(req) = &s_inst.inst {
-                stmts.push(crate::ivl::IvlStmt::Assume {
-                    cond: crate::ivl::IvlExpr::from(req),
-                });
-            }
-        }
-
         let ensures: Vec<Expr> = func
             .instructions
             .iter()
@@ -652,158 +1070,28 @@ impl Verifier {
             .collect();
         let canon_ret = Self::find_canonical_ret_var(func).unwrap_or_else(|| "ret".to_string());
 
-        let loop_pos = func.instructions.iter().position(|s| matches!(s.inst, Instruction::Loop(_)));
-
-        if let Some(l_start) = loop_pos {
-            let l_end = func.instructions[l_start + 1..]
-                .iter()
-                .position(|s| matches!(s.inst, Instruction::EndLoop(_)))
-                .map(|p| l_start + 1 + p)
-                .unwrap_or(func.instructions.len() - 1);
-
-            let body_slice = &func.instructions[l_start + 1..l_end];
-
-            if body_slice.iter().any(|si| matches!(si.inst, Instruction::Syscall { .. })) {
-                results.push(VerificationResult::Unknown {
-                    goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
-                    category: PropertyCategory::Inductive,
-                    reason: "Unsupported instruction inside loop body: SYSCALL".into(),
-                    stack_trace: vec![StackFrame {
-                        file: func.file.clone(),
-                        line: func.instructions[l_start].loc.line,
-                        function: func.name.clone(),
-                        snippet: func.instructions[l_start].loc.text.clone(),
-                        role: "Unsupported instruction inside loop body: SYSCALL".into(),
-                    }],
-                });
-                return results;
-            }
-
-            // Hạ cấp phần trước vòng lặp
-            let pre_loop_slice = &func.instructions[..l_start];
-            let pre_stmts = Self::lower_slice(func, pre_loop_slice, &buffer_sizes, program, &mut vc, &mut results, &ensures, &canon_ret, true);
-            stmts.extend(pre_stmts);
-
-            let mut loop_invs = Vec::new();
-            let mut loop_decs = Vec::new();
-            let mut break_idx_opt = None;
-            let mut first_brk_expr = None;
-
-            for (pos, b_si) in body_slice.iter().enumerate() {
-                match &b_si.inst {
-                    Instruction::Invariant(e) => loop_invs.push(crate::ivl::IvlExpr::from(e)),
-                    Instruction::Decreases(e) => loop_decs.push(crate::ivl::IvlExpr::from(e)),
-                    Instruction::BreakIf(c) if break_idx_opt.is_none() => {
-                        break_idx_opt = Some(l_start + 1 + pos);
-                        first_brk_expr = Some(crate::ivl::IvlExpr::Var(c.trim_start_matches('%').to_string()));
-                    }
-                    _ => {}
-                }
-            }
-
-            // Step 1: Base Case
-            for inv in &loop_invs {
-                stmts.push(crate::ivl::IvlStmt::Assert {
-                    cond: inv.clone(),
-                    goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
-                    category: PropertyCategory::Inductive,
-                    loc: func.instructions[l_start].loc.clone(),
-                });
-            }
-
-            results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
-            stmts.clear();
-
-            let modified: Vec<String> = crate::ivl::IvlLowerer::collect_modified_vars(body_slice).into_iter().collect();
-
-            let (body_before, body_after) = if let Some(b_idx) = break_idx_opt {
-                (&func.instructions[l_start + 1 .. b_idx], &func.instructions[b_idx + 1 .. l_end])
-            } else {
-                (body_slice, &func.instructions[l_end..l_end])
-            };
-
-            // Step 2 & Step 4: Inductive Step & Termination
-            if !loop_invs.is_empty() || !loop_decs.is_empty() {
-                let mut ind_stmts = Vec::new();
-                ind_stmts.push(crate::ivl::IvlStmt::Havoc {
-                    vars: modified.clone(),
-                    is_memory: false,
-                });
-                for inv in &loop_invs {
-                    ind_stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
-                }
-                for (d_idx, dec) in loop_decs.iter().enumerate() {
-                    ind_stmts.push(crate::ivl::IvlStmt::Assign {
-                        dest: format!("__rank_init_{}", d_idx),
-                        expr: dec.clone(),
-                        is_memory: false,
-                    });
-                }
-                let mut vc_ind = vc.clone();
-                ind_stmts.extend(Self::lower_slice(func, body_before, &buffer_sizes, program, &mut vc_ind, &mut results, &ensures, &canon_ret, true));
-                if let Some(ref brk) = first_brk_expr {
-                    ind_stmts.push(crate::ivl::IvlStmt::Assume {
-                        cond: crate::ivl::IvlExpr::Not(Box::new(brk.clone())),
-                    });
-                }
-                ind_stmts.extend(Self::lower_slice(func, body_after, &buffer_sizes, program, &mut vc_ind, &mut results, &ensures, &canon_ret, true));
-
-                for inv in &loop_invs {
-                    ind_stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: inv.clone(),
-                        goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
-                        category: PropertyCategory::Inductive,
-                        loc: func.instructions[l_start].loc.clone(),
-                    });
-                }
-                for (d_idx, dec) in loop_decs.iter().enumerate() {
-                    let old_r = crate::ivl::IvlExpr::Var(format!("__rank_init_{}", d_idx));
-                    ind_stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(old_r.clone()),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                        },
-                        goal_name: format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
-                        category: PropertyCategory::Termination,
-                        loc: func.instructions[l_start].loc.clone(),
-                    });
-                    ind_stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Lt,
-                            lhs: Box::new(dec.clone()),
-                            rhs: Box::new(old_r),
-                        },
-                        goal_name: format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
-                        category: PropertyCategory::Termination,
-                        loc: func.instructions[l_start].loc.clone(),
-                    });
-                }
-                results.extend(vc_ind.verify_sequence(&ind_stmts, &func.name, &func.file));
-            }
-
-            // Exit path (Step 3)
-            stmts.push(crate::ivl::IvlStmt::Havoc {
-                vars: modified,
-                is_memory: false,
+        let has_ret = func.instructions.iter().any(|si| matches!(si.inst, Instruction::Ret(_) | Instruction::RetIf { .. }));
+        if !ensures.is_empty() && !has_ret {
+            results.push(VerificationResult::Failed {
+                goal_name: format!("Function '{}' - Verify ENSURE postcondition", func.name),
+                category: PropertyCategory::Functional,
+                reason: format!("Function '{}' declares ENSURE contract but has no RET or RET_IF instruction!", func.name),
+                counter_example: None,
+                stack_trace: vec![StackFrame {
+                    file: func.file.clone(),
+                    line: func.instructions.last().map(|s| s.loc.line).unwrap_or(1),
+                    function: func.name.clone(),
+                    snippet: "Missing RET statement".to_string(),
+                    role: "Missing RET for ENSURE postcondition".to_string(),
+                }],
             });
-            for inv in &loop_invs {
-                stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
-            }
-            stmts.extend(Self::lower_slice(func, body_before, &buffer_sizes, program, &mut vc, &mut results, &ensures, &canon_ret, true));
-            if let Some(ref brk) = first_brk_expr {
-                stmts.push(crate::ivl::IvlStmt::Assume { cond: brk.clone() });
-            }
-
-            let post_loop_slice = &func.instructions[l_end + 1 ..];
-            stmts.extend(Self::lower_slice(func, post_loop_slice, &buffer_sizes, program, &mut vc, &mut results, &ensures, &canon_ret, true));
-            results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
-        } else {
-            // Hàm thẳng hoặc hàm rẽ nhánh không có loop
-            let all_stmts = Self::lower_slice(func, &func.instructions, &buffer_sizes, program, &mut vc, &mut results, &ensures, &canon_ret, false);
-            stmts.extend(all_stmts);
-            results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
+            return results;
         }
+
+        let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
+        let all_stmts = Self::lower_slice(func, &func.instructions, &buffer_sizes, &buffer_aliases, program, &mut vc, &mut results, &ensures, &canon_ret, has_loop);
+        stmts.extend(all_stmts);
+        results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
 
         results
     }
@@ -1029,12 +1317,18 @@ impl Verifier {
         };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.contains("unsat") {
+        let first_token = stdout
+            .lines()
+            .map(|l| l.trim())
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+
+        if first_token == "unsat" {
             VerificationResult::Verified {
                 goal_name: goal_name.to_string(),
                 category,
             }
-        } else if stdout.contains("sat") {
+        } else if first_token == "sat" {
             VerificationResult::Failed {
                 goal_name: goal_name.to_string(),
                 category,
@@ -1042,7 +1336,7 @@ impl Verifier {
                 counter_example: Some(stdout.to_string()),
                 stack_trace,
             }
-        } else if stdout.contains("unknown") || stdout.contains("timeout") {
+        } else if first_token == "unknown" || first_token == "timeout" || stdout.contains("timeout") {
             VerificationResult::Unknown {
                 goal_name: goal_name.to_string(),
                 category,
