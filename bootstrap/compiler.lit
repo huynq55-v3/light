@@ -82,8 +82,8 @@ FUNC emit_elf_header(buf: slice<u8>, code_len: i64, entry_offset: i64) -> i64
   # p_filesz at offset 96
   STORE64 %ptr 96 %total_sz
 
-  # p_memsz at offset 104: 1MB virtual memory allocation for code + data segment + heap
-  %min_memsz = CONST i64 1048576
+  # p_memsz at offset 104: 16MB virtual memory allocation for code + data segment + heap
+  %min_memsz = CONST i64 16777216
   STORE64 %ptr 104 %min_memsz
 
   # p_align = 4096 at offset 112
@@ -1012,7 +1012,7 @@ END_FUNC
 
 # Search label table for matching 16-byte label name and return code offset
 FUNC find_label_offset(tables: slice<u8>, lbl_count: i64, target_p1: i64, target_p2: i64) -> i64
-  REQUIRE len(tables) >= 4096 && lbl_count >= 0 && lbl_count <= 80
+  REQUIRE len(tables) >= 32768 && lbl_count >= 0 && lbl_count <= 500
   %ptr = SLICE_PTR tables
   %li = CONST i64 0
   %c_24 = CONST i64 24
@@ -1050,11 +1050,11 @@ END_FUNC
 
 # Resolve all branch and jump fixups by writing 4-byte rel32 offsets into ELF buffer
 FUNC resolve_jump_fixups(elf_buf: slice<u8>, tables: slice<u8>, fix_count: i64, lbl_count: i64) -> i64
-  REQUIRE len(elf_buf) >= 65536 && len(tables) >= 4096 && fix_count >= 0 && fix_count <= 80 && lbl_count >= 0 && lbl_count <= 80
+  REQUIRE len(elf_buf) >= 262144 && len(tables) >= 32768 && fix_count >= 0 && fix_count <= 500 && lbl_count >= 0 && lbl_count <= 500
 
   %tbl_ptr = SLICE_PTR tables
-  %c_2048 = CONST i64 2048
-  %fix_ptr = ADD i64 %tbl_ptr %c_2048
+  %c_16384 = CONST i64 16384
+  %fix_ptr = ADD i64 %tbl_ptr %c_16384
   %elf_ptr = SLICE_PTR elf_buf
   %i = CONST i64 0
   %c_24 = CONST i64 24
@@ -1093,8 +1093,8 @@ FUNC resolve_jump_fixups(elf_buf: slice<u8>, tables: slice<u8>, fix_count: i64, 
 
     LABEL write_rel_bytes
     # Check disp_site is within buffer
-    %c_60000 = CONST i64 60000
-    %disp_ok = LT i64 %disp_site %c_60000
+    %c_max_elf = CONST i64 250000
+    %disp_ok = LT i64 %disp_site %c_max_elf
     %not_ok = EQ bool %disp_ok %false_b
     BR_IF %not_ok next_fix_entry
 
@@ -1130,8 +1130,8 @@ END_FUNC
 FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   REQUIRE len(src_path) > 0 && len(out_path) > 0
 
-  # Read source file (64KB buffer)
-  %src_buf = ALLOC slice<u8> 65536
+  # Read source file (128KB buffer)
+  %src_buf = ALLOC slice<u8> 131072
   %bytes_read = CALL fs_read_file src_path %src_buf
 
   %zero = CONST i64 0
@@ -1147,6 +1147,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %in_main = CONST bool true
   %main_offset = CONST i64 120
   %helper_func_offset = CONST i64 120
+  %data_bump = CONST i64 4259840
 
   # Allocate prefix slice for "FUNC "
   %p_func = ALLOC slice<u8> 5
@@ -1240,21 +1241,21 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %p_brif = ALLOC slice<u8> 6
   STORE_STR %p_brif "BR_IF "
 
-  # Allocate unified tables buffer (4KB: 0..2048 for labels, 2048..4096 for fixups)
-  %tables = ALLOC slice<u8> 4096
+  # Allocate unified tables buffer (32KB: 0..16384 for labels, 16384..32768 for fixups)
+  %tables = ALLOC slice<u8> 32768
   %lbl_ptr = SLICE_PTR %tables
   %lbl_count = CONST i64 0
 
-  %c_2048 = CONST i64 2048
-  %fix_ptr = ADD i64 %lbl_ptr %c_2048
+  %c_16384 = CONST i64 16384
+  %fix_ptr = ADD i64 %lbl_ptr %c_16384
   %fix_count = CONST i64 0
 
   # Allocate temporary 16-byte buffer for label name normalization
   %lbl_tmp = ALLOC slice<u8> 16
   %lbl_tmp_ptr = SLICE_PTR %lbl_tmp
 
-  # Allocate ELF binary buffer (64KB)
-  %elf_buf = ALLOC slice<u8> 65536
+  # Allocate ELF binary buffer (256KB)
+  %elf_buf = ALLOC slice<u8> 262144
   %elf_raw_ptr = SLICE_PTR %elf_buf
   %src_raw_ptr = SLICE_PTR %src_buf
   %c_pct_val = CONST i64 37
@@ -1284,7 +1285,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     BR_IF %near_eof advance_pos
 
     # Bound check for current code buffer position
-    %max_pos = CONST i64 60000
+    %max_pos = CONST i64 250000
     %code_overflow = GT i64 %cur_code_pos %max_pos
     %err_ovf = CONST i64 -2
     RET_IF %code_overflow %err_ovf
@@ -1526,8 +1527,23 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %not_alloc = EQ bool %is_alloc %false_b
     BR_IF %not_alloc check_sptr
 
-    %data_vaddr = CONST i64 4259840
-    %next_pos_al = CALL emit_mov_imm %elf_buf %cur_code_pos %dst_reg %data_vaddr
+    %alloc_chk = ADD i64 %rhs_pos 8
+    %alloc_near = GT i64 %alloc_chk %bytes_read
+    BR_IF %alloc_near advance_pos
+
+    %alloc_args_p = ADD i64 %rhs_pos 6
+    %sp_c = CONST i64 32
+    %sp_alloc = CALL find_char_from %src_buf %alloc_args_p %sp_c
+    %size_p = CALL skip_whitespace %src_buf %sp_alloc
+    %size_p_ovf = GT i64 %size_p %nl
+    BR_IF %size_p_ovf advance_pos
+
+    %alloc_size = CALL parse_int_from %src_buf %size_p %nl
+    %c_16 = CONST i64 16
+    %size_aligned = ADD i64 %alloc_size %c_16
+    %next_pos_al = CALL emit_mov_imm %elf_buf %cur_code_pos %dst_reg %data_bump
+    %next_data_bump = ADD i64 %data_bump %size_aligned
+    %data_bump = MOV %next_data_bump
     %cur_code_pos = MOV %next_pos_al
     %t_al = CONST bool true
     %has_dyn_code = MOV %t_al
@@ -1688,7 +1704,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %disp_site_c = ADD i64 %call_pos 1
 
     # Record fixup for function call
-    %max_fix_lim_c = CONST i64 70
+    %max_fix_lim_c = CONST i64 450
     %fix_ovf_c = GTE i64 %fix_count %max_fix_lim_c
     BR_IF %fix_ovf_c call_done_fix
 
@@ -1795,7 +1811,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %fn_def_p1 = LOAD64 %lbl_tmp_ptr 0
     %fn_def_p2 = LOAD64 %lbl_tmp_ptr 8
 
-    %max_lbl_lim_f = CONST i64 70
+    %max_lbl_lim_f = CONST i64 450
     %lbl_ovf_f = GTE i64 %lbl_count %max_lbl_lim_f
     BR_IF %lbl_ovf_f do_fn_prologue
 
@@ -1979,8 +1995,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %part1_l = LOAD64 %lbl_tmp_ptr 0
     %part2_l = LOAD64 %lbl_tmp_ptr 8
 
-    # Check lbl_count bounds (0..70)
-    %max_lbl_lim = CONST i64 70
+    # Check lbl_count bounds (0..450)
+    %max_lbl_lim = CONST i64 450
     %lbl_ovf = GTE i64 %lbl_count %max_lbl_lim
     BR_IF %lbl_ovf advance_pos
 
@@ -2009,8 +2025,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %part1_j = LOAD64 %lbl_tmp_ptr 0
     %part2_j = LOAD64 %lbl_tmp_ptr 8
 
-    # Check fix_count bounds (0..70)
-    %max_fix_lim = CONST i64 70
+    # Check fix_count bounds (0..450)
+    %max_fix_lim = CONST i64 450
     %fix_ovf_j = GTE i64 %fix_count %max_fix_lim
     BR_IF %fix_ovf_j advance_pos
 
@@ -2054,8 +2070,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %part1_br = LOAD64 %lbl_tmp_ptr 0
     %part2_br = LOAD64 %lbl_tmp_ptr 8
 
-    # Check fix_count bounds (0..70)
-    %max_fix_lim2 = CONST i64 70
+    # Check fix_count bounds (0..450)
+    %max_fix_lim2 = CONST i64 450
     %fix_ovf_br = GTE i64 %fix_count %max_fix_lim2
     BR_IF %fix_ovf_br advance_pos
 
