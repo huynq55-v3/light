@@ -1,0 +1,117 @@
+# Example 15: AI Benchmark Test 1 - Prime Number Determination (is_prime)
+# Written purely adhering to LIGHT_AI_SPEC.md specification rules.
+# Includes mathematical verification via Z3 SMT Solver:
+#   - Division-by-zero safety
+#   - Loop invariant preservation (Hoare logic induction)
+#   - Loop ranking function (DECREASES) proving halting/termination
+#   - Postcondition guarantees (ENSURE)
+
+IMPORT "../stdlib/io.lit"
+
+# Function: is_prime
+# Determines if an integer n is prime.
+# Returns 1 if prime, 0 if not prime.
+FUNC is_prime(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 1000
+
+  # Step 1: Numbers less than 2 are not prime (0, 1)
+  %c_2 = CONST i64 2
+  %is_small = LT i64 n %c_2
+  BR_IF %is_small ret_not_prime
+
+  # Step 2: 2 is prime
+  %is_two = EQ i64 n %c_2
+  BR_IF %is_two ret_prime
+
+  # Step 3: Check divisors d starting from 2 up to n - 1
+  %d = CONST i64 2
+  %zero = CONST i64 0
+  %one = CONST i64 1
+
+  LOOP prime_loop
+    INVARIANT %d >= 2 && %d <= n
+    DECREASES n - %d
+
+    # If d >= n, no divisor was found -> n is prime!
+    %done = GTE i64 %d n
+    BREAK_IF %done
+
+    # Check if n % d == 0
+    %rem = MOD i64 n %d
+    %is_div = EQ i64 %rem %zero
+    BR_IF %is_div ret_not_prime
+
+    # Increment divisor
+    %next_d = ADD i64 %d 1
+    %d = MOV %next_d
+  END_LOOP prime_loop
+
+  LABEL ret_prime
+  %res_prime = CONST i64 1
+  ENSURE %res_prime == 1 || %res_prime == 0
+  RET %res_prime
+
+  LABEL ret_not_prime
+  %res_composite = CONST i64 0
+  ENSURE %res_composite == 1 || %res_composite == 0
+  RET %res_composite
+END_FUNC
+
+FUNC main() -> i64
+  # Test cases:
+  # 29 is prime -> expect 1
+  %n1 = CONST i64 29
+  %r1 = CALL is_prime %n1
+  %one = CONST i64 1
+  %ok1 = EQ i64 %r1 %one
+  %false_b = CONST bool false
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # 15 is composite (3 * 5) -> expect 0
+  %n2 = CONST i64 15
+  %r2 = CALL is_prime %n2
+  %zero = CONST i64 0
+  %ok2 = EQ i64 %r2 %zero
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # 2 is prime -> expect 1
+  %n3 = CONST i64 2
+  %r3 = CALL is_prime %n3
+  %ok3 = EQ i64 %r3 %one
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # 1 is not prime -> expect 0
+  %n4 = CONST i64 1
+  %r4 = CALL is_prime %n4
+  %ok4 = EQ i64 %r4 %zero
+  %fail4 = EQ bool %ok4 %false_b
+  BR_IF %fail4 test_failed
+
+  # 97 is prime -> expect 1
+  %n5 = CONST i64 97
+  %r5 = CALL is_prime %n5
+  %ok5 = EQ i64 %r5 %one
+  %fail5 = EQ bool %ok5 %false_b
+  BR_IF %fail5 test_failed
+
+  # All tests passed! Print success banner
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] Benchmark Test 1 (is_prime): All 5 test cases verified!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+  LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] Benchmark Test 1: Assertion failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC
