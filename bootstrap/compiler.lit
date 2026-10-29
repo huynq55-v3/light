@@ -991,13 +991,16 @@ FUNC copy_label_name(src_buf: slice<u8>, start: i64, nl: i64, out_buf: slice<u8>
 
     %src_idx = ADD i64 start %i
     %ch = LOAD8 %src_ptr %src_idx
-    # Stop at space (ASCII 32) or \r (13)
+    # Stop at space (ASCII 32), \r (13), or '(' (40)
     %c_sp = CONST i64 32
     %is_sp = EQ i64 %ch %c_sp
     BREAK_IF %is_sp
     %c_cr = CONST i64 13
     %is_cr = EQ i64 %ch %c_cr
     BREAK_IF %is_cr
+    %c_lp = CONST i64 40
+    %is_lp = EQ i64 %ch %c_lp
+    BREAK_IF %is_lp
 
     STORE8 %out_ptr %i %ch
     %next_i = ADD i64 %i 1
@@ -1556,6 +1559,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
     # Find space after func_name
     %fn_nm_p = ADD i64 %rhs_pos 5
+    %dummy_fn_call = CALL copy_label_name %src_buf %fn_nm_p %nl %lbl_tmp
+    %fn_call_p1 = LOAD64 %lbl_tmp_ptr 0
+    %fn_call_p2 = LOAD64 %lbl_tmp_ptr 8
     %sp_call_1 = CALL find_char_from %src_buf %fn_nm_p %sp_c
     %arg1_p = CALL skip_whitespace %src_buf %sp_call_1
 
@@ -1678,7 +1684,25 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %call_pos = MOV %cur_code_pos
 
     LABEL emit_the_call
-    %c_call = CALL emit_call_inst %elf_buf %call_pos %helper_func_offset
+    %c_call = CALL emit_call_inst %elf_buf %call_pos 0
+    %disp_site_c = ADD i64 %call_pos 1
+
+    # Record fixup for function call
+    %max_fix_lim_c = CONST i64 70
+    %fix_ovf_c = GTE i64 %fix_count %max_fix_lim_c
+    BR_IF %fix_ovf_c call_done_fix
+
+    %c_24_call = CONST i64 24
+    %fc_entry = MUL i64 %fix_count %c_24_call
+    STORE64 %fix_ptr %fc_entry %disp_site_c
+    %fc_e8 = ADD i64 %fc_entry 8
+    STORE64 %fix_ptr %fc_e8 %fn_call_p1
+    %fc_e16 = ADD i64 %fc_entry 16
+    STORE64 %fix_ptr %fc_e16 %fn_call_p2
+    %next_fix_cnt_c = ADD i64 %fix_count 1
+    %fix_count = MOV %next_fix_cnt_c
+
+    LABEL call_done_fix
     # Return value from rax (0) into dst_reg
     %c_ret_v = CALL emit_mov_rr %elf_buf %c_call %dst_reg 0
     %cur_code_pos = MOV %c_ret_v
@@ -1765,7 +1789,27 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     # It is a helper function:
     %f_im = CONST bool false
     %in_main = MOV %f_im
-    %helper_func_offset = MOV %cur_code_pos
+
+    # Record function entry point into symbol table (%lbl_ptr)
+    %dummy_fn_def = CALL copy_label_name %src_buf %fn_name_p %nl %lbl_tmp
+    %fn_def_p1 = LOAD64 %lbl_tmp_ptr 0
+    %fn_def_p2 = LOAD64 %lbl_tmp_ptr 8
+
+    %max_lbl_lim_f = CONST i64 70
+    %lbl_ovf_f = GTE i64 %lbl_count %max_lbl_lim_f
+    BR_IF %lbl_ovf_f do_fn_prologue
+
+    %c_24_f = CONST i64 24
+    %lf_entry = MUL i64 %lbl_count %c_24_f
+    STORE64 %lbl_ptr %lf_entry %fn_def_p1
+    %lf_e8 = ADD i64 %lf_entry 8
+    STORE64 %lbl_ptr %lf_e8 %fn_def_p2
+    %lf_e16 = ADD i64 %lf_entry 16
+    STORE64 %lbl_ptr %lf_e16 %cur_code_pos
+    %next_lbl_cnt_f = ADD i64 %lbl_count 1
+    %lbl_count = MOV %next_lbl_cnt_f
+
+    LABEL do_fn_prologue
     %c_pro = CALL emit_func_prologue %elf_buf %cur_code_pos
     %cur_code_pos = MOV %c_pro
     %t_fn = CONST bool true
@@ -2184,8 +2228,15 @@ FUNC main() -> i64
   STORE_STR %out7 "branch.bin\0"
   %res7 = CALL compile_file %src7 %out7
 
-  %success_msg = ALLOC slice<u8> 90
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch)!\n"
+  # 9. Compile test_multi.lit -> multi.bin
+  %src8 = ALLOC slice<u8> 16
+  STORE_STR %src8 "test_multi.lit\0"
+  %out8 = ALLOC slice<u8> 16
+  STORE_STR %out8 "multi.bin\0"
+  %res8 = CALL compile_file %src8 %out8
+
+  %success_msg = ALLOC slice<u8> 128
+  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch, multi)!\n"
   %s_len = SLICE_LEN %success_msg
   %dummy2 = CALL std_print_slice %success_msg %s_len
 
