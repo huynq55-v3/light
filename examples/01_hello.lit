@@ -3,20 +3,17 @@
 
 FUNC main() -> i64
   # Cấp phát 24 bytes buffer
-  ALLOC %buffer 24
-  STORE_STR %buffer 0 "Hello from Light Lang!\n"
+  %buffer = ALLOC slice<u8> 24
+  STORE_STR %buffer "Hello from Light Lang!\n"
+  %ptr = SLICE_PTR %buffer
 
-  # Linux Syscall sys_write(fd=1, buf=%buffer, count=23)
+  # Linux Syscall sys_write(fd=1, buf=%ptr, count=23)
   %rax = CONST i64 1
   %rdi = CONST i64 1
-  %rsi = MOV %buffer
+  %rsi = MOV %ptr
   %rdx = CONST i64 23
-  SYSCALL %rax %rdi %rsi %rdx
+  SYSCALL
 
-  # sys_exit(0)
-  %exit_rax = CONST i64 60
-  %exit_code = CONST i64 0
-  SYSCALL %exit_rax %exit_code %exit_code %exit_code
-
-  RET %exit_code
+  %zero = CONST i64 0
+  RET %zero
 END_FUNC

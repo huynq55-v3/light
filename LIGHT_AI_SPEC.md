@@ -72,7 +72,7 @@ Binary operations take exactly 2 operands (no nested expressions):
 - `BR_IF %cond <name>`: Conditional jump when `%cond` is true.
 
 ### V. Memory & Slices (Safe Zero-Overhead Memory)
-- `%buf = ALLOC <size_in_bytes>`: Allocate contiguous memory on the stack/BSS.
+- `%buf = ALLOC slice<u8> <size_in_bytes>`: Allocate contiguous memory on the stack/BSS.
 - `STORE8 %buf %offset %val`: Store 1 byte (0..255) at `%buf + %offset`.
 - `%dest = LOAD8 %buf %offset`: Read 1 byte from `%buf + %offset`.
 - `STORE64 %buf %offset %val`: Store 8 bytes (i64) at `%buf + %offset`.
@@ -82,7 +82,7 @@ Binary operations take exactly 2 operands (no nested expressions):
 - `%ptr = SLICE_PTR %buf`: Get raw memory pointer.
 
 ### VI. Linux Bare-Metal Syscall (Zero libc)
-- `%res = SYSCALL %rax %rdi %rsi %rdx`: Direct Linux x86_64 kernel syscall.
+- `SYSCALL`: Direct Linux x86_64 kernel syscall using pre-loaded physical registers (`%rax`, `%rdi`, `%rsi`, `%rdx`, `%r10`, `%r8`). Result returned in `%rax`.
   - `sys_read`: `%rax = 0`, `%rdi = fd`, `%rsi = buf_ptr`, `%rdx = count`
   - `sys_write`: `%rax = 1`, `%rdi = fd (1=stdout)`, `%rsi = buf_ptr`, `%rdx = count`
   - `sys_open`: `%rax = 2`, `%rdi = path_ptr`, `%rsi = flags`, `%rdx = mode`
@@ -123,7 +123,7 @@ END_FUNC
 ### Pattern 2: Bare-Metal Console Print via Linux Syscall
 ```light
 FUNC main() -> i64
-  %msg = ALLOC 32
+  %msg = ALLOC slice<u8> 32
   STORE_STR %msg "Hello from Light Flat SSA!\n"
   %len = SLICE_LEN %msg
   %ptr = SLICE_PTR %msg
@@ -133,7 +133,7 @@ FUNC main() -> i64
   %rdi = CONST 1
   %rsi = MOV %ptr
   %rdx = MOV %len
-  SYSCALL %rax %rdi %rsi %rdx
+  SYSCALL
 
   # Return code 0 (exits via sys_exit 60)
   %zero = CONST 0

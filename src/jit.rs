@@ -178,7 +178,7 @@ impl MachineCodeEmitter {
     pub fn compile_function(
         &mut self,
         func: &Function,
-        program: &Program,
+        _program: &Program,
         base_data_vaddr: u64,
     ) -> Result<(), String> {
         let mut slots: HashMap<String, i32> = HashMap::new();
@@ -222,7 +222,7 @@ impl MachineCodeEmitter {
                     }
                     if !self.buffer_offsets.contains_key(dest) {
                         let offset = self.data_section.len();
-                        self.data_section.resize(offset + len, 0);
+                        self.data_section.resize(offset + len + 16, 0);
                         self.buffer_offsets.insert(dest.clone(), offset);
                         self.slice_capacities.insert(dest.clone(), *len);
                     }
@@ -250,23 +250,35 @@ impl MachineCodeEmitter {
         self.code.extend_from_slice(&[0x48, 0x81, 0xec]);
         self.code.extend_from_slice(&(frame_size as i32).to_le_bytes());
 
-        // Save incoming parameters from System V AMD64 ABI registers
-        // Regs: Rdi, Rsi, Rdx, Rcx, R8, R9
+        // System V AMD64 ABI registers: Rdi, Rsi, Rdx, Rcx, R8, R9
         let abi_regs = [X86Reg::Rdi, X86Reg::Rsi, X86Reg::Rdx, X86Reg::Rcx, X86Reg::R8, X86Reg::R9];
-        let mut reg_idx = 0;
-        for p in &func.params {
-            let clean = p.name.trim_start_matches('%');
-            if let Some(&slot) = slots.get(clean) {
-                if reg_idx < abi_regs.len() {
-                    self.emit_store_stack(abi_regs[reg_idx], slot);
-                    reg_idx += 1;
+
+        // Save incoming parameters
+        if func.name == "main" {
+            // Linux raw ELF entry point stack layout:
+            // [rbp + 8]: argc
+            // [rbp + 24]: argv[1]
+            for (idx, p) in func.params.iter().enumerate() {
+                let clean = p.name.trim_start_matches('%');
+                if let Some(&slot) = slots.get(clean) {
+                    if idx == 0 {
+                        // mov rax, [rbp + 8] (48 8b 45 08)
+                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x08]);
+                        self.emit_store_stack(X86Reg::Rax, slot);
+                    } else if idx == 1 {
+                        // mov rax, [rbp + 24] (48 8b 45 18)
+                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
+                        self.emit_store_stack(X86Reg::Rax, slot);
+                    }
                 }
             }
-            if matches!(p.ty, Type::Slice(_)) {
-                let len_name = format!("{}_len", clean);
-                if let Some(&slot_len) = slots.get(&len_name) {
+        } else {
+            let mut reg_idx = 0;
+            for p in &func.params {
+                let clean = p.name.trim_start_matches('%');
+                if let Some(&slot) = slots.get(clean) {
                     if reg_idx < abi_regs.len() {
-                        self.emit_store_stack(abi_regs[reg_idx], slot_len);
+                        self.emit_store_stack(abi_regs[reg_idx], slot);
                         reg_idx += 1;
                     }
                 }
@@ -373,16 +385,30 @@ impl MachineCodeEmitter {
                 Instruction::SliceLen { dest, slice } => {
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
-                    if let Some(&cap) = self.slice_capacities.get(slice) {
+                    let sl_clean = slice.trim_start_matches('%');
+                    if let Some(&s_slot) = slots.get(sl_clean) {
+                        self.emit_load_stack(X86Reg::Rax, s_slot);
+                        // Inline strlen on RAX:
+                        // 31 c9: xor ecx, ecx
+                        // 8a 14 08: mov dl, byte ptr [rax + rcx]
+                        // 84 d2: test dl, dl
+                        // 74 05: jz +5 (to mov rax, rcx)
+                        // 48 ff c1: inc rcx
+                        // eb f4: jmp -12 (to mov dl, [rax + rcx])
+                        // 48 89 c8: mov rax, rcx
+                        self.code.extend_from_slice(&[
+                            0x31, 0xc9,
+                            0x8a, 0x14, 0x08,
+                            0x84, 0xd2,
+                            0x74, 0x05,
+                            0x48, 0xff, 0xc1,
+                            0xeb, 0xf4,
+                            0x48, 0x89, 0xc8,
+                        ]);
+                    } else if let Some(&cap) = self.slice_capacities.get(slice) {
                         self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
                     } else {
-                        let sl_clean = slice.trim_start_matches('%');
-                        let len_name = format!("{}_len", sl_clean);
-                        if let Some(&s_slot) = slots.get(&len_name) {
-                            self.emit_load_stack(X86Reg::Rax, s_slot);
-                        } else if let Some(&s_slot) = slots.get(sl_clean) {
-                            self.emit_load_stack(X86Reg::Rax, s_slot);
-                        }
+                        self.emit_mov_reg_imm64(X86Reg::Rax, 0);
                     }
                     self.emit_store_stack(X86Reg::Rax, slot);
                 }
@@ -391,10 +417,11 @@ impl MachineCodeEmitter {
                     let buf_off = self.buffer_offsets.get(buf).cloned().unwrap_or(0);
                     let target_off = buf_off + offset;
                     let bytes = content.as_bytes();
-                    if target_off + bytes.len() > self.data_section.len() {
-                        self.data_section.resize(target_off + bytes.len(), 0);
+                    if target_off + bytes.len() + 1 > self.data_section.len() {
+                        self.data_section.resize(target_off + bytes.len() + 1, 0);
                     }
                     self.data_section[target_off..target_off + bytes.len()].copy_from_slice(bytes);
+                    self.data_section[target_off + bytes.len()] = 0;
                 }
 
                 Instruction::Load8 { dest, buf, offset } => {
@@ -554,40 +581,13 @@ impl MachineCodeEmitter {
 
                 Instruction::Call { dest, func_name, args } => {
                     // System V AMD64 ABI: Rdi, Rsi, Rdx, Rcx, R8, R9
-                    // Look up callee to determine slice argument expansions
-                    let callee = program.functions.iter().find(|f| &f.name == func_name);
                     let mut reg_idx = 0;
 
-                    for (i, arg) in args.iter().enumerate() {
+                    for arg in args {
                         if reg_idx >= abi_regs.len() { break; }
                         let target_reg = abi_regs[reg_idx];
-
-                        let is_slice_param = callee.map_or(false, |cf| {
-                            i < cf.params.len() && matches!(cf.params[i].ty, Type::Slice(_))
-                        });
-
                         load_op_into_reg(self, arg, target_reg);
                         reg_idx += 1;
-
-                        if is_slice_param && reg_idx < abi_regs.len() {
-                            let len_target = abi_regs[reg_idx];
-                            if let Operand::Reg(r) = arg {
-                                if let Some(&cap) = self.slice_capacities.get(r) {
-                                    self.emit_mov_reg_imm64(len_target, cap as i64);
-                                } else {
-                                    let clean = r.trim_start_matches('%');
-                                    let len_name = format!("{}_len", clean);
-                                    if let Some(&s_slot) = slots.get(&len_name) {
-                                        self.emit_load_stack(len_target, s_slot);
-                                    } else {
-                                        self.emit_mov_reg_imm64(len_target, 0);
-                                    }
-                                }
-                            } else {
-                                self.emit_mov_reg_imm64(len_target, 0);
-                            }
-                            reg_idx += 1;
-                        }
                     }
 
                     // call rel32 (E8 disp32)

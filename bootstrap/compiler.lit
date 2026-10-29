@@ -1103,6 +1103,25 @@ FUNC emit_func_prologue(buf: slice<u8>, pos: i64) -> i64
   RET %next_pos
 END_FUNC
 
+# Emit: mov rax, [rbp + disp8] (4 bytes: 48 8B 45 disp8)
+FUNC emit_mov_rax_rbp_disp8(buf: slice<u8>, pos: i64, disp: i64) -> i64
+  REQUIRE pos >= 0 && pos + 4 <= len(buf) && disp >= 0 && disp <= 127
+  %ptr = SLICE_PTR buf
+  %b0 = CONST i64 72
+  STORE8 %ptr pos %b0
+  %p1 = ADD i64 pos 1
+  %b1 = CONST i64 139
+  STORE8 %ptr %p1 %b1
+  %p2 = ADD i64 pos 2
+  %b2 = CONST i64 69
+  STORE8 %ptr %p2 %b2
+  %p3 = ADD i64 pos 3
+  STORE8 %ptr %p3 disp
+  %res = ADD i64 pos 4
+  ENSURE %res == pos + 4
+  RET %res
+END_FUNC
+
 # Emit: mov rsp, rbp; pop rbp; ret (5 bytes: 48 89 ec 5d c3)
 FUNC emit_func_epilogue(buf: slice<u8>, pos: i64) -> i64
   REQUIRE pos >= 0 && pos + 5 <= len(buf)
@@ -1842,6 +1861,113 @@ FUNC copy_label_name(src_buf: slice<u8>, start: i64, nl: i64, out_buf: slice<u8>
   RET %zero
 END_FUNC
 
+# Copy null-terminated C-string from raw memory pointer into slice
+FUNC copy_cstr_to_slice(src_ptr: i64, dst_buf: slice<u8>) -> i64
+  REQUIRE len(dst_buf) >= 128
+
+  %zero = CONST i64 0
+  %is_null = LTE i64 src_ptr %zero
+  RET_IF %is_null %zero
+
+  %dst_ptr = SLICE_PTR dst_buf
+  %i = CONST i64 0
+  %max_120 = CONST i64 120
+
+  LOOP cstr_copy_loop
+    INVARIANT %i >= 0 && %i <= 120
+    INVARIANT %i <= len(dst_buf)
+
+    %done = GTE i64 %i %max_120
+    BREAK_IF %done
+
+    %ch = LOAD8 src_ptr %i
+    %is_zero = EQ i64 %ch %zero
+    BREAK_IF %is_zero
+
+    STORE8 %dst_ptr %i %ch
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP cstr_copy_loop
+
+  STORE8 %dst_ptr %i %zero
+  ENSURE %i >= 0 && %i <= 120
+  RET %i
+END_FUNC
+
+# Derive output executable path by stripping trailing '.lit'
+FUNC derive_out_path(src_buf: slice<u8>, src_len: i64, out_buf: slice<u8>) -> i64
+  REQUIRE src_len >= 0 && src_len <= len(src_buf) && src_len <= 120 && len(out_buf) >= 128
+
+  %zero = CONST i64 0
+  %src_ptr = SLICE_PTR src_buf
+  %out_ptr = SLICE_PTR out_buf
+  %c_4 = CONST i64 4
+  %has_4 = GTE i64 src_len %c_4
+  %false_b = CONST bool false
+  %no_ext_chk = EQ bool %has_4 %false_b
+  BR_IF %no_ext_chk copy_full_name
+
+  # Check if ends with ".lit"
+  %idx_dot = SUB i64 src_len 4
+  %b_dot = LOAD8 %src_ptr %idx_dot
+  %c_dot = CONST i64 46
+  %is_dot = EQ i64 %b_dot %c_dot
+  %not_dot = EQ bool %is_dot %false_b
+  BR_IF %not_dot copy_full_name
+
+  %idx_l = SUB i64 src_len 3
+  %b_l = LOAD8 %src_ptr %idx_l
+  %c_l = CONST i64 108
+  %is_l = EQ i64 %b_l %c_l
+  %not_l = EQ bool %is_l %false_b
+  BR_IF %not_l copy_full_name
+
+  %idx_i = SUB i64 src_len 2
+  %b_i = LOAD8 %src_ptr %idx_i
+  %c_i = CONST i64 105
+  %is_i = EQ i64 %b_i %c_i
+  %not_i = EQ bool %is_i %false_b
+  BR_IF %not_i copy_full_name
+
+  %idx_t = SUB i64 src_len 1
+  %b_t = LOAD8 %src_ptr %idx_t
+  %c_t = CONST i64 116
+  %is_t = EQ i64 %b_t %c_t
+  %not_t = EQ bool %is_t %false_b
+  BR_IF %not_t copy_full_name
+
+  # Ends with ".lit"! Target length is src_len - 4
+  %out_len_lit = SUB i64 src_len 4
+  %target_len = MOV %out_len_lit
+  JUMP do_copy_out
+
+  LABEL copy_full_name
+  %target_len = MOV src_len
+
+  LABEL do_copy_out
+  %i = CONST i64 0
+  LOOP out_copy_loop
+    INVARIANT %i >= 0 && %i <= target_len
+    INVARIANT target_len >= 0 && target_len <= 120
+    INVARIANT %i <= len(src_buf)
+    INVARIANT %i <= len(out_buf)
+
+    %done = GTE i64 %i %target_len
+    BREAK_IF %done
+
+    %byte_val = LOAD8 %src_ptr %i
+    STORE8 %out_ptr %i %byte_val
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP out_copy_loop
+
+  STORE8 %out_ptr %target_len %zero
+  ENSURE %target_len >= 0 && %target_len <= 120
+  RET %target_len
+END_FUNC
+
 # Look up or allocate local variable stack slot (returns slot offset 8, 16, 24, ...)
 FUNC find_or_add_var(var_table: slice<u8>, var_count: i64, name_p1: i64, name_p2: i64) -> i64
   REQUIRE len(var_table) >= 65536 && var_count >= 0 && var_count <= 2600
@@ -2546,8 +2672,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     JUMP load_op2
 
     LABEL load_r1_phys
-    %r1 = CALL parse_reg_id %src_buf %r1_pos
-    %pos_after_r1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %r1
+    %r1_add = CALL parse_reg_id %src_buf %r1_pos
+    %pos_after_r1 = CALL emit_mov_rr %elf_buf %cur_code_pos 7 %r1_add
 
     LABEL load_op2
     # Load operand 2 into rsi (6)
@@ -2568,8 +2694,8 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %not_r2_pct = EQ bool %is_r2_pct %false_b
     BR_IF %not_r2_pct r2_imm_add
 
-    %r2 = CALL parse_reg_id %src_buf %r2_pos
-    %pos_after_r2 = CALL emit_mov_rr %elf_buf %pos_after_r1 6 %r2
+    %r2_add = CALL parse_reg_id %src_buf %r2_pos
+    %pos_after_r2 = CALL emit_mov_rr %elf_buf %pos_after_r1 6 %r2_add
     JUMP do_add_op
 
     LABEL r2_imm_add
@@ -3819,6 +3945,53 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %main_offset = MOV %cur_code_pos
     %c_pro_m = CALL emit_func_prologue %elf_buf %cur_code_pos
     %cur_code_pos = MOV %c_pro_m
+
+    # Check if main has parameters (e.g. FUNC main(argc: i64, argv1: i64))
+    %c_40_lp_m = CONST i64 40
+    %fn_lp_m = CALL find_char_from %src_buf %fn_name_p %c_40_lp_m
+    %c_41_rp_m = CONST i64 41
+    %fn_rp_m = CALL find_char_from %src_buf %fn_lp_m %c_41_rp_m
+    %no_pm_m = GTE i64 %fn_lp_m %fn_rp_m
+    BR_IF %no_pm_m main_p_done
+
+    %pm0_raw = ADD i64 %fn_lp_m 1
+    %pm0_start = CALL skip_whitespace %src_buf %pm0_raw
+    %pm0_empty = GTE i64 %pm0_start %fn_rp_m
+    BR_IF %pm0_empty main_p_done
+
+    # Param 0: argc -> [rbp + 8]
+    %c_col_m = CONST i64 58
+    %pm0_col = CALL find_char_from %src_buf %pm0_start %c_col_m
+    %dummy_pm0 = CALL copy_label_name %src_buf %pm0_start %pm0_col %lbl_tmp
+    %pm0_p1 = LOAD64 %lbl_tmp_ptr 0
+    %pm0_p2 = LOAD64 %lbl_tmp_ptr 8
+    %slot_pm0 = CALL find_or_add_var %var_table %var_count %pm0_p1 %pm0_p2
+    %next_vcm0 = ADD i64 %var_count 1
+    %var_count = MOV %next_vcm0
+    %c_pm1 = CALL emit_mov_rax_rbp_disp8 %elf_buf %cur_code_pos 8
+    %c_pm2 = CALL emit_store_stack %elf_buf %c_pm1 0 %slot_pm0
+    %cur_code_pos = MOV %c_pm2
+
+    # Check Param 1: argv1 -> [rbp + 24]
+    %c_comma_m = CONST i64 44
+    %pm1_comma = CALL find_char_from %src_buf %pm0_col %c_comma_m
+    %no_pm1 = GTE i64 %pm1_comma %fn_rp_m
+    BR_IF %no_pm1 main_p_done
+
+    %pm1_raw = ADD i64 %pm1_comma 1
+    %pm1_start = CALL skip_whitespace %src_buf %pm1_raw
+    %pm1_col = CALL find_char_from %src_buf %pm1_start %c_col_m
+    %dummy_pm1 = CALL copy_label_name %src_buf %pm1_start %pm1_col %lbl_tmp
+    %pm1_p1 = LOAD64 %lbl_tmp_ptr 0
+    %pm1_p2 = LOAD64 %lbl_tmp_ptr 8
+    %slot_pm1 = CALL find_or_add_var %var_table %var_count %pm1_p1 %pm1_p2
+    %next_vcm1 = ADD i64 %var_count 1
+    %var_count = MOV %next_vcm1
+    %c_pm3 = CALL emit_mov_rax_rbp_disp8 %elf_buf %cur_code_pos 24
+    %c_pm4 = CALL emit_store_stack %elf_buf %c_pm3 0 %slot_pm1
+    %cur_code_pos = MOV %c_pm4
+
+    LABEL main_p_done
     %t_fn_m = CONST bool true
     %has_dyn_code = MOV %t_fn_m
     JUMP advance_pos
@@ -4530,99 +4703,48 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 END_FUNC
 
 # Compiler main entry point
-FUNC main() -> i64
-  %msg = ALLOC slice<u8> 80
-  STORE_STR %msg "🚀 Light Self-Hosting Compiler v0.1 starting compilation...\n"
-  %msg_len = SLICE_LEN %msg
-  %dummy1 = CALL std_print_slice %msg %msg_len
+FUNC main(argc: i64, argv1: i64) -> i64
+  %false_b = CONST bool false
+  %c_2 = CONST i64 2
+  %has_arg = GTE i64 argc %c_2
+  %no_arg = EQ bool %has_arg %false_b
+  BR_IF %no_arg show_usage
 
-  # 1. Compile tests/test_syscall.lit -> syscall.bin
-  %src0 = ALLOC slice<u8> 32
-  STORE_STR %src0 "tests/test_syscall.lit\0"
-  %out0 = ALLOC slice<u8> 16
-  STORE_STR %out0 "syscall.bin\0"
-  %res0 = CALL compile_file %src0 %out0
+  # 1. Copy argv[1] into src_path buffer
+  %src_path = ALLOC slice<u8> 128
+  %src_len = CALL copy_cstr_to_slice argv1 %src_path
 
-  # 2. Compile tests/test_advanced.lit -> advanced.bin
-  %src1 = ALLOC slice<u8> 32
-  STORE_STR %src1 "tests/test_advanced.lit\0"
-  %out1 = ALLOC slice<u8> 16
-  STORE_STR %out1 "advanced.bin\0"
-  %res1 = CALL compile_file %src1 %out1
+  # 2. Derive out_path by stripping .lit extension
+  %out_path = ALLOC slice<u8> 128
+  %out_len = CALL derive_out_path %src_path %src_len %out_path
 
-  # 3. Compile tests/test_calc.lit -> calc.bin
-  %src2 = ALLOC slice<u8> 32
-  STORE_STR %src2 "tests/test_calc.lit\0"
-  %out2 = ALLOC slice<u8> 16
-  STORE_STR %out2 "calc.bin\0"
-  %res2 = CALL compile_file %src2 %out2
+  # 3. Print compiling banner
+  %b_msg = ALLOC slice<u8> 64
+  STORE_STR %b_msg "🚀 Light Native Compiler compiling source...\n"
+  %b_len = SLICE_LEN %b_msg
+  %dummy_b = CALL std_print_slice %b_msg %b_len
 
-  # 4. Compile tests/test_mem.lit -> mem.bin
-  %src3 = ALLOC slice<u8> 32
-  STORE_STR %src3 "tests/test_mem.lit\0"
-  %out3 = ALLOC slice<u8> 16
-  STORE_STR %out3 "mem.bin\0"
-  %res3 = CALL compile_file %src3 %out3
+  # 4. Compile source file to target binary
+  %res = CALL compile_file %src_path %out_path
 
-  # 5. Compile tests/test_mem64.lit -> mem64.bin
-  %src4 = ALLOC slice<u8> 32
-  STORE_STR %src4 "tests/test_mem64.lit\0"
-  %out4 = ALLOC slice<u8> 16
-  STORE_STR %out4 "mem64.bin\0"
-  %res4 = CALL compile_file %src4 %out4
-
-  # 6. Compile tests/test_func.lit -> func.bin
-  %src5 = ALLOC slice<u8> 32
-  STORE_STR %src5 "tests/test_func.lit\0"
-  %out5 = ALLOC slice<u8> 16
-  STORE_STR %out5 "func.bin\0"
-  %res5 = CALL compile_file %src5 %out5
-
-  # 7. Compile tests/test_args.lit -> args.bin
-  %src6 = ALLOC slice<u8> 32
-  STORE_STR %src6 "tests/test_args.lit\0"
-  %out6 = ALLOC slice<u8> 16
-  STORE_STR %out6 "args.bin\0"
-  %res6 = CALL compile_file %src6 %out6
-
-  # 8. Compile tests/test_branch.lit -> branch.bin
-  %src7 = ALLOC slice<u8> 32
-  STORE_STR %src7 "tests/test_branch.lit\0"
-  %out7 = ALLOC slice<u8> 16
-  STORE_STR %out7 "branch.bin\0"
-  %res7 = CALL compile_file %src7 %out7
-
-  # 9. Compile tests/test_multi.lit -> multi.bin
-  %src8 = ALLOC slice<u8> 32
-  STORE_STR %src8 "tests/test_multi.lit\0"
-  %out8 = ALLOC slice<u8> 16
-  STORE_STR %out8 "multi.bin\0"
-  %res8 = CALL compile_file %src8 %out8
-
-  # 10. Compile tests/test_vars.lit -> vars.bin
-  %src9 = ALLOC slice<u8> 32
-  STORE_STR %src9 "tests/test_vars.lit\0"
-  %out9 = ALLOC slice<u8> 16
-  STORE_STR %out9 "vars.bin\0"
-  %res9 = CALL compile_file %src9 %out9
-
-  # 11. Self-hosting: Compile bootstrap/compiler.lit -> lightc-native
-  %src_self = ALLOC slice<u8> 32
-  STORE_STR %src_self "bootstrap/compiler.lit\0"
-  %out_self = ALLOC slice<u8> 16
-  STORE_STR %out_self "lightc-native\0"
-  %res_self = CALL compile_file %src_self %out_self
-
-  %success_msg = ALLOC slice<u8> 128
-  STORE_STR %success_msg "🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch, multi, vars)!\n"
-  %s_len = SLICE_LEN %success_msg
-  %dummy2 = CALL std_print_slice %success_msg %s_len
-
-  %self_msg = ALLOC slice<u8> 128
-  STORE_STR %self_msg "🚀 Self-Hosting Stage 2 Complete! Generated lightc-native via Light itself!\n"
-  %self_msg_len = SLICE_LEN %self_msg
-  %dummy_self = CALL std_print_slice %self_msg %self_msg_len
-
+  # Bound check on res: if res < 0, exit with error code
   %zero = CONST i64 0
+  %is_err = LT i64 %res %zero
+  RET_IF %is_err %res
+
+  # 5. Print success message and return 0
+  %s_msg = ALLOC slice<u8> 64
+  STORE_STR %s_msg "🎉 Compilation completed successfully!\n"
+  %s_len = SLICE_LEN %s_msg
+  %dummy_s = CALL std_print_slice %s_msg %s_len
+
   RET %zero
+
+  LABEL show_usage
+  %usage = ALLOC slice<u8> 64
+  STORE_STR %usage "Usage: lightc-native <source.lit>\n"
+  %u_len = SLICE_LEN %usage
+  %dummy_u = CALL std_print_slice %usage %u_len
+  %one = CONST i64 1
+  RET %one
 END_FUNC

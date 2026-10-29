@@ -63,69 +63,57 @@ cargo run -- build tests/test_clean_syntax.lit -o app_bin
 echo "Exit code: $?"
 ```
 
-### 4. Stage 1: Build the Native Compiler (`lightc`)
-Use the initial Rust bootstrap toolchain to build the native Light compiler executable:
+### 4. Stage 1: Build the Native Compiler (`lightc-native`)
+Use the initial Rust bootstrap toolchain to build the native Light compiler binary:
 ```bash
 # Compile bootstrap/compiler.lit into native x86_64 ELF binary
-cargo run -- build bootstrap/compiler.lit -o lightc
+cargo run --release -- build bootstrap/compiler.lit -o lightc-native
 ```
 
-### 5. Stage 2: Compiling with Native `lightc-native` (100% Self-Hosted)
-`lightc-native` is a **pure standalone 74 KB native ELF64 executable** generated directly by Light, without `libc`, without Rust, and without external linkers.
+### 5. Stage 2: Compiling with Native `lightc-native` (100% Self-Hosted CLI)
+`lightc-native` is a **pure standalone 75 KB native ELF64 executable** generated directly by Light, without `libc`, without Rust, and without external linkers.
 
-#### A. Generate `lightc-native` & Test Binaries via `lightc`
+It takes **exactly 1 CLI argument** (`<source.lit>`) and produces a standalone binary named after the source file (stripping the `.lit` extension):
+
 ```bash
-# Execute Stage 1 compiler
-./lightc
+# Usage:
+./lightc-native <source.lit>
 ```
-This automatically compiles:
-- All test programs in `tests/*.lit` &rarr; `syscall.bin`, `calc.bin`, `advanced.bin`, etc.
-- The compiler source code `bootstrap/compiler.lit` &rarr; `lightc-native` (Stage 2 native binary).
 
-#### B. Compile and Self-Host Directly with `lightc-native`
-From this point forward, you no longer need Rust or Cargo! You can compile programs and self-host entirely with `lightc-native`:
+#### A. Compile an Application
 ```bash
-# Execute Stage 2 native compiler
-./lightc-native
-```
-Output:
-```text
-🚀 Light Self-Hosting Compiler v0.1 starting compilation...
-🎉 Successfully compiled test suite (syscall, calc, mem, mem64, func, args, branch, multi, vars)!
-🚀 Self-Hosting Stage 2 Complete! Generated lightc-native via Light itself!
+# Compile examples/01_hello.lit -> creates examples/01_hello
+./lightc-native examples/01_hello.lit
+
+# Run the compiled binary
+./examples/01_hello
+# Output: Hello from Light Lang!
 ```
 
-#### C. Run the Compiled Native Binaries
-All executables produced by `lightc-native` are pure bare-metal Linux binaries:
+#### B. Compile Test Suites
 ```bash
-# Run calculation test
-./calc.bin
-echo "Exit code: $?" # Output: 50
-
-# Run raw Linux syscall test
-./syscall.bin
-# Output: Hello from Bare-Metal Syscall!
+# Compile arithmetic test -> creates tests/test_calc
+./lightc-native tests/test_calc.lit
+./tests/test_calc
+echo "Exit code: $?" # Output: 123
 ```
 
-#### D. Verify Fixed-Point Convergence (Reproducible Builds)
-You can mathematically prove that the compiler has converged and reached an identical fixed-point:
+#### C. Prove 100% Fixed-Point Self-Hosting
+From this point forward, you no longer need Rust or Cargo! The native compiler compiles itself:
 ```bash
-# 1. Save Stage 2 binary
-cp lightc-native lightc_stage2
+# Compile its own source code with lightc-native -> creates bootstrap/compiler
+./lightc-native bootstrap/compiler.lit
 
-# 2. Recompile using Stage 2 to produce Stage 3 (overwrites lightc-native)
-./lightc_stage2
+# Verify byte-for-byte fixed-point convergence
+cmp lightc-native bootstrap/compiler
+echo "Exit code: $?" # 0 (100% Bit-for-bit identical!)
 
-# 3. Prove byte-for-byte bit identity
-cmp lightc_stage2 lightc-native
-echo "Exit code: $?" # 0 (Files are 100% identical!)
-
-sha256sum lightc_stage2 lightc-native
+sha256sum lightc-native bootstrap/compiler
 ```
 Both files yield the exact same SHA-256 hash:
 ```text
-33b1379788933f4163109adf55ef48d7c5d8730a700f535cdbba1dc8a8857cfc  lightc_stage2
-33b1379788933f4163109adf55ef48d7c5d8730a700f535cdbba1dc8a8857cfc  lightc-native
+c7e517a46b27298efa5a01d41ca2422910ca0cbea11905d0b1e7e58505279011  lightc-native
+c7e517a46b27298efa5a01d41ca2422910ca0cbea11905d0b1e7e58505279011  bootstrap/compiler
 ```
 This proves bit-for-bit mathematical deterministic self-hosting!
 
@@ -137,17 +125,17 @@ This proves bit-for-bit mathematical deterministic self-hosting!
 # Bare-metal Hello World in Light
 FUNC main() -> i64
   # Allocate 32 bytes on stack/BSS
-  %msg = ALLOC 32
+  %msg = ALLOC slice<u8> 32
   STORE_STR %msg "Hello, AI-Native Systems!\n"
   %len = SLICE_LEN %msg
   %ptr = SLICE_PTR %msg
 
-  # Direct Linux sys_write(stdout=1, buf, len)
+  # Direct Linux sys_write(stdout=1, buf=%ptr, count=%len)
   %rax = CONST 1
   %rdi = CONST 1
   %rsi = MOV %ptr
   %rdx = MOV %len
-  SYSCALL %rax %rdi %rsi %rdx
+  SYSCALL
 
   # Exit process with code 0
   %zero = CONST 0
