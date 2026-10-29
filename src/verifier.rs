@@ -132,10 +132,171 @@ impl Verifier {
             .collect();
         let canon_ret = Self::find_canonical_ret_var(func).unwrap_or_else(|| "ret".to_string());
 
+        let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
+
         // 2. Chuyển đổi các chỉ thị và lệnh tính toán
-        for s_inst in &func.instructions {
+        let mut idx = 0;
+        while idx < func.instructions.len() {
+            let s_inst = &func.instructions[idx];
             match &s_inst.inst {
                 Instruction::Require(_) | Instruction::Ensure(_) => {}
+                Instruction::StoreStr { buf, offset, content } => {
+                    let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
+                    let req_size = *offset + content.as_bytes().len();
+                    stmts.push(crate::ivl::IvlStmt::Assert {
+                        cond: crate::ivl::IvlExpr::BoolConst(req_size <= buf_size),
+                        goal_name: format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
+                }
+                Instruction::Loop(_) => {
+                    let l_start = idx;
+                    let l_end = func.instructions[l_start + 1..]
+                        .iter()
+                        .position(|s| matches!(s.inst, Instruction::EndLoop(_)))
+                        .map(|p| l_start + 1 + p)
+                        .unwrap_or(func.instructions.len() - 1);
+
+                    let body_slice = &func.instructions[l_start + 1..l_end];
+                    let mut loop_invs = Vec::new();
+                    let mut loop_decs = Vec::new();
+                    let mut body_before_break = Vec::new();
+                    let mut body_after_break = Vec::new();
+                    let mut first_brk_expr = None;
+                    let mut seen_break = false;
+
+                    for b_si in body_slice {
+                        match &b_si.inst {
+                            Instruction::Invariant(e) => loop_invs.push(crate::ivl::IvlExpr::from(e)),
+                            Instruction::Decreases(e) => loop_decs.push(crate::ivl::IvlExpr::from(e)),
+                            Instruction::BreakIf(c) if !seen_break => {
+                                seen_break = true;
+                                first_brk_expr = Some(crate::ivl::IvlExpr::Var(c.trim_start_matches('%').to_string()));
+                            }
+                            _ => {
+                                if seen_break {
+                                    body_after_break.push(b_si);
+                                } else {
+                                    body_before_break.push(b_si);
+                                }
+                            }
+                        }
+                    }
+
+                    // Step 1: Base Case - Assert INVARIANT trước khi vào vòng lặp
+                    for inv in &loop_invs {
+                        stmts.push(crate::ivl::IvlStmt::Assert {
+                            cond: inv.clone(),
+                            goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
+                            category: PropertyCategory::Inductive,
+                            loc: s_inst.loc.clone(),
+                        });
+                    }
+
+                    let modified: Vec<String> = crate::ivl::IvlLowerer::collect_modified_vars(body_slice).into_iter().collect();
+
+                    // --- KIỂM CHỨNG BƯỚC QUY NẠP (Step 2) VÀ DỪNG (Step 4a, 4b) TRÊN NHÁNH TIẾP TỤC LẶP ---
+                    if !loop_invs.is_empty() || !loop_decs.is_empty() {
+                        let mut ind_stmts = Vec::new();
+                        // Nạp lại các REQUIRE tiền điều kiện
+                        for s_si in &func.instructions {
+                            if let Instruction::Require(req) = &s_si.inst {
+                                ind_stmts.push(crate::ivl::IvlStmt::Assume {
+                                    cond: crate::ivl::IvlExpr::from(req),
+                                });
+                            }
+                        }
+                        // Havoc các biến bị thay đổi trong vòng lặp
+                        ind_stmts.push(crate::ivl::IvlStmt::Havoc {
+                            vars: modified.clone(),
+                            is_memory: false,
+                        });
+                        // Giả định INVARIANT đúng tại đầu vòng lặp bất kỳ
+                        for inv in &loop_invs {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
+                        }
+                        // Lưu giá trị ban đầu của DECREASES
+                        for (d_idx, dec) in loop_decs.iter().enumerate() {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assign {
+                                dest: format!("__rank_init_{}", d_idx),
+                                expr: dec.clone(),
+                                is_memory: false,
+                            });
+                        }
+                        // Thực thi phần thân trước BREAK_IF
+                        for b_si in &body_before_break {
+                            ind_stmts.extend(crate::ivl::IvlLowerer::lower_inst(b_si, &buffer_sizes));
+                        }
+                        // Nhánh tiếp tục lặp: Giả định KHÔNG break (!break_cond)
+                        if let Some(ref brk) = first_brk_expr {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assume {
+                                cond: crate::ivl::IvlExpr::Not(Box::new(brk.clone())),
+                            });
+                        }
+                        // Thực thi phần thân sau BREAK_IF (cập nhật biến lặp)
+                        for b_si in &body_after_break {
+                            ind_stmts.extend(crate::ivl::IvlLowerer::lower_inst(b_si, &buffer_sizes));
+                        }
+                        // Step 2: Inductive Step - Khẳng định INVARIANT được bảo toàn
+                        for inv in &loop_invs {
+                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: inv.clone(),
+                                goal_name: format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name),
+                                category: PropertyCategory::Inductive,
+                                loc: s_inst.loc.clone(),
+                            });
+                        }
+                        // Step 4a & 4b: Termination
+                        for (d_idx, dec) in loop_decs.iter().enumerate() {
+                            let old_r = crate::ivl::IvlExpr::Var(format!("__rank_init_{}", d_idx));
+                            // Step 4a: old_r >= 0
+                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: crate::ivl::IvlExpr::Binary {
+                                    op: BinOp::Gte,
+                                    lhs: Box::new(old_r.clone()),
+                                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                                },
+                                goal_name: format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
+                                category: PropertyCategory::Termination,
+                                loc: s_inst.loc.clone(),
+                            });
+                            // Step 4b: dec < old_r
+                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: crate::ivl::IvlExpr::Binary {
+                                    op: BinOp::Lt,
+                                    lhs: Box::new(dec.clone()),
+                                    rhs: Box::new(old_r),
+                                },
+                                goal_name: format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
+                                category: PropertyCategory::Termination,
+                                loc: s_inst.loc.clone(),
+                            });
+                        }
+                        let mut vc_ind = vc.clone();
+                        results.extend(vc_ind.verify_sequence(&ind_stmts, &func.name, &func.file));
+                    }
+
+                    // --- CHUẨN BỊ CHO ĐƯỜNG THOÁT VÒNG LẶP TIẾP DIỄN TRONG STMTS (Exit Path -> Step 3) ---
+                    stmts.push(crate::ivl::IvlStmt::Havoc {
+                        vars: modified,
+                        is_memory: false,
+                    });
+                    for inv in &loop_invs {
+                        stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
+                    }
+                    for b_si in &body_before_break {
+                        stmts.extend(crate::ivl::IvlLowerer::lower_inst(b_si, &buffer_sizes));
+                    }
+                    if let Some(ref brk) = first_brk_expr {
+                        stmts.push(crate::ivl::IvlStmt::Assume {
+                            cond: brk.clone(),
+                        });
+                    }
+
+                    idx = l_end + 1;
+                    continue;
+                }
                 Instruction::Assert(e) => {
                     stmts.push(crate::ivl::IvlStmt::Assert {
                         cond: crate::ivl::IvlExpr::from(e),
@@ -294,9 +455,30 @@ impl Verifier {
                     });
                     for ens in &ensures {
                         let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                        let goal_name = if has_loop {
+                            format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name)
+                        } else {
+                            format!("Function '{}' - Verify ENSURE postcondition", func.name)
+                        };
                         stmts.push(crate::ivl::IvlStmt::Assert {
                             cond: ens_ivl,
-                            goal_name: format!("Function '{}' - Verify ENSURE postcondition", func.name),
+                            goal_name,
+                            category: PropertyCategory::Functional,
+                            loc: s_inst.loc.clone(),
+                        });
+                    }
+                }
+                Instruction::Ret(None) => {
+                    for ens in &ensures {
+                        let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                        let goal_name = if has_loop {
+                            format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name)
+                        } else {
+                            format!("Function '{}' - Verify ENSURE postcondition", func.name)
+                        };
+                        stmts.push(crate::ivl::IvlStmt::Assert {
+                            cond: ens_ivl,
+                            goal_name,
                             category: PropertyCategory::Functional,
                             loc: s_inst.loc.clone(),
                         });
@@ -306,6 +488,7 @@ impl Verifier {
                     stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
                 }
             }
+            idx += 1;
         }
 
         // 3. Thực thi Universal VCGen

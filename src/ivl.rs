@@ -23,6 +23,12 @@ pub enum IvlExpr {
         lhs: Box<IvlExpr>,
         rhs: Box<IvlExpr>,
     },
+    /// Biểu thức điều kiện Phi-node: ite(cond, then_expr, else_expr)
+    Ite {
+        cond: Box<IvlExpr>,
+        then_val: Box<IvlExpr>,
+        else_val: Box<IvlExpr>,
+    },
     Not(Box<IvlExpr>),
     Len(String),
     /// SMT Theory of Arrays: select(mem, offset) - Đọc từ ô nhớ
@@ -195,6 +201,11 @@ impl IvlLowerer {
                 op: op.clone(),
                 lhs: Box::new(Self::subst_expr(lhs, from, to)),
                 rhs: Box::new(Self::subst_expr(rhs, from, to)),
+            },
+            IvlExpr::Ite { cond, then_val, else_val } => IvlExpr::Ite {
+                cond: Box::new(Self::subst_expr(cond, from, to)),
+                then_val: Box::new(Self::subst_expr(then_val, from, to)),
+                else_val: Box::new(Self::subst_expr(else_val, from, to)),
             },
             IvlExpr::Not(e) => IvlExpr::Not(Box::new(Self::subst_expr(e, from, to))),
             IvlExpr::Select { mem, offset } => IvlExpr::Select {
@@ -392,6 +403,12 @@ impl IvlLowerer {
                 stmts.push(IvlStmt::Assign {
                     dest: format!("{}_len", clean),
                     expr: IvlExpr::IntConst(*size as i64),
+                    is_memory: false,
+                });
+            }
+            Instruction::Syscall { dest: Some(d), .. } => {
+                stmts.push(IvlStmt::Havoc {
+                    vars: vec![d.clone()],
                     is_memory: false,
                 });
             }

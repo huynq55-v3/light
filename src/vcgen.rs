@@ -14,6 +14,7 @@ use crate::ivl::{IvlExpr, IvlStmt};
 use crate::verifier::{StackFrame, VerificationResult, Verifier};
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone)]
 pub struct VcGen {
     pub declared_vars: HashSet<String>,
     pub declared_mems: HashSet<String>,
@@ -92,6 +93,12 @@ impl VcGen {
                     BinOp::Or => format!("(ite (or (distinct {} (_ bv0 64)) (distinct {} (_ bv0 64))) (_ bv1 64) (_ bv0 64))", s1, s2),
                 }
             }
+            IvlExpr::Ite { cond, then_val, else_val } => {
+                let c = self.expr_to_bool(cond);
+                let t = self.expr_to_bv(then_val);
+                let e = self.expr_to_bv(else_val);
+                format!("(ite {} {} {})", c, t, e)
+            }
             IvlExpr::Not(e) => {
                 let s = self.expr_to_bv(e);
                 format!("(ite (= {} (_ bv0 64)) (_ bv1 64) (_ bv0 64))", s)
@@ -128,6 +135,12 @@ impl VcGen {
                     }
                 }
             }
+            IvlExpr::Ite { cond, then_val, else_val } => {
+                let c = self.expr_to_bool(cond);
+                let t = self.expr_to_bool(then_val);
+                let e = self.expr_to_bool(else_val);
+                format!("(ite {} {} {})", c, t, e)
+            }
             IvlExpr::Not(e) => format!("(not {})", self.expr_to_bool(e)),
             IvlExpr::BoolConst(b) => if *b { "true".to_string() } else { "false".to_string() },
             _ => {
@@ -161,6 +174,11 @@ impl VcGen {
                 self.collect_scalar_vars(lhs, vars);
                 self.collect_scalar_vars(rhs, vars);
             }
+            IvlExpr::Ite { cond, then_val, else_val } => {
+                self.collect_scalar_vars(cond, vars);
+                self.collect_scalar_vars(then_val, vars);
+                self.collect_scalar_vars(else_val, vars);
+            }
             IvlExpr::Not(inner) => self.collect_scalar_vars(inner, vars),
             _ => {}
         }
@@ -180,6 +198,11 @@ impl VcGen {
             IvlExpr::Binary { lhs, rhs, .. } => {
                 Self::collect_mem_names(lhs, mems);
                 Self::collect_mem_names(rhs, mems);
+            }
+            IvlExpr::Ite { cond, then_val, else_val } => {
+                Self::collect_mem_names(cond, mems);
+                Self::collect_mem_names(then_val, mems);
+                Self::collect_mem_names(else_val, mems);
             }
             IvlExpr::Not(inner) => Self::collect_mem_names(inner, mems),
             _ => {}

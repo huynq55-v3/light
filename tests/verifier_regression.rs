@@ -1303,3 +1303,31 @@ END_FUNC
     assert!(all_passed, "IVL Engine phải VERIFY thành công hàm check_nonneg với RET_IF! Got: {:?}", results);
 }
 
+#[test]
+fn test_ivl_on_real_loop_hoare_logic_steps() {
+    let code = r#"
+FUNC sum_to_n(n: i64) -> i64
+    REQUIRE n >= 0 && n <= 1000
+    ENSURE %ret >= 0
+    %s = CONST i64 0
+    %i = CONST i64 0
+    LOOP l1
+        INVARIANT %s >= 0 && %s <= %i * 1000
+        INVARIANT %i >= 0 && %i <= n
+        DECREASES n - %i
+        %done = GTE i64 %i n
+        BREAK_IF %done
+        %s = ADD i64 %s %i
+        %i = ADD i64 %i 1
+    END_LOOP l1
+    RET %s
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse loop test");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    assert_eq!(results.len(), 7, "Cần có đủ 7 goals: 2 x Step 1, 2 x Step 2, Step 4a, Step 4b, Step 3. Got: {:?}", results);
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "IVL Engine phải kiểm chứng thành công cả 5 bước Hoare Logic của LOOP! Got: {:?}", results);
+}
+
+
