@@ -1,9 +1,11 @@
 # Syscall Bare-Metal Execution Test for Light Self-Hosting Compiler
 FUNC main() -> i64
+  %data = ALLOC slice<u8> 64
   STORE_STR %data "Hello from Bare-Metal Syscall!\n"
+  %ptr = SLICE_PTR %data
   %rax = CONST i64 1
   %rdi = CONST i64 1
-  %rsi = CONST i64 4194816
+  %rsi = MOV %ptr
   %rdx = CONST i64 31
   SYSCALL
   %rax = CONST i64 60

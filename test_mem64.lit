@@ -1,10 +1,10 @@
 # 64-bit Memory Operations Test for Light Self-Hosting Compiler
 FUNC main() -> i64
-  %rsi = ALLOC slice<u8> 64
-  %rdi = CONST i64 123456789
-  STORE64 %rsi 16 %rdi
-  %rbx = LOAD64 %rsi 16
-  %rdi = CONST i64 123456747
-  %rbx = SUB i64 %rbx %rdi
-  RET %rbx
+  %buf = ALLOC slice<u8> 64
+  %v1 = CONST i64 123456789
+  STORE64 %buf 16 %v1
+  %read = LOAD64 %buf 16
+  %v2 = CONST i64 123456747
+  %res = SUB i64 %read %v2
+  RET %res
 END_FUNC

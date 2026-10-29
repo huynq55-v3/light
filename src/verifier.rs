@@ -391,23 +391,33 @@ impl Verifier {
     ) -> String {
         let mut smt = String::new();
         smt.push_str("(set-logic QF_BV)\n");
+        let mut declared = std::collections::HashSet::new();
 
         // 1. Declare callee parameters
         for p in &callee.params {
+            declared.insert(p.name.clone());
+            declared.insert(format!("{}_len", p.name));
             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
             smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", p.name));
         }
 
         // 2. Declare caller parameters
         for p in &caller.params {
-            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
-            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", p.name));
+            if declared.insert(p.name.clone()) {
+                smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
+            }
+            if declared.insert(format!("{}_len", p.name)) {
+                smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", p.name));
+            }
         }
 
         // 2b. Declare static buffer sizes in caller
         for (buf_name, size) in buffer_sizes {
             let clean = buf_name.trim_start_matches('%');
-            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            let len_name = format!("{}_len", clean);
+            if declared.insert(len_name.clone()) {
+                smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", len_name));
+            }
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
         }
 
@@ -423,15 +433,46 @@ impl Verifier {
             match &si.inst {
                 Instruction::AssignConst { dest, val, .. } => {
                     let d = dest.trim_start_matches('%');
-                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    if declared.insert(d.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    }
                     if let Value::I64(v) = val {
                         smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                    }
+                }
+                Instruction::Mov { dest, src } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = src.trim_start_matches('%');
+                    if declared.insert(d.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    }
+                    smt.push_str(&format!("(assert (= {} {}))\n", d, s));
+                }
+                Instruction::Load8 { dest, .. } => {
+                    let name = dest.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                    smt.push_str(&format!("(assert (and (bvsge {} (_ bv0 64)) (bvsle {} (_ bv255 64))))\n", name, name));
+                }
+                Instruction::Load64 { dest, .. } => {
+                    let name = dest.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
+                }
+                Instruction::SlicePtr { dest, .. } => {
+                    let name = dest.trim_start_matches('%');
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
                     }
                 }
                 Instruction::SliceLen { dest, slice } => {
                     let d = dest.trim_start_matches('%');
                     let s = slice.trim_start_matches('%');
-                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    if declared.insert(d.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    }
                     if let Some(&size) = buffer_sizes.get(slice) {
                         smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, size));
                     } else {
@@ -440,7 +481,9 @@ impl Verifier {
                 }
                 Instruction::Binary { op, dest, src1, src2, .. } => {
                     let d = dest.trim_start_matches('%');
-                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    if declared.insert(d.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    }
                     let s1 = match src1 {
                         Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
                         Operand::Reg(r) => r.trim_start_matches('%').to_string(),
@@ -468,7 +511,9 @@ impl Verifier {
                 }
                 Instruction::Call { dest: Some(d), func_name, args: call_args } => {
                     let name = d.trim_start_matches('%');
-                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    if declared.insert(name.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
+                    }
 
                     // Propagate ENSURE contracts of prior called functions
                     if let Some(prog) = program {
