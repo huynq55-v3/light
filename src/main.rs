@@ -1,6 +1,8 @@
 mod ast;
+mod ivl;
 mod jit;
 mod parser;
+mod vcgen;
 mod verifier;
 mod vm;
 
