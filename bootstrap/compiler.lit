@@ -4606,11 +4606,11 @@ FUNC main() -> i64
   STORE_STR %out9 "vars.bin\0"
   %res9 = CALL compile_file %src9 %out9
 
-  # 11. Self-hosting: Compile bootstrap/compiler.lit -> lightc_v2
+  # 11. Self-hosting: Compile bootstrap/compiler.lit -> lightc-native
   %src_self = ALLOC slice<u8> 32
   STORE_STR %src_self "bootstrap/compiler.lit\0"
   %out_self = ALLOC slice<u8> 16
-  STORE_STR %out_self "lightc_v2\0"
+  STORE_STR %out_self "lightc-native\0"
   %res_self = CALL compile_file %src_self %out_self
 
   %success_msg = ALLOC slice<u8> 128
@@ -4619,7 +4619,7 @@ FUNC main() -> i64
   %dummy2 = CALL std_print_slice %success_msg %s_len
 
   %self_msg = ALLOC slice<u8> 128
-  STORE_STR %self_msg "🚀 Self-Hosting Stage 2 Complete! Generated lightc_v2 via Light itself!\n"
+  STORE_STR %self_msg "🚀 Self-Hosting Stage 2 Complete! Generated lightc-native via Light itself!\n"
   %self_msg_len = SLICE_LEN %self_msg
   %dummy_self = CALL std_print_slice %self_msg %self_msg_len
 

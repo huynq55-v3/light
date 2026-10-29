@@ -176,6 +176,28 @@ fn build_elf(file_path: &str, output_path: &str) {
 
 fn run_verification(program: &ast::Program) -> bool {
     let mut has_failure = false;
+
+    // 0. Program-wide Symbol & Loop Label Uniqueness Check
+    let mut seen_labels: std::collections::HashMap<String, (String, usize)> = std::collections::HashMap::new();
+    for func in &program.functions {
+        for s_inst in &func.instructions {
+            let label_name = match &s_inst.inst {
+                ast::Instruction::Loop(l) => Some(l),
+                ast::Instruction::Label(l) => Some(l),
+                _ => None,
+            };
+            if let Some(lbl) = label_name {
+                if let Some((prev_fn, prev_line)) = seen_labels.get(lbl) {
+                    has_failure = true;
+                    eprintln!("  🚨 [FAIL] Program-level Symbol Collision: Duplicate label/loop '{}'", lbl);
+                    eprintln!("     Conflict between {}() line {} and {}() line {}", prev_fn, prev_line, func.name, s_inst.loc.line);
+                } else {
+                    seen_labels.insert(lbl.clone(), (func.name.clone(), s_inst.loc.line));
+                }
+            }
+        }
+    }
+
     for func in &program.functions {
         let results = Verifier::verify_function(func, Some(program));
         for res in results {

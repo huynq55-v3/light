@@ -41,6 +41,109 @@ impl Verifier {
     pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
         let mut results = Vec::new();
 
+        // 0. Static Well-Formedness: SSA Definite Assignment Check (No Undefined Variables)
+        let phys_regs: std::collections::HashSet<&str> = [
+            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+            "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"
+        ].into_iter().collect();
+
+        let mut defined_vars: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for param in &func.params {
+            defined_vars.insert(param.name.trim_start_matches('%').to_string());
+        }
+
+        for s_inst in &func.instructions {
+            let mut used_regs: Vec<&String> = Vec::new();
+            match &s_inst.inst {
+                Instruction::Mov { src, .. } => used_regs.push(src),
+                Instruction::Binary { src1, src2, .. } => {
+                    if let Operand::Reg(r) = src1 { used_regs.push(r); }
+                    if let Operand::Reg(r) = src2 { used_regs.push(r); }
+                }
+                Instruction::Call { args, .. } => {
+                    for arg in args {
+                        if let Operand::Reg(r) = arg { used_regs.push(r); }
+                    }
+                }
+                Instruction::SlicePtr { slice, .. } => used_regs.push(slice),
+                Instruction::SliceLen { slice, .. } => used_regs.push(slice),
+                Instruction::Store8 { buf, offset, val } => {
+                    used_regs.push(buf);
+                    if let Operand::Reg(r) = offset { used_regs.push(r); }
+                    if let Operand::Reg(r) = val { used_regs.push(r); }
+                }
+                Instruction::Load8 { buf, offset, .. } => {
+                    used_regs.push(buf);
+                    if let Operand::Reg(r) = offset { used_regs.push(r); }
+                }
+                Instruction::Store64 { buf, offset, val } => {
+                    used_regs.push(buf);
+                    if let Operand::Reg(r) = offset { used_regs.push(r); }
+                    if let Operand::Reg(r) = val { used_regs.push(r); }
+                }
+                Instruction::Load64 { buf, offset, .. } => {
+                    used_regs.push(buf);
+                    if let Operand::Reg(r) = offset { used_regs.push(r); }
+                }
+                Instruction::StoreStr { buf, .. } => used_regs.push(buf),
+                Instruction::BrIf { cond, .. } => used_regs.push(cond),
+                Instruction::BreakIf(cond) => used_regs.push(cond),
+                Instruction::ContinueIf(cond) => used_regs.push(cond),
+                Instruction::Syscall { rax, rdi, rsi, rdx, .. } => {
+                    if let Operand::Reg(r) = rax { used_regs.push(r); }
+                    if let Operand::Reg(r) = rdi { used_regs.push(r); }
+                    if let Operand::Reg(r) = rsi { used_regs.push(r); }
+                    if let Operand::Reg(r) = rdx { used_regs.push(r); }
+                }
+                Instruction::Ret(Some(Operand::Reg(r))) => used_regs.push(r),
+                Instruction::RetIf { cond, val } => {
+                    used_regs.push(cond);
+                    if let Some(Operand::Reg(r)) = val { used_regs.push(r); }
+                }
+                _ => {}
+            }
+
+            for reg in used_regs {
+                let clean = reg.trim_start_matches('%');
+                if !phys_regs.contains(clean) && !defined_vars.contains(clean) {
+                    let goal_name = format!("Function '{}' - Line {}: SSA Definite Assignment for '%{}'", func.name, s_inst.loc.line, clean);
+                    let stack = vec![StackFrame {
+                        file: s_inst.loc.file.clone(),
+                        line: s_inst.loc.line,
+                        function: format!("{}()", func.name),
+                        snippet: s_inst.loc.text.clone(),
+                        role: format!("Variable '%{}' is used before being defined or passed as parameter", clean),
+                    }];
+                    results.push(VerificationResult::Failed {
+                        goal_name,
+                        reason: format!("Static SSA Violation: Variable '%{}' is used without being assigned or defined!", clean),
+                        counter_example: None,
+                        stack_trace: stack,
+                    });
+                }
+            }
+
+            // Register newly defined variable
+            match &s_inst.inst {
+                Instruction::AssignConst { dest, .. }
+                | Instruction::Mov { dest, .. }
+                | Instruction::Binary { dest, .. }
+                | Instruction::AllocSlice { dest, .. }
+                | Instruction::SlicePtr { dest, .. }
+                | Instruction::SliceLen { dest, .. }
+                | Instruction::Alloc { dest, .. }
+                | Instruction::Load8 { dest, .. }
+                | Instruction::Load64 { dest, .. } => {
+                    defined_vars.insert(dest.trim_start_matches('%').to_string());
+                }
+                Instruction::Call { dest: Some(d), .. }
+                | Instruction::Syscall { dest: Some(d), .. } => {
+                    defined_vars.insert(d.trim_start_matches('%').to_string());
+                }
+                _ => {}
+            }
+        }
+
         // 1. Collect verification directives
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
