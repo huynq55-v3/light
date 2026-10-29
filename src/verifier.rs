@@ -539,8 +539,10 @@ impl Verifier {
                     if declared.insert(d.to_string()) {
                         smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                     }
-                    if let Value::I64(v) = val {
-                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
                     }
                 }
                 Instruction::Mov { dest, src } => {
@@ -812,13 +814,17 @@ impl Verifier {
                 break;
             }
             match &s_inst.inst {
-                Instruction::AssignConst { dest, val: Value::I64(v), .. } => {
+                Instruction::AssignConst { dest, val, .. } => {
                     let d = dest.trim_start_matches('%');
                     if !declared_vars.contains(d) {
                         smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                         declared_vars.insert(d.to_string());
                     }
-                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
                     if d == loop_var {
                         found_init = true;
                     }
@@ -1006,10 +1012,14 @@ impl Verifier {
                     smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                     smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
                 }
-                Instruction::AssignConst { dest, val: Value::I64(v), .. } => {
+                Instruction::AssignConst { dest, val, .. } => {
                     let d = dest.trim_start_matches('%');
                     smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
@@ -1102,8 +1112,10 @@ impl Verifier {
                     if declared.insert(name.to_string()) {
                         smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", name));
                     }
-                    if let Value::I64(n) = val {
-                        smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, n));
+                    match val {
+                        Value::I64(n) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, n)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", name, if *b { 1 } else { 0 })),
+                        _ => {}
                     }
                 }
                 Instruction::SliceLen { dest, slice } => {

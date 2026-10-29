@@ -2083,6 +2083,22 @@ FUNC resolve_jump_fixups(elf_buf: slice<u8>, tables: slice<u8>, fix_count: i64, 
     # Call find_label_offset
     %target_off = CALL find_label_offset tables lbl_count %target_p1 %target_p2
 
+    # Check if target_off is valid (valid code starts at offset 120 after ELF header)
+    %c_120_min = CONST i64 120
+    %is_undef = LT i64 %target_off %c_120_min
+    %false_b_u = CONST bool false
+    %not_undef = EQ bool %is_undef %false_b_u
+    BR_IF %not_undef jmp_calc_rel
+
+    # Undefined symbol! Print error and return error code 1
+    %err_undef_msg = ALLOC slice<u8> 64
+    STORE_STR %err_undef_msg "🚨 Error: Undefined function or label reference!\n"
+    %msg_len_u = SLICE_LEN %err_undef_msg
+    %dummy_err = CALL std_print_slice %err_undef_msg %msg_len_u
+    %err_ret_val = CONST i64 1
+    RET %err_ret_val
+
+    LABEL jmp_calc_rel
     # Compute rel32 = target_off - (disp_site + 4)
     %next_after_disp = ADD i64 %disp_site 4
     %rel = SUB i64 %target_off %next_after_disp
@@ -2133,15 +2149,220 @@ FUNC resolve_jump_fixups(elf_buf: slice<u8>, tables: slice<u8>, fix_count: i64, 
   RET %zero_ret
 END_FUNC
 
+# Find directory prefix length of a path (e.g. "examples/foo.lit" -> 9 for "examples/")
+FUNC find_dir_len(path: slice<u8>, path_len: i64) -> i64
+  REQUIRE len(path) >= 0 && path_len >= 0 && path_len <= len(path)
+  %ptr = SLICE_PTR path
+  %i = MOV path_len
+  %c_slash = CONST i64 47
+  %zero = CONST i64 0
+
+  LOOP dir_loop
+    INVARIANT %i >= 0 && %i <= path_len
+    %done = LTE i64 %i %zero
+    BREAK_IF %done
+
+    %prev_i = SUB i64 %i 1
+    %ch = LOAD8 %ptr %prev_i
+    %is_slash = EQ i64 %ch %c_slash
+    RET_IF %is_slash %i
+
+    %i = MOV %prev_i
+  END_LOOP dir_loop
+
+  ENSURE %zero >= 0 && %zero <= path_len
+  RET %zero
+END_FUNC
+
+# Copy count bytes from src_ptr to dst_ptr
+FUNC copy_bytes(src_ptr: i64, dst_ptr: i64, count: i64) -> i64
+  REQUIRE count >= 0
+
+  %i = CONST i64 0
+
+  LOOP copy_b_loop
+    INVARIANT %i >= 0 && %i <= count
+
+    %done = GTE i64 %i count
+    BREAK_IF %done
+
+    %b = LOAD8 src_ptr %i
+    STORE8 dst_ptr %i %b
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP copy_b_loop
+
+  RET count
+END_FUNC
+
+# Read source file and recursively resolve and inline top-level IMPORT statements
+FUNC load_source_with_imports(src_path: slice<u8>, out_buf: slice<u8>, out_cap: i64) -> i64
+  REQUIRE len(src_path) >= 128 && len(out_buf) >= 524288 && out_cap >= 0 && out_cap <= len(out_buf)
+
+  # Buffer for the primary file
+  %main_buf = ALLOC slice<u8> 524288
+  %main_ptr = SLICE_PTR %main_buf
+  %main_cap = CONST i64 524287
+  %main_bytes = CALL fs_read_file src_path %main_buf %main_cap
+
+  %zero = CONST i64 0
+  %read_err = LTE i64 %main_bytes %zero
+  RET_IF %read_err %main_bytes
+
+  # Guarantee null termination at main_bytes
+  STORE8 %main_ptr %main_bytes %zero
+
+  # Find directory prefix length of src_path
+  %src_len = CALL find_char_from src_path 0 0
+  %dir_len = CALL find_dir_len src_path %src_len
+  %c_128_max = CONST i64 128
+  %dir_ovf = GT i64 %dir_len %c_128_max
+  BR_IF %dir_ovf end_import_scan
+
+  # Prefix slice for "IMPORT "
+  %p_imp = ALLOC slice<u8> 7
+  STORE_STR %p_imp "IMPORT "
+
+  %out_ptr = SLICE_PTR out_buf
+  %src_path_ptr = SLICE_PTR src_path
+
+  %c_max_out = CONST i64 520000
+  %pos = CONST i64 0
+  %out_pos = CONST i64 0
+
+  LOOP import_scan_loop
+    INVARIANT %pos >= 0 && %pos <= len(main_buf)
+    INVARIANT %out_pos >= 0 && %out_pos <= len(out_buf)
+
+    %done = GTE i64 %pos %main_bytes
+    BREAK_IF %done
+
+    %line_start = CALL skip_whitespace %main_buf %pos
+    %at_eof = GTE i64 %line_start %main_bytes
+    BREAK_IF %at_eof
+
+    %c_nl = CONST i64 10
+    %nl = CALL find_char_from %main_buf %line_start %c_nl
+
+    # Check if line starts with "IMPORT "
+    %is_imp = CALL str_starts_with %main_buf %line_start %p_imp
+    %false_b = CONST bool false
+    %not_imp = EQ bool %is_imp %false_b
+    BR_IF %not_imp copy_regular_line
+
+    # IMPORT line detected: extract quoted path
+    %c_quote = CONST i64 34
+    %q1 = CALL find_char_from %main_buf %line_start %c_quote
+    %has_q1 = LT i64 %q1 %main_bytes
+    %not_has_q1 = EQ bool %has_q1 %false_b
+    BR_IF %not_has_q1 next_import_line
+
+    %q1_next = ADD i64 %q1 1
+    %q2 = CALL find_char_from %main_buf %q1_next %c_quote
+
+    %has_both = LT i64 %q1_next %q2
+    %not_valid_q = EQ bool %has_both %false_b
+    BR_IF %not_valid_q next_import_line
+
+    %rel_len = SUB i64 %q2 %q1_next
+    %c_max_p = CONST i64 100
+    %path_ovf = GT i64 %rel_len %c_max_p
+    BR_IF %path_ovf next_import_line
+
+    %c_240 = CONST i64 240
+    %sum_len = ADD i64 %dir_len %rel_len
+    %sum_too_big = GT i64 %sum_len %c_240
+    BR_IF %sum_too_big next_import_line
+
+    # Construct resolved path in 256-byte buffer
+    %imp_path = ALLOC slice<u8> 256
+    %imp_ptr = SLICE_PTR %imp_path
+
+    # Copy directory prefix
+    %dummy_d = CALL copy_bytes %src_path_ptr %imp_ptr %dir_len
+
+    # Append relative path from IMPORT line
+    %q1_ptr = ADD i64 %main_ptr %q1_next
+    %dest_imp_ptr = ADD i64 %imp_ptr %dir_len
+    %dummy_r = CALL copy_bytes %q1_ptr %dest_imp_ptr %rel_len
+
+    # Null terminate imp_path
+    %full_path_len = ADD i64 %dir_len %rel_len
+    STORE8 %imp_ptr %full_path_len %zero
+
+    # Read the imported file into temporary buffer
+    %file_imp_buf = ALLOC slice<u8> 65536
+    %file_imp_cap = CONST i64 65536
+    %imp_bytes_read = CALL fs_read_file %imp_path %file_imp_buf %file_imp_cap
+
+    %imp_read_ok = GT i64 %imp_bytes_read %zero
+    %not_imp_ok = EQ bool %imp_read_ok %false_b
+    BR_IF %not_imp_ok next_import_line
+
+    # Check bounds on out_buf before inlining
+    %out_rem = SUB i64 %c_max_out %out_pos
+    %too_big_imp = GT i64 %imp_bytes_read %out_rem
+    BR_IF %too_big_imp next_import_line
+
+    # Inline imported file contents into out_buf
+    %file_imp_ptr = SLICE_PTR %file_imp_buf
+    %dest_out_ptr = ADD i64 %out_ptr %out_pos
+    %dummy_imp = CALL copy_bytes %file_imp_ptr %dest_out_ptr %imp_bytes_read
+    %next_out_p = ADD i64 %out_pos %imp_bytes_read
+    %out_pos = MOV %next_out_p
+
+    # Add trailing newline after imported file
+    %c_ten = CONST i64 10
+    STORE8 %out_ptr %out_pos %c_ten
+    %next_out_nl = ADD i64 %out_pos 1
+    %out_pos = MOV %next_out_nl
+    JUMP next_import_line
+
+    LABEL copy_regular_line
+    # Copy line from %pos up to %nl + 1 (including newline) into out_buf
+    %has_nl_char = LT i64 %nl %main_bytes
+    %one_nl = CONST i64 1
+    %line_end_with_nl = ADD i64 %nl %one_nl
+    %line_end = MOV %line_end_with_nl
+    BR_IF %has_nl_char got_line_end
+    %line_end = MOV %nl
+
+    LABEL got_line_end
+    %line_bytes = SUB i64 %line_end %pos
+
+    %out_rem2 = SUB i64 %c_max_out %out_pos
+    %line_too_big = GT i64 %line_bytes %out_rem2
+    BR_IF %line_too_big next_import_line
+
+    %cur_src_ptr = ADD i64 %main_ptr %pos
+    %dest_out_ptr2 = ADD i64 %out_ptr %out_pos
+    %dummy_line = CALL copy_bytes %cur_src_ptr %dest_out_ptr2 %line_bytes
+    %next_out_p2 = ADD i64 %out_pos %line_bytes
+    %out_pos = MOV %next_out_p2
+
+    LABEL next_import_line
+    %c_1 = CONST i64 1
+    %next_pos_l = ADD i64 %nl %c_1
+    %is_past_end = GTE i64 %next_pos_l %main_bytes
+    BR_IF %is_past_end end_import_scan
+    %pos = MOV %next_pos_l
+  END_LOOP import_scan_loop
+
+  LABEL end_import_scan
+  STORE8 %out_ptr %out_pos %zero
+  RET %out_pos
+END_FUNC
+
 
 # Compile input .lit file and emit standalone ELF binary
 FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
-  REQUIRE len(src_path) > 0 && len(out_path) > 0
+  REQUIRE len(src_path) >= 128 && len(out_path) > 0
 
-  # Read source file (512KB buffer)
+  # Read source file and resolve IMPORTs (512KB buffer)
   %src_buf = ALLOC slice<u8> 524288
   %buf_cap = CONST i64 524288
-  %bytes_read = CALL fs_read_file src_path %src_buf %buf_cap
+  %bytes_read = CALL load_source_with_imports src_path %src_buf %buf_cap
 
   %zero = CONST i64 0
   %read_err = LTE i64 %bytes_read %zero
@@ -4645,6 +4866,10 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
   # Resolve all jump and branch fixups
   %res_fix = CALL resolve_jump_fixups %elf_buf %tables %fix_count %lbl_count
+  %zero_chk_rf = CONST i64 0
+  %has_fix_err = GT i64 %res_fix %zero_chk_rf
+  %err_fix_code = CONST i64 2
+  RET_IF %has_fix_err %err_fix_code
 
   # 1. Check if we emitted dynamic instructions
   %false_dyn = CONST bool false
@@ -4656,13 +4881,16 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %dyn_code_len = SUB i64 %cur_code_pos %c_120
   %hdr_dyn = CALL emit_elf_header %elf_buf %dyn_code_len %main_offset
   %res_dyn = CALL fs_write_file_bytes out_path %elf_buf %cur_code_pos
-  RET %res_dyn
+  %zero_ok = CONST i64 0
+  %is_write_err = LT i64 %res_dyn %zero_ok
+  RET_IF %is_write_err %res_dyn
+  RET %zero_ok
 
   LABEL check_str_or_plain
   # Ensure exit code is valid u8 (0..255)
   %c_255 = CONST i64 255
   %exit_too_high = GT i64 %parsed_exit %c_255
-  %err_code = CONST i64 -1
+  %err_code = CONST i64 1
   RET_IF %exit_too_high %err_code
   %exit_neg = LT i64 %parsed_exit %zero
   RET_IF %exit_neg %err_code
@@ -4690,7 +4918,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 
   # Write exact binary size to disk
   %res1 = CALL fs_write_file_bytes out_path %elf_buf %total_bin_sz
-  RET %res1
+  %is_w1_err = LT i64 %res1 %zero_ok
+  RET_IF %is_w1_err %res1
+  RET %zero_ok
 
   LABEL emit_plain_exit
   %c_120_def2 = CONST i64 120
@@ -4699,7 +4929,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %bin_sz = CALL emit_exit_code %elf_buf %parsed_exit
   %exact_sz = CONST i64 136
   %res2 = CALL fs_write_file_bytes out_path %elf_buf %exact_sz
-  RET %res2
+  %is_w2_err = LT i64 %res2 %zero_ok
+  RET_IF %is_w2_err %res2
+  RET %zero_ok
 END_FUNC
 
 # Compiler main entry point
@@ -4727,9 +4959,9 @@ FUNC main(argc: i64, argv1: i64) -> i64
   # 4. Compile source file to target binary
   %res = CALL compile_file %src_path %out_path
 
-  # Bound check on res: if res < 0, exit with error code
+  # Bound check on res: if res != 0, exit with error code res
   %zero = CONST i64 0
-  %is_err = LT i64 %res %zero
+  %is_err = NEQ i64 %res %zero
   RET_IF %is_err %res
 
   # 5. Print success message and return 0
