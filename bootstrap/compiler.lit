@@ -2394,7 +2394,7 @@ FUNC run_z3_buffer_check(copied: i64, cap: i64, z3_path: slice<u8>, z3_len: i64)
   %p_cmd = SLICE_PTR %cmd_buf
 
   %p_c1 = ALLOC slice<u8> 64
-  STORE_STR %p_c1 "export PATH=/home/huy/.local/bin:/usr/local/bin:/usr/bin; "
+  STORE_STR %p_c1 "export PATH=~/.local/bin:/usr/local/bin:/usr/bin; "
   %len_c1 = SLICE_LEN %p_c1
   %p_c1_ptr = SLICE_PTR %p_c1
   %dummy_c1_c = CALL copy_bytes %p_c1_ptr %p_cmd %len_c1

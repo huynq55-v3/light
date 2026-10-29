@@ -20,7 +20,7 @@ FUNC sum_to_n(n: i64) -> i64
 
   LOOP sum_loop
     INVARIANT %i >= 0 && %i <= n
-    INVARIANT %acc >= 0
+    INVARIANT %acc >= 0 && %acc <= %i * 1000
     DECREASES n - %i
 
     %done = GTE i64 %i n

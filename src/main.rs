@@ -202,16 +202,33 @@ fn run_verification(program: &ast::Program) -> bool {
         let results = Verifier::verify_function(func, Some(program));
         for res in results {
             match res {
-                VerificationResult::Verified { goal_name } => {
-                    println!("  🛡️ [PASS] {}", goal_name);
+                VerificationResult::Verified { goal_name, category } => {
+                    println!("  🛡️ [PASS - {}] {}", category.badge(), goal_name);
                 }
-                VerificationResult::Failed { goal_name, reason, counter_example, stack_trace } => {
+                VerificationResult::Failed { goal_name, category, reason, counter_example, stack_trace } => {
                     has_failure = true;
-                    eprintln!("  🚨 [FAIL] {}", goal_name);
+                    eprintln!("  🚨 [FAIL - {}] {}", category.badge(), goal_name);
                     eprintln!("     Reason: {}", reason);
                     if let Some(ce) = counter_example {
                         eprintln!("     🔍 Z3 Counter-example:\n{}", ce);
                     }
+                    if !stack_trace.is_empty() {
+                        eprintln!("     📍 Verification Stack Trace (most recent call first):");
+                        for (idx, frame) in stack_trace.iter().enumerate() {
+                            let rel_file = if let Ok(cwd) = std::env::current_dir() {
+                                frame.file.strip_prefix(cwd.to_str().unwrap_or("")).unwrap_or(&frame.file).trim_start_matches('/')
+                            } else {
+                                &frame.file
+                            };
+                            eprintln!("       ↳ [{}] {}:{} in {}", idx + 1, rel_file, frame.line, frame.function);
+                            eprintln!("             | {}  <-- {}", frame.snippet, frame.role);
+                        }
+                    }
+                }
+                VerificationResult::Unknown { goal_name, category, reason, stack_trace } => {
+                    has_failure = true;
+                    eprintln!("  ❓ [UNKNOWN - {}] {}", category.badge(), goal_name);
+                    eprintln!("     Reason: {}", reason);
                     if !stack_trace.is_empty() {
                         eprintln!("     📍 Verification Stack Trace (most recent call first):");
                         for (idx, frame) in stack_trace.iter().enumerate() {
