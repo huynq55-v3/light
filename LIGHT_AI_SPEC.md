@@ -38,12 +38,14 @@ Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at comp
 - `REQUIRE <expr>`: Preconditions that caller arguments MUST satisfy.
 - `ENSURE <expr>`: Postconditions guaranteed by the function on its return value.
 - `INVARIANT <expr>`: Loop invariant maintained across every iteration (enables 2-step mathematical induction).
+- `DECREASES <expr>`: Loop ranking function (expression strictly decreases towards 0, proving termination and avoiding infinite loops).
 - `ASSERT <expr>`: Static assertion at a specific execution point.
 
 *Supported expressions in contracts:* `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, `len(%slice)`.
 
 ### II. Constants & Value Movement
-- `%dest = CONST <val>`: Load integer or boolean constant (`%x = CONST 42`, `%flag = CONST true`).
+- `%dest = CONST <type> <val>`: Load typed constant (`%x = CONST i64 42`, `%flag = CONST bool true`).
+  > **Note for AI:** Always specify the type explicitly (`i64` or `bool`). The self-hosted native compiler requires explicit typing for deterministic assembly code generation.
 - `%dest = MOV %src`: Copy value between registers/variables.
 
 ### III. Arithmetic & Logic Operations (Flat TAC)
@@ -93,17 +95,18 @@ Binary operations take exactly 2 operands (no nested expressions):
 
 ## 4. CANONICAL CODE PATTERNS
 
-### Pattern 1: Loop with State Mutation (Rebinding)
+### Pattern 1: Loop with State Mutation (Rebinding) & Termination Proof
 ```light
 FUNC sum_to_n(n: i64) -> i64
   REQUIRE n >= 0 && n <= 1000
 
-  %i = CONST 0
-  %acc = CONST 0
+  %i = CONST i64 0
+  %acc = CONST i64 0
 
   LOOP sum_loop
     INVARIANT %i >= 0 && %i <= n
     INVARIANT %acc >= 0
+    DECREASES n - %i
 
     %done = GTE %i n
     BREAK_IF %done
@@ -129,14 +132,14 @@ FUNC main() -> i64
   %ptr = SLICE_PTR %msg
 
   # Linux sys_write(stdout=1, ptr, len)
-  %rax = CONST 1
-  %rdi = CONST 1
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
   %rsi = MOV %ptr
   %rdx = MOV %len
   SYSCALL
 
   # Return code 0 (exits via sys_exit 60)
-  %zero = CONST 0
+  %zero = CONST i64 0
   RET %zero
 END_FUNC
 ```
@@ -146,11 +149,12 @@ END_FUNC
 FUNC fill_buffer(buf: slice<u8>, count: i64) -> i64
   REQUIRE count >= 0 && count <= len(buf)
 
-  %i = CONST 0
-  %char_a = CONST 65   # ASCII 'A'
+  %i = CONST i64 0
+  %char_a = CONST i64 65   # ASCII 'A'
 
   LOOP fill_loop
     INVARIANT %i >= 0 && %i <= count
+    DECREASES count - %i
 
     %done = GTE %i count
     BREAK_IF %done
