@@ -93,6 +93,153 @@ impl Verifier {
         format!("(_ bv{} 64)", n)
     }
 
+    /// Hạ cấp một lệnh sang chuỗi IVL kèm đầy đủ các kiểm chứng an toàn (Safety & Functional Asserts)
+    fn lower_inst_with_checks(
+        func: &Function,
+        s_inst: &SpannedInstruction,
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+        program: Option<&Program>,
+    ) -> Vec<crate::ivl::IvlStmt> {
+        let mut stmts = Vec::new();
+        match &s_inst.inst {
+            Instruction::Assert(e) => {
+                stmts.push(crate::ivl::IvlStmt::Assert {
+                    cond: crate::ivl::IvlExpr::from(e),
+                    goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
+                    category: PropertyCategory::Functional,
+                    loc: s_inst.loc.clone(),
+                });
+            }
+            Instruction::StoreStr { buf, offset, content } => {
+                let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
+                let req_size = *offset + content.as_bytes().len();
+                stmts.push(crate::ivl::IvlStmt::Assert {
+                    cond: crate::ivl::IvlExpr::BoolConst(req_size <= buf_size),
+                    goal_name: format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf),
+                    category: PropertyCategory::Safety,
+                    loc: s_inst.loc.clone(),
+                });
+            }
+            Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } => {
+                let s2_expr = crate::ivl::IvlLowerer::operand_to_expr(src2);
+                stmts.push(crate::ivl::IvlStmt::Assert {
+                    cond: crate::ivl::IvlExpr::Binary {
+                        op: BinOp::Neq,
+                        lhs: Box::new(s2_expr),
+                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                    },
+                    goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety", func.name, s_inst.loc.line),
+                    category: PropertyCategory::Safety,
+                    loc: s_inst.loc.clone(),
+                });
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+            }
+            Instruction::Load8 { buf, offset, .. } | Instruction::Store8 { buf, offset, .. } => {
+                if let Some(&sz) = buffer_sizes.get(buf) {
+                    let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
+                    let in_bounds = crate::ivl::IvlExpr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(crate::ivl::IvlExpr::Binary {
+                            op: BinOp::Gte,
+                            lhs: Box::new(off_expr.clone()),
+                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                        }),
+                        rhs: Box::new(crate::ivl::IvlExpr::Binary {
+                            op: BinOp::Lt,
+                            lhs: Box::new(off_expr),
+                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(sz as i64)),
+                        }),
+                    };
+                    stmts.push(crate::ivl::IvlStmt::Assert {
+                        cond: in_bounds,
+                        goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
+                }
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+            }
+            Instruction::Load64 { buf, offset, .. } | Instruction::Store64 { buf, offset, .. } => {
+                if let Some(&sz) = buffer_sizes.get(buf) {
+                    let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
+                    let max_off = (sz as i64) - 8;
+                    let in_bounds = if sz < 8 {
+                        crate::ivl::IvlExpr::BoolConst(false)
+                    } else {
+                        crate::ivl::IvlExpr::Binary {
+                            op: BinOp::And,
+                            lhs: Box::new(crate::ivl::IvlExpr::Binary {
+                                op: BinOp::Gte,
+                                lhs: Box::new(off_expr.clone()),
+                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                            }),
+                            rhs: Box::new(crate::ivl::IvlExpr::Binary {
+                                op: BinOp::Lte,
+                                lhs: Box::new(off_expr),
+                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(max_off)),
+                            }),
+                        }
+                    };
+                    stmts.push(crate::ivl::IvlStmt::Assert {
+                        cond: in_bounds,
+                        goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
+                }
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+            }
+            Instruction::Call { dest, func_name, args } => {
+                if let Some(prog) = program {
+                    if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
+                        for c_si in &callee.instructions {
+                            if let Instruction::Require(req) = &c_si.inst {
+                                let mut req_ivl = crate::ivl::IvlExpr::from(req);
+                                for (i, p) in callee.params.iter().enumerate() {
+                                    if i < args.len() {
+                                        let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
+                                        req_ivl = crate::ivl::IvlLowerer::subst_expr(&req_ivl, &p.name, &arg_expr);
+                                    }
+                                }
+                                stmts.push(crate::ivl::IvlStmt::Assert {
+                                    cond: req_ivl,
+                                    goal_name: format!("Function '{}' - Line {}: Verify REQUIRE contract of '{}'", func.name, s_inst.loc.line, func_name),
+                                    category: PropertyCategory::Safety,
+                                    loc: s_inst.loc.clone(),
+                                });
+                            }
+                        }
+                        if let Some(d) = dest {
+                            stmts.push(crate::ivl::IvlStmt::Havoc {
+                                vars: vec![d.clone()],
+                                is_memory: false,
+                            });
+                            let callee_ret = Self::find_canonical_ret_var(callee).unwrap_or_else(|| "ret".to_string());
+                            for c_si in &callee.instructions {
+                                if let Instruction::Ensure(ens) = &c_si.inst {
+                                    let mut ens_ivl = crate::ivl::IvlExpr::from(ens);
+                                    for (i, p) in callee.params.iter().enumerate() {
+                                        if i < args.len() {
+                                            let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
+                                            ens_ivl = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &p.name, &arg_expr);
+                                        }
+                                    }
+                                    let d_expr = crate::ivl::IvlExpr::Var(d.trim_start_matches('%').to_string());
+                                    ens_ivl = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &callee_ret, &d_expr);
+                                    stmts.push(crate::ivl::IvlStmt::Assume { cond: ens_ivl });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes));
+            }
+        }
+        stmts
+    }
+
     /// Kiểm tra tính đúng đắn toán học bằng kiến trúc Boogie IVL Engine (Universal VCGen)
     #[allow(dead_code)]
     pub fn verify_function_ivl(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
@@ -140,16 +287,6 @@ impl Verifier {
             let s_inst = &func.instructions[idx];
             match &s_inst.inst {
                 Instruction::Require(_) | Instruction::Ensure(_) => {}
-                Instruction::StoreStr { buf, offset, content } => {
-                    let buf_size = buffer_sizes.get(buf).cloned().unwrap_or(0);
-                    let req_size = *offset + content.as_bytes().len();
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: crate::ivl::IvlExpr::BoolConst(req_size <= buf_size),
-                        goal_name: format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
                 Instruction::Loop(_) => {
                     let l_start = idx;
                     let l_end = func.instructions[l_start + 1..]
@@ -159,6 +296,25 @@ impl Verifier {
                         .unwrap_or(func.instructions.len() - 1);
 
                     let body_slice = &func.instructions[l_start + 1..l_end];
+
+                    // Kiểm tra các lệnh không hỗ trợ trong thân vòng lặp (như SYSCALL) -> trả về Unknown
+                    if body_slice.iter().any(|si| matches!(si.inst, Instruction::Syscall { .. })) {
+                        results.push(VerificationResult::Unknown {
+                            goal_name: format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name),
+                            category: PropertyCategory::Inductive,
+                            reason: "Unsupported instruction inside loop body: SYSCALL".into(),
+                            stack_trace: vec![StackFrame {
+                                file: func.file.clone(),
+                                line: s_inst.loc.line,
+                                function: func.name.clone(),
+                                snippet: s_inst.loc.text.clone(),
+                                role: "Unsupported instruction inside loop body: SYSCALL".into(),
+                            }],
+                        });
+                        idx = l_end + 1;
+                        continue;
+                    }
+
                     let mut loop_invs = Vec::new();
                     let mut loop_decs = Vec::new();
                     let mut body_before_break = Vec::new();
@@ -194,19 +350,15 @@ impl Verifier {
                         });
                     }
 
+                    // Thực thi toàn bộ các vi lệnh trước vòng lặp + Step 1 Base Case để `vc` cập nhật trạng thái pre-loop!
+                    results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
+                    stmts.clear();
+
                     let modified: Vec<String> = crate::ivl::IvlLowerer::collect_modified_vars(body_slice).into_iter().collect();
 
                     // --- KIỂM CHỨNG BƯỚC QUY NẠP (Step 2) VÀ DỪNG (Step 4a, 4b) TRÊN NHÁNH TIẾP TỤC LẶP ---
                     if !loop_invs.is_empty() || !loop_decs.is_empty() {
                         let mut ind_stmts = Vec::new();
-                        // Nạp lại các REQUIRE tiền điều kiện
-                        for s_si in &func.instructions {
-                            if let Instruction::Require(req) = &s_si.inst {
-                                ind_stmts.push(crate::ivl::IvlStmt::Assume {
-                                    cond: crate::ivl::IvlExpr::from(req),
-                                });
-                            }
-                        }
                         // Havoc các biến bị thay đổi trong vòng lặp
                         ind_stmts.push(crate::ivl::IvlStmt::Havoc {
                             vars: modified.clone(),
@@ -224,9 +376,9 @@ impl Verifier {
                                 is_memory: false,
                             });
                         }
-                        // Thực thi phần thân trước BREAK_IF
+                        // Thực thi phần thân trước BREAK_IF (kèm các kiểm tra an toàn nội bộ)
                         for b_si in &body_before_break {
-                            ind_stmts.extend(crate::ivl::IvlLowerer::lower_inst(b_si, &buffer_sizes));
+                            ind_stmts.extend(Self::lower_inst_with_checks(func, b_si, &buffer_sizes, program));
                         }
                         // Nhánh tiếp tục lặp: Giả định KHÔNG break (!break_cond)
                         if let Some(ref brk) = first_brk_expr {
@@ -234,9 +386,9 @@ impl Verifier {
                                 cond: crate::ivl::IvlExpr::Not(Box::new(brk.clone())),
                             });
                         }
-                        // Thực thi phần thân sau BREAK_IF (cập nhật biến lặp)
+                        // Thực thi phần thân sau BREAK_IF (kèm các kiểm tra an toàn nội bộ & cập nhật biến lặp)
                         for b_si in &body_after_break {
-                            ind_stmts.extend(crate::ivl::IvlLowerer::lower_inst(b_si, &buffer_sizes));
+                            ind_stmts.extend(Self::lower_inst_with_checks(func, b_si, &buffer_sizes, program));
                         }
                         // Step 2: Inductive Step - Khẳng định INVARIANT được bảo toàn
                         for inv in &loop_invs {
@@ -286,7 +438,7 @@ impl Verifier {
                         stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
                     }
                     for b_si in &body_before_break {
-                        stmts.extend(crate::ivl::IvlLowerer::lower_inst(b_si, &buffer_sizes));
+                        stmts.extend(Self::lower_inst_with_checks(func, b_si, &buffer_sizes, program));
                     }
                     if let Some(ref brk) = first_brk_expr {
                         stmts.push(crate::ivl::IvlStmt::Assume {
@@ -296,129 +448,6 @@ impl Verifier {
 
                     idx = l_end + 1;
                     continue;
-                }
-                Instruction::Assert(e) => {
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: crate::ivl::IvlExpr::from(e),
-                        goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
-                        category: PropertyCategory::Functional,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
-                Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } => {
-                    let s2_expr = crate::ivl::IvlLowerer::operand_to_expr(src2);
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Neq,
-                            lhs: Box::new(s2_expr),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                        },
-                        goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety", func.name, s_inst.loc.line),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
-                }
-                Instruction::Load8 { buf, offset, .. } | Instruction::Store8 { buf, offset, .. } => {
-                    if let Some(&sz) = buffer_sizes.get(buf) {
-                        let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
-                        let in_bounds = crate::ivl::IvlExpr::Binary {
-                            op: BinOp::And,
-                            lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                                op: BinOp::Gte,
-                                lhs: Box::new(off_expr.clone()),
-                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                            }),
-                            rhs: Box::new(crate::ivl::IvlExpr::Binary {
-                                op: BinOp::Lt,
-                                lhs: Box::new(off_expr),
-                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(sz as i64)),
-                            }),
-                        };
-                        stmts.push(crate::ivl::IvlStmt::Assert {
-                            cond: in_bounds,
-                            goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                            category: PropertyCategory::Safety,
-                            loc: s_inst.loc.clone(),
-                        });
-                    }
-                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
-                }
-                Instruction::Load64 { buf, offset, .. } | Instruction::Store64 { buf, offset, .. } => {
-                    if let Some(&sz) = buffer_sizes.get(buf) {
-                        let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
-                        let max_off = (sz as i64) - 8;
-                        let in_bounds = if sz < 8 {
-                            crate::ivl::IvlExpr::BoolConst(false)
-                        } else {
-                            crate::ivl::IvlExpr::Binary {
-                                op: BinOp::And,
-                                lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                                    op: BinOp::Gte,
-                                    lhs: Box::new(off_expr.clone()),
-                                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                                }),
-                                rhs: Box::new(crate::ivl::IvlExpr::Binary {
-                                    op: BinOp::Lte,
-                                    lhs: Box::new(off_expr),
-                                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(max_off)),
-                                }),
-                            }
-                        };
-                        stmts.push(crate::ivl::IvlStmt::Assert {
-                            cond: in_bounds,
-                            goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                            category: PropertyCategory::Safety,
-                            loc: s_inst.loc.clone(),
-                        });
-                    }
-                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
-                }
-                Instruction::Call { dest, func_name, args } => {
-                    if let Some(prog) = program {
-                        if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
-                            // 1. Assert callee REQUIRE contracts
-                            for c_si in &callee.instructions {
-                                if let Instruction::Require(req) = &c_si.inst {
-                                    let mut req_ivl = crate::ivl::IvlExpr::from(req);
-                                    for (i, p) in callee.params.iter().enumerate() {
-                                        if i < args.len() {
-                                            let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
-                                            req_ivl = crate::ivl::IvlLowerer::subst_expr(&req_ivl, &p.name, &arg_expr);
-                                        }
-                                    }
-                                    stmts.push(crate::ivl::IvlStmt::Assert {
-                                        cond: req_ivl,
-                                        goal_name: format!("Function '{}' - Line {}: Verify REQUIRE contract of '{}'", func.name, s_inst.loc.line, func_name),
-                                        category: PropertyCategory::Safety,
-                                        loc: s_inst.loc.clone(),
-                                    });
-                                }
-                            }
-                            // 2. Havoc destination register & Assume callee ENSURE contracts
-                            if let Some(d) = dest {
-                                stmts.push(crate::ivl::IvlStmt::Havoc {
-                                    vars: vec![d.clone()],
-                                    is_memory: false,
-                                });
-                                let callee_ret = Self::find_canonical_ret_var(callee).unwrap_or_else(|| "ret".to_string());
-                                for c_si in &callee.instructions {
-                                    if let Instruction::Ensure(ens) = &c_si.inst {
-                                        let mut ens_ivl = crate::ivl::IvlExpr::from(ens);
-                                        for (i, p) in callee.params.iter().enumerate() {
-                                            if i < args.len() {
-                                                let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
-                                                ens_ivl = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &p.name, &arg_expr);
-                                            }
-                                        }
-                                        let d_expr = crate::ivl::IvlExpr::Var(d.trim_start_matches('%').to_string());
-                                        ens_ivl = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &callee_ret, &d_expr);
-                                        stmts.push(crate::ivl::IvlStmt::Assume { cond: ens_ivl });
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
                 Instruction::RetIf { cond, val } => {
                     let cond_expr = crate::ivl::IvlExpr::Var(cond.trim_start_matches('%').to_string());
@@ -485,7 +514,7 @@ impl Verifier {
                     }
                 }
                 _other => {
-                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
+                    stmts.extend(Self::lower_inst_with_checks(func, s_inst, &buffer_sizes, program));
                 }
             }
             idx += 1;

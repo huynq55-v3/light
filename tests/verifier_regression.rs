@@ -1330,4 +1330,58 @@ END_FUNC
     assert!(all_passed, "IVL Engine phải kiểm chứng thành công cả 5 bước Hoare Logic của LOOP! Got: {:?}", results);
 }
 
+#[test]
+fn test_ivl_on_real_in_loop_oob_v12() {
+    // V12 chạy trên verify_function_ivl: bắt lỗi ghi ngoài biên bên trong vòng lặp!
+    let code = r#"
+FUNC test_loop_oob() -> i64
+  ALLOC %buf 8
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 10
+    DECREASES 10 - %i
+    %done = GTE i64 %i 10
+    BREAK_IF %done
+    STORE8 %buf %i 42
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP l1
+  RET 0
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V12");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let failed_bounds = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check")
+        }
+        _ => false,
+    });
+    assert!(failed_bounds, "IVL Engine phải bắt được lỗi tràn bộ nhớ STORE8 trong thân vòng lặp! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_real_unsupported_in_loop_v6() {
+    // V6 chạy trên verify_function_ivl: lệnh không hỗ trợ trong vòng lặp phải trả về Unknown!
+    let code = r#"
+FUNC loop_with_unsupported(n: i64) -> i64
+  REQUIRE n >= 0
+  %i = CONST i64 0
+  LOOP bad_loop
+    INVARIANT %i >= 0
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %r = SYSCALL 1 1 0 0
+    %i = ADD i64 %i 1
+  END_LOOP bad_loop
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V6");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let has_unknown = results.iter().any(|r| matches!(r, VerificationResult::Unknown { .. }));
+    assert!(has_unknown, "IVL Engine phải trả về Unknown khi có SYSCALL trong thân vòng lặp! Got: {:?}", results);
+}
+
+
 
