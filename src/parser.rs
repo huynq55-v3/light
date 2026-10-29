@@ -1049,6 +1049,18 @@ impl Parser {
             return Ok(Expr::Not(Box::new(inner)));
         }
 
+        // 6b. Dấu âm Unary (vd: -%a, -(%a + %b)) khi không phải là hằng số nguyên âm đơn thuần
+        if let Some(stripped) = s.strip_prefix('-') {
+            if s.parse::<i64>().is_err() && s.parse::<f64>().is_err() {
+                let inner = Self::parse_expr(stripped, line_no)?;
+                return Ok(Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(Expr::IntConst(0)),
+                    rhs: Box::new(inner),
+                });
+            }
+        }
+
         // 7. Hàm len(%arr)
         if s.starts_with("len(") && s.ends_with(')') {
             let inner = &s[4..s.len() - 1].trim();

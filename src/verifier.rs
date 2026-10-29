@@ -449,6 +449,66 @@ impl Verifier {
         }
 
         let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
+        let has_syscall = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Syscall { .. }));
+        let is_syscall_stub = has_syscall && func.instructions.len() <= 8;
+
+        // 4b. Verify early return paths (RET_IF & mid-function RET) against ENSURE postconditions for ALL functions
+        if !ensures.is_empty() && !is_syscall_stub {
+            for (idx, s_inst) in func.instructions.iter().enumerate() {
+                if let Instruction::RetIf { cond, val } = &s_inst.inst {
+                    let early_goal = format!(
+                        "Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)",
+                        func.name, s_inst.loc.line
+                    );
+                    let early_query = Self::build_early_ret_ensure_query(
+                        func,
+                        idx,
+                        cond,
+                        val.as_ref(),
+                        &requires,
+                        &ensures,
+                        &buffer_sizes,
+                        program,
+                    );
+                    let stack = vec![StackFrame {
+                        file: s_inst.loc.file.clone(),
+                        line: s_inst.loc.line,
+                        function: format!("{}()", func.name),
+                        snippet: s_inst.loc.text.clone(),
+                        role: "Early return (RET_IF) violates ENSURE postcondition".into(),
+                    }];
+                    results.push(Self::solve_query(&early_goal, PropertyCategory::Functional, &early_query, stack));
+                }
+            }
+            let total_insts = func.instructions.len();
+            for (idx, s_inst) in func.instructions.iter().enumerate() {
+                if idx + 1 < total_insts {
+                    if let Instruction::Ret(val) = &s_inst.inst {
+                        let mid_ret_goal = format!(
+                            "Function '{}' - Line {}: Verify ENSURE on branch return (RET)",
+                            func.name, s_inst.loc.line
+                        );
+                        let mid_query = Self::build_mid_ret_ensure_query(
+                            func,
+                            idx,
+                            val.as_ref(),
+                            &requires,
+                            &ensures,
+                            &buffer_sizes,
+                            program,
+                        );
+                        let stack = vec![StackFrame {
+                            file: s_inst.loc.file.clone(),
+                            line: s_inst.loc.line,
+                            function: format!("{}()", func.name),
+                            snippet: s_inst.loc.text.clone(),
+                            role: "Branch return (RET) violates ENSURE postcondition".into(),
+                        }];
+                        results.push(Self::solve_query(&mid_ret_goal, PropertyCategory::Functional, &mid_query, stack));
+                    }
+                }
+            }
+        }
 
         // 5. Hoare Logic Verification for Loops (kích hoạt khi có INVARIANT hoặc khi hàm có LOOP + ENSURE/DECREASES)
         if !invariants.is_empty() || (has_loop && (!ensures.is_empty() || !decreases.is_empty())) {
@@ -575,67 +635,13 @@ impl Verifier {
             }
         } else if !ensures.is_empty() {
             let func_goal = format!("Function '{}' - Verify ENSURE postcondition", func.name);
-            let has_syscall = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Syscall { .. }));
-            if has_syscall && func.instructions.len() <= 8 {
+            if is_syscall_stub {
                 // Raw OS Syscall stub: Postcondition is an Axiomatic OS specification
                 results.push(VerificationResult::Verified {
                     goal_name: format!("{} (Axiomatic OS Syscall Contract)", func_goal),
                     category: PropertyCategory::Safety,
                 });
             } else {
-                // Verify early return paths (RET_IF) against ENSURE postconditions
-                for (idx, s_inst) in func.instructions.iter().enumerate() {
-                    if let Instruction::RetIf { cond, .. } = &s_inst.inst {
-                        let early_goal = format!(
-                            "Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)",
-                            func.name, s_inst.loc.line
-                        );
-                        let early_query = Self::build_early_ret_ensure_query(
-                            func,
-                            idx,
-                            cond,
-                            &requires,
-                            &ensures,
-                            &buffer_sizes,
-                            program,
-                        );
-                        let stack = vec![StackFrame {
-                            file: s_inst.loc.file.clone(),
-                            line: s_inst.loc.line,
-                            function: format!("{}()", func.name),
-                            snippet: s_inst.loc.text.clone(),
-                            role: "Early return (RET_IF) violates ENSURE postcondition".into(),
-                        }];
-                        results.push(Self::solve_query(&early_goal, PropertyCategory::Functional, &early_query, stack));
-                    }
-                }
-                // Verify any mid-function unconditional RET instructions (before the final instruction)
-                let total_insts = func.instructions.len();
-                for (idx, s_inst) in func.instructions.iter().enumerate() {
-                    if idx + 1 < total_insts && matches!(s_inst.inst, Instruction::Ret(_)) {
-                        let mid_ret_goal = format!(
-                            "Function '{}' - Line {}: Verify ENSURE on branch return (RET)",
-                            func.name, s_inst.loc.line
-                        );
-                        let mid_query = Self::build_mid_ret_ensure_query(
-                            func,
-                            idx,
-                            &requires,
-                            &ensures,
-                            &buffer_sizes,
-                            program,
-                        );
-                        let stack = vec![StackFrame {
-                            file: s_inst.loc.file.clone(),
-                            line: s_inst.loc.line,
-                            function: format!("{}()", func.name),
-                            snippet: s_inst.loc.text.clone(),
-                            role: "Branch return (RET) violates ENSURE postcondition".into(),
-                        }];
-                        results.push(Self::solve_query(&mid_ret_goal, PropertyCategory::Functional, &mid_query, stack));
-                    }
-                }
-
                 let query = Self::build_straightline_query(func, &requires, &ensures, &buffer_sizes, program);
                 let stack = vec![StackFrame {
                     file: func.file.clone(),
@@ -899,7 +905,7 @@ impl Verifier {
         let mut pending_incoming: std::collections::HashMap<String, Vec<(String, std::collections::HashMap<String, String>)>> = std::collections::HashMap::new();
         let mut skip_until_label: Option<(String, std::collections::HashMap<String, String>)> = None;
         let mut path_terminated_by_ret = false;
-        let mut active_loop_breaks: Vec<String> = Vec::new();
+        let mut active_loop_breaks: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
 
         // 4. Duyệt từng lệnh với SSA Renaming (mỗi lần gán tạo phiên bản _v{idx})
         let limit = upto_idx.min(func.instructions.len());
@@ -1014,13 +1020,43 @@ impl Verifier {
             }
 
             // Nếu đi qua END_LOOP (tức là upto_idx nằm phía sau vòng lặp):
-            // Phải assert rằng ít nhất một điều kiện thoát vòng lặp (BREAK_IF) đã xảy ra!
+            // Phải assert rằng ít nhất một điều kiện thoát vòng lặp (BREAK_IF) đã xảy ra,
+            // đồng thời khôi phục `current_val` về đúng trạng thái tại điểm BREAK_IF (không lấy phần cập nhật sau BREAK_IF)!
             if active_loops.iter().any(|(_, e, _, _)| *e == idx) {
                 if !active_loop_breaks.is_empty() {
                     if active_loop_breaks.len() == 1 {
-                        smt.push_str(&format!("(assert {})\n", active_loop_breaks[0]));
+                        smt.push_str(&format!("(assert {})\n", active_loop_breaks[0].0));
+                        current_val = active_loop_breaks[0].1.clone();
                     } else {
-                        smt.push_str(&format!("(assert (or {}))\n", active_loop_breaks.join(" ")));
+                        let conds: Vec<String> = active_loop_breaks.iter().map(|(c, _)| c.clone()).collect();
+                        smt.push_str(&format!("(assert (or {}))\n", conds.join(" ")));
+                        let mut all_vars = std::collections::HashSet::new();
+                        for (_, st) in &active_loop_breaks {
+                            for k in st.keys() {
+                                all_vars.insert(k.clone());
+                            }
+                        }
+                        let mut merged_exit = current_val.clone();
+                        for v in all_vars {
+                            let first_val = active_loop_breaks[0].1.get(&v).cloned().unwrap_or_else(|| v.clone());
+                            let all_same = active_loop_breaks.iter().all(|(_, st)| st.get(&v).cloned().unwrap_or_else(|| v.clone()) == first_val);
+                            if all_same {
+                                merged_exit.insert(v, first_val);
+                            } else {
+                                let m_var = format!("{}_exit_merge_{}", v, idx);
+                                if declared.insert(m_var.clone()) {
+                                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", m_var));
+                                }
+                                let mut ite_expr = active_loop_breaks.last().unwrap().1.get(&v).cloned().unwrap_or_else(|| v.clone());
+                                for (c, st) in active_loop_breaks[..active_loop_breaks.len() - 1].iter().rev() {
+                                    let tv = st.get(&v).cloned().unwrap_or_else(|| v.clone());
+                                    ite_expr = format!("(ite {} {} {})", c, tv, ite_expr);
+                                }
+                                smt.push_str(&format!("(assert (= {} {}))\n", m_var, ite_expr));
+                                merged_exit.insert(v, m_var);
+                            }
+                        }
+                        current_val = merged_exit;
                     }
                     active_loop_breaks.clear();
                 }
@@ -1206,7 +1242,7 @@ impl Verifier {
                         if limit <= *l_end {
                             smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c_smt));
                         } else {
-                            active_loop_breaks.push(format!("(distinct {} (_ bv0 64))", c_smt));
+                            active_loop_breaks.push((format!("(distinct {} (_ bv0 64))", c_smt), current_val.clone()));
                         }
                     } else {
                         smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c_smt));
@@ -1654,6 +1690,68 @@ impl Verifier {
         })
     }
 
+    /// Phát sinh các ràng buộc cho các biến được định nghĩa trước vòng lặp và không bị thay đổi trong vòng lặp
+    fn emit_pre_loop_invariants(
+        func: &Function,
+        loop_start_idx: usize,
+        transition: &LoopTransition,
+        declared_vars: &mut std::collections::HashSet<String>,
+        smt: &mut String,
+    ) {
+        for s_inst in &func.instructions[..loop_start_idx] {
+            match &s_inst.inst {
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
+                        if declared_vars.insert(d.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        }
+                        match val {
+                            Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", d, Self::smt_bv64(*v))),
+                            Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                            Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                            _ => {}
+                        }
+                    }
+                }
+                Instruction::Mov { dest, src } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = src.trim_start_matches('%');
+                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
+                        if declared_vars.insert(d.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        }
+                        if declared_vars.insert(s.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", s));
+                        }
+                        smt.push_str(&format!("(assert (= {} {}))\n", d, s));
+                    }
+                }
+                Instruction::Binary { op, dest, src1, src2, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
+                        if declared_vars.insert(d.to_string()) {
+                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                        }
+                        let empty_map = std::collections::HashMap::new();
+                        let s1 = Self::resolve_operand(src1, &empty_map);
+                        let s2 = Self::resolve_operand(src2, &empty_map);
+                        smt.push_str(&format!("(assert (= {} {}))\n", d, Self::binop_to_smt(op, &s1, &s2)));
+                    }
+                }
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    if declared_vars.insert(d.to_string()) {
+                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    }
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn build_inductive_step_query(
         func: &Function,
         requires: &[Expr],
@@ -1678,33 +1776,7 @@ impl Verifier {
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
         }
 
-        for s_inst in &func.instructions[..loop_start_idx] {
-            match &s_inst.inst {
-                Instruction::AssignConst { dest, val, .. } => {
-                    let d = dest.trim_start_matches('%');
-                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
-                        if declared_vars.insert(d.to_string()) {
-                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                        }
-                        match val {
-                            Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", d, Self::smt_bv64(*v))),
-                            Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
-                            Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
-                            _ => {}
-                        }
-                    }
-                }
-                Instruction::SliceLen { dest, slice } => {
-                    let d = dest.trim_start_matches('%');
-                    let s = slice.trim_start_matches('%');
-                    if declared_vars.insert(d.to_string()) {
-                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                    }
-                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
-                }
-                _ => {}
-            }
-        }
+        Self::emit_pre_loop_invariants(func, loop_start_idx, transition, &mut declared_vars, &mut smt);
 
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
@@ -1765,33 +1837,7 @@ impl Verifier {
         }
 
         // Point 4: Pre-loop constants and slice lengths preservation into Exit Step
-        for s_inst in &func.instructions[..loop_start_idx] {
-            match &s_inst.inst {
-                Instruction::AssignConst { dest, val, .. } => {
-                    let d = dest.trim_start_matches('%');
-                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
-                        if declared_vars.insert(d.to_string()) {
-                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                        }
-                        match val {
-                            Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", d, Self::smt_bv64(*v))),
-                            Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
-                            Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
-                            _ => {}
-                        }
-                    }
-                }
-                Instruction::SliceLen { dest, slice } => {
-                    let d = dest.trim_start_matches('%');
-                    let s = slice.trim_start_matches('%');
-                    if declared_vars.insert(d.to_string()) {
-                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                    }
-                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
-                }
-                _ => {}
-            }
-        }
+        Self::emit_pre_loop_invariants(func, loop_start_idx, transition, &mut declared_vars, &mut smt);
 
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
@@ -1951,33 +1997,7 @@ impl Verifier {
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
         }
 
-        for s_inst in &func.instructions[..loop_start_idx] {
-            match &s_inst.inst {
-                Instruction::AssignConst { dest, val, .. } => {
-                    let d = dest.trim_start_matches('%');
-                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
-                        if declared_vars.insert(d.to_string()) {
-                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                        }
-                        match val {
-                            Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", d, Self::smt_bv64(*v))),
-                            Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
-                            Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
-                            _ => {}
-                        }
-                    }
-                }
-                Instruction::SliceLen { dest, slice } => {
-                    let d = dest.trim_start_matches('%');
-                    let s = slice.trim_start_matches('%');
-                    if declared_vars.insert(d.to_string()) {
-                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                    }
-                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
-                }
-                _ => {}
-            }
-        }
+        Self::emit_pre_loop_invariants(func, loop_start_idx, transition, &mut declared_vars, &mut smt);
 
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
@@ -2024,33 +2044,7 @@ impl Verifier {
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
         }
 
-        for s_inst in &func.instructions[..loop_start_idx] {
-            match &s_inst.inst {
-                Instruction::AssignConst { dest, val, .. } => {
-                    let d = dest.trim_start_matches('%');
-                    if !transition.next_state.contains_key(d) || transition.next_state.get(d) == Some(&d.to_string()) {
-                        if declared_vars.insert(d.to_string()) {
-                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                        }
-                        match val {
-                            Value::I64(v) => smt.push_str(&format!("(assert (= {} {}))\n", d, Self::smt_bv64(*v))),
-                            Value::U64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
-                            Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
-                            _ => {}
-                        }
-                    }
-                }
-                Instruction::SliceLen { dest, slice } => {
-                    let d = dest.trim_start_matches('%');
-                    let s = slice.trim_start_matches('%');
-                    if declared_vars.insert(d.to_string()) {
-                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
-                    }
-                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
-                }
-                _ => {}
-            }
-        }
+        Self::emit_pre_loop_invariants(func, loop_start_idx, transition, &mut declared_vars, &mut smt);
 
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
@@ -2074,17 +2068,28 @@ impl Verifier {
         smt
     }
 
+    /// Tìm tên biến trả về ở lệnh RET cuối cùng của hàm (thường được dùng trong mệnh đề ENSURE)
+    fn find_canonical_ret_var(func: &Function) -> Option<String> {
+        for s_inst in func.instructions.iter().rev() {
+            if let Instruction::Ret(Some(Operand::Reg(r))) = &s_inst.inst {
+                return Some(r.trim_start_matches('%').to_string());
+            }
+        }
+        None
+    }
+
     fn build_early_ret_ensure_query(
         func: &Function,
         ret_if_idx: usize,
         cond: &str,
+        ret_val: Option<&Operand>,
         requires: &[Expr],
         ensures: &[Expr],
         buffer_sizes: &std::collections::HashMap<String, usize>,
         program: Option<&Program>,
     ) -> String {
         let mut smt = String::from("(set-logic QF_BV)\n");
-        let current_val = Self::emit_symbolic_prefix(
+        let mut current_val = Self::emit_symbolic_prefix(
             func,
             ret_if_idx,
             requires,
@@ -2092,6 +2097,16 @@ impl Verifier {
             program,
             &mut smt,
         );
+
+        // Nếu RET_IF trả về một toán hạng/thanh ghi khác với thanh ghi trả về cuối hàm (canonical ret var),
+        // ánh xạ canonical ret var sang giá trị trả về của RET_IF để ENSURE kiểm tra đúng giá trị đó!
+        if let (Some(canon_ret), Some(op)) = (Self::find_canonical_ret_var(func), ret_val) {
+            let early_smt_val = Self::resolve_operand(op, &current_val);
+            let alias_var = format!("{}_early_ret_{}", canon_ret, ret_if_idx);
+            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", alias_var));
+            smt.push_str(&format!("(assert (= {} {}))\n", alias_var, early_smt_val));
+            current_val.insert(canon_ret, alias_var);
+        }
 
         // Tại điểm RET_IF, điều kiện rẽ nhánh phải ĐÚNG (khác 0)
         let c_smt = Self::resolve_operand(&Operand::Reg(cond.to_string()), &current_val);
@@ -2118,13 +2133,14 @@ impl Verifier {
     fn build_mid_ret_ensure_query(
         func: &Function,
         ret_idx: usize,
+        ret_val: Option<&Operand>,
         requires: &[Expr],
         ensures: &[Expr],
         buffer_sizes: &std::collections::HashMap<String, usize>,
         program: Option<&Program>,
     ) -> String {
         let mut smt = String::from("(set-logic QF_BV)\n");
-        let current_val = Self::emit_symbolic_prefix(
+        let mut current_val = Self::emit_symbolic_prefix(
             func,
             ret_idx,
             requires,
@@ -2132,6 +2148,14 @@ impl Verifier {
             program,
             &mut smt,
         );
+
+        if let (Some(canon_ret), Some(op)) = (Self::find_canonical_ret_var(func), ret_val) {
+            let mid_smt_val = Self::resolve_operand(op, &current_val);
+            let alias_var = format!("{}_mid_ret_{}", canon_ret, ret_idx);
+            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", alias_var));
+            smt.push_str(&format!("(assert (= {} {}))\n", alias_var, mid_smt_val));
+            current_val.insert(canon_ret, alias_var);
+        }
 
         let ensure_terms: Vec<String> = ensures
             .iter()

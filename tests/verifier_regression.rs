@@ -870,3 +870,193 @@ fn test_v26_parenthesized_expressions_in_contracts() {
     assert_eq!(smt2_bool, "(or (and (bvsgt x (_ bv0 64)) (bvsgt y (_ bv0 64))) (= z (_ bv0 64)))");
 }
 
+#[test]
+fn test_v27_post_loop_break_state_restored_accurately() {
+    // V27: Post-loop state must match the state at BREAK_IF, not the over-stepped state
+    let code = r#"
+FUNC test_post_loop_exact() -> i64
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 10
+    DECREASES 10 - %i
+    %done = EQ i64 %i 10
+    BREAK_IF %done
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP l1
+  ASSERT %i == 10
+  RET %i
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V27");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let assert_passed = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
+        }
+        _ => false,
+    });
+
+    assert!(
+        assert_passed,
+        "V27 test failed: ASSERT %i == 10 after loop must PASS! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v28_loop_with_early_ret_if_verified_against_ensure() {
+    // V28: A function with both LOOP and RET_IF must verify RET_IF against ENSURE
+    let code = r#"
+FUNC search_or_default(n: i64) -> i64
+  %bad = LT i64 n 0
+  %neg_one = CONST i64 -1
+  RET_IF %bad %neg_one
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %res >= 0
+  %res = CONST i64 1
+  RET %res
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V28");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_early_ret = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE on early return (RET_IF)")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_early_ret,
+        "V28 test failed: Early return RET_IF with -1 in a loop function must fail ENSURE %res >= 0! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v29_early_ret_value_aliased_to_canonical_ret_var() {
+    // V29: RET_IF returning %zero is aliased to canonical %ret in ENSURE %ret >= 0
+    let code = r#"
+FUNC check_nonneg(x: i64) -> i64
+  %is_neg = LT i64 x 0
+  %zero = CONST i64 0
+  RET_IF %is_neg %zero
+  %ret = MOV x
+  ENSURE %ret >= 0
+  RET %ret
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V29");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+
+    assert!(
+        all_passed,
+        "V29 test failed: RET_IF returning %zero must satisfy ENSURE %ret >= 0! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v30_pre_loop_binary_expression_preserved_in_contracts() {
+    // V30: Pre-loop binary expressions (ADD, SUB) preserved into loop exit and inductive step
+    let code = r#"
+FUNC test_pre_loop_binop(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 100
+  %ten = CONST i64 10
+  %limit = ADD i64 n %ten
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= %limit
+    DECREASES %limit - %i
+    %done = GTE i64 %i %limit
+    BREAK_IF %done
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %i == %limit
+  RET %i
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V30");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let passed_exit = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
+        }
+        _ => false,
+    });
+
+    assert!(
+        passed_exit,
+        "V30 test failed: Pre-loop %limit = ADD n 10 must be preserved into Exit Step! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v31_unary_minus_expressions_parsed_as_subtraction() {
+    // V31: Unary minus (-%a, -(%a + %b)) parsed as (0 - expr)
+    let expr1 = Parser::parse_expr("-%a", 1).expect("parse -%a");
+    let smt1 = Verifier::expr_to_smt(&expr1);
+    assert_eq!(smt1, "(bvsub (_ bv0 64) a)");
+
+    let expr2 = Parser::parse_expr("-(%a + %b)", 1).expect("parse -(%a + %b)");
+    let smt2 = Verifier::expr_to_smt(&expr2);
+    assert_eq!(smt2, "(bvsub (_ bv0 64) (bvadd a b))");
+}
+
+#[test]
+fn test_v32_both_branches_end_in_ret() {
+    // V32: Function where both if and else branches end in RET
+    let code = r#"
+FUNC max_val(a: i64, b: i64) -> i64
+  %cmp = GT i64 a b
+  BR_IF %cmp .is_a
+  %res1 = MOV b
+  ENSURE %res >= a && %res >= b
+  RET %res1
+  LABEL .is_a
+  %res = MOV a
+  RET %res
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V32");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let mid_ret_passed = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE on branch return (RET)")
+        }
+        _ => false,
+    });
+    let final_ret_passed = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE postcondition")
+        }
+        _ => false,
+    });
+
+    assert!(
+        mid_ret_passed && final_ret_passed,
+        "V32 test failed: Both branch RETs must verify against ENSURE! Got: {:?}",
+        results
+    );
+}
+
