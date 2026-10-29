@@ -37,11 +37,7 @@ impl VcGen {
 
     /// Định nghĩa hằng số 64-bit an toàn chuẩn SMT-LIB2 QF_BV (hỗ trợ cả số âm)
     pub fn smt_bv64(n: i64) -> String {
-        if n >= 0 {
-            format!("(_ bv{} 64)", n)
-        } else {
-            format!("(bvneg (_ bv{} 64))", -n)
-        }
+        Verifier::smt_bv64(n)
     }
 
     /// Chuyển đổi biểu thức số học / logic / bộ nhớ sang chuỗi SMT-LIB2
@@ -141,6 +137,35 @@ impl VcGen {
         }
     }
 
+    pub fn collect_scalar_vars(&self, expr: &IvlExpr, vars: &mut HashSet<String>) {
+        match expr {
+            IvlExpr::Var(v) => {
+                let clean = v.trim_start_matches('%');
+                let mapped = self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string());
+                vars.insert(mapped);
+            }
+            IvlExpr::Len(v) => {
+                let clean = v.trim_start_matches('%');
+                let len_key = format!("{}_len", clean);
+                let mapped = self.current_val.get(&len_key).cloned().unwrap_or(len_key);
+                vars.insert(mapped);
+            }
+            IvlExpr::Select { offset, .. } => {
+                self.collect_scalar_vars(offset, vars);
+            }
+            IvlExpr::Store { offset, val, .. } => {
+                self.collect_scalar_vars(offset, vars);
+                self.collect_scalar_vars(val, vars);
+            }
+            IvlExpr::Binary { lhs, rhs, .. } => {
+                self.collect_scalar_vars(lhs, vars);
+                self.collect_scalar_vars(rhs, vars);
+            }
+            IvlExpr::Not(inner) => self.collect_scalar_vars(inner, vars),
+            _ => {}
+        }
+    }
+
     pub fn collect_mem_names(expr: &IvlExpr, mems: &mut HashSet<String>) {
         match expr {
             IvlExpr::Select { mem, offset } => {
@@ -173,6 +198,11 @@ impl VcGen {
         for stmt in stmts {
             match stmt {
                 IvlStmt::Assign { dest, expr, is_memory } => {
+                    let mut needed_vars = HashSet::new();
+                    self.collect_scalar_vars(expr, &mut needed_vars);
+                    for nv in needed_vars {
+                        self.declared_vars.insert(nv);
+                    }
                     let mut needed_mems = HashSet::new();
                     Self::collect_mem_names(expr, &mut needed_mems);
                     for nm in needed_mems {
@@ -197,6 +227,11 @@ impl VcGen {
                     }
                 }
                 IvlStmt::Assume { cond } => {
+                    let mut needed_vars = HashSet::new();
+                    self.collect_scalar_vars(cond, &mut needed_vars);
+                    for nv in needed_vars {
+                        self.declared_vars.insert(nv);
+                    }
                     let mut needed_mems = HashSet::new();
                     Self::collect_mem_names(cond, &mut needed_mems);
                     for nm in needed_mems {
@@ -223,6 +258,11 @@ impl VcGen {
                     }
                 }
                 IvlStmt::Assert { cond, goal_name, category, loc } => {
+                    let mut needed_vars = HashSet::new();
+                    self.collect_scalar_vars(cond, &mut needed_vars);
+                    for nv in needed_vars {
+                        self.declared_vars.insert(nv);
+                    }
                     let mut needed_mems = HashSet::new();
                     Self::collect_mem_names(cond, &mut needed_mems);
                     for nm in needed_mems {

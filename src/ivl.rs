@@ -363,6 +363,38 @@ impl IvlLowerer {
                     is_memory: true,
                 });
             }
+            Instruction::Load64 { dest, buf, offset } => {
+                let off_expr = Self::operand_to_expr(offset);
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr: IvlExpr::Select {
+                        mem: buf.clone(),
+                        offset: Box::new(off_expr),
+                    },
+                    is_memory: false,
+                });
+            }
+            Instruction::Store64 { buf, offset, val } => {
+                let off_expr = Self::operand_to_expr(offset);
+                let val_expr = Self::operand_to_expr(val);
+                stmts.push(IvlStmt::Assign {
+                    dest: buf.clone(),
+                    expr: IvlExpr::Store {
+                        mem: buf.clone(),
+                        offset: Box::new(off_expr),
+                        val: Box::new(val_expr),
+                    },
+                    is_memory: true,
+                });
+            }
+            Instruction::Alloc { dest, size } => {
+                let clean = dest.trim_start_matches('%');
+                stmts.push(IvlStmt::Assign {
+                    dest: format!("{}_len", clean),
+                    expr: IvlExpr::IntConst(*size as i64),
+                    is_memory: false,
+                });
+            }
             _ => {}
         }
         stmts

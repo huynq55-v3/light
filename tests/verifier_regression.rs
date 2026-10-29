@@ -1216,3 +1216,90 @@ END_FUNC
     assert!(matches!(results[1], VerificationResult::Verified { .. }));
 }
 
+#[test]
+fn test_ivl_on_real_memory_bounds_v8() {
+    // Chạy trực tiếp V8 trên động cơ mới verify_function_ivl
+    let code = r#"
+FUNC check_oob() -> i64
+  %buf = ALLOC slice<u8> 16
+  %val = LOAD8 %buf 20
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V8");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let failed = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check")
+        }
+        _ => false,
+    });
+    assert!(failed, "IVL Engine phải bắt được lỗi tràn bộ đệm LOAD8 ở offset 20! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_real_division_by_zero_v9() {
+    // Chạy trực tiếp V9 (5 - 5 = 0) trên động cơ mới verify_function_ivl
+    let code = r#"
+FUNC check_div() -> i64
+  %a = CONST i64 5
+  %b = CONST i64 5
+  %denom = SUB i64 %a %b
+  %res = DIV i64 100 %denom
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V9");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let failed = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Division-by-Zero safety")
+        }
+        _ => false,
+    });
+    assert!(failed, "IVL Engine phải bắt được lỗi chia cho 0 ngữ cảnh động! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_real_early_return_violation_v16() {
+    // Chạy trực tiếp V16 (RET_IF trả về số âm vi phạm ENSURE) trên động cơ mới verify_function_ivl
+    let code = r#"
+FUNC abs_bad(x: i64) -> i64
+  ENSURE %res > 0
+  %is_neg = LT i64 x 0
+  %res = MOV x
+  RET_IF %is_neg %res
+  %res = ADD i64 x 1
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V16");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let failed = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("early return (RET_IF)")
+        }
+        _ => false,
+    });
+    assert!(failed, "IVL Engine phải bắt được lỗi RET_IF trả về giá trị âm! Got: {:?}", results);
+}
+
+#[test]
+fn test_ivl_on_real_early_return_success_v29() {
+    // Chạy trực tiếp V29 (RET_IF trả về %zero thỏa mãn ENSURE %ret >= 0) trên động cơ mới verify_function_ivl
+    let code = r#"
+FUNC check_nonneg(x: i64) -> i64
+  %is_neg = LT i64 x 0
+  %zero = CONST i64 0
+  RET_IF %is_neg %zero
+  %ret = MOV x
+  ENSURE %ret >= 0
+  RET %ret
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V29");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "IVL Engine phải VERIFY thành công hàm check_nonneg với RET_IF! Got: {:?}", results);
+}
+
