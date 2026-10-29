@@ -554,10 +554,19 @@ impl Parser {
 
         // --- LINUX SYSCALL & RET ---
         if parts[0] == "SYSCALL" {
+            if parts.len() == 1 {
+                return Ok(Instruction::Syscall {
+                    dest: None,
+                    rax: Operand::Reg("%rax".into()),
+                    rdi: Operand::Reg("%rdi".into()),
+                    rsi: Operand::Reg("%rsi".into()),
+                    rdx: Operand::Reg("%rdx".into()),
+                });
+            }
             if parts.len() < 5 {
                 return Err(ParseError {
                     line_no,
-                    message: "Syntax: SYSCALL rax rdi rsi rdx".into(),
+                    message: "Syntax: SYSCALL or SYSCALL rax rdi rsi rdx".into(),
                 });
             }
             return Ok(Instruction::Syscall {

@@ -233,3 +233,146 @@ END_FUNC
         results
     );
 }
+
+#[test]
+fn test_v7_assert_false_fails() {
+    // V7: Explicit ASSERT false directive must fail verification
+    let code = r#"
+FUNC check_assert() -> i64
+  %a = CONST i64 5
+  ASSERT %a == 10
+  RET %a
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V7");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_assert = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_assert,
+        "V7 test failed: Verifier should have failed on violated ASSERT directive! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v8_memory_bounds_load8_out_of_bounds_fails() {
+    // V8: Accessing byte outside allocated buffer capacity must fail safety check
+    let code = r#"
+FUNC check_oob() -> i64
+  %buf = ALLOC slice<u8> 16
+  %val = LOAD8 %buf 20
+  RET %val
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V8");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_bounds = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_bounds,
+        "V8 test failed: Verifier should have caught out-of-bounds LOAD8 access! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v9_div_zero_dynamic_context_fails() {
+    // V9: Context-sensitive division by zero: divisor computed dynamically as 5 - 5 = 0
+    let code = r#"
+FUNC check_div() -> i64
+  %a = CONST i64 5
+  %b = CONST i64 5
+  %denom = SUB i64 %a %b
+  %res = DIV i64 100 %denom
+  RET %res
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V9");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_div_zero = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Division-by-Zero safety")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_div_zero,
+        "V9 test failed: Context-sensitive division by zero should have been caught! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v10_negative_constants_work_without_syntax_error() {
+    // V10: Negative integer constants formatted with bvneg in SMT without Z3 syntax errors
+    let code = r#"
+FUNC check_negative(x: i64) -> i64
+  REQUIRE x <= -50 && x >= -1000
+  %sub = SUB i64 x 100
+  ENSURE %sub < -40
+  RET %sub
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V10");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    // Ensure it verifies without syntax errors
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+
+    assert!(
+        all_passed,
+        "V10 test failed: Negative constants in SMT query caused failure: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v11_ssa_reassignment_vacuous_truth_prevention() {
+    // V11: Re-assigning variable %x in straightline code must NOT trigger vacuous truth (UNSAT)
+    // %x = 1, then %x = %x + 1 -> %x is now 2. ENSURE %x == 999 MUST FAIL.
+    // If vacuous truth bug was present, 1 = 2 would be UNSAT and ENSURE 999 would falsely PASS.
+    let code = r#"
+FUNC check_vacuous() -> i64
+  %x = CONST i64 1
+  %x = ADD i64 %x 1
+  ENSURE %x == 999
+  RET %x
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V11");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_ensure = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE postcondition")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_ensure,
+        "V11 Vacuous Truth test failed: Verifier should have rejected ENSURE %x == 999 under SSA renaming! Got: {:?}",
+        results
+    );
+}
+

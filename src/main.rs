@@ -177,9 +177,9 @@ fn build_elf(file_path: &str, output_path: &str) {
 fn run_verification(program: &ast::Program) -> bool {
     let mut has_failure = false;
 
-    // 0. Program-wide Symbol & Loop Label Uniqueness Check
-    let mut seen_labels: std::collections::HashMap<String, (String, usize)> = std::collections::HashMap::new();
+    // 0. Function-scoped Symbol & Loop Label Uniqueness Check
     for func in &program.functions {
+        let mut seen_labels: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for s_inst in &func.instructions {
             let label_name = match &s_inst.inst {
                 ast::Instruction::Loop(l) => Some(l),
@@ -187,12 +187,12 @@ fn run_verification(program: &ast::Program) -> bool {
                 _ => None,
             };
             if let Some(lbl) = label_name {
-                if let Some((prev_fn, prev_line)) = seen_labels.get(lbl) {
+                if let Some(prev_line) = seen_labels.get(lbl) {
                     has_failure = true;
-                    eprintln!("  🚨 [FAIL] Program-level Symbol Collision: Duplicate label/loop '{}'", lbl);
-                    eprintln!("     Conflict between {}() line {} and {}() line {}", prev_fn, prev_line, func.name, s_inst.loc.line);
+                    eprintln!("  🚨 [FAIL] Symbol Collision in {}(): Duplicate label/loop '{}'", func.name, lbl);
+                    eprintln!("     Conflict between line {} and line {}", prev_line, s_inst.loc.line);
                 } else {
-                    seen_labels.insert(lbl.clone(), (func.name.clone(), s_inst.loc.line));
+                    seen_labels.insert(lbl.clone(), s_inst.loc.line);
                 }
             }
         }
