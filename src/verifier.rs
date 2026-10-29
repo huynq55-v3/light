@@ -438,8 +438,10 @@ impl Verifier {
             }
         }
 
-        // 5. Hoare Logic Verification for Loops
-        if !invariants.is_empty() {
+        let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
+
+        // 5. Hoare Logic Verification for Loops (kích hoạt khi có INVARIANT hoặc khi hàm có LOOP + ENSURE/DECREASES)
+        if !invariants.is_empty() || (has_loop && (!ensures.is_empty() || !decreases.is_empty())) {
             let mut loop_start = None;
             let mut loop_end = None;
             for (idx, s_inst) in func.instructions.iter().enumerate() {
@@ -452,16 +454,18 @@ impl Verifier {
             }
 
             if let (Some(l_start), Some(l_end)) = (loop_start, loop_end) {
-                let base_goal = format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name);
-                let base_query = Self::build_base_case_query(func, l_start, &requires, &invariants, &buffer_sizes, program);
-                let stack = vec![StackFrame {
-                    file: func.file.clone(),
-                    line: func.start_line,
-                    function: format!("{}()", func.name),
-                    snippet: "Base Case loop invariant".into(),
-                    role: "Loop initialization does not satisfy invariant".into(),
-                }];
-                results.push(Self::solve_query(&base_goal, PropertyCategory::Inductive, &base_query, stack));
+                if !invariants.is_empty() {
+                    let base_goal = format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name);
+                    let base_query = Self::build_base_case_query(func, l_start, &requires, &invariants, &buffer_sizes, program);
+                    let stack = vec![StackFrame {
+                        file: func.file.clone(),
+                        line: func.start_line,
+                        function: format!("{}()", func.name),
+                        snippet: "Base Case loop invariant".into(),
+                        role: "Loop initialization does not satisfy invariant".into(),
+                    }];
+                    results.push(Self::solve_query(&base_goal, PropertyCategory::Inductive, &base_query, stack));
+                }
 
                 let mut known_vars = std::collections::HashSet::new();
                 for p in &func.params {
@@ -491,16 +495,18 @@ impl Verifier {
 
                 match Self::extract_loop_transition(func, l_start, l_end, &known_vars) {
                     Ok(transition) => {
-                        let step_goal = format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name);
-                        let step_query = Self::build_inductive_step_query(func, &requires, &invariants, &buffer_sizes, &transition, l_start);
-                        let stack2 = vec![StackFrame {
-                            file: func.file.clone(),
-                            line: func.start_line,
-                            function: format!("{}()", func.name),
-                            snippet: "Inductive Step loop invariant".into(),
-                            role: "Loop body fails to preserve invariant across iteration".into(),
-                        }];
-                        results.push(Self::solve_query(&step_goal, PropertyCategory::Inductive, &step_query, stack2));
+                        if !invariants.is_empty() {
+                            let step_goal = format!("Function '{}' - Step 2: Inductive Step (Invariant preservation)", func.name);
+                            let step_query = Self::build_inductive_step_query(func, &requires, &invariants, &buffer_sizes, &transition, l_start);
+                            let stack2 = vec![StackFrame {
+                                file: func.file.clone(),
+                                line: func.start_line,
+                                function: format!("{}()", func.name),
+                                snippet: "Inductive Step loop invariant".into(),
+                                role: "Loop body fails to preserve invariant across iteration".into(),
+                            }];
+                            results.push(Self::solve_query(&step_goal, PropertyCategory::Inductive, &step_query, stack2));
+                        }
 
                         if !ensures.is_empty() {
                             let exit_goal = format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name);
@@ -567,6 +573,33 @@ impl Verifier {
                     category: PropertyCategory::Safety,
                 });
             } else {
+                // Verify early return paths (RET_IF) against ENSURE postconditions
+                for (idx, s_inst) in func.instructions.iter().enumerate() {
+                    if let Instruction::RetIf { cond, .. } = &s_inst.inst {
+                        let early_goal = format!(
+                            "Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)",
+                            func.name, s_inst.loc.line
+                        );
+                        let early_query = Self::build_early_ret_ensure_query(
+                            func,
+                            idx,
+                            cond,
+                            &requires,
+                            &ensures,
+                            &buffer_sizes,
+                            program,
+                        );
+                        let stack = vec![StackFrame {
+                            file: s_inst.loc.file.clone(),
+                            line: s_inst.loc.line,
+                            function: format!("{}()", func.name),
+                            snippet: s_inst.loc.text.clone(),
+                            role: "Early return (RET_IF) violates ENSURE postcondition".into(),
+                        }];
+                        results.push(Self::solve_query(&early_goal, PropertyCategory::Functional, &early_query, stack));
+                    }
+                }
+
                 let query = Self::build_straightline_query(func, &requires, &ensures, &buffer_sizes, program);
                 let stack = vec![StackFrame {
                     file: func.file.clone(),
@@ -616,6 +649,31 @@ impl Verifier {
         }
         vars
     }
+    /// Chuyển biểu thức sang SMT-LIB2 đảm bảo kết quả mang kiểu Bool (Sort Bool)
+    pub fn expr_to_smt_bool(expr: &Expr) -> String {
+        match expr {
+            Expr::Var(name) => {
+                let clean = name.trim_start_matches('%');
+                format!("(distinct {} (_ bv0 64))", clean)
+            }
+            Expr::IntConst(n) => {
+                if *n != 0 { "true".into() } else { "false".into() }
+            }
+            Expr::BoolConst(b) => if *b { "true".into() } else { "false".into() },
+            Expr::Not(inner) => format!("(not {})", Self::expr_to_smt_bool(inner)),
+            Expr::Binary { op: BinOp::And, lhs, rhs } => {
+                format!("(and {} {})", Self::expr_to_smt_bool(lhs), Self::expr_to_smt_bool(rhs))
+            }
+            Expr::Binary { op: BinOp::Or, lhs, rhs } => {
+                format!("(or {} {})", Self::expr_to_smt_bool(lhs), Self::expr_to_smt_bool(rhs))
+            }
+            Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => {
+                format!("(distinct {} (_ bv0 64))", Self::expr_to_smt(expr))
+            }
+            _ => Self::expr_to_smt(expr),
+        }
+    }
+
     /// Chuyển đổi biểu thức Expr sang chuỗi logic SMT-LIB2 (Bit-Vector 64-bit)
     pub fn expr_to_smt(expr: &Expr) -> String {
         match expr {
@@ -626,9 +684,18 @@ impl Verifier {
             Expr::IntConst(n) => Self::smt_bv64(*n),
             Expr::FloatConst(f) => format!("{}", f),
             Expr::BoolConst(b) => if *b { "true".into() } else { "false".into() },
-            Expr::Not(inner) => format!("(not {})", Self::expr_to_smt(inner)),
+            Expr::Not(inner) => format!("(not {})", Self::expr_to_smt_bool(inner)),
             Expr::Len(arr) => format!("{}_len", arr.trim_start_matches('%')),
             Expr::Binary { op, lhs, rhs } => {
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    let b1 = Self::expr_to_smt_bool(lhs);
+                    let b2 = Self::expr_to_smt_bool(rhs);
+                    return match op {
+                        BinOp::And => format!("(and {} {})", b1, b2),
+                        BinOp::Or => format!("(or {} {})", b1, b2),
+                        _ => unreachable!(),
+                    };
+                }
                 let s1 = Self::expr_to_smt(lhs);
                 let s2 = Self::expr_to_smt(rhs);
                 match op {
@@ -643,8 +710,7 @@ impl Verifier {
                     BinOp::Lte => format!("(bvsle {} {})", s1, s2),
                     BinOp::Gt => format!("(bvsgt {} {})", s1, s2),
                     BinOp::Gte => format!("(bvsge {} {})", s1, s2),
-                    BinOp::And => format!("(and {} {})", s1, s2),
-                    BinOp::Or => format!("(or {} {})", s1, s2),
+                    BinOp::And | BinOp::Or => unreachable!(),
                 }
             }
         }
@@ -781,20 +847,62 @@ impl Verifier {
                 }
                 current_val.entry(v.clone()).or_insert_with(|| v.clone());
             }
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
         }
 
         let enclosing_loop = Self::find_enclosing_loop(func, upto_idx);
         let mut loop_havoc_applied = false;
-        let mut skip_until_label: Option<String> = None;
+        // Label index lookup to know if a BR_IF target is before or after `upto_idx`
+        let mut label_positions = std::collections::HashMap::new();
+        for (i, inst_i) in func.instructions.iter().enumerate() {
+            if let Instruction::Label(lbl) = &inst_i.inst {
+                label_positions.insert(lbl.clone(), i);
+            }
+        }
+        // Track active branch merges: label_name -> Vec<(cond_smt, state_at_branch)>
+        let mut pending_incoming: std::collections::HashMap<String, Vec<(String, std::collections::HashMap<String, String>)>> = std::collections::HashMap::new();
+        let mut skip_until_label: Option<(String, std::collections::HashMap<String, String>)> = None;
 
         // 4. Duyệt từng lệnh với SSA Renaming (mỗi lần gán tạo phiên bản _v{idx})
         let limit = upto_idx.min(func.instructions.len());
         for (idx, si) in func.instructions[..limit].iter().enumerate() {
-            // Forward jump skipping
-            if let Some(target) = &skip_until_label {
+            // Nếu đang skip qua một khối sau JUMP không điều kiện
+            if let Some((ref target, ref pre_jump_state)) = skip_until_label {
                 if let Instruction::Label(lbl) = &si.inst {
                     if lbl == target {
+                        // Khôi phục state từ nhánh nhảy tới hoặc hợp nhất
+                        let mut base_state = pre_jump_state.clone();
+                        if let Some(incoming_list) = pending_incoming.remove(lbl) {
+                            for (cond_smt, branch_state) in incoming_list {
+                                let mut all_keys: std::collections::HashSet<String> = base_state.keys().cloned().collect();
+                                all_keys.extend(branch_state.keys().cloned());
+                                for k in all_keys {
+                                    let v_else = base_state.get(&k).cloned().unwrap_or_else(|| k.clone());
+                                    let v_then = branch_state.get(&k).cloned().unwrap_or_else(|| k.clone());
+                                    if v_else != v_then {
+                                        let phi = format!("{}_phi_{}", k, idx);
+                                        if declared.insert(phi.clone()) {
+                                            smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", phi));
+                                        }
+                                        smt.push_str(&format!("(assert (= {} (ite {} {} {})))\n", phi, cond_smt, v_then, v_else));
+                                        base_state.insert(k, phi);
+                                    }
+                                }
+                            }
+                        }
+                        current_val = base_state;
+                        skip_until_label = None;
+                    } else if let Some(incoming_list) = pending_incoming.remove(lbl) {
+                        // Nhảy từ JUMP sang lbl_join, nhưng đang đi ngang qua lbl_then!
+                        // Phải bắt đầu thực thi nhánh lbl_then với trạng thái của BR_IF nhảy vào lbl_then
+                        let (cond_smt, then_start_state) = incoming_list.into_iter().last().unwrap();
+                        let else_end_state = pre_jump_state.clone();
+                        // Lưu trạng thái kết thúc nhánh else để lát nữa gặp target (lbl_join) thì merge!
+                        pending_incoming
+                            .entry(target.clone())
+                            .or_default()
+                            .push((format!("(not {})", cond_smt), else_end_state));
+                        current_val = then_start_state;
                         skip_until_label = None;
                     }
                 }
@@ -824,7 +932,7 @@ impl Verifier {
                             }
                         }
                         let mapped_inv = Self::subst_expr_vars(inv, &current_val);
-                        smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(&mapped_inv)));
+                        smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(&mapped_inv)));
                     }
                     continue; // Skip Instruction::Loop
                 }
@@ -832,9 +940,28 @@ impl Verifier {
 
             match &si.inst {
                 Instruction::Jump(target) => {
-                    skip_until_label = Some(target.clone());
+                    skip_until_label = Some((target.clone(), current_val.clone()));
                 }
-                Instruction::Label(_) => {}
+                Instruction::Label(lbl) => {
+                    if let Some(incoming_list) = pending_incoming.remove(lbl) {
+                        for (cond_smt, branch_state) in incoming_list {
+                            let mut all_keys: std::collections::HashSet<String> = current_val.keys().cloned().collect();
+                            all_keys.extend(branch_state.keys().cloned());
+                            for k in all_keys {
+                                let v_cur = current_val.get(&k).cloned().unwrap_or_else(|| k.clone());
+                                let v_brk = branch_state.get(&k).cloned().unwrap_or_else(|| k.clone());
+                                if v_cur != v_brk {
+                                    let phi = format!("{}_phi_{}", k, idx);
+                                    if declared.insert(phi.clone()) {
+                                        smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", phi));
+                                    }
+                                    smt.push_str(&format!("(assert (= {} (ite {} {} {})))\n", phi, cond_smt, v_brk, v_cur));
+                                    current_val.insert(k, phi);
+                                }
+                            }
+                        }
+                    }
+                }
                 Instruction::AssignConst { dest, val, .. } => {
                     let d = dest.trim_start_matches('%');
                     let ver = format!("{}_v{}", d, idx);
@@ -935,7 +1062,7 @@ impl Verifier {
                                             instantiated = Self::subst_expr_var(&instantiated, ret_r.trim_start_matches('%'), &ver);
                                         }
                                     }
-                                    smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(&instantiated)));
+                                    smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(&instantiated)));
                                 }
                             }
                         }
@@ -950,8 +1077,25 @@ impl Verifier {
                     }
                     current_val.insert(clean_d.to_string(), ver);
                 }
+                Instruction::BrIf { cond, target } => {
+                    let c_smt = Self::resolve_operand(&Operand::Reg(cond.clone()), &current_val);
+                    if let Some(&tgt_pos) = label_positions.get(target) {
+                        if tgt_pos <= limit {
+                            // Mục tiêu kiểm chứng nằm ở hoặc sau nhãn đích `target`:
+                            // Lưu lại trạng thái tại điểm nhảy để lát nữa hợp nhất (Phi-node), KHÔNG ép c_smt == 0!
+                            pending_incoming
+                                .entry(target.clone())
+                                .or_default()
+                                .push((format!("(distinct {} (_ bv0 64))", c_smt), current_val.clone()));
+                        } else {
+                            // Mục tiêu kiểm chứng nằm trước nhãn đích `target`: phải không nhảy mới tới được đây
+                            smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c_smt));
+                        }
+                    } else {
+                        smt.push_str(&format!("(assert (= {} (_ bv0 64)))\n", c_smt));
+                    }
+                }
                 Instruction::RetIf { cond, .. }
-                | Instruction::BrIf { cond, .. }
                 | Instruction::BreakIf(cond)
                 | Instruction::ContinueIf(cond) => {
                     let c_smt = Self::resolve_operand(&Operand::Reg(cond.clone()), &current_val);
@@ -975,7 +1119,7 @@ impl Verifier {
         let mut smt = String::from("(set-logic QF_BV)\n");
         let current_val = Self::emit_symbolic_prefix(func, upto_idx, requires, buffer_sizes, program, &mut smt);
         let mapped_expr = Self::subst_expr_vars(assert_expr, &current_val);
-        smt.push_str(&format!("(assert (not {}))\n", Self::expr_to_smt(&mapped_expr)));
+        smt.push_str(&format!("(assert (not {}))\n", Self::expr_to_smt_bool(&mapped_expr)));
         smt.push_str("(check-sat)\n(get-model)\n");
         smt
     }
@@ -1016,6 +1160,9 @@ impl Verifier {
                 Operand::Const(Value::I64(v)) => {
                     smt.push_str(&format!("(assert (= {} {}))\n", pname, Self::smt_bv64(*v)));
                 }
+                Operand::Const(Value::U64(v)) => {
+                    smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", pname, v));
+                }
                 Operand::Const(Value::Bool(b)) => {
                     smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", pname, if *b { 1 } else { 0 }));
                 }
@@ -1033,7 +1180,7 @@ impl Verifier {
         }
 
         // Negate callee REQUIRE
-        smt.push_str(&format!("(assert (not {}))\n", Self::expr_to_smt(req_expr)));
+        smt.push_str(&format!("(assert (not {}))\n", Self::expr_to_smt_bool(req_expr)));
         smt.push_str("(check-sat)\n(get-model)\n");
         smt
     }
@@ -1125,7 +1272,7 @@ impl Verifier {
             .iter()
             .map(|inv| {
                 let mapped = Self::subst_expr_vars(inv, &current_val);
-                Self::expr_to_smt(&mapped)
+                Self::expr_to_smt_bool(&mapped)
             })
             .collect();
 
@@ -1173,6 +1320,7 @@ impl Verifier {
     fn resolve_operand(op: &Operand, current_val: &std::collections::HashMap<String, String>) -> String {
         match op {
             Operand::Const(Value::I64(n)) => Self::smt_bv64(*n),
+            Operand::Const(Value::U64(n)) => format!("(_ bv{} 64)", n),
             Operand::Const(Value::Bool(b)) => {
                 format!("(_ bv{} 64)", if *b { 1 } else { 0 })
             }
@@ -1389,10 +1537,10 @@ impl Verifier {
         }
 
         for req in requires {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
         }
         for inv in invariants {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(inv)));
         }
 
         // Nạp chuyển đổi trạng thái thực tế từ thân vòng lặp: T(s, s')
@@ -1407,7 +1555,7 @@ impl Verifier {
         let mut next_inv_terms = Vec::new();
         for inv in invariants {
             let next_inv_expr = Self::subst_expr_vars(inv, &transition.next_state);
-            next_inv_terms.push(Self::expr_to_smt(&next_inv_expr));
+            next_inv_terms.push(Self::expr_to_smt_bool(&next_inv_expr));
         }
         let next_combined = if next_inv_terms.len() == 1 {
             next_inv_terms[0].clone()
@@ -1476,10 +1624,10 @@ impl Verifier {
         }
 
         for req in requires {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
         }
         for inv in invariants {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(inv)));
         }
 
         smt.push_str(&transition.smt_body);
@@ -1592,7 +1740,7 @@ impl Verifier {
             .iter()
             .map(|e| {
                 let mapped = Self::subst_expr_vars(e, &current_val);
-                Self::expr_to_smt(&mapped)
+                Self::expr_to_smt_bool(&mapped)
             })
             .collect();
 
@@ -1662,10 +1810,10 @@ impl Verifier {
         }
 
         for req in requires {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
         }
         for inv in invariants {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(inv)));
         }
 
         for cond in &transition.loop_continue_conds {
@@ -1733,10 +1881,10 @@ impl Verifier {
         }
 
         for req in requires {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(req)));
         }
         for inv in invariants {
-            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt_bool(inv)));
         }
 
         smt.push_str(&transition.smt_body);
@@ -1750,6 +1898,47 @@ impl Verifier {
         let next_dec = Self::expr_to_smt(&next_dec_expr);
 
         smt.push_str(&format!("(assert (not (bvslt {} {})))\n", next_dec, dec_smt));
+        smt.push_str("(check-sat)\n(get-model)\n");
+        smt
+    }
+
+    fn build_early_ret_ensure_query(
+        func: &Function,
+        ret_if_idx: usize,
+        cond: &str,
+        requires: &[Expr],
+        ensures: &[Expr],
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+        program: Option<&Program>,
+    ) -> String {
+        let mut smt = String::from("(set-logic QF_BV)\n");
+        let current_val = Self::emit_symbolic_prefix(
+            func,
+            ret_if_idx,
+            requires,
+            buffer_sizes,
+            program,
+            &mut smt,
+        );
+
+        // Tại điểm RET_IF, điều kiện rẽ nhánh phải ĐÚNG (khác 0)
+        let c_smt = Self::resolve_operand(&Operand::Reg(cond.to_string()), &current_val);
+        smt.push_str(&format!("(assert (distinct {} (_ bv0 64)))\n", c_smt));
+
+        let ensure_terms: Vec<String> = ensures
+            .iter()
+            .map(|e| {
+                let mapped = Self::subst_expr_vars(e, &current_val);
+                Self::expr_to_smt_bool(&mapped)
+            })
+            .collect();
+
+        let combined = if ensure_terms.len() == 1 {
+            ensure_terms[0].clone()
+        } else {
+            format!("(and {})", ensure_terms.join(" "))
+        };
+        smt.push_str(&format!("(assert (not {}))\n", combined));
         smt.push_str("(check-sat)\n(get-model)\n");
         smt
     }
@@ -1775,7 +1964,7 @@ impl Verifier {
             .iter()
             .map(|e| {
                 let mapped = Self::subst_expr_vars(e, &current_val);
-                Self::expr_to_smt(&mapped)
+                Self::expr_to_smt_bool(&mapped)
             })
             .collect();
 

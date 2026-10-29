@@ -897,12 +897,29 @@ impl Parser {
             }
         }
 
-        // 4. Phép cộng / trừ: +, -
-        for (sym, op) in [("+", BinOp::Add), ("-", BinOp::Sub)] {
-            if let Some(pos) = s.rfind(sym) {
-                if pos > 0 && !s[..pos].trim().is_empty() {
-                    let lhs = Self::parse_expr(&s[..pos], line_no)?;
-                    let rhs = Self::parse_expr(&s[pos + 1..], line_no)?;
+        // 4. Phép cộng / trừ: +, - (Quét từ phải sang trái để giữ tính kết hợp trái, bỏ qua dấu âm unary)
+        let bytes = s.as_bytes();
+        for i in (1..bytes.len()).rev() {
+            let ch = bytes[i] as char;
+            if ch == '+' || ch == '-' {
+                let left_part = s[..i].trim();
+                // Nếu bên trái kết thúc bằng một toán tử khác (vd: "%y - -5"), thì dấu '-' tại i là dấu âm unary
+                if !left_part.is_empty()
+                    && !left_part.ends_with('+')
+                    && !left_part.ends_with('-')
+                    && !left_part.ends_with('*')
+                    && !left_part.ends_with('/')
+                    && !left_part.ends_with('%')
+                    && !left_part.ends_with('&')
+                    && !left_part.ends_with('|')
+                    && !left_part.ends_with('=')
+                    && !left_part.ends_with('!')
+                    && !left_part.ends_with('<')
+                    && !left_part.ends_with('>')
+                {
+                    let op = if ch == '+' { BinOp::Add } else { BinOp::Sub };
+                    let lhs = Self::parse_expr(left_part, line_no)?;
+                    let rhs = Self::parse_expr(&s[i + 1..], line_no)?;
                     return Ok(Expr::Binary {
                         op,
                         lhs: Box::new(lhs),
@@ -912,12 +929,37 @@ impl Parser {
             }
         }
 
-        // 5. Phép nhân / chia / chia dư: *, /, %
-        for (sym, op) in [("*", BinOp::Mul), ("/", BinOp::Div), ("%", BinOp::Mod)] {
-            if let Some(pos) = s.rfind(sym) {
-                if pos > 0 {
-                    let lhs = Self::parse_expr(&s[..pos], line_no)?;
-                    let rhs = Self::parse_expr(&s[pos + 1..], line_no)?;
+        // 5. Phép nhân / chia / chia dư: *, /, % (Quét từ phải sang trái, tránh ký tự '%' của tên thanh ghi %reg)
+        for i in (1..bytes.len()).rev() {
+            let ch = bytes[i] as char;
+            if ch == '*' || ch == '/' || ch == '%' {
+                let left_part = s[..i].trim();
+                let right_part = s[i + 1..].trim();
+                // Nếu là dấu '%', phải có khoảng trắng phía sau hoặc không phải là tiền tố thanh ghi '%var'
+                if ch == '%' && !s[i + 1..].starts_with(' ') {
+                    continue;
+                }
+                if !left_part.is_empty()
+                    && !right_part.is_empty()
+                    && !left_part.ends_with('+')
+                    && !left_part.ends_with('-')
+                    && !left_part.ends_with('*')
+                    && !left_part.ends_with('/')
+                    && !left_part.ends_with('%')
+                    && !left_part.ends_with('&')
+                    && !left_part.ends_with('|')
+                    && !left_part.ends_with('=')
+                    && !left_part.ends_with('!')
+                    && !left_part.ends_with('<')
+                    && !left_part.ends_with('>')
+                {
+                    let op = match ch {
+                        '*' => BinOp::Mul,
+                        '/' => BinOp::Div,
+                        _ => BinOp::Mod,
+                    };
+                    let lhs = Self::parse_expr(left_part, line_no)?;
+                    let rhs = Self::parse_expr(right_part, line_no)?;
                     return Ok(Expr::Binary {
                         op,
                         lhs: Box::new(lhs),

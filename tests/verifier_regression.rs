@@ -530,3 +530,145 @@ END_FUNC
     );
 }
 
+#[test]
+fn test_v16_early_return_violating_ensure_fails() {
+    // V16: RET_IF path returning a negative value must fail ENSURE %res > 0
+    let code = r#"
+FUNC abs_bad(x: i64) -> i64
+  ENSURE %res > 0
+  %is_neg = LT i64 x 0
+  %res = MOV x
+  RET_IF %is_neg %res
+  %res = ADD i64 x 1
+  RET %res
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V16");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_early_ret = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("early return (RET_IF)")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_early_ret,
+        "V16 test failed: Early return with negative value should have failed ENSURE! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v17_branching_join_phi_node_soundness() {
+    // V17: If then branch sets %x = -999 and else branch sets %x = 10,
+    // post-join ASSERT %x > 0 must FAIL because the condition can be true!
+    let code = r#"
+FUNC test_join(cond: bool) -> i64
+  BR_IF cond .then_branch
+  %x = CONST i64 10
+  JUMP .join
+  LABEL .then_branch
+  %x = CONST i64 -999
+  LABEL .join
+  ASSERT %x > 0
+  RET %x
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V17");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_assert = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_assert,
+        "V17 test failed: Phi-node join should expose then-branch %x = -999 and fail ASSERT %x > 0! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v18_loop_without_invariant_fails_exit_step() {
+    // V18: Loop without INVARIANT cannot prove postcondition ENSURE %i == 10
+    // Because without an invariant, %i at exit cannot be proven to equal 10.
+    let code = r#"
+FUNC loop_no_inv() -> i64
+  %i = CONST i64 0
+  LOOP my_loop
+    %done = GTE i64 %i 10
+    BREAK_IF %done
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP my_loop
+  ENSURE %i == 10
+  RET %i
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V18");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_exit = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_exit,
+        "V18 test failed: Loop without INVARIANT should not be able to prove ENSURE %i == 10! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v19_bool_sort_in_contracts() {
+    // V19: Bare boolean/flag variables in ASSERT, REQUIRE, and !%var should work without Z3 sort errors
+    let code = r#"
+FUNC test_bool_contract(flag: bool) -> i64
+  REQUIRE flag
+  %res = CONST i64 1
+  ASSERT flag
+  ASSERT !false
+  RET %res
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V19");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+
+    assert!(
+        all_passed,
+        "V19 test failed: Boolean sort in contracts caused solver failure! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v20_parser_operator_precedence_and_unary_minus() {
+    // V20: Expressions like %x - -5 and a - b + c and %x * %y
+    let expr1 = Parser::parse_expr("%x - -5", 1).expect("parse expr1");
+    let smt1 = Verifier::expr_to_smt(&expr1);
+    assert_eq!(smt1, "(bvsub x (bvneg (_ bv5 64)))");
+
+    let expr2 = Parser::parse_expr("10 - 5 + 2", 1).expect("parse expr2");
+    let smt2 = Verifier::expr_to_smt(&expr2);
+    // Left-associative: (10 - 5) + 2
+    assert_eq!(smt2, "(bvadd (bvsub (_ bv10 64) (_ bv5 64)) (_ bv2 64))");
+
+    let expr3 = Parser::parse_expr("%x * %y", 1).expect("parse expr3");
+    let smt3 = Verifier::expr_to_smt(&expr3);
+    assert_eq!(smt3, "(bvmul x y)");
+}
+
