@@ -34,6 +34,25 @@ FUNC std_print_all(s: slice<u8>) -> i64
   RET %res
 END_FUNC
 
+# Safely print a subslice without allocating memory
+FUNC print_subslice(s: slice<u8>, start: i64, count: i64) -> i64
+  REQUIRE start >= 0 && count >= 0 && start + count <= len(s)
+
+  %zero = CONST i64 0
+  %is_zero = EQ i64 count %zero
+  RET_IF %is_zero %zero
+
+  %s_ptr = SLICE_PTR s
+  %start_ptr = ADD i64 %s_ptr start
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %start_ptr
+  %rdx = MOV count
+  SYSCALL %rax %rdi %rsi %rdx
+
+  RET %zero
+END_FUNC
+
 # Safely terminate process with an exit status code
 FUNC std_exit(code: i64) -> i64
   REQUIRE code >= 0 && code <= 255
@@ -1889,7 +1908,8 @@ FUNC copy_label_name(src_buf: slice<u8>, start: i64, nl: i64, out_buf: slice<u8>
     %i = MOV %next_i
   END_LOOP copy_lbl_loop
 
-  RET %zero
+  ENSURE %i >= 0 && %i <= 16
+  RET %i
 END_FUNC
 
 # Copy null-terminated C-string from raw memory pointer into slice
@@ -2289,6 +2309,24 @@ FUNC format_i64(val: i64, out_buf: slice<u8>, start_pos: i64) -> i64
   RET %cur_p
 END_FUNC
 
+# Print non-negative 64-bit integer to stdout
+FUNC print_num(val: i64) -> i64
+  REQUIRE val >= 0
+
+  %num_buf = ALLOC slice<u8> 32
+  %zero = CONST i64 0
+  %end_pos = CALL format_i64 val %num_buf %zero
+
+  %bad_len = LTE i64 %end_pos %zero
+  RET_IF %bad_len %zero
+  %c_32 = CONST i64 32
+  %ovf_len = GT i64 %end_pos %c_32
+  RET_IF %ovf_len %zero
+
+  %dummy_p = CALL std_print_slice %num_buf %end_pos
+  RET %zero
+END_FUNC
+
 # Formally check with external Z3 CLI if copied > cap
 FUNC run_z3_buffer_check(copied: i64, cap: i64, z3_path: slice<u8>, z3_len: i64) -> i64
   REQUIRE copied >= 0 && copied <= 128 && cap >= 0 && len(z3_path) >= 128 && z3_len >= 0 && z3_len <= 120
@@ -2491,10 +2529,12 @@ FUNC load_source_with_imports(src_path: slice<u8>, out_buf: slice<u8>, out_cap: 
   %c_max_out = CONST i64 520000
   %pos = CONST i64 0
   %out_pos = CONST i64 0
+  %main_line = CONST i64 1
 
   LOOP import_scan_loop
     INVARIANT %pos >= 0 && %pos <= len(main_buf)
     INVARIANT %out_pos >= 0 && %out_pos <= len(out_buf)
+    INVARIANT %main_line >= 0
 
     %done = GTE i64 %pos %main_bytes
     BREAK_IF %done
@@ -2581,6 +2621,45 @@ FUNC load_source_with_imports(src_path: slice<u8>, out_buf: slice<u8>, out_cap: 
     JUMP next_import_line
 
     LABEL copy_regular_line
+    # Prepend line marker: "#L " + format_i64(%main_line) + "\n"
+    %c_hash = CONST i64 35
+    %c_cap_l = CONST i64 76
+    %c_sp_lm = CONST i64 32
+    %c_nl_lm = CONST i64 10
+
+    # Ensure buffer space: out_pos + 40 <= c_max_out
+    %c_40_chk = ADD i64 %out_pos 40
+    %chk_lm_ovf = GT i64 %c_40_chk %c_max_out
+    BR_IF %chk_lm_ovf skip_line_marker
+
+    STORE8 %out_ptr %out_pos %c_hash
+    %op1 = ADD i64 %out_pos 1
+    STORE8 %out_ptr %op1 %c_cap_l
+    %op2 = ADD i64 %op1 1
+    STORE8 %out_ptr %op2 %c_sp_lm
+    %op3 = ADD i64 %op2 1
+
+    # Format %main_line
+    %ml_clamped = MOV %main_line
+    %ml_neg = LT i64 %main_line 0
+    BR_IF %ml_neg skip_line_marker
+
+    %op3_chk = ADD i64 %op3 20
+    %op3_ovf = GT i64 %op3_chk %c_max_out
+    BR_IF %op3_ovf skip_line_marker
+
+    %op4 = CALL format_i64 %ml_clamped out_buf %op3
+    %lim_ob = SUB i64 %c_max_out 2
+    %op4_bad = GT i64 %op4 %lim_ob
+    BR_IF %op4_bad skip_line_marker
+    %op4_low = LT i64 %op4 %op3
+    BR_IF %op4_low skip_line_marker
+
+    STORE8 %out_ptr %op4 %c_nl_lm
+    %next_out_lm = ADD i64 %op4 1
+    %out_pos = MOV %next_out_lm
+
+    LABEL skip_line_marker
     # Copy line from %pos up to %nl + 1 (including newline) into out_buf
     %has_nl_char = LT i64 %nl %main_bytes
     %one_nl = CONST i64 1
@@ -2605,6 +2684,8 @@ FUNC load_source_with_imports(src_path: slice<u8>, out_buf: slice<u8>, out_cap: 
     LABEL next_import_line
     %c_1 = CONST i64 1
     %next_pos_l = ADD i64 %nl %c_1
+    %next_main_line = ADD i64 %main_line %c_1
+    %main_line = MOV %next_main_line
     %is_past_end = GTE i64 %next_pos_l %main_bytes
     BR_IF %is_past_end end_import_scan
     %pos = MOV %next_pos_l
@@ -2645,15 +2726,15 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>, z3_path: slice<u8>, 
   %data_bump = CONST i64 6291456
 
   # Allocate prefix slice for "FUNC "
-  %p_func = ALLOC slice<u8> 5
+  %p_func = ALLOC slice<u8> 16
   STORE_STR %p_func "FUNC "
 
   # Allocate prefix slice for "CALL "
-  %p_call = ALLOC slice<u8> 5
+  %p_call = ALLOC slice<u8> 16
   STORE_STR %p_call "CALL "
 
   # Allocate prefix slice for "main"
-  %p_main = ALLOC slice<u8> 4
+  %p_main = ALLOC slice<u8> 16
   STORE_STR %p_main "main"
 
   # Allocate prefix slice for "RET "
@@ -2810,6 +2891,14 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>, z3_path: slice<u8>, 
   %cur_loop_p2 = CONST i64 0
   %cur_loop_end_p1 = CONST i64 0
 
+  # Source location and function tracking for diagnostic stack traces
+  %cur_line_no = CONST i64 1
+  %cur_fn_buf = ALLOC slice<u8> 32
+  STORE_STR %cur_fn_buf "main"
+  %cur_fn_len = CONST i64 4
+  %p_line_marker = ALLOC slice<u8> 16
+  STORE_STR %p_line_marker "#L "
+
   # Scan lines
   LOOP parse_file_loop
     INVARIANT %pos >= 0 && %pos <= len(src_buf)
@@ -2827,6 +2916,21 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>, z3_path: slice<u8>, 
     %nl_char = CONST i64 10
     %nl = CALL find_char_from %src_buf %start %nl_char
 
+    # Check if line is line marker "#L "
+    %is_lm = CALL str_starts_with %src_buf %start %p_line_marker
+    %false_b_lm = CONST bool false
+    %not_lm = EQ bool %is_lm %false_b_lm
+    BR_IF %not_lm check_instructions_start
+
+    # It is a line marker! Parse line number:
+    %p_lm_num = ADD i64 %start 3
+    %lm_short = GT i64 %p_lm_num %nl
+    BR_IF %lm_short advance_pos
+    %parsed_line = CALL parse_int_from %src_buf %p_lm_num %nl
+    %cur_line_no = MOV %parsed_line
+    JUMP advance_pos
+
+    LABEL check_instructions_start
     # Ensure buffer space in line for instruction parsing
     %safe_margin = CONST i64 16
     %needed_len = ADD i64 %start %safe_margin
@@ -4420,6 +4524,9 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>, z3_path: slice<u8>, 
     BR_IF %fn_near advance_pos
 
     %fn_name_p = ADD i64 %start 5
+    %new_fn_len = CALL copy_label_name %src_buf %fn_name_p %nl %cur_fn_buf
+    %cur_fn_len = MOV %new_fn_len
+
     %is_fn_main = CALL str_starts_with %src_buf %fn_name_p %p_main
     %not_fn_main = EQ bool %is_fn_main %false_b
     BR_IF %not_fn_main setup_helper_fn
@@ -4883,13 +4990,217 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>, z3_path: slice<u8>, 
     %not_ovf = EQ bool %is_overflow %false_b
     BR_IF %not_ovf store_str_emit
 
-    # Buffer overflow detected by Z3! Print error message and abort!
-    %err_ovf_msg = ALLOC slice<u8> 128
-    STORE_STR %err_ovf_msg "🚨 [FAIL] Z3 Verification: Static buffer overflow detected!\n"
-    %err_ovf_len = SLICE_LEN %err_ovf_msg
-    %dummy_eo1 = CALL std_print_slice %err_ovf_msg %err_ovf_len
+    # Buffer overflow detected by Z3! Print detailed Verification Stack Trace!
+    # Extract destination variable name into var_name_buf (32 bytes)
+    %var_name_buf = ALLOC slice<u8> 32
+    %var_name_len = CALL copy_label_name %src_buf %st_vn_start %q1 %var_name_buf
+    %c_16_vn = CONST i64 16
+    %vn_l_ok1 = GTE i64 %var_name_len %zero_st
+    %vn_l_ok2 = LTE i64 %var_name_len %c_16_vn
+    %vn_l_ok = AND bool %vn_l_ok1 %vn_l_ok2
+    %vn_l_act = MOV %var_name_len
+    BR_IF %vn_l_ok vn_l_clamped
+    %vn_l_act = CONST i64 0
+    LABEL vn_l_clamped
 
-    %err_abort = ALLOC slice<u8> 128
+    # Function name length clamp (0..16)
+    %c_16_fn = CONST i64 16
+    %fn_l_ok1 = GTE i64 %cur_fn_len %zero_st
+    %fn_l_ok2 = LTE i64 %cur_fn_len %c_16_fn
+    %fn_l_ok = AND bool %fn_l_ok1 %fn_l_ok2
+    %fn_l_act = MOV %cur_fn_len
+    BR_IF %fn_l_ok fn_l_clamped
+    %fn_l_act = CONST i64 4
+    LABEL fn_l_clamped
+
+    # Line 1: "  🚨 [FAIL] Function '" + cur_fn + "' - Line " + cur_line_no + ": String write within buffer '" + var_name + "'\n"
+    %m1 = ALLOC slice<u8> 32
+    STORE_STR %m1 "  🚨 [FAIL] Function '"
+    %m1_len = SLICE_LEN %m1
+    %dummy_m1 = CALL std_print_slice %m1 %m1_len
+
+    %dummy_fn1 = CALL print_subslice %cur_fn_buf 0 %fn_l_act
+
+    %m2 = ALLOC slice<u8> 16
+    STORE_STR %m2 "' - Line "
+    %m2_len = SLICE_LEN %m2
+    %dummy_m2 = CALL std_print_slice %m2 %m2_len
+
+    # Line number (clamped to >= 1)
+    %cln_act = MOV %cur_line_no
+    %cln_neg = LT i64 %cur_line_no %zero_st
+    BR_IF %cln_neg cln_clamped_neg
+    JUMP cln_clamped_done
+    LABEL cln_clamped_neg
+    %cln_act = CONST i64 1
+    LABEL cln_clamped_done
+    %dummy_ln = CALL print_num %cln_act
+
+    %m3 = ALLOC slice<u8> 32
+    STORE_STR %m3 ": String write within buffer '"
+    %m3_len = SLICE_LEN %m3
+    %dummy_m3 = CALL std_print_slice %m3 %m3_len
+
+    %dummy_vn1 = CALL print_subslice %var_name_buf 0 %vn_l_act
+
+    %m_q_nl = ALLOC slice<u8> 4
+    STORE_STR %m_q_nl "'\n"
+    %m_q_len = SLICE_LEN %m_q_nl
+    %dummy_mq = CALL std_print_slice %m_q_nl %m_q_len
+
+    # Line 2: "     Reason: Static buffer overflow! UTF-8 string requires " + copied + " bytes, but buffer '" + var_name + "' has only " + cap + " bytes\n"
+    %m4 = ALLOC slice<u8> 64
+    STORE_STR %m4 "     Reason: Static buffer overflow! UTF-8 string requires "
+    %m4_len = SLICE_LEN %m4
+    %dummy_m4 = CALL std_print_slice %m4 %m4_len
+
+    %dummy_p_cp = CALL print_num %copied
+
+    %m5 = ALLOC slice<u8> 32
+    STORE_STR %m5 " bytes, but buffer '"
+    %m5_len = SLICE_LEN %m5
+    %dummy_m5 = CALL std_print_slice %m5 %m5_len
+
+    %dummy_vn2 = CALL print_subslice %var_name_buf 0 %vn_l_act
+
+    %m6 = ALLOC slice<u8> 16
+    STORE_STR %m6 "' has only "
+    %m6_len = SLICE_LEN %m6
+    %dummy_m6 = CALL std_print_slice %m6 %m6_len
+
+    %dummy_p_cap = CALL print_num %cap
+
+    %m7 = ALLOC slice<u8> 16
+    STORE_STR %m7 " bytes\n"
+    %m7_len = SLICE_LEN %m7
+    %dummy_m7 = CALL std_print_slice %m7 %m7_len
+
+    # Line 3: "     🔍 Z3 Counter-example:\nBuffer capacity: " + cap + " bytes\nRequired bytes: " + copied + " (UTF-8 Overflow by " + diff + " bytes)\n"
+    %m8 = ALLOC slice<u8> 64
+    STORE_STR %m8 "     🔍 Z3 Counter-example:\nBuffer capacity: "
+    %m8_len = SLICE_LEN %m8
+    %dummy_m8 = CALL std_print_slice %m8 %m8_len
+
+    %dummy_p_cap2 = CALL print_num %cap
+
+    %m9 = ALLOC slice<u8> 32
+    STORE_STR %m9 " bytes\nRequired bytes: "
+    %m9_len = SLICE_LEN %m9
+    %dummy_m9 = CALL std_print_slice %m9 %m9_len
+
+    %dummy_p_cp2 = CALL print_num %copied
+
+    %m10 = ALLOC slice<u8> 32
+    STORE_STR %m10 " (UTF-8 Overflow by "
+    %m10_len = SLICE_LEN %m10
+    %dummy_m10 = CALL std_print_slice %m10 %m10_len
+
+    %diff = SUB i64 %copied %cap
+    %diff_act = MOV %diff
+    %diff_neg = LT i64 %diff %zero_st
+    BR_IF %diff_neg diff_clamped
+    JUMP diff_done
+    LABEL diff_clamped
+    %diff_act = CONST i64 0
+    LABEL diff_done
+    %dummy_p_diff = CALL print_num %diff_act
+
+    %m11 = ALLOC slice<u8> 16
+    STORE_STR %m11 " bytes)\n"
+    %m11_len = SLICE_LEN %m11
+    %dummy_m11 = CALL std_print_slice %m11 %m11_len
+
+    # Line 4: "     📍 Verification Stack Trace (most recent call first):\n       ↳ [1] " + src_path + ":" + cur_line_no + " in " + cur_fn + "()\n"
+    %m12 = ALLOC slice<u8> 96
+    STORE_STR %m12 "     📍 Verification Stack Trace (most recent call first):\n       ↳ [1] "
+    %m12_len = SLICE_LEN %m12
+    %dummy_m12 = CALL std_print_slice %m12 %m12_len
+
+    %src_path_len = CALL find_char_from src_path 0 0
+    %c_120_sp = CONST i64 120
+    %sp_l_ok1 = GTE i64 %src_path_len %zero_st
+    %sp_l_ok2 = LTE i64 %src_path_len %c_120_sp
+    %sp_l_ok = AND bool %sp_l_ok1 %sp_l_ok2
+    %sp_l_act = MOV %src_path_len
+    BR_IF %sp_l_ok sp_l_clamped
+    %sp_l_act = CONST i64 0
+    LABEL sp_l_clamped
+    %dummy_sp = CALL print_subslice src_path 0 %sp_l_act
+
+    %m_colon = ALLOC slice<u8> 4
+    STORE_STR %m_colon ":"
+    %m_col_len = SLICE_LEN %m_colon
+    %dummy_mc = CALL std_print_slice %m_colon %m_col_len
+
+    %dummy_ln2 = CALL print_num %cln_act
+
+    %m_in = ALLOC slice<u8> 8
+    STORE_STR %m_in " in "
+    %m_in_len = SLICE_LEN %m_in
+    %dummy_min = CALL std_print_slice %m_in %m_in_len
+
+    %dummy_fn2 = CALL print_subslice %cur_fn_buf 0 %fn_l_act
+
+    %m_pipe = ALLOC slice<u8> 32
+    STORE_STR %m_pipe "()\n             | "
+    %m_pipe_len = SLICE_LEN %m_pipe
+    %dummy_mpi = CALL std_print_slice %m_pipe %m_pipe_len
+
+    # Line 5: Source line snippet + "  <-- Overflows buffer '" + var_name + "' (capacity: " + cap + " bytes, required: " + copied + " bytes)\n\n"
+    %snip_end = MOV %nl
+    %has_prev = GT i64 %nl %start
+    %false_b_sn = CONST bool false
+    %not_has_p = EQ bool %has_prev %false_b_sn
+    BR_IF %not_has_p snip_cr_done
+    %prev_idx = SUB i64 %nl 1
+    %prev_ch = LOAD8 %src_raw_ptr %prev_idx
+    %c_13 = CONST i64 13
+    %is_cr_sn = EQ i64 %prev_ch %c_13
+    %not_cr_sn = EQ bool %is_cr_sn %false_b_sn
+    BR_IF %not_cr_sn snip_cr_done
+    %snip_end = MOV %prev_idx
+    LABEL snip_cr_done
+
+    %line_snip_len = SUB i64 %snip_end %start
+    %snip_ok1 = GTE i64 %line_snip_len %zero_st
+    %snip_chk = ADD i64 %start %line_snip_len
+    %snip_buf_len = SLICE_LEN %src_buf
+    %snip_ok2 = LTE i64 %snip_chk %snip_buf_len
+    %snip_ok = AND bool %snip_ok1 %snip_ok2
+    %snip_l_act = MOV %line_snip_len
+    BR_IF %snip_ok snip_l_clamped
+    %snip_l_act = CONST i64 0
+    LABEL snip_l_clamped
+    %dummy_snip = CALL print_subslice %src_buf %start %snip_l_act
+
+    %m13 = ALLOC slice<u8> 32
+    STORE_STR %m13 "  <-- Overflows buffer '"
+    %m13_len = SLICE_LEN %m13
+    %dummy_m13 = CALL std_print_slice %m13 %m13_len
+
+    %dummy_vn3 = CALL print_subslice %var_name_buf 0 %vn_l_act
+
+    %m14 = ALLOC slice<u8> 16
+    STORE_STR %m14 "' (capacity: "
+    %m14_len = SLICE_LEN %m14
+    %dummy_m14 = CALL std_print_slice %m14 %m14_len
+
+    %dummy_p_cap3 = CALL print_num %cap
+
+    %m15 = ALLOC slice<u8> 32
+    STORE_STR %m15 " bytes, required: "
+    %m15_len = SLICE_LEN %m15
+    %dummy_m15 = CALL std_print_slice %m15 %m15_len
+
+    %dummy_p_cp3 = CALL print_num %copied
+
+    %m16 = ALLOC slice<u8> 16
+    STORE_STR %m16 " bytes)\n\n"
+    %m16_len = SLICE_LEN %m16
+    %dummy_m16 = CALL std_print_slice %m16 %m16_len
+
+    # Abort banner:
+    %err_abort = ALLOC slice<u8> 96
     STORE_STR %err_abort "❌ BUILD ABORTED: Contract verification failed! Binary will not be emitted.\n"
     %err_ab_len = SLICE_LEN %err_abort
     %dummy_eo2 = CALL std_print_slice %err_abort %err_ab_len
