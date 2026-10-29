@@ -3,7 +3,7 @@
 //! Lấy cảm hứng từ kiến trúc Boogie (Microsoft Research) & Why3 (INRIA).
 //!
 //! Toàn bộ chương trình được hạ cấp (Lowering) thành đồ thị CFG với chỉ đúng 4 vi lệnh toán học:
-//! 1. `Assign`: Gán biểu thức giá trị toán học thuần túy
+//! 1. `Assign`: Gán biểu thức giá trị toán học thuần túy (hỗ trợ cả biến số BitVec và Memory Array)
 //! 2. `Assert`: Khẳng định một thuộc tính phải đúng (nếu sai -> Báo lỗi & counter-example)
 //! 3. `Assume`: Giả định tiền đề hoặc điều kiện rẽ nhánh hợp lệ
 //! 4. `Havoc`: Quên giá trị cũ của các biến (phục vụ bất biến quy nạp cho vòng lặp)
@@ -12,28 +12,74 @@ use crate::ast::*;
 use crate::verifier::PropertyCategory;
 use std::collections::{HashMap, HashSet};
 
+/// Biểu thức kiểm chứng toán học (hỗ trợ Biến số, Phép tính, và Lý thuyết Mảng / Bộ nhớ SMT)
+#[derive(Debug, Clone, PartialEq)]
+pub enum IvlExpr {
+    Var(String),
+    IntConst(i64),
+    BoolConst(bool),
+    Binary {
+        op: BinOp,
+        lhs: Box<IvlExpr>,
+        rhs: Box<IvlExpr>,
+    },
+    Not(Box<IvlExpr>),
+    Len(String),
+    /// SMT Theory of Arrays: select(mem, offset) - Đọc từ ô nhớ
+    Select {
+        mem: String,
+        offset: Box<IvlExpr>,
+    },
+    /// SMT Theory of Arrays: store(mem, offset, val) - Ghi vào ô nhớ tạo trạng thái bộ nhớ mới
+    Store {
+        mem: String,
+        offset: Box<IvlExpr>,
+        val: Box<IvlExpr>,
+    },
+}
+
+impl From<&Expr> for IvlExpr {
+    fn from(e: &Expr) -> Self {
+        match e {
+            Expr::Var(v) => IvlExpr::Var(v.clone()),
+            Expr::IntConst(n) => IvlExpr::IntConst(*n),
+            Expr::FloatConst(f) => IvlExpr::IntConst(*f as i64),
+            Expr::BoolConst(b) => IvlExpr::BoolConst(*b),
+            Expr::Len(v) => IvlExpr::Len(v.clone()),
+            Expr::Binary { op, lhs, rhs } => IvlExpr::Binary {
+                op: op.clone(),
+                lhs: Box::new(IvlExpr::from(lhs.as_ref())),
+                rhs: Box::new(IvlExpr::from(rhs.as_ref())),
+            },
+            Expr::Not(inner) => IvlExpr::Not(Box::new(IvlExpr::from(inner.as_ref()))),
+        }
+    }
+}
+
 /// Vi lệnh kiểm chứng toán học nguyên tử
 #[derive(Debug, Clone, PartialEq)]
 pub enum IvlStmt {
-    /// Gán giá trị: `dest := expr`
+    /// Gán giá trị: `dest := expr` (hỗ trợ cả biến vô hướng và toán đồ bộ nhớ Array Memory)
     Assign {
         dest: String,
-        expr: Expr,
+        expr: IvlExpr,
+        is_memory: bool,
     },
     /// Khẳng định chân lý: `assert cond`
     Assert {
-        cond: Expr,
+        cond: IvlExpr,
         goal_name: String,
         category: PropertyCategory,
         loc: Loc,
     },
     /// Giả định tiên đề / nhánh rẽ: `assume cond`
     Assume {
-        cond: Expr,
+        cond: IvlExpr,
     },
     /// Giải phóng biến thành tự do (Havoc): `havoc x, y, z`
     Havoc {
         vars: Vec<String>,
+        is_memory: bool,
     },
     /// Ghi chú / debug trace
     Comment(String),
@@ -109,35 +155,35 @@ impl CfgGraph {
 pub struct IvlLowerer;
 
 impl IvlLowerer {
-    pub fn operand_to_expr(op: &Operand) -> Expr {
+    pub fn operand_to_expr(op: &Operand) -> IvlExpr {
         match op {
-            Operand::Reg(r) => Expr::Var(r.trim_start_matches('%').to_string()),
+            Operand::Reg(r) => IvlExpr::Var(r.trim_start_matches('%').to_string()),
             Operand::Const(v) => match v {
-                Value::I64(n) => Expr::IntConst(*n),
-                Value::U64(n) => Expr::IntConst(*n as i64),
-                Value::F64(f) => Expr::FloatConst(*f),
-                Value::Bool(b) => Expr::BoolConst(*b),
-                Value::Ptr(p) => Expr::IntConst(*p as i64),
-                Value::Slice { len, .. } => Expr::IntConst(*len as i64),
+                Value::I64(n) => IvlExpr::IntConst(*n),
+                Value::U64(n) => IvlExpr::IntConst(*n as i64),
+                Value::F64(f) => IvlExpr::IntConst(*f as i64),
+                Value::Bool(b) => IvlExpr::BoolConst(*b),
+                Value::Ptr(p) => IvlExpr::IntConst(*p as i64),
+                Value::Slice { len, .. } => IvlExpr::IntConst(*len as i64),
             },
         }
     }
 
-    pub fn subst_expr(expr: &Expr, from: &str, to: &Expr) -> Expr {
+    pub fn subst_expr(expr: &IvlExpr, from: &str, to: &IvlExpr) -> IvlExpr {
         let clean_from = from.trim_start_matches('%');
         match expr {
-            Expr::Var(v) => {
+            IvlExpr::Var(v) => {
                 if v.trim_start_matches('%') == clean_from {
                     to.clone()
                 } else {
                     expr.clone()
                 }
             }
-            Expr::IntConst(_) | Expr::FloatConst(_) | Expr::BoolConst(_) => expr.clone(),
-            Expr::Len(v) => {
+            IvlExpr::IntConst(_) | IvlExpr::BoolConst(_) => expr.clone(),
+            IvlExpr::Len(v) => {
                 if v.trim_start_matches('%') == clean_from {
-                    if let Expr::Var(to_var) = to {
-                        Expr::Len(to_var.clone())
+                    if let IvlExpr::Var(to_var) = to {
+                        IvlExpr::Len(to_var.clone())
                     } else {
                         expr.clone()
                     }
@@ -145,12 +191,21 @@ impl IvlLowerer {
                     expr.clone()
                 }
             }
-            Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            IvlExpr::Binary { op, lhs, rhs } => IvlExpr::Binary {
                 op: op.clone(),
                 lhs: Box::new(Self::subst_expr(lhs, from, to)),
                 rhs: Box::new(Self::subst_expr(rhs, from, to)),
             },
-            Expr::Not(e) => Expr::Not(Box::new(Self::subst_expr(e, from, to))),
+            IvlExpr::Not(e) => IvlExpr::Not(Box::new(Self::subst_expr(e, from, to))),
+            IvlExpr::Select { mem, offset } => IvlExpr::Select {
+                mem: mem.clone(),
+                offset: Box::new(Self::subst_expr(offset, from, to)),
+            },
+            IvlExpr::Store { mem, offset, val } => IvlExpr::Store {
+                mem: mem.clone(),
+                offset: Box::new(Self::subst_expr(offset, from, to)),
+                val: Box::new(Self::subst_expr(val, from, to)),
+            },
         }
     }
 

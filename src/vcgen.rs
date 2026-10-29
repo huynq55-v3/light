@@ -1,24 +1,24 @@
 #![allow(dead_code)]
 //! Universal Verification Condition Generator (VCGen)
-//! Thực thi kiểm chứng toán học thuần túy trên các vi lệnh IVL (`Assign`, `Assume`, `Havoc`, `Assert`).
+//! Thực thi kiểm chứng toán học thuần túy trên các vi lệnh IVL (`Assign`, `Assume`, `Havoc`, `Assert`)
+//! kết hợp với Lý thuyết Mảng và Bộ nhớ SMT (QF_ABV: Quantifier-Free BitVectors & Arrays).
 //!
-//! Nguyên lý hoạt động:
-//! - Duyệt qua chuỗi vi lệnh IVL.
-//! - `Assign`: Cập nhật trạng thái SSA và gắn ràng buộc giá trị trong SMT.
-//! - `Assume`: Bổ sung điều kiện tiên đề / nhánh rẽ vào tiền đề của solver.
-//! - `Havoc`: Quên giá trị cũ của biến, tạo biến tự do ngẫu nhiên mới trong SMT.
-//! - `Assert`: Sinh truy vấn SMT phủ định mệnh đề và gọi Z3 để chứng minh (UNSAT = Verified).
+//! Hỗ trợ chuẩn SMT-LIB2:
+//! - Biến số vô hướng: `(_ BitVec 64)`
+//! - Toán đồ bộ nhớ Heap/Array: `(Array (_ BitVec 64) (_ BitVec 64))`
+//! - Thao tác đọc bộ nhớ: `(select mem offset)`
+//! - Thao tác ghi bộ nhớ: `(store mem offset val)`
 
 use crate::ast::*;
-use crate::ivl::IvlStmt;
-#[allow(unused_imports)]
-pub use crate::verifier::PropertyCategory;
+use crate::ivl::{IvlExpr, IvlStmt};
 use crate::verifier::{StackFrame, VerificationResult, Verifier};
 use std::collections::{HashMap, HashSet};
 
 pub struct VcGen {
-    pub declared: HashSet<String>,
+    pub declared_vars: HashSet<String>,
+    pub declared_mems: HashSet<String>,
     pub current_val: HashMap<String, String>,
+    pub current_mem: HashMap<String, String>,
     pub assertions_smt: Vec<String>,
     pub step_counter: usize,
 }
@@ -26,8 +26,10 @@ pub struct VcGen {
 impl VcGen {
     pub fn new() -> Self {
         Self {
-            declared: HashSet::new(),
+            declared_vars: HashSet::new(),
+            declared_mems: HashSet::new(),
             current_val: HashMap::new(),
+            current_mem: HashMap::new(),
             assertions_smt: Vec::new(),
             step_counter: 0,
         }
@@ -42,28 +44,40 @@ impl VcGen {
         }
     }
 
-    /// Chuyển đổi biểu thức số học / logic sang chuỗi SMT-LIB2 BitVec 64
-    pub fn expr_to_bv(&self, expr: &Expr) -> String {
+    /// Chuyển đổi biểu thức số học / logic / bộ nhớ sang chuỗi SMT-LIB2
+    pub fn expr_to_bv(&self, expr: &IvlExpr) -> String {
         match expr {
-            Expr::Var(v) => {
+            IvlExpr::Var(v) => {
                 let clean = v.trim_start_matches('%');
                 self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string())
             }
-            Expr::IntConst(n) => Self::smt_bv64(*n),
-            Expr::FloatConst(_) => "(_ bv0 64)".to_string(),
-            Expr::BoolConst(b) => {
+            IvlExpr::IntConst(n) => Self::smt_bv64(*n),
+            IvlExpr::BoolConst(b) => {
                 if *b {
                     "(_ bv1 64)".to_string()
                 } else {
                     "(_ bv0 64)".to_string()
                 }
             }
-            Expr::Len(v) => {
+            IvlExpr::Len(v) => {
                 let clean = v.trim_start_matches('%');
                 let len_key = format!("{}_len", clean);
                 self.current_val.get(&len_key).cloned().unwrap_or(len_key)
             }
-            Expr::Binary { op, lhs, rhs } => {
+            IvlExpr::Select { mem, offset } => {
+                let clean_m = mem.trim_start_matches('%');
+                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| clean_m.to_string());
+                let off = self.expr_to_bv(offset);
+                format!("(select {} {})", m, off)
+            }
+            IvlExpr::Store { mem, offset, val } => {
+                let clean_m = mem.trim_start_matches('%');
+                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| clean_m.to_string());
+                let off = self.expr_to_bv(offset);
+                let v = self.expr_to_bv(val);
+                format!("(store {} {} {})", m, off, v)
+            }
+            IvlExpr::Binary { op, lhs, rhs } => {
                 let s1 = self.expr_to_bv(lhs);
                 let s2 = self.expr_to_bv(rhs);
                 match op {
@@ -82,7 +96,7 @@ impl VcGen {
                     BinOp::Or => format!("(ite (or (distinct {} (_ bv0 64)) (distinct {} (_ bv0 64))) (_ bv1 64) (_ bv0 64))", s1, s2),
                 }
             }
-            Expr::Not(e) => {
+            IvlExpr::Not(e) => {
                 let s = self.expr_to_bv(e);
                 format!("(ite (= {} (_ bv0 64)) (_ bv1 64) (_ bv0 64))", s)
             }
@@ -90,9 +104,9 @@ impl VcGen {
     }
 
     /// Chuyển đổi biểu thức sang biểu thức logic Boolean chuẩn của SMT
-    pub fn expr_to_bool(&self, expr: &Expr) -> String {
+    pub fn expr_to_bool(&self, expr: &IvlExpr) -> String {
         match expr {
-            Expr::Binary { op, lhs, rhs } => {
+            IvlExpr::Binary { op, lhs, rhs } => {
                 let s1 = self.expr_to_bv(lhs);
                 let s2 = self.expr_to_bv(rhs);
                 match op {
@@ -118,8 +132,8 @@ impl VcGen {
                     }
                 }
             }
-            Expr::Not(e) => format!("(not {})", self.expr_to_bool(e)),
-            Expr::BoolConst(b) => if *b { "true".to_string() } else { "false".to_string() },
+            IvlExpr::Not(e) => format!("(not {})", self.expr_to_bool(e)),
+            IvlExpr::BoolConst(b) => if *b { "true".to_string() } else { "false".to_string() },
             _ => {
                 let bv = self.expr_to_bv(expr);
                 format!("(distinct {} (_ bv0 64))", bv)
@@ -127,10 +141,23 @@ impl VcGen {
         }
     }
 
-    /// Khai báo một biến trong SMT nếu chưa từng được khai báo
-    pub fn ensure_declared(&mut self, var: &str, smt_decls: &mut String) {
-        if self.declared.insert(var.to_string()) {
-            smt_decls.push_str(&format!("(declare-const {} (_ BitVec 64))\n", var));
+    pub fn collect_mem_names(expr: &IvlExpr, mems: &mut HashSet<String>) {
+        match expr {
+            IvlExpr::Select { mem, offset } => {
+                mems.insert(mem.trim_start_matches('%').to_string());
+                Self::collect_mem_names(offset, mems);
+            }
+            IvlExpr::Store { mem, offset, val } => {
+                mems.insert(mem.trim_start_matches('%').to_string());
+                Self::collect_mem_names(offset, mems);
+                Self::collect_mem_names(val, mems);
+            }
+            IvlExpr::Binary { lhs, rhs, .. } => {
+                Self::collect_mem_names(lhs, mems);
+                Self::collect_mem_names(rhs, mems);
+            }
+            IvlExpr::Not(inner) => Self::collect_mem_names(inner, mems),
+            _ => {}
         }
     }
 
@@ -145,33 +172,71 @@ impl VcGen {
 
         for stmt in stmts {
             match stmt {
-                IvlStmt::Assign { dest, expr } => {
+                IvlStmt::Assign { dest, expr, is_memory } => {
+                    let mut needed_mems = HashSet::new();
+                    Self::collect_mem_names(expr, &mut needed_mems);
+                    for nm in needed_mems {
+                        if !self.current_mem.contains_key(&nm) {
+                            self.declared_mems.insert(nm);
+                        }
+                    }
+
                     self.step_counter += 1;
                     let clean = dest.trim_start_matches('%');
                     let val_smt = self.expr_to_bv(expr);
-                    let ver = format!("{}_v{}", clean, self.step_counter);
-                    self.declared.insert(ver.clone());
-                    self.assertions_smt.push(format!("(assert (= {} {}))", ver, val_smt));
-                    self.current_val.insert(clean.to_string(), ver);
+                    if *is_memory {
+                        let ver = format!("{}_mem_{}", clean, self.step_counter);
+                        self.declared_mems.insert(ver.clone());
+                        self.assertions_smt.push(format!("(assert (= {} {}))", ver, val_smt));
+                        self.current_mem.insert(clean.to_string(), ver);
+                    } else {
+                        let ver = format!("{}_v{}", clean, self.step_counter);
+                        self.declared_vars.insert(ver.clone());
+                        self.assertions_smt.push(format!("(assert (= {} {}))", ver, val_smt));
+                        self.current_val.insert(clean.to_string(), ver);
+                    }
                 }
                 IvlStmt::Assume { cond } => {
+                    let mut needed_mems = HashSet::new();
+                    Self::collect_mem_names(cond, &mut needed_mems);
+                    for nm in needed_mems {
+                        if !self.current_mem.contains_key(&nm) {
+                            self.declared_mems.insert(nm);
+                        }
+                    }
                     let cond_smt = self.expr_to_bool(cond);
                     self.assertions_smt.push(format!("(assert {})", cond_smt));
                 }
-                IvlStmt::Havoc { vars } => {
+                IvlStmt::Havoc { vars, is_memory } => {
                     for v in vars {
                         self.step_counter += 1;
                         let clean = v.trim_start_matches('%');
-                        let havoc_ver = format!("{}_havoc_{}", clean, self.step_counter);
-                        self.declared.insert(havoc_ver.clone());
-                        self.current_val.insert(clean.to_string(), havoc_ver);
+                        if *is_memory {
+                            let havoc_ver = format!("{}_havoc_mem_{}", clean, self.step_counter);
+                            self.declared_mems.insert(havoc_ver.clone());
+                            self.current_mem.insert(clean.to_string(), havoc_ver);
+                        } else {
+                            let havoc_ver = format!("{}_havoc_{}", clean, self.step_counter);
+                            self.declared_vars.insert(havoc_ver.clone());
+                            self.current_val.insert(clean.to_string(), havoc_ver);
+                        }
                     }
                 }
                 IvlStmt::Assert { cond, goal_name, category, loc } => {
+                    let mut needed_mems = HashSet::new();
+                    Self::collect_mem_names(cond, &mut needed_mems);
+                    for nm in needed_mems {
+                        if !self.current_mem.contains_key(&nm) {
+                            self.declared_mems.insert(nm);
+                        }
+                    }
                     let cond_smt = self.expr_to_bool(cond);
 
-                    let mut query = String::from("(set-logic QF_BV)\n");
-                    for d in &self.declared {
+                    let mut query = String::from("(set-logic QF_ABV)\n");
+                    for m in &self.declared_mems {
+                        query.push_str(&format!("(declare-const {} (Array (_ BitVec 64) (_ BitVec 64)))\n", m));
+                    }
+                    for d in &self.declared_vars {
                         query.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
                     }
                     for a in &self.assertions_smt {
@@ -216,22 +281,24 @@ mod tests {
         let stmts = vec![
             IvlStmt::Assign {
                 dest: "x".to_string(),
-                expr: Expr::IntConst(10),
+                expr: IvlExpr::IntConst(10),
+                is_memory: false,
             },
             IvlStmt::Assign {
                 dest: "y".to_string(),
-                expr: Expr::Binary {
+                expr: IvlExpr::Binary {
                     op: BinOp::Add,
-                    lhs: Box::new(Expr::Var("x".to_string())),
-                    rhs: Box::new(Expr::IntConst(5)),
+                    lhs: Box::new(IvlExpr::Var("x".to_string())),
+                    rhs: Box::new(IvlExpr::IntConst(5)),
                 },
+                is_memory: false,
             },
             // y must be 15 -> should PASS
             IvlStmt::Assert {
-                cond: Expr::Binary {
+                cond: IvlExpr::Binary {
                     op: BinOp::Eq,
-                    lhs: Box::new(Expr::Var("y".to_string())),
-                    rhs: Box::new(Expr::IntConst(15)),
+                    lhs: Box::new(IvlExpr::Var("y".to_string())),
+                    rhs: Box::new(IvlExpr::IntConst(15)),
                 },
                 goal_name: "test y == 15".to_string(),
                 category: PropertyCategory::Functional,
@@ -239,10 +306,10 @@ mod tests {
             },
             // y == 999 -> should FAIL
             IvlStmt::Assert {
-                cond: Expr::Binary {
+                cond: IvlExpr::Binary {
                     op: BinOp::Eq,
-                    lhs: Box::new(Expr::Var("y".to_string())),
-                    rhs: Box::new(Expr::IntConst(999)),
+                    lhs: Box::new(IvlExpr::Var("y".to_string())),
+                    rhs: Box::new(IvlExpr::IntConst(999)),
                 },
                 goal_name: "test y == 999".to_string(),
                 category: PropertyCategory::Functional,
@@ -254,5 +321,85 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(matches!(results[0], VerificationResult::Verified { .. }));
         assert!(matches!(results[1], VerificationResult::Failed { .. }));
+    }
+
+    #[test]
+    fn test_ivl_memory_store_and_load_verification() {
+        let mut vc = VcGen::new();
+        let dummy_loc = Loc {
+            file: "test_mem.lit".to_string(),
+            line: 1,
+            text: "STORE8 %buf 0 42; %val = LOAD8 %buf 0".to_string(),
+        };
+
+        // 1. Ghi số 100 vào ô nhớ 1 của buffer %buf:
+        //    buf_mem := store(buf_mem, 1, 100)
+        // 2. Ghi số 42 vào ô nhớ 0 của buffer %buf:
+        //    buf_mem := store(buf_mem, 0, 42)
+        // 3. Đọc lại từ ô nhớ 0: val0 := select(buf_mem, 0) -> Phải bằng 42!
+        // 4. Đọc lại từ ô nhớ 1: val1 := select(buf_mem, 1) -> Vẫn phải bằng 100!
+        let stmts = vec![
+            IvlStmt::Assign {
+                dest: "buf".to_string(),
+                expr: IvlExpr::Store {
+                    mem: "buf".to_string(),
+                    offset: Box::new(IvlExpr::IntConst(1)),
+                    val: Box::new(IvlExpr::IntConst(100)),
+                },
+                is_memory: true,
+            },
+            IvlStmt::Assign {
+                dest: "buf".to_string(),
+                expr: IvlExpr::Store {
+                    mem: "buf".to_string(),
+                    offset: Box::new(IvlExpr::IntConst(0)),
+                    val: Box::new(IvlExpr::IntConst(42)),
+                },
+                is_memory: true,
+            },
+            IvlStmt::Assign {
+                dest: "val0".to_string(),
+                expr: IvlExpr::Select {
+                    mem: "buf".to_string(),
+                    offset: Box::new(IvlExpr::IntConst(0)),
+                },
+                is_memory: false,
+            },
+            IvlStmt::Assign {
+                dest: "val1".to_string(),
+                expr: IvlExpr::Select {
+                    mem: "buf".to_string(),
+                    offset: Box::new(IvlExpr::IntConst(1)),
+                },
+                is_memory: false,
+            },
+            // Kiểm tra đọc lại ô nhớ 0
+            IvlStmt::Assert {
+                cond: IvlExpr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(IvlExpr::Var("val0".to_string())),
+                    rhs: Box::new(IvlExpr::IntConst(42)),
+                },
+                goal_name: "test memory read after write val0 == 42".to_string(),
+                category: PropertyCategory::Safety,
+                loc: dummy_loc.clone(),
+            },
+            // Kiểm tra tính không tương hỗ (non-aliasing): ô nhớ 1 vẫn giữ nguyên giá trị 100
+            IvlStmt::Assert {
+                cond: IvlExpr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(IvlExpr::Var("val1".to_string())),
+                    rhs: Box::new(IvlExpr::IntConst(100)),
+                },
+                goal_name: "test memory non-aliasing at offset 1 val1 == 100".to_string(),
+                category: PropertyCategory::Safety,
+                loc: dummy_loc,
+            },
+        ];
+
+        let results = vc.verify_sequence(&stmts, "test_mem_func", "test_mem.lit");
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], VerificationResult::Verified { .. }));
+        assert!(matches!(results[1], VerificationResult::Verified { .. }));
     }
 }
