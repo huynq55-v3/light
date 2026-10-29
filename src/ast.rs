@@ -81,6 +81,8 @@ pub enum Instruction {
     Ensure(Expr),
     /// Bất biến vòng lặp: INVARIANT <expr>
     Invariant(Expr),
+    /// Mệnh đề chứng minh dừng vòng lặp (Ranking Function): DECREASES <expr>
+    Decreases(Expr),
     /// Khẳng định điều kiện tại một thời điểm: ASSERT <expr>
     Assert(Expr),
 

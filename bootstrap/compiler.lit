@@ -415,6 +415,37 @@ FUNC sys_unlink(path: slice<u8>) -> i64
   RET %res
 END_FUNC
 
+# Linux sys_fork (syscall 57)
+FUNC sys_fork() -> i64
+  %zero = CONST i64 0
+  %rax = CONST i64 57
+  %pid = SYSCALL %rax %zero %zero %zero
+  ENSURE %pid >= -1
+  RET %pid
+END_FUNC
+
+# Linux sys_execve (syscall 59)
+FUNC sys_execve(pathname: i64, argv_ptr: i64, envp_ptr: i64) -> i64
+  %zero = CONST i64 0
+  %rdi = MOV pathname
+  %rsi = MOV argv_ptr
+  %rdx = MOV envp_ptr
+  %rax = CONST i64 59
+  %res = SYSCALL %rax %rdi %rsi %rdx
+  RET %res
+END_FUNC
+
+# Linux sys_wait4 (syscall 61)
+FUNC sys_wait4(pid: i64, status: slice<u8>, options: i64) -> i64
+  REQUIRE len(status) >= 16
+  %rdi = MOV pid
+  %rsi = SLICE_PTR status
+  %rdx = MOV options
+  %rax = CONST i64 61
+  %res = SYSCALL %rax %rdi %rsi %rdx
+  RET %res
+END_FUNC
+
 # High-level file reading: read file into destination buffer
 FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>, count: i64) -> i64
   REQUIRE len(path) > 0 && count > 0 && count <= len(out_buf)
@@ -2196,6 +2227,236 @@ FUNC copy_bytes(src_ptr: i64, dst_ptr: i64, count: i64) -> i64
   RET count
 END_FUNC
 
+# Format non-negative integer into decimal ASCII digits
+FUNC format_i64(val: i64, out_buf: slice<u8>, start_pos: i64) -> i64
+  REQUIRE val >= 0 && start_pos >= 0 && start_pos + 20 <= len(out_buf)
+
+  %ptr = SLICE_PTR out_buf
+  %zero = CONST i64 0
+  %ten = CONST i64 10
+  %c_48 = CONST i64 48
+  %one = CONST i64 1
+  %temp = ALLOC slice<u8> 24
+  %t_ptr = SLICE_PTR %temp
+
+  %is_zero = EQ i64 val %zero
+  %false_b = CONST bool false
+  %not_zero = EQ bool %is_zero %false_b
+  BR_IF %not_zero fmt_extract
+
+  STORE8 %t_ptr 0 %c_48
+  %count_zero = CONST i64 1
+  %c_init = MOV %count_zero
+  JUMP fmt_rev_start
+
+  LABEL fmt_extract
+  %v = MOV val
+  %count = CONST i64 0
+
+  LOOP digit_loop
+    %d_done = LTE i64 %v %zero
+    BREAK_IF %d_done
+
+    %rem = MOD i64 %v %ten
+    %ch = ADD i64 %rem %c_48
+    STORE8 %t_ptr %count %ch
+    %next_c = ADD i64 %count 1
+    %count = MOV %next_c
+
+    %next_v = DIV i64 %v %ten
+    %v = MOV %next_v
+  END_LOOP digit_loop
+  %c_init = MOV %count
+
+  LABEL fmt_rev_start
+  %k = CONST i64 0
+  %cur_p = MOV start_pos
+  LOOP rev_loop
+    %k_done = GTE i64 %k %c_init
+    BREAK_IF %k_done
+
+    %diff = SUB i64 %c_init %k
+    %idx = SUB i64 %diff %one
+    %digit_ch = LOAD8 %t_ptr %idx
+    STORE8 %ptr %cur_p %digit_ch
+
+    %next_p = ADD i64 %cur_p %one
+    %cur_p = MOV %next_p
+    %next_k = ADD i64 %k %one
+    %k = MOV %next_k
+  END_LOOP rev_loop
+
+  RET %cur_p
+END_FUNC
+
+# Formally check with external Z3 CLI if copied > cap
+FUNC run_z3_buffer_check(copied: i64, cap: i64, z3_path: slice<u8>, z3_len: i64) -> i64
+  REQUIRE copied >= 0 && copied <= 128 && cap >= 0 && len(z3_path) >= 128 && z3_len >= 0 && z3_len <= 120
+
+  %smt_buf = ALLOC slice<u8> 256
+  %p_smt = SLICE_PTR %smt_buf
+
+  %p_s1 = ALLOC slice<u8> 48
+  STORE_STR %p_s1 "(set-logic QF_BV) (assert (bvugt (_ bv"
+  %len_s1 = SLICE_LEN %p_s1
+  %p_s1_ptr = SLICE_PTR %p_s1
+  %dummy_c1_s = CALL copy_bytes %p_s1_ptr %p_smt %len_s1
+  %pos0 = MOV %len_s1
+
+  %pos1 = CALL format_i64 copied %smt_buf %pos0
+  %c_pos1_max = CONST i64 60
+  %p1_ovf = GT i64 %pos1 %c_pos1_max
+  %zero = CONST i64 0
+  RET_IF %p1_ovf %zero
+  %p1_neg = LT i64 %pos1 %pos0
+  RET_IF %p1_neg %zero
+
+  %p_s2 = ALLOC slice<u8> 16
+  STORE_STR %p_s2 " 64) (_ bv"
+  %len_s2 = SLICE_LEN %p_s2
+  %p_s2_ptr = SLICE_PTR %p_s2
+  %dst_p2 = ADD i64 %p_smt %pos1
+  %dummy_c2_s = CALL copy_bytes %p_s2_ptr %dst_p2 %len_s2
+  %pos2 = ADD i64 %pos1 %len_s2
+
+  %c_pos2_max = CONST i64 80
+  %p2_ovf = GT i64 %pos2 %c_pos2_max
+  RET_IF %p2_ovf %zero
+
+  %pos3 = CALL format_i64 cap %smt_buf %pos2
+  %c_pos3_max = CONST i64 110
+  %p3_ovf = GT i64 %pos3 %c_pos3_max
+  RET_IF %p3_ovf %zero
+  %p3_neg = LT i64 %pos3 %pos2
+  RET_IF %p3_neg %zero
+
+  %p_s3 = ALLOC slice<u8> 32
+  STORE_STR %p_s3 " 64))) (check-sat)\n"
+  %len_s3 = SLICE_LEN %p_s3
+  %p_s3_ptr = SLICE_PTR %p_s3
+  %dst_p3 = ADD i64 %p_smt %pos3
+  %dummy_c3_s = CALL copy_bytes %p_s3_ptr %dst_p3 %len_s3
+  %pos4 = ADD i64 %pos3 %len_s3
+  %c_pos4_max = CONST i64 150
+  %p4_ovf = GT i64 %pos4 %c_pos4_max
+  RET_IF %p4_ovf %zero
+
+  %smt_fn = ALLOC slice<u8> 32
+  STORE_STR %smt_fn "/tmp/light_z3.smt2\0"
+  %flags_creat = CONST i64 577
+  %mode_644 = CONST i64 420
+  %fd_q = CALL sys_open %smt_fn %flags_creat %mode_644
+  %open_err = LT i64 %fd_q %zero
+  RET_IF %open_err %zero
+
+  %dummy_wq = CALL sys_write %fd_q %smt_buf %pos4
+  %dummy_cq = CALL sys_close %fd_q
+
+  %cmd_buf = ALLOC slice<u8> 512
+  %p_cmd = SLICE_PTR %cmd_buf
+
+  %p_c1 = ALLOC slice<u8> 64
+  STORE_STR %p_c1 "export PATH=/home/huy/.local/bin:/usr/local/bin:/usr/bin; "
+  %len_c1 = SLICE_LEN %p_c1
+  %p_c1_ptr = SLICE_PTR %p_c1
+  %dummy_c1_c = CALL copy_bytes %p_c1_ptr %p_cmd %len_c1
+
+  %p_z3_ptr = SLICE_PTR z3_path
+  %dst_cmd_z3 = ADD i64 %p_cmd %len_c1
+  %dummy_cz = CALL copy_bytes %p_z3_ptr %dst_cmd_z3 z3_len
+  %cmd_pos2 = ADD i64 %len_c1 z3_len
+
+  %p_c2 = ALLOC slice<u8> 64
+  STORE_STR %p_c2 " /tmp/light_z3.smt2 > /tmp/light_z3.out 2>&1"
+  %len_c2 = SLICE_LEN %p_c2
+  %p_c2_ptr = SLICE_PTR %p_c2
+  %dst_cmd_suf = ADD i64 %p_cmd %cmd_pos2
+  %dummy_c2_c = CALL copy_bytes %p_c2_ptr %dst_cmd_suf %len_c2
+  %cmd_pos3 = ADD i64 %cmd_pos2 %len_c2
+
+  %zero_byte = CONST i64 0
+  STORE8 %p_cmd %cmd_pos3 %zero_byte
+
+  %sh_str = ALLOC slice<u8> 16
+  STORE_STR %sh_str "/bin/sh\0"
+  %sh_ptr = SLICE_PTR %sh_str
+
+  %c_flag = ALLOC slice<u8> 8
+  STORE_STR %c_flag "-c\0"
+  %c_ptr = SLICE_PTR %c_flag
+
+  %argv_buf = ALLOC slice<u8> 64
+  %argv_ptr = SLICE_PTR %argv_buf
+
+  STORE64 %argv_ptr 0 %sh_ptr
+  STORE64 %argv_ptr 8 %c_ptr
+  STORE64 %argv_ptr 16 %p_cmd
+  STORE64 %argv_ptr 24 %zero_byte
+
+  %env_ptr = ADD i64 %argv_ptr 24
+
+  %pid = CALL sys_fork
+  %is_child = EQ i64 %pid %zero
+  BR_IF %is_child z3_child_exec
+
+  %status_buf = ALLOC slice<u8> 16
+  %dummy_w = CALL sys_wait4 %pid %status_buf %zero
+  JUMP z3_check_output
+
+  LABEL z3_child_exec
+  %dummy_ex = CALL sys_execve %sh_ptr %argv_ptr %env_ptr
+  %exit_c = CONST i64 127
+  %rax_ex = CONST i64 60
+  %rdi_ex = MOV %exit_c
+  %dummy_die = SYSCALL %rax_ex %rdi_ex %zero %zero
+  RET %zero
+
+  LABEL z3_check_output
+  %out_fn = ALLOC slice<u8> 32
+  STORE_STR %out_fn "/tmp/light_z3.out\0"
+  %flags_read = CONST i64 0
+  %fd_out = CALL sys_open %out_fn %flags_read %flags_read
+  %is_fd_err = LT i64 %fd_out %zero
+  BR_IF %is_fd_err z3_cleanup_fail
+
+  %res_buf = ALLOC slice<u8> 32
+  %c_32 = CONST i64 32
+  %out_read = CALL sys_read %fd_out %res_buf %c_32
+  %dummy_co = CALL sys_close %fd_out
+
+  %dummy_u1 = CALL sys_unlink %smt_fn
+  %dummy_u2 = CALL sys_unlink %out_fn
+
+  %c_3_sz = CONST i64 3
+  %too_short = LT i64 %out_read %c_3_sz
+  BR_IF %too_short z3_return_safe
+
+  %res_ptr = SLICE_PTR %res_buf
+  %b_s = LOAD8 %res_ptr 0
+  %b_a = LOAD8 %res_ptr 1
+  %b_t = LOAD8 %res_ptr 2
+  %c_ch_s = CONST i64 115
+  %c_ch_a = CONST i64 97
+  %c_ch_t = CONST i64 116
+  %is_s = EQ i64 %b_s %c_ch_s
+  %is_a = EQ i64 %b_a %c_ch_a
+  %is_t = EQ i64 %b_t %c_ch_t
+  %is_sa = AND bool %is_s %is_a
+  %is_sat = AND bool %is_sa %is_t
+  %false_b = CONST bool false
+  %not_sat = EQ bool %is_sat %false_b
+  BR_IF %not_sat z3_return_safe
+
+  %one_ret = CONST i64 1
+  RET %one_ret
+
+  LABEL z3_cleanup_fail
+  %dummy_u1_f = CALL sys_unlink %smt_fn
+
+  LABEL z3_return_safe
+  RET %zero
+END_FUNC
+
 # Read source file and recursively resolve and inline top-level IMPORT statements
 FUNC load_source_with_imports(src_path: slice<u8>, out_buf: slice<u8>, out_cap: i64) -> i64
   REQUIRE len(src_path) >= 128 && len(out_buf) >= 524288 && out_cap >= 0 && out_cap <= len(out_buf)
@@ -2356,8 +2617,8 @@ END_FUNC
 
 
 # Compile input .lit file and emit standalone ELF binary
-FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
-  REQUIRE len(src_path) >= 128 && len(out_path) > 0
+FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>, z3_path: slice<u8>, z3_len: i64) -> i64
+  REQUIRE len(src_path) >= 128 && len(out_path) > 0 && len(z3_path) >= 128 && z3_len >= 0 && z3_len <= 120
 
   # Read source file and resolve IMPORTs (512KB buffer)
   %src_buf = ALLOC slice<u8> 524288
@@ -2367,6 +2628,10 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
   %zero = CONST i64 0
   %read_err = LTE i64 %bytes_read %zero
   RET_IF %read_err %bytes_read
+
+  # Buffer capacity tracking table (maps stack slot to allocated capacity)
+  %buf_caps = ALLOC slice<u8> 65536
+  %buf_caps_ptr = SLICE_PTR %buf_caps
 
   %pos = CONST i64 0
   %parsed_exit = CONST i64 0
@@ -3659,6 +3924,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %al_pos1 = CALL emit_mov_imm %elf_buf %cur_code_pos 0 %data_bump
     %al_pos2 = CALL emit_store_stack %elf_buf %al_pos1 0 %dst_slot
     %cur_code_pos = MOV %al_pos2
+    STORE64 %buf_caps_ptr %dst_slot %alloc_size
     JUMP alloc_bump_finish
 
     LABEL emit_alloc_phys
@@ -4212,6 +4478,24 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %c_pm4 = CALL emit_store_stack %elf_buf %c_pm3 0 %slot_pm1
     %cur_code_pos = MOV %c_pm4
 
+    # Check Param 2: argv2 -> [rbp + 32]
+    %pm2_comma = CALL find_char_from %src_buf %pm1_col %c_comma_m
+    %no_pm2 = GTE i64 %pm2_comma %fn_rp_m
+    BR_IF %no_pm2 main_p_done
+
+    %pm2_raw = ADD i64 %pm2_comma 1
+    %pm2_start = CALL skip_whitespace %src_buf %pm2_raw
+    %pm2_col = CALL find_char_from %src_buf %pm2_start %c_col_m
+    %dummy_pm2 = CALL copy_label_name %src_buf %pm2_start %pm2_col %lbl_tmp
+    %pm2_p1 = LOAD64 %lbl_tmp_ptr 0
+    %pm2_p2 = LOAD64 %lbl_tmp_ptr 8
+    %slot_pm2 = CALL find_or_add_var %var_table %var_count %pm2_p1 %pm2_p2
+    %next_vcm2 = ADD i64 %var_count 1
+    %var_count = MOV %next_vcm2
+    %c_pm5 = CALL emit_mov_rax_rbp_disp8 %elf_buf %cur_code_pos 32
+    %c_pm6 = CALL emit_store_stack %elf_buf %c_pm5 0 %slot_pm2
+    %cur_code_pos = MOV %c_pm6
+
     LABEL main_p_done
     %t_fn_m = CONST bool true
     %has_dyn_code = MOV %t_fn_m
@@ -4586,6 +4870,34 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
     %st_neg = LT i64 %copied %zero_st
     BR_IF %st_neg advance_pos
 
+    # Check Z3 formal verification if destination buffer has known capacity
+    %cap = LOAD64 %buf_caps_ptr %st_vn_slot
+    %has_cap = GT i64 %cap %zero_st
+    %not_has_cap = EQ bool %has_cap %false_b
+    BR_IF %not_has_cap store_str_emit
+
+    # Verify with Z3: check if copied > cap
+    %z3_res = CALL run_z3_buffer_check %copied %cap z3_path z3_len
+    %one_ovf = CONST i64 1
+    %is_overflow = EQ i64 %z3_res %one_ovf
+    %not_ovf = EQ bool %is_overflow %false_b
+    BR_IF %not_ovf store_str_emit
+
+    # Buffer overflow detected by Z3! Print error message and abort!
+    %err_ovf_msg = ALLOC slice<u8> 128
+    STORE_STR %err_ovf_msg "🚨 [FAIL] Z3 Verification: Static buffer overflow detected!\n"
+    %err_ovf_len = SLICE_LEN %err_ovf_msg
+    %dummy_eo1 = CALL std_print_slice %err_ovf_msg %err_ovf_len
+
+    %err_abort = ALLOC slice<u8> 128
+    STORE_STR %err_abort "❌ BUILD ABORTED: Contract verification failed! Binary will not be emitted.\n"
+    %err_ab_len = SLICE_LEN %err_abort
+    %dummy_eo2 = CALL std_print_slice %err_abort %err_ab_len
+
+    %exit_fail_code = CONST i64 3
+    RET %exit_fail_code
+
+    LABEL store_str_emit
     # Emit code: mov rdi, [rbp - st_vn_slot]
     %c_st0 = CALL emit_load_stack %elf_buf %cur_code_pos 7 %st_vn_slot
 
@@ -4935,7 +5247,7 @@ FUNC compile_file(src_path: slice<u8>, out_path: slice<u8>) -> i64
 END_FUNC
 
 # Compiler main entry point
-FUNC main(argc: i64, argv1: i64) -> i64
+FUNC main(argc: i64, argv1: i64, argv2: i64) -> i64
   %false_b = CONST bool false
   %c_2 = CONST i64 2
   %has_arg = GTE i64 argc %c_2
@@ -4950,21 +5262,40 @@ FUNC main(argc: i64, argv1: i64) -> i64
   %out_path = ALLOC slice<u8> 128
   %out_len = CALL derive_out_path %src_path %src_len %out_path
 
-  # 3. Print compiling banner
+  # 3. Check if custom Z3 path is provided (argc >= 3)
+  %z3_path = ALLOC slice<u8> 128
+  %c_3 = CONST i64 3
+  %has_z3_arg = GTE i64 argc %c_3
+  %not_has_z3 = EQ bool %has_z3_arg %false_b
+  BR_IF %not_has_z3 use_default_z3
+
+  # Custom Z3 path from argv2
+  %z3_len_raw = CALL copy_cstr_to_slice argv2 %z3_path
+  %z3_len = MOV %z3_len_raw
+  JUMP z3_path_ready
+
+  LABEL use_default_z3
+  STORE_STR %z3_path "/home/huy/.local/bin/z3\0"
+  %c_z3_def_len = CONST i64 23
+  %z3_len = MOV %c_z3_def_len
+
+  LABEL z3_path_ready
+
+  # 4. Print compiling banner
   %b_msg = ALLOC slice<u8> 64
   STORE_STR %b_msg "🚀 Light Native Compiler compiling source...\n"
   %b_len = SLICE_LEN %b_msg
   %dummy_b = CALL std_print_slice %b_msg %b_len
 
-  # 4. Compile source file to target binary
-  %res = CALL compile_file %src_path %out_path
+  # 5. Compile source file to target binary
+  %res = CALL compile_file %src_path %out_path %z3_path %z3_len
 
   # Bound check on res: if res != 0, exit with error code res
   %zero = CONST i64 0
   %is_err = NEQ i64 %res %zero
   RET_IF %is_err %res
 
-  # 5. Print success message and return 0
+  # 6. Print success message and return 0
   %s_msg = ALLOC slice<u8> 64
   STORE_STR %s_msg "🎉 Compilation completed successfully!\n"
   %s_len = SLICE_LEN %s_msg
@@ -4974,7 +5305,7 @@ FUNC main(argc: i64, argv1: i64) -> i64
 
   LABEL show_usage
   %usage = ALLOC slice<u8> 64
-  STORE_STR %usage "Usage: lightc-native <source.lit>\n"
+  STORE_STR %usage "Usage: lightc-native <source.lit> [path/to/z3]\n"
   %u_len = SLICE_LEN %usage
   %dummy_u = CALL std_print_slice %usage %u_len
   %one = CONST i64 1

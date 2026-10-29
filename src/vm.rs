@@ -142,7 +142,7 @@ impl VirtualMachine {
 
             match inst {
                 // Các chỉ thị kiểm chứng chỉ dành cho compiler & SMT Solver, VM chỉ bỏ qua hoặc assert runtime
-                Instruction::Require(_) | Instruction::Invariant(_) | Instruction::Ensure(_) => {
+                Instruction::Require(_) | Instruction::Invariant(_) | Instruction::Decreases(_) | Instruction::Ensure(_) => {
                     pc += 1;
                 }
                 Instruction::Assert(_expr) => {

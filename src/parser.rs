@@ -378,6 +378,11 @@ impl Parser {
             let expr = Self::parse_expr(expr_str, line_no)?;
             return Ok(Instruction::Invariant(expr));
         }
+        if parts[0] == "DECREASES" {
+            let expr_str = line.strip_prefix("DECREASES").unwrap().trim();
+            let expr = Self::parse_expr(expr_str, line_no)?;
+            return Ok(Instruction::Decreases(expr));
+        }
         if parts[0] == "ASSERT" {
             let expr_str = line.strip_prefix("ASSERT").unwrap().trim();
             let expr = Self::parse_expr(expr_str, line_no)?;

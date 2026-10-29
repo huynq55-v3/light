@@ -1,0 +1,24 @@
+FUNC buggy_loop(n: i64) -> i64
+  REQUIRE n >= 0
+
+  %i = MOV n
+  %zero = CONST i64 0
+
+  LOOP count_loop
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES %i
+
+    %done = LTE i64 %i %zero
+    BREAK_IF %done
+
+    # BUG: Không giảm %i -> vòng lặp vô tận!
+  END_LOOP count_loop
+
+  RET %i
+END_FUNC
+
+FUNC main() -> i64
+  %ten = CONST i64 10
+  %res = CALL buggy_loop %ten
+  RET %res
+END_FUNC

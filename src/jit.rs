@@ -269,6 +269,10 @@ impl MachineCodeEmitter {
                         // mov rax, [rbp + 24] (48 8b 45 18)
                         self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
                         self.emit_store_stack(X86Reg::Rax, slot);
+                    } else if idx == 2 {
+                        // mov rax, [rbp + 32] (48 8b 45 20)
+                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x20]);
+                        self.emit_store_stack(X86Reg::Rax, slot);
                     }
                 }
             }
@@ -327,7 +331,7 @@ impl MachineCodeEmitter {
 
         for si in &func.instructions {
             match &si.inst {
-                Instruction::Require(_) | Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Assert(_) => {}
+                Instruction::Require(_) | Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) | Instruction::Assert(_) => {}
 
                 Instruction::AssignConst { dest, val, .. } => {
                     let clean = dest.trim_start_matches('%');

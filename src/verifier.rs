@@ -148,12 +148,14 @@ impl Verifier {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
         let mut invariants = Vec::new();
+        let mut decreases = Vec::new();
 
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Require(e) => requires.push(e.clone()),
                 Instruction::Ensure(e) => ensures.push(e.clone()),
                 Instruction::Invariant(e) => invariants.push(e.clone()),
+                Instruction::Decreases(e) => decreases.push(e.clone()),
                 _ => {}
             }
         }
@@ -356,6 +358,32 @@ impl Verifier {
                     role: "Loop exit condition fails to satisfy ENSURE postcondition".into(),
                 }];
                 results.push(Self::solve_query(&exit_goal, &exit_query, stack3));
+            }
+
+            if !decreases.is_empty() {
+                for dec in &decreases {
+                    let term_bounded_goal = format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name);
+                    let query_b = Self::build_decreases_bounded_query(func, &requires, &invariants, dec, &buffer_sizes);
+                    let stack_b = vec![StackFrame {
+                        file: func.file.clone(),
+                        line: func.start_line,
+                        function: format!("{}()", func.name),
+                        snippet: format!("DECREASES expression"),
+                        role: "Ranking function may become negative before loop terminates".into(),
+                    }];
+                    results.push(Self::solve_query(&term_bounded_goal, &query_b, stack_b));
+
+                    let term_strict_goal = format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name);
+                    let query_s = Self::build_decreases_strictly_decreasing_query(func, &requires, &invariants, dec, &buffer_sizes);
+                    let stack_s = vec![StackFrame {
+                        file: func.file.clone(),
+                        line: func.start_line,
+                        function: format!("{}()", func.name),
+                        snippet: format!("DECREASES expression"),
+                        role: "Ranking function does not strictly decrease across iterations (infinite loop potential)".into(),
+                    }];
+                    results.push(Self::solve_query(&term_strict_goal, &query_s, stack_s));
+                }
             }
         } else if !ensures.is_empty() {
             let func_goal = format!("Function '{}' - Verify ENSURE postcondition", func.name);
@@ -733,6 +761,18 @@ impl Verifier {
             smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", p.name));
         }
 
+        for s_inst in &func.instructions {
+            if let Instruction::AssignConst { dest, val, .. } = &s_inst.inst {
+                let d = dest.trim_start_matches('%');
+                smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                match val {
+                    Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                    Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                    _ => {}
+                }
+            }
+        }
+
         // Giả thiết đầu vào Require
         for req in requires {
             smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
@@ -924,6 +964,49 @@ impl Verifier {
         }
     }
 
+    fn assert_loop_continues(func: &Function, smt: &mut String) {
+        for s_inst in &func.instructions {
+            if let Instruction::BreakIf(cond) = &s_inst.inst {
+                let clean_c = cond.trim_start_matches('%');
+                for prev in &func.instructions {
+                    if let Instruction::Binary { op, dest, src1, src2, .. } = &prev.inst {
+                        if dest.trim_start_matches('%') == clean_c {
+                            let s1 = match src1 {
+                                Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                                Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                                _ => "(_ bv0 64)".into(),
+                            };
+                            let s2 = match src2 {
+                                Operand::Const(Value::I64(n)) => format!("(_ bv{} 64)", n),
+                                Operand::Reg(r) => r.trim_start_matches('%').to_string(),
+                                _ => "(_ bv0 64)".into(),
+                            };
+                            // Loop continues when BREAK_IF condition is FALSE!
+                            match op {
+                                BinOp::Gte => {
+                                    smt.push_str(&format!("(assert (bvslt {} {}))\n", s1, s2));
+                                }
+                                BinOp::Lte => {
+                                    smt.push_str(&format!("(assert (bvsgt {} {}))\n", s1, s2));
+                                }
+                                BinOp::Gt => {
+                                    smt.push_str(&format!("(assert (bvsle {} {}))\n", s1, s2));
+                                }
+                                BinOp::Lt => {
+                                    smt.push_str(&format!("(assert (bvsge {} {}))\n", s1, s2));
+                                }
+                                BinOp::Eq => {
+                                    smt.push_str(&format!("(assert (not (= {} {})))\n", s1, s2));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn build_inductive_step_query(
         func: &Function,
         requires: &[Expr],
@@ -941,6 +1024,28 @@ impl Verifier {
             let clean = buf_name.trim_start_matches('%');
             smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // Declare local constants and slice lengths
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Giả sử Require & Invariant tại bước hiện tại là đúng
@@ -994,6 +1099,28 @@ impl Verifier {
             let clean = buf_name.trim_start_matches('%');
             smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // Declare local constants and slice lengths
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
 
         for req in requires {
@@ -1073,6 +1200,154 @@ impl Verifier {
         smt
     }
 
+    fn build_decreases_bounded_query(
+        func: &Function,
+        requires: &[Expr],
+        invariants: &[Expr],
+        decreases: &Expr,
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+    ) -> String {
+        let mut smt = String::new();
+        smt.push_str("(set-logic QF_BV)\n");
+
+        let mut all_exprs: Vec<&Expr> = requires.iter().collect();
+        all_exprs.extend(invariants.iter());
+        all_exprs.push(decreases);
+        Self::declare_all_vars(func, &all_exprs, &mut smt);
+
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // Declare local constants and slice lengths
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for req in requires {
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+        }
+        for inv in invariants {
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
+        }
+
+        let loop_var = Self::find_loop_var(func, invariants);
+        for inv in invariants {
+            Self::extract_loop_bounds(inv, &loop_var, &mut smt);
+        }
+
+        // Assert loop guard: loop only executes when BREAK_IF conditions are false
+        Self::assert_loop_continues(func, &mut smt);
+
+        let dec_smt = Self::expr_to_smt(decreases);
+        smt.push_str(&format!("(assert (not (bvsge {} (_ bv0 64))))\n", dec_smt));
+        smt.push_str("(check-sat)\n(get-model)\n");
+        smt
+    }
+
+    fn build_decreases_strictly_decreasing_query(
+        func: &Function,
+        requires: &[Expr],
+        invariants: &[Expr],
+        decreases: &Expr,
+        buffer_sizes: &std::collections::HashMap<String, usize>,
+    ) -> String {
+        let mut smt = String::new();
+        smt.push_str("(set-logic QF_BV)\n");
+
+        let mut all_exprs: Vec<&Expr> = requires.iter().collect();
+        all_exprs.extend(invariants.iter());
+        all_exprs.push(decreases);
+        Self::declare_all_vars(func, &all_exprs, &mut smt);
+
+        for (buf_name, size) in buffer_sizes {
+            let clean = buf_name.trim_start_matches('%');
+            smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
+            smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // Declare local constants and slice lengths
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for req in requires {
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(req)));
+        }
+        for inv in invariants {
+            smt.push_str(&format!("(assert {})\n", Self::expr_to_smt(inv)));
+        }
+
+        let loop_var = Self::find_loop_var(func, invariants);
+        for inv in invariants {
+            Self::extract_loop_bounds(inv, &loop_var, &mut smt);
+        }
+
+        // Assert loop guard: loop only executes when BREAK_IF conditions are false
+        Self::assert_loop_continues(func, &mut smt);
+
+        let mut step_is_sub = false;
+        for si in &func.instructions {
+            if let Instruction::Binary { op, dest, .. } = &si.inst {
+                let clean_dest = dest.trim_start_matches('%');
+                if clean_dest.contains(&loop_var) && *op == BinOp::Sub {
+                    step_is_sub = true;
+                }
+            }
+        }
+
+        smt.push_str(&format!("(declare-const next_{} (_ BitVec 64))\n", loop_var));
+        if step_is_sub {
+            smt.push_str(&format!("(assert (= next_{} (bvsub {} (_ bv1 64))))\n", loop_var, loop_var));
+        } else {
+            smt.push_str(&format!("(assert (= next_{} (bvadd {} (_ bv1 64))))\n", loop_var, loop_var));
+        }
+
+        let dec_smt = Self::expr_to_smt(decreases);
+        let next_dec_expr = Self::subst_expr_var(decreases, &loop_var, &format!("next_{}", loop_var));
+        let next_dec = Self::expr_to_smt(&next_dec_expr);
+
+        smt.push_str(&format!("(assert (not (bvslt {} {})))\n", next_dec, dec_smt));
+        smt.push_str("(check-sat)\n(get-model)\n");
+        smt
+    }
+
     fn build_straightline_query(
         func: &Function,
         requires: &[Expr],
@@ -1102,6 +1377,28 @@ impl Verifier {
             let clean = buf_name.trim_start_matches('%');
             smt.push_str(&format!("(declare-const {}_len (_ BitVec 64))\n", clean));
             smt.push_str(&format!("(assert (= {}_len (_ bv{} 64)))\n", clean, size));
+        }
+
+        // Declare local constants and slice lengths
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::SliceLen { dest, slice } => {
+                    let d = dest.trim_start_matches('%');
+                    let s = slice.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    smt.push_str(&format!("(assert (= {} {}_len))\n", d, s));
+                }
+                Instruction::AssignConst { dest, val, .. } => {
+                    let d = dest.trim_start_matches('%');
+                    smt.push_str(&format!("(declare-const {} (_ BitVec 64))\n", d));
+                    match val {
+                        Value::I64(v) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, v)),
+                        Value::Bool(b) => smt.push_str(&format!("(assert (= {} (_ bv{} 64)))\n", d, if *b { 1 } else { 0 })),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Khởi tạo các giá trị và phép toán trong hàm (SSA Translation)

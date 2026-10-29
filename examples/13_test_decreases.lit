@@ -1,0 +1,30 @@
+# Ví dụ kiểm chứng hàm đếm lùi với mệnh đề DECREASES chứng minh dừng
+FUNC sum_down(n: i64) -> i64
+  REQUIRE n >= 0
+
+  %i = MOV n
+  %sum = CONST i64 0
+  %zero = CONST i64 0
+
+  LOOP count_loop
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES %i
+
+    %done = LTE i64 %i %zero
+    BREAK_IF %done
+
+    %next_sum = ADD i64 %sum %i
+    %sum = MOV %next_sum
+
+    %prev_i = SUB i64 %i 1
+    %i = MOV %prev_i
+  END_LOOP count_loop
+
+  RET %sum
+END_FUNC
+
+FUNC main() -> i64
+  %ten = CONST i64 10
+  %res = CALL sum_down %ten
+  RET %res
+END_FUNC
