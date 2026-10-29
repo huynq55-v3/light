@@ -93,6 +93,122 @@ impl Verifier {
         format!("(_ bv{} 64)", n)
     }
 
+    /// Kiểm tra tính đúng đắn toán học bằng kiến trúc Boogie IVL Engine (Universal VCGen)
+    #[allow(dead_code)]
+    pub fn verify_function_ivl(func: &Function, _program: Option<&Program>) -> Vec<VerificationResult> {
+        let mut results = Vec::new();
+        let buffer_sizes = crate::ivl::IvlLowerer::extract_buffer_sizes(func);
+        let mut stmts = Vec::new();
+
+        // 0. Khởi tạo và khai báo các tham số đầu vào của hàm
+        let mut vc = crate::vcgen::VcGen::new();
+        let param_names: std::collections::HashSet<String> = func
+            .params
+            .iter()
+            .map(|p| p.name.trim_start_matches('%').to_string())
+            .collect();
+
+        for p in &param_names {
+            vc.declared_vars.insert(p.clone());
+            vc.current_val.insert(p.clone(), p.clone());
+        }
+
+        // 1. Nạp các tiền điều kiện REQUIRE vào tiền đề Assume
+        for s_inst in &func.instructions {
+            if let Instruction::Require(req) = &s_inst.inst {
+                stmts.push(crate::ivl::IvlStmt::Assume {
+                    cond: crate::ivl::IvlExpr::from(req),
+                });
+            }
+        }
+
+        // 2. Chuyển đổi các chỉ thị và lệnh tính toán
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::Require(_) | Instruction::Ensure(_) => {}
+                Instruction::Assert(e) => {
+                    stmts.push(crate::ivl::IvlStmt::Assert {
+                        cond: crate::ivl::IvlExpr::from(e),
+                        goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
+                        category: PropertyCategory::Functional,
+                        loc: s_inst.loc.clone(),
+                    });
+                }
+                Instruction::Binary { op: BinOp::Div | BinOp::Mod, src2, .. } => {
+                    let s2_expr = crate::ivl::IvlLowerer::operand_to_expr(src2);
+                    stmts.push(crate::ivl::IvlStmt::Assert {
+                        cond: crate::ivl::IvlExpr::Binary {
+                            op: BinOp::Neq,
+                            lhs: Box::new(s2_expr),
+                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                        },
+                        goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety", func.name, s_inst.loc.line),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
+                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
+                }
+                Instruction::Load8 { buf, offset, .. } | Instruction::Store8 { buf, offset, .. } => {
+                    if let Some(&sz) = buffer_sizes.get(buf) {
+                        let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
+                        let in_bounds = crate::ivl::IvlExpr::Binary {
+                            op: BinOp::And,
+                            lhs: Box::new(crate::ivl::IvlExpr::Binary {
+                                op: BinOp::Gte,
+                                lhs: Box::new(off_expr.clone()),
+                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                            }),
+                            rhs: Box::new(crate::ivl::IvlExpr::Binary {
+                                op: BinOp::Lt,
+                                lhs: Box::new(off_expr),
+                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(sz as i64)),
+                            }),
+                        };
+                        stmts.push(crate::ivl::IvlStmt::Assert {
+                            cond: in_bounds,
+                            goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                            category: PropertyCategory::Safety,
+                            loc: s_inst.loc.clone(),
+                        });
+                    }
+                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
+                }
+                Instruction::Ret(Some(op)) => {
+                    for si in &func.instructions {
+                        if let Instruction::Ensure(ens) = &si.inst {
+                            let op_expr = crate::ivl::IvlLowerer::operand_to_expr(op);
+                            let mut ensure_vars = std::collections::HashSet::new();
+                            Self::collect_vars(ens, &mut ensure_vars);
+
+                            // Tìm tên biến đại diện cho giá trị trả về trong ENSURE (biến không phải là tham số của hàm)
+                            let ret_var_in_ensure = ensure_vars
+                                .iter()
+                                .find(|v| !param_names.contains(*v))
+                                .cloned()
+                                .unwrap_or_else(|| "ret".to_string());
+
+                            let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                            let mapped_ens = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &ret_var_in_ensure, &op_expr);
+                            stmts.push(crate::ivl::IvlStmt::Assert {
+                                cond: mapped_ens,
+                                goal_name: format!("Function '{}' - Verify ENSURE postcondition", func.name),
+                                category: PropertyCategory::Functional,
+                                loc: s_inst.loc.clone(),
+                            });
+                        }
+                    }
+                }
+                _other => {
+                    stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, &buffer_sizes));
+                }
+            }
+        }
+
+        // 3. Thực thi Universal VCGen
+        results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
+        results
+    }
+
     /// Kiểm tra tính đúng đắn toán học của toàn bộ hàm trong chương trình
     pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
         let mut results = Vec::new();

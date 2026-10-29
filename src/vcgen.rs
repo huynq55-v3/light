@@ -268,6 +268,7 @@ impl VcGen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verifier::PropertyCategory;
 
     #[test]
     fn test_ivl_simple_verification() {

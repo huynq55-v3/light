@@ -1195,3 +1195,24 @@ END_FUNC
     assert!(all_passed, "V38 test failed: Function returning constant 0 must satisfy ENSURE %ret == 0! Got: {:?}", results);
 }
 
+#[test]
+fn test_ivl_verify_function_end_to_end() {
+    // Kiểm chứng end-to-end sử dụng kiến trúc mới: IvlLowerer + Universal VcGen (Boogie architecture)
+    let code = r#"
+FUNC abs_val(x: i64) -> i64
+  REQUIRE x >= 0
+  %two = CONST i64 2
+  %half = DIV i64 x %two
+  ENSURE %ret >= 0
+  RET %half
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse IVL test");
+    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    assert_eq!(results.len(), 2);
+    // Goal 1: Division-by-zero on %two (2 != 0) -> Verified!
+    assert!(matches!(results[0], VerificationResult::Verified { .. }));
+    // Goal 2: ENSURE %ret >= 0 -> Verified!
+    assert!(matches!(results[1], VerificationResult::Verified { .. }));
+}
+

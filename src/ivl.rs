@@ -151,7 +151,7 @@ impl CfgGraph {
     }
 }
 
-/// Bộ chuyển đổi toán học: hạ cấp Function trong Light sang đồ thị CFG chứa các lệnh IVL
+/// Bộ chuyển đổi toán học: hạ cấp Function trong Light sang các chuỗi kiểm chứng IVL
 pub struct IvlLowerer;
 
 impl IvlLowerer {
@@ -232,5 +232,139 @@ impl IvlLowerer {
             }
         }
         modified
+    }
+
+    /// Thu thập độ dài các buffer tĩnh và lan truyền qua các bí danh
+    pub fn extract_buffer_sizes(func: &Function) -> HashMap<String, usize> {
+        let mut buffer_sizes = HashMap::new();
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::Alloc { dest, size } => {
+                    buffer_sizes.insert(dest.clone(), *size);
+                }
+                Instruction::AllocSlice { dest, len, .. } => {
+                    buffer_sizes.insert(dest.clone(), *len);
+                }
+                Instruction::SlicePtr { dest, slice } => {
+                    if let Some(&sz) = buffer_sizes.get(slice) {
+                        buffer_sizes.insert(dest.clone(), sz);
+                    }
+                }
+                Instruction::Mov { dest, src } => {
+                    if let Some(&sz) = buffer_sizes.get(src) {
+                        buffer_sizes.insert(dest.clone(), sz);
+                    }
+                }
+                _ => {}
+            }
+        }
+        buffer_sizes
+    }
+
+    /// Hạ cấp một lệnh đơn lẻ thành chuỗi vi lệnh IVL
+    pub fn lower_inst(si: &SpannedInstruction, buffer_sizes: &HashMap<String, usize>) -> Vec<IvlStmt> {
+        let mut stmts = Vec::new();
+        match &si.inst {
+            Instruction::AssignConst { dest, val, .. } => {
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr: Self::operand_to_expr(&Operand::Const(val.clone())),
+                    is_memory: false,
+                });
+            }
+            Instruction::Mov { dest, src } => {
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr: IvlExpr::Var(src.trim_start_matches('%').to_string()),
+                    is_memory: false,
+                });
+            }
+            Instruction::Binary { op, dest, src1, src2, .. } => {
+                let e1 = Self::operand_to_expr(src1);
+                let e2 = Self::operand_to_expr(src2);
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr: IvlExpr::Binary {
+                        op: op.clone(),
+                        lhs: Box::new(e1),
+                        rhs: Box::new(e2),
+                    },
+                    is_memory: false,
+                });
+            }
+            Instruction::AllocSlice { dest, len, .. } => {
+                let clean = dest.trim_start_matches('%');
+                stmts.push(IvlStmt::Assign {
+                    dest: format!("{}_len", clean),
+                    expr: IvlExpr::IntConst(*len as i64),
+                    is_memory: false,
+                });
+            }
+            Instruction::SliceLen { dest, slice } => {
+                let s_clean = slice.trim_start_matches('%');
+                if let Some(&size) = buffer_sizes.get(slice) {
+                    stmts.push(IvlStmt::Assign {
+                        dest: dest.clone(),
+                        expr: IvlExpr::IntConst(size as i64),
+                        is_memory: false,
+                    });
+                } else {
+                    stmts.push(IvlStmt::Assign {
+                        dest: dest.clone(),
+                        expr: IvlExpr::Var(format!("{}_len", s_clean)),
+                        is_memory: false,
+                    });
+                }
+            }
+            Instruction::SlicePtr { dest, slice } => {
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr: IvlExpr::Var(slice.trim_start_matches('%').to_string()),
+                    is_memory: false,
+                });
+            }
+            Instruction::Load8 { dest, buf, offset } => {
+                let off_expr = Self::operand_to_expr(offset);
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr: IvlExpr::Select {
+                        mem: buf.clone(),
+                        offset: Box::new(off_expr),
+                    },
+                    is_memory: false,
+                });
+                let clean_d = dest.trim_start_matches('%');
+                stmts.push(IvlStmt::Assume {
+                    cond: IvlExpr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Gte,
+                            lhs: Box::new(IvlExpr::Var(clean_d.to_string())),
+                            rhs: Box::new(IvlExpr::IntConst(0)),
+                        }),
+                        rhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Lte,
+                            lhs: Box::new(IvlExpr::Var(clean_d.to_string())),
+                            rhs: Box::new(IvlExpr::IntConst(255)),
+                        }),
+                    },
+                });
+            }
+            Instruction::Store8 { buf, offset, val } => {
+                let off_expr = Self::operand_to_expr(offset);
+                let val_expr = Self::operand_to_expr(val);
+                stmts.push(IvlStmt::Assign {
+                    dest: buf.clone(),
+                    expr: IvlExpr::Store {
+                        mem: buf.clone(),
+                        offset: Box::new(off_expr),
+                        val: Box::new(val_expr),
+                    },
+                    is_memory: true,
+                });
+            }
+            _ => {}
+        }
+        stmts
     }
 }
