@@ -376,3 +376,157 @@ END_FUNC
     );
 }
 
+#[test]
+fn test_v12_in_loop_out_of_bounds_fails() {
+    // V12: In-loop safety checks must havoc loop-modified variables at loop entry.
+    // Buffer has size 8, but loop counter progresses up to 10.
+    // Verifier must detect potential out-of-bounds access across loop iterations!
+    let code = r#"
+FUNC test_loop_oob() -> i64
+  ALLOC %buf 8
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 10
+    DECREASES 10 - %i
+    %done = GTE i64 %i 10
+    BREAK_IF %done
+    STORE8 %buf %i 42
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP l1
+  RET 0
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V12");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let failed_bounds = results.iter().any(|r| match r {
+        VerificationResult::Failed { category, goal_name, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check on '%buf'")
+        }
+        _ => false,
+    });
+
+    assert!(
+        failed_bounds,
+        "V12 test failed: Verifier should have caught in-loop buffer overflow on %buf (capacity 8, offset up to 9)! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v13_forward_jump_label_branching() {
+    // V13: Forward JUMP skipping in emit_symbolic_prefix.
+    // When BR_IF is not taken (false), fallthrough path jumps over the taken block.
+    // %res must remain 100, not overwritten by 200 in the skipped branch.
+    let code = r#"
+FUNC test_branch() -> i64
+  %cond = CONST bool false
+  BR_IF %cond .then_branch
+  %res = CONST i64 100
+  JUMP .end_branch
+  LABEL .then_branch
+  %res = CONST i64 200
+  LABEL .end_branch
+  ASSERT %res == 100
+  RET %res
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V13");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let passed_assert = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
+        }
+        _ => false,
+    });
+
+    assert!(
+        passed_assert,
+        "V13 test failed: Forward jump skipping failed; ASSERT %res == 100 should verify! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v14_multibreak_loop_ite_merge() {
+    // V14: Multi-break loop state merging using nested ite.
+    // If loop has multiple BREAK_IF points, exit step merges states with ite.
+    let code = r#"
+FUNC test_multibreak(mode: i64) -> i64
+  REQUIRE mode >= 0 && mode <= 1
+  %val = CONST i64 10
+  LOOP mb_loop
+    INVARIANT %val >= 10 && %val <= 20
+    %c1 = EQ i64 mode 0
+    BREAK_IF %c1
+    %val = CONST i64 20
+    %c2 = CONST bool true
+    BREAK_IF %c2
+  END_LOOP mb_loop
+  ENSURE %val >= 10 && %val <= 20
+  RET %val
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V14");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let passed_exit = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
+        }
+        _ => false,
+    });
+
+    assert!(
+        passed_exit,
+        "V14 test failed: Multi-break merging should verify ENSURE %val >= 10 && %val <= 20! Got: {:?}",
+        results
+    );
+}
+
+#[test]
+fn test_v15_loop_invariant_constant_preservation() {
+    // V15: Pre-loop constants and slice lengths are preserved into Step 3 (Exit Step).
+    // Constant %limit is defined before loop, used in loop invariant and ENSURE postcondition.
+    let code = r#"
+FUNC test_const_preservation(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 100
+  %limit = CONST i64 50
+  %i = CONST i64 0
+  LOOP cp_loop
+    INVARIANT %i >= 0 && %i <= %limit
+    DECREASES %limit - %i
+    %done = GTE i64 %i %limit
+    BREAK_IF %done
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP cp_loop
+  ENSURE %i == %limit
+  RET %i
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V15");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+
+    let passed_exit = results.iter().any(|r| match r {
+        VerificationResult::Verified { goal_name, category } => {
+            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
+        }
+        _ => false,
+    });
+
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+
+    assert!(
+        passed_exit && all_passed,
+        "V15 test failed: Pre-loop constant %limit should be preserved in Step 3 Exit Step! Got: {:?}",
+        results
+    );
+}
+
