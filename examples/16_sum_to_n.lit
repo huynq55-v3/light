@@ -1,0 +1,99 @@
+# Example 16: AI Benchmark Test 2 - Arithmetic Series Summation (sum_to_n)
+# Written purely adhering to LIGHT_AI_SPEC.md specification rules.
+# Includes mathematical verification via Z3 SMT Solver:
+#   - Precondition bound check: REQUIRE n >= 0 && n <= 1000
+#   - Loop invariant: INVARIANT %i >= 0 && %i <= n
+#   - Loop invariant: INVARIANT %acc >= 0
+#   - Loop ranking function (DECREASES n - %i) proving halting
+#   - Postcondition guarantee: ENSURE %acc >= 0
+
+IMPORT "../stdlib/io.lit"
+
+# Function: sum_to_n
+# Calculates the sum from 1 to n: sum = 1 + 2 + ... + n
+# For n = 0, sum = 0
+FUNC sum_to_n(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 1000
+
+  %i = CONST i64 0
+  %acc = CONST i64 0
+
+  LOOP sum_loop
+    INVARIANT %i >= 0 && %i <= n
+    INVARIANT %acc >= 0
+    DECREASES n - %i
+
+    %done = GTE i64 %i n
+    BREAK_IF %done
+
+    %next_i = ADD i64 %i 1
+    %acc = ADD i64 %acc %next_i
+
+    # Rebind loop counter for next iteration
+    %i = MOV %next_i
+  END_LOOP sum_loop
+
+  ENSURE %acc >= 0
+  RET %acc
+END_FUNC
+
+FUNC main() -> i64
+  # Test 1: n = 0 -> sum = 0
+  %n1 = CONST i64 0
+  %r1 = CALL sum_to_n %n1
+  %exp1 = CONST i64 0
+  %ok1 = EQ i64 %r1 %exp1
+  %false_b = CONST bool false
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # Test 2: n = 1 -> sum = 1
+  %n2 = CONST i64 1
+  %r2 = CALL sum_to_n %n2
+  %exp2 = CONST i64 1
+  %ok2 = EQ i64 %r2 %exp2
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # Test 3: n = 5 -> sum = 15
+  %n3 = CONST i64 5
+  %r3 = CALL sum_to_n %n3
+  %exp3 = CONST i64 15
+  %ok3 = EQ i64 %r3 %exp3
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # Test 4: n = 10 -> sum = 55
+  %n4 = CONST i64 10
+  %r4 = CALL sum_to_n %n4
+  %exp4 = CONST i64 55
+  %ok4 = EQ i64 %r4 %exp4
+  %fail4 = EQ bool %ok4 %false_b
+  BR_IF %fail4 test_failed
+
+  # Test 5: n = 100 -> sum = 5050
+  %n5 = CONST i64 100
+  %r5 = CALL sum_to_n %n5
+  %exp5 = CONST i64 5050
+  %ok5 = EQ i64 %r5 %exp5
+  %fail5 = EQ bool %ok5 %false_b
+  BR_IF %fail5 test_failed
+
+  # All tests passed! Print success banner
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] Benchmark Test 2 (sum_to_n): All 5 test cases verified!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+  LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] Benchmark Test 2: Assertion failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC
