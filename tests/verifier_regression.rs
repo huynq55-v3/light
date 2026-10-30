@@ -1904,7 +1904,7 @@ END_FUNC
 }
 
 #[test]
-fn test_v57_bitwise_operations_verification_and_vm() {
+fn test_v57_bitwise_operations_verification() {
     let code = r#"
 FUNC test_bitwise(a: i64, b: i64) -> i64
   REQUIRE a == 60 && b == 13
