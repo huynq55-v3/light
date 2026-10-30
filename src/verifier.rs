@@ -997,11 +997,14 @@ impl Verifier {
                         }
                     }
                 }
-                Instruction::Syscall { rax, rdi, rsi, rdx, .. } => {
+                Instruction::Syscall { rax, rdi, rsi, rdx, r10, r8, r9, .. } => {
                     if let Operand::Reg(r) = rax { used_regs.push(r); }
                     if let Operand::Reg(r) = rdi { used_regs.push(r); }
                     if let Operand::Reg(r) = rsi { used_regs.push(r); }
                     if let Operand::Reg(r) = rdx { used_regs.push(r); }
+                    if let Some(Operand::Reg(r)) = r10 { used_regs.push(r); }
+                    if let Some(Operand::Reg(r)) = r8 { used_regs.push(r); }
+                    if let Some(Operand::Reg(r)) = r9 { used_regs.push(r); }
                 }
                 _ => {}
             }

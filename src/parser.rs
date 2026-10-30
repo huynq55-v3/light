@@ -561,12 +561,15 @@ impl Parser {
                     rdi: Operand::Reg("%rdi".into()),
                     rsi: Operand::Reg("%rsi".into()),
                     rdx: Operand::Reg("%rdx".into()),
+                    r10: None,
+                    r8: None,
+                    r9: None,
                 });
             }
             if parts.len() < 5 {
                 return Err(ParseError {
                     line_no,
-                    message: "Syntax: SYSCALL or SYSCALL rax rdi rsi rdx".into(),
+                    message: "Syntax: SYSCALL or SYSCALL rax rdi rsi rdx [r10 [r8 [r9]]]".into(),
                 });
             }
             return Ok(Instruction::Syscall {
@@ -575,6 +578,9 @@ impl Parser {
                 rdi: Self::parse_operand(parts[2]),
                 rsi: Self::parse_operand(parts[3]),
                 rdx: Self::parse_operand(parts[4]),
+                r10: parts.get(5).map(|s| Self::parse_operand(s)),
+                r8: parts.get(6).map(|s| Self::parse_operand(s)),
+                r9: parts.get(7).map(|s| Self::parse_operand(s)),
             });
         }
 
@@ -787,7 +793,7 @@ impl Parser {
                     if parts.len() < 7 {
                         return Err(ParseError {
                             line_no,
-                            message: "Syntax: %dest = SYSCALL rax rdi rsi rdx".into(),
+                            message: "Syntax: %dest = SYSCALL rax rdi rsi rdx [r10 [r8 [r9]]]".into(),
                         });
                     }
                     return Ok(Instruction::Syscall {
@@ -796,6 +802,9 @@ impl Parser {
                         rdi: Self::parse_operand(parts[4]),
                         rsi: Self::parse_operand(parts[5]),
                         rdx: Self::parse_operand(parts[6]),
+                        r10: parts.get(7).map(|s| Self::parse_operand(s)),
+                        r8: parts.get(8).map(|s| Self::parse_operand(s)),
+                        r9: parts.get(9).map(|s| Self::parse_operand(s)),
                     });
                 }
                 "NOT" | "BITNOT" => {

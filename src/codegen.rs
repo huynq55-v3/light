@@ -667,7 +667,10 @@ impl MachineCodeEmitter {
                     }
                 }
 
-                Instruction::Syscall { dest, rax, rdi, rsi, rdx } => {
+                Instruction::Syscall { dest, rax, rdi, rsi, rdx, r10, r8, r9 } => {
+                    if let Some(op) = r9 { load_op_into_reg(self, op, X86Reg::R9); }
+                    if let Some(op) = r8 { load_op_into_reg(self, op, X86Reg::R8); }
+                    if let Some(op) = r10 { load_op_into_reg(self, op, X86Reg::R10); }
                     load_op_into_reg(self, rdx, X86Reg::Rdx);
                     load_op_into_reg(self, rsi, X86Reg::Rsi);
                     load_op_into_reg(self, rdi, X86Reg::Rdi);

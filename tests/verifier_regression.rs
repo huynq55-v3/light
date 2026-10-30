@@ -2052,6 +2052,53 @@ END_FUNC
     assert_eq!(status.code(), Some(77), "AOT Alloc và Load8 phải trả về đúng exit code 77!");
 }
 
+#[test]
+fn test_v63_mmap_syscall_execution() {
+    let code = r#"
+FUNC main() -> i64
+  # sys_mmap (syscall 9):
+  # rax = 9
+  # rdi = 0 (NULL addr)
+  # rsi = 4096 (len: 1 page)
+  # rdx = 3 (PROT_READ | PROT_WRITE)
+  # r10 = 34 (MAP_PRIVATE | MAP_ANONYMOUS: 0x02 | 0x20)
+  # r8  = -1 (fd)
+  # r9  = 0 (offset)
+  %c_9 = CONST i64 9
+  %c_0 = CONST i64 0
+  %c_len = CONST i64 4096
+  %c_prot = CONST i64 3
+  %c_flags = CONST i64 34
+  %c_neg1 = CONST i64 -1
+  %ptr = SYSCALL %c_9 %c_0 %c_len %c_prot %c_flags %c_neg1 %c_0
+
+  # Lưu byte 88 vào trang nhớ vừa mmap
+  %c_88 = CONST i64 88
+  STORE8 %ptr %c_0 %c_88
+
+  # Đọc lại byte từ trang nhớ mmap
+  %val = LOAD8 %ptr %c_0
+
+  # sys_munmap (syscall 11):
+  # rax = 11, rdi = %ptr, rsi = 4096
+  %c_11 = CONST i64 11
+  %unmap = SYSCALL %c_11 %ptr %c_len %c_0 %c_0 %c_0 %c_0
+
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V63");
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT V63");
+
+    let tmp_bin = format!("/tmp/light_test_v63_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V63");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(88), "mmap -> write 88 -> read 88 -> munmap phải thành công và trả về đúng exit code 88!");
+}
+
 
 
 
