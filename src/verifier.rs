@@ -729,8 +729,8 @@ impl Verifier {
                     let modified: Vec<String> = crate::ivl::IvlLowerer::collect_modified_vars(body_slice).into_iter().collect();
                     let modified_mems: Vec<String> = crate::ivl::IvlLowerer::collect_modified_mems(body_slice, Some(buffer_aliases)).into_iter().collect();
 
-                    // Step 2 & Step 4: Inductive Step & Termination
-                    if !loop_invs.is_empty() || !loop_decs.is_empty() {
+                    // Step 2 & Step 4: Symbolic Loop Execution & Safety Verification
+                    {
                         let mut ind_stmts = Vec::new();
                         ind_stmts.push(crate::ivl::IvlStmt::Havoc {
                             vars: modified.clone(),
@@ -836,66 +836,64 @@ impl Verifier {
                             let seg_mems = crate::ivl::IvlLowerer::collect_modified_mems(seg_slice, Some(buffer_aliases));
 
                             let mut seg_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-                            for s in seg_slice {
-                                let mut lowered = Self::lower_inst_with_checks(func, s, buffer_sizes, buffer_aliases, program);
-                                for st in &mut lowered {
-                                    match st {
-                                        crate::ivl::IvlStmt::Assign { dest, expr, is_memory } => {
-                                            for (from, to) in &seg_map {
-                                                *expr = crate::ivl::IvlLowerer::subst_expr(expr, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                            let mut lowered = Self::lower_slice(func, seg_slice, buffer_sizes, buffer_aliases, program, vc, results, ensures, canon_ret, true);
+                            for st in &mut lowered {
+                                match st {
+                                    crate::ivl::IvlStmt::Assign { dest, expr, is_memory } => {
+                                        for (from, to) in &seg_map {
+                                            *expr = crate::ivl::IvlLowerer::subst_expr(expr, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                        }
+                                        let clean = dest.trim_start_matches('%').to_string();
+                                        if *is_memory {
+                                            if seg_mems.contains(&clean) {
+                                                let target_mem = format!("{}_mb_{}", clean, j);
+                                                seg_map.insert(clean, target_mem.clone());
+                                                *dest = target_mem;
                                             }
-                                            let clean = dest.trim_start_matches('%').to_string();
-                                            if *is_memory {
-                                                if seg_mems.contains(&clean) {
-                                                    let target_mem = format!("{}_mb_{}", clean, j);
-                                                    seg_map.insert(clean, target_mem.clone());
-                                                    *dest = target_mem;
-                                                }
-                                            } else if seg_mod.contains(&clean) {
+                                        } else if seg_mod.contains(&clean) {
+                                            let target_var = format!("{}_mb_{}", clean, j);
+                                            seg_map.insert(clean, target_var.clone());
+                                            *dest = target_var;
+                                        }
+                                    }
+                                    crate::ivl::IvlStmt::Assert { cond, .. } => {
+                                        for (from, to) in &seg_map {
+                                            *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                        }
+                                        *cond = crate::ivl::IvlExpr::Binary {
+                                            op: BinOp::Or,
+                                            lhs: Box::new(accum_exit_cond.clone()),
+                                            rhs: Box::new(cond.clone()),
+                                        };
+                                    }
+                                    crate::ivl::IvlStmt::Assume { cond } => {
+                                        for (from, to) in &seg_map {
+                                            *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
+                                        }
+                                        *cond = crate::ivl::IvlExpr::Binary {
+                                            op: BinOp::Or,
+                                            lhs: Box::new(accum_exit_cond.clone()),
+                                            rhs: Box::new(cond.clone()),
+                                        };
+                                    }
+                                    crate::ivl::IvlStmt::Havoc { vars, is_memory } => {
+                                        for v in vars.iter_mut() {
+                                            let clean = v.trim_start_matches('%').to_string();
+                                            if !*is_memory && seg_mod.contains(&clean) {
                                                 let target_var = format!("{}_mb_{}", clean, j);
                                                 seg_map.insert(clean, target_var.clone());
-                                                *dest = target_var;
+                                                *v = target_var;
+                                            } else if *is_memory && seg_mems.contains(&clean) {
+                                                let target_mem = format!("{}_mb_{}", clean, j);
+                                                seg_map.insert(clean, target_mem.clone());
+                                                *v = target_mem;
                                             }
                                         }
-                                        crate::ivl::IvlStmt::Assert { cond, .. } => {
-                                            for (from, to) in &seg_map {
-                                                *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
-                                            }
-                                            *cond = crate::ivl::IvlExpr::Binary {
-                                                op: BinOp::Or,
-                                                lhs: Box::new(accum_exit_cond.clone()),
-                                                rhs: Box::new(cond.clone()),
-                                            };
-                                        }
-                                        crate::ivl::IvlStmt::Assume { cond } => {
-                                            for (from, to) in &seg_map {
-                                                *cond = crate::ivl::IvlLowerer::subst_expr(cond, from, &crate::ivl::IvlExpr::Var(to.clone()));
-                                            }
-                                            *cond = crate::ivl::IvlExpr::Binary {
-                                                op: BinOp::Or,
-                                                lhs: Box::new(accum_exit_cond.clone()),
-                                                rhs: Box::new(cond.clone()),
-                                            };
-                                        }
-                                        crate::ivl::IvlStmt::Havoc { vars, is_memory } => {
-                                            for v in vars.iter_mut() {
-                                                let clean = v.trim_start_matches('%').to_string();
-                                                if !*is_memory && seg_mod.contains(&clean) {
-                                                    let target_var = format!("{}_mb_{}", clean, j);
-                                                    seg_map.insert(clean, target_var.clone());
-                                                    *v = target_var;
-                                                } else if *is_memory && seg_mems.contains(&clean) {
-                                                    let target_mem = format!("{}_mb_{}", clean, j);
-                                                    seg_map.insert(clean, target_mem.clone());
-                                                    *v = target_mem;
-                                                }
-                                            }
-                                        }
-                                        _ => {}
                                     }
+                                    _ => {}
                                 }
-                                stmts.extend(lowered);
                             }
+                            stmts.extend(lowered);
 
                             for m in &seg_mod {
                                 let mb_target = seg_map.get(m).cloned().unwrap_or_else(|| m.clone());

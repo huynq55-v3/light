@@ -1,0 +1,28 @@
+# ==============================================================================
+# BÀI 2 (BẢN LỖI): TRUNG BÌNH CỘNG BỊ TRÀN SỐ 64-BIT (bad_midpoint)
+# Minh họa bug kinh điển trong Binary Search (Josh Bloch, Google Search 2006)
+#
+# Với Z3 BitVector (_ BitVec 64), phép cộng (a + b) khi a, b lớn sẽ tràn số
+# (Arithmetic Overflow) thành số âm, làm vi phạm hậu điều kiện ENSURE!
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC bad_midpoint(a: i64, b: i64) -> i64
+  # Tiền điều kiện: 0 <= a <= b
+  REQUIRE a >= 0 && b >= a
+
+  # Hậu điều kiện: Trung vị phải nằm trong đoạn [a, b]
+  ENSURE %mid >= a && %mid <= b
+
+  # BUG KINH ĐIỂN: a + b có thể vượt quá i64::MAX (0x7FFFFFFFFFFFFFFF)
+  # dẫn đến tràn số thành số âm!
+  %sum = ADD i64 a b
+  %mid = DIV i64 %sum 2
+  RET %mid
+END_FUNC
+
+FUNC main() -> i64
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC

@@ -1,0 +1,89 @@
+# ==============================================================================
+# BÀI 2 (BẢN CHUẨN): TRUNG BÌNH CỘNG AN TOÀN (safe_midpoint)
+# Khắc phục triệt để lỗi tràn số BitVector 64-bit
+#
+# Công thức an toàn:
+#   mid = a + (b - a) / 2
+# Do b >= a >= 0 nên (b - a) <= b <= i64::MAX -> KHÔNG BAO GIỜ TRÀN SỐ!
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC safe_midpoint(a: i64, b: i64) -> i64
+  # Tiền điều kiện: a >= 0 && b >= a
+  REQUIRE a >= 0 && b >= a
+
+  # Hậu điều kiện: Trung vị chắc chắn nằm trong [a, b]
+  ENSURE %mid >= a && %mid <= b
+
+  # Thuật toán an toàn:
+  # 1. Tính khoảng cách giữa b và a (b - a luôn >= 0 và <= b, không thể tràn)
+  %diff = SUB i64 b a
+
+  # 2. Chia đôi khoảng cách
+  %half = DIV i64 %diff 2
+
+  # 3. Cộng khoảng cách phân nửa vào a -> luôn <= b và >= a
+  %mid = ADD i64 a %half
+  RET %mid
+END_FUNC
+
+FUNC main() -> i64
+  %false_b = CONST bool false
+
+  # Test Case 1: a = 0, b = 10 -> mid = 5
+  %a1 = CONST i64 0
+  %b1 = CONST i64 10
+  %r1 = CALL safe_midpoint %a1 %b1
+  %exp1 = CONST i64 5
+  %ok1 = EQ i64 %r1 %exp1
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # Test Case 2: a = 10, b = 10 -> mid = 10 (hai đầu mút bằng nhau)
+  %a2 = CONST i64 10
+  %b2 = CONST i64 10
+  %r2 = CALL safe_midpoint %a2 %b2
+  %exp2 = CONST i64 10
+  %ok2 = EQ i64 %r2 %exp2
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # Test Case 3: Số siêu lớn gần i64::MAX (a = 9.0 * 10^18, b = 9.2 * 10^18)
+  # Phép cộng (a + b) sẽ là 18.2 * 10^18 > i64::MAX (9.22 * 10^18) -> bad_midpoint sẽ nát bấy!
+  # Nhưng safe_midpoint tính ra 9.1 * 10^18 hoàn hảo!
+  %a3 = CONST i64 9000000000000000000
+  %b3 = CONST i64 9200000000000000000
+  %r3 = CALL safe_midpoint %a3 %b3
+  %exp3 = CONST i64 9100000000000000000
+  %ok3 = EQ i64 %r3 %exp3
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # Test Case 4: a = 3, b = 4 -> mid = 3 (làm tròn số nguyên)
+  %a4 = CONST i64 3
+  %b4 = CONST i64 4
+  %r4 = CALL safe_midpoint %a4 %b4
+  %exp4 = CONST i64 3
+  %ok4 = EQ i64 %r4 %exp4
+  %fail4 = EQ bool %ok4 %false_b
+  BR_IF %fail4 test_failed
+
+  # In thông báo thành công
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] safe_midpoint: All 4 test cases passed with zero overflow!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] safe_midpoint assertion failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC

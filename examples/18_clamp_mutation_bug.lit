@@ -1,0 +1,40 @@
+# ==============================================================================
+# BÀI 1 (MUTATION TEST): HÀM CLAMP(VAL, LOW, HIGH) BỎ TIỀN ĐIỀU KIỆN
+# Thử thách âm tính: Cố tình bỏ dòng 'REQUIRE low <= high'
+#
+# Kỳ vọng:
+#   Z3 SMT Solver sẽ phát hiện vi phạm và trả về phản ví dụ (Counter-example)
+#   chẳng hạn trường hợp low > high (ví dụ low = 10, high = 5).
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC clamp_mutated(val: i64, low: i64, high: i64) -> i64
+  # MUTATION BUG: Dòng tiền điều kiện REQUIRE low <= high ĐÃ BỊ BỎ!
+  # # REQUIRE low <= high
+
+  # Hậu điều kiện vẫn giữ nguyên:
+  ENSURE %ret >= low && %ret <= high
+
+  # 1. Early Return
+  %is_low = LT i64 val low
+  RET_IF %is_low low
+
+  # 2. Diamond Pattern
+  %is_high = GT i64 val high
+  BR_IF %is_high label_high
+
+  %res = MOV val
+  JUMP label_merge
+
+LABEL label_high
+  %res = MOV high
+
+LABEL label_merge
+  RET %res
+END_FUNC
+
+FUNC main() -> i64
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC

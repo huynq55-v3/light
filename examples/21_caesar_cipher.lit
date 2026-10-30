@@ -1,0 +1,89 @@
+# ==============================================================================
+# BÀI 3: CAESAR CIPHER TRÊN BUFFER CỐ ĐỊNH (STORE_STR, LOAD8, STORE8)
+# Kiểm chứng mô hình hóa bộ nhớ mảng SMT: (Array (_ BitVec 64) (_ BitVec 64))
+#
+# Mục tiêu chứng minh:
+#   1. Khế ước REQUIRE key >= 1 && key <= 5 đảm bảo byte mã hóa %out thuộc [66, 70] ('B' -> 'F').
+#   2. Ghi 1 byte (STORE8) vào offset 0 cách ly hoàn toàn, KHÔNG làm hỏng byte ở offset 1 (%unchanged == 66).
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC encrypt_first_char(key: i64) -> i64
+  # Tiền điều kiện: key nằm trong khoảng [1, 5]
+  REQUIRE key >= 1 && key <= 5
+
+  # Cấp phát buffer 8 bytes
+  ALLOC %buf 8
+
+  # Ghi chuỗi "ABC" vào %buf tại offset 0 ('A'=65, 'B'=66, 'C'=67)
+  STORE_STR %buf 0 "ABC"
+
+  # Đọc ký tự đầu tiên tại offset 0 (chữ 'A' = 65)
+  %c0 = LOAD8 %buf 0
+
+  # Mã hóa Caesar: dịch ký tự theo key
+  %enc = ADD i64 %c0 key
+
+  # Ghi đè ký tự đã mã hóa trở lại offset 0
+  STORE8 %buf 0 %enc
+
+  # Đọc lại từ offset 0 (ký tự đã mã hóa) và offset 1 (ký tự kế tiếp)
+  %out = LOAD8 %buf 0
+  %unchanged = LOAD8 %buf 1
+
+  # Kiểm chứng hình thức bằng Z3 SMT:
+  # 1. Byte mã hóa phải nằm trong khoảng ['B', 'F'] (65 + [1..5] = [66..70])
+  ASSERT %out >= 66 && %out <= 70
+
+  # 2. Byte ở offset 1 phải giữ nguyên giá trị 66 (chữ 'B')
+  ASSERT %unchanged == 66
+
+  RET %out
+END_FUNC
+
+FUNC main() -> i64
+  %false_b = CONST bool false
+
+  # Test Case 1: key = 1 -> 'A' (65) + 1 = 66 ('B')
+  %k1 = CONST i64 1
+  %r1 = CALL encrypt_first_char %k1
+  %exp1 = CONST i64 66
+  %ok1 = EQ i64 %r1 %exp1
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # Test Case 2: key = 3 -> 'A' (65) + 3 = 68 ('D')
+  %k2 = CONST i64 3
+  %r2 = CALL encrypt_first_char %k2
+  %exp2 = CONST i64 68
+  %ok2 = EQ i64 %r2 %exp2
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # Test Case 3: key = 5 -> 'A' (65) + 5 = 70 ('F')
+  %k3 = CONST i64 5
+  %r3 = CALL encrypt_first_char %k3
+  %exp3 = CONST i64 70
+  %ok3 = EQ i64 %r3 %exp3
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # Thông báo thành công
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] encrypt_first_char: Memory array isolation verified by Z3!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] Caesar cipher test failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC

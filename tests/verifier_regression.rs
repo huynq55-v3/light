@@ -1859,6 +1859,50 @@ END_FUNC
     assert!(all_passed, "Vòng lặp có 2 điểm BREAK_IF phân nhánh theo mode phải verify chính xác ENSURE postcondition! Got: {:?}", results);
 }
 
+#[test]
+fn test_v55_loop_no_inv_with_oob_after_break_fails() {
+    let code = r#"
+FUNC loop_no_inv_with_bug(n: i64) -> i64
+  ALLOC %buf 8
+  %i = CONST i64 0
+  LOOP my_loop
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %bad = LOAD8 %buf 999
+    %i = ADD i64 %i 1
+  END_LOOP my_loop
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V55");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_oob_failure = results.iter().any(|r| match r {
+        VerificationResult::Failed { goal_name, category, .. } => {
+            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check on '%buf'")
+        }
+        _ => false,
+    });
+    assert!(has_oob_failure, "Vòng lặp không có INVARIANT nhưng có LOAD8 tràn bộ nhớ sau BREAK_IF phải bị phát hiện lỗi! Got: {:?}", results);
+}
+
+#[test]
+fn test_v56_mov_buffer_alias_after_store_no_sort_conflict() {
+    let code = r#"
+FUNC test_mov_alias() -> i64
+  ALLOC %buf 16
+  STORE8 %buf 0 42
+  %ptr = MOV %buf
+  %val = LOAD8 %ptr 0
+  ASSERT %val == 42
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V56");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "MOV buffer alias sau khi STORE8 không được gây Sort Conflict và phải verify đúng 42! Got: {:?}", results);
+}
+
 
 
 

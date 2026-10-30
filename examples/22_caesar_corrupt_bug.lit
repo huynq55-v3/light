@@ -1,0 +1,31 @@
+# ==============================================================================
+# BÀI 3 (MUTATION BUG): LỖI GHI ĐÈ LÀM HỎNG BYTE LÂN CẬN (Memory Corruption Bug)
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC encrypt_first_char_buggy(key: i64) -> i64
+  REQUIRE key >= 1 && key <= 5
+
+  ALLOC %buf 8
+  STORE_STR %buf 0 "ABC"
+
+  %c0 = LOAD8 %buf 0
+  %enc = ADD i64 %c0 key
+
+  # BUG CỐ Ý: Lập trình viên vô tình ghi đè vào offset 1 thay vì offset 0!
+  STORE8 %buf 1 %enc
+
+  %out = LOAD8 %buf 0
+  %unchanged = LOAD8 %buf 1
+
+  # Kỳ vọng Z3: ASSERT này sẽ bị FAIL vì chữ 'B' tại offset 1 đã bị ghi đè!
+  ASSERT %unchanged == 66
+
+  RET %out
+END_FUNC
+
+FUNC main() -> i64
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC

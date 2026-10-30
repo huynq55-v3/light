@@ -46,10 +46,12 @@ impl VcGen {
         match expr {
             IvlExpr::Var(v) => {
                 let clean = v.trim_start_matches('%');
-                if let Some(m) = self.current_mem.get(clean) {
+                if let Some(val) = self.current_val.get(clean) {
+                    val.clone()
+                } else if let Some(m) = self.current_mem.get(clean) {
                     m.clone()
                 } else {
-                    self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string())
+                    clean.to_string()
                 }
             }
             IvlExpr::IntConst(n) => Self::smt_bv64(*n),

@@ -1,0 +1,120 @@
+# ==============================================================================
+# BÀI 1: HÀM CLAMP(VAL, LOW, HIGH)
+# Kiểm chứng Rẽ nhánh & Early Return (RET_IF, BR_IF Diamond, ENSURE)
+#
+# Contracts:
+#   - Tiền điều kiện (REQUIRE): low <= high
+#   - Hậu điều kiện (ENSURE): %ret >= low && %ret <= high
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC clamp(val: i64, low: i64, high: i64) -> i64
+  # Tiền điều kiện: Giới hạn dưới low phải nhỏ hơn hoặc bằng giới hạn trên high
+  REQUIRE low <= high
+
+  # Hậu điều kiện: Giá trị trả về (%ret) bắt buộc phải nằm trong đoạn [low, high]
+  ENSURE %ret >= low && %ret <= high
+
+  # 1. Early Return qua RET_IF: Nếu val < low thì lập tức trả về low
+  %is_low = LT i64 val low
+  RET_IF %is_low low
+
+  # 2. Cấu trúc Diamond qua BR_IF: Nếu val > high thì nhảy tới nhánh label_high
+  %is_high = GT i64 val high
+  BR_IF %is_high label_high
+
+  # Nhánh Else: low <= val <= high -> giữ nguyên giá trị val
+  %res = MOV val
+  JUMP label_merge
+
+LABEL label_high
+  # Nhánh Then: val > high -> gán bằng high
+  %res = MOV high
+
+LABEL label_merge
+  # Điểm hội tụ của Diamond (Merge point)
+  RET %res
+END_FUNC
+
+FUNC main() -> i64
+  %false_b = CONST bool false
+
+  # Test Case 1: val < low (-5 < 0..10) -> Kết quả mong đợi: 0 (Kích hoạt RET_IF)
+  %v1 = CONST i64 -5
+  %low1 = CONST i64 0
+  %high1 = CONST i64 10
+  %r1 = CALL clamp %v1 %low1 %high1
+  %exp1 = CONST i64 0
+  %ok1 = EQ i64 %r1 %exp1
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # Test Case 2: val > high (15 > 0..10) -> Kết quả mong đợi: 10 (Kích hoạt BR_IF label_high)
+  %v2 = CONST i64 15
+  %low2 = CONST i64 0
+  %high2 = CONST i64 10
+  %r2 = CALL clamp %v2 %low2 %high2
+  %exp2 = CONST i64 10
+  %ok2 = EQ i64 %r2 %exp2
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # Test Case 3: low <= val <= high (7 trong 0..10) -> Kết quả mong đợi: 7 (Nhánh Else)
+  %v3 = CONST i64 7
+  %low3 = CONST i64 0
+  %high3 = CONST i64 10
+  %r3 = CALL clamp %v3 %low3 %high3
+  %exp3 = CONST i64 7
+  %ok3 = EQ i64 %r3 %exp3
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # Test Case 4: val == low (0 == 0..10) -> Kết quả mong đợi: 0 (Biên dưới)
+  %v4 = CONST i64 0
+  %low4 = CONST i64 0
+  %high4 = CONST i64 10
+  %r4 = CALL clamp %v4 %low4 %high4
+  %exp4 = CONST i64 0
+  %ok4 = EQ i64 %r4 %exp4
+  %fail4 = EQ bool %ok4 %false_b
+  BR_IF %fail4 test_failed
+
+  # Test Case 5: val == high (10 == 0..10) -> Kết quả mong đợi: 10 (Biên trên)
+  %v5 = CONST i64 10
+  %low5 = CONST i64 0
+  %high5 = CONST i64 10
+  %r5 = CALL clamp %v5 %low5 %high5
+  %exp5 = CONST i64 10
+  %ok5 = EQ i64 %r5 %exp5
+  %fail5 = EQ bool %ok5 %false_b
+  BR_IF %fail5 test_failed
+
+  # Test Case 6: low == high (val = 20, low = 5, high = 5) -> Kết quả: 5
+  %v6 = CONST i64 20
+  %low6 = CONST i64 5
+  %high6 = CONST i64 5
+  %r6 = CALL clamp %v6 %low6 %high6
+  %exp6 = CONST i64 5
+  %ok6 = EQ i64 %r6 %exp6
+  %fail6 = EQ bool %ok6 %false_b
+  BR_IF %fail6 test_failed
+
+  # Tất cả test cases đều thành công!
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] clamp(val, low, high): All 6 test cases verified successfully!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] clamp assertion failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC

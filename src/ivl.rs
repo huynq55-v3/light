@@ -365,11 +365,23 @@ impl IvlLowerer {
                 });
             }
             Instruction::Mov { dest, src } => {
-                stmts.push(IvlStmt::Assign {
-                    dest: dest.clone(),
-                    expr: IvlExpr::Var(src.trim_start_matches('%').to_string()),
-                    is_memory: false,
-                });
+                let s_clean = src.trim_start_matches('%');
+                if buffer_sizes.contains_key(s_clean)
+                    || buffer_sizes.contains_key(src)
+                    || buffer_aliases.map(|a| a.contains_key(s_clean) || a.contains_key(src)).unwrap_or(false)
+                {
+                    stmts.push(IvlStmt::Assign {
+                        dest: dest.clone(),
+                        expr: IvlExpr::IntConst(0),
+                        is_memory: false,
+                    });
+                } else {
+                    stmts.push(IvlStmt::Assign {
+                        dest: dest.clone(),
+                        expr: IvlExpr::Var(s_clean.to_string()),
+                        is_memory: false,
+                    });
+                }
             }
             Instruction::Binary { op, dest, src1, src2, .. } => {
                 let e1 = Self::operand_to_expr(src1);
