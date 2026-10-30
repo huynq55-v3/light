@@ -2972,6 +2972,137 @@ END_FUNC
     assert!(parse_res.unwrap_err().message.contains("Floating-point type 'f64' is not yet supported"));
 }
 
+#[test]
+fn test_v91_store_str_exact_length_no_overflow() {
+    // V91: STORE_STR must copy exact bytes without extra null-byte overflow
+    let code = r#"
+FUNC main() -> i64
+  %buf = ALLOC slice<u8> 5
+  STORE_STR %buf 0 "Hello"
+  %c0 = LOAD8 %buf 0
+  %c4 = LOAD8 %buf 4
+  # 'H' = 72, 'o' = 111
+  %eq0 = EQ i64 %c0 72
+  %eq4 = EQ i64 %c4 111
+  %and = AND %eq0 %eq4
+  BR_IF %and .ok
+  RET 1
+LABEL .ok
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V91");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    for r in &res {
+        if let VerificationResult::Failed { reason, .. } = r {
+            panic!("V91 verification failed: {}", reason);
+        }
+    }
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&prog).expect("Compile V91");
+    let elf_path = format!("/tmp/light_test_v91_{}", std::process::id());
+    emitter.emit_elf64(&elf_path).expect("Emit ELF V91");
+    std::process::Command::new("chmod").args(["+x", &elf_path]).output().expect("chmod");
+
+    let out = std::process::Command::new(&elf_path).output().expect("Exec V91");
+    let _ = std::fs::remove_file(&elf_path);
+    assert_eq!(out.status.code(), Some(0), "V91 STORE_STR exact length 5 in 5-byte buffer must execute cleanly");
+
+    // Verify that storing 6 bytes into 5 bytes FAILS verification
+    let code_overflow = r#"
+FUNC overflow() -> i64
+  %buf = ALLOC slice<u8> 5
+  STORE_STR %buf 0 "Hello!"
+  RET 0
+END_FUNC
+"#;
+    let prog_ovf = Parser::parse(code_overflow).expect("Parse V91 Overflow");
+    let res_ovf = Verifier::verify_function(&prog_ovf.functions[0], Some(&prog_ovf));
+    assert!(res_ovf.iter().any(|r| matches!(r, VerificationResult::Failed { .. })), "Writing 6 bytes into 5-byte buffer MUST fail verification");
+}
+
+#[test]
+fn test_v92_u64_contract_unsigned_comparison() {
+    // V92: REQUIRE and ENSURE with u64 must use unsigned comparison (bvult / bvugt)
+    let code = r#"
+FUNC test_u64(a: u64, b: u64) -> u64
+  REQUIRE a < b
+  %res = SUB u64 b a
+  ENSURE %res > 0
+  RET %res
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V92");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    for r in &res {
+        if let VerificationResult::Failed { reason, .. } = r {
+            panic!("V92 verification failed: {}", reason);
+        }
+    }
+}
+
+#[test]
+fn test_v93_syscall_havocs_memory_buffer() {
+    // V93: Calling SYSCALL with buffer register argument must havoc buffer contents
+    let code = r#"
+FUNC test_sys_havoc() -> i64
+  %buf = ALLOC slice<u8> 16
+  STORE8 %buf 0 65
+  %c_0 = CONST i64 0
+  %c_16 = CONST i64 16
+  # sys_read(fd=0, buf=%buf, count=16)
+  %read_ret = SYSCALL %c_0 %c_0 %buf %c_16
+  %c0 = LOAD8 %buf 0
+  # After SYSCALL, buf content may have been overwritten by kernel!
+  ASSERT %c0 == 65
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V93");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
+        "After SYSCALL with buffer, ASSERT %c0 == 65 MUST FAIL because SYSCALL havocs memory!"
+    );
+}
+
+#[test]
+fn test_v94_float_contract_correct_line_number() {
+    // V94: Float rejection error in contracts must report actual line number, not line 0
+    let code = "FUNC foo(x: i64) -> i64\n  REQUIRE x > 3.14159\n  RET x\nEND_FUNC\n";
+    let parse_res = Parser::parse(code);
+    assert!(parse_res.is_err(), "Parser must reject float in REQUIRE");
+    let err = parse_res.unwrap_err();
+    assert_eq!(err.line_no, 2, "Error must be reported on line 2 (got line {})", err.line_no);
+    assert!(err.message.contains("Floating-point numbers are not supported in Light contracts"));
+}
+
+#[test]
+fn test_v95_cross_loop_jump_validation() {
+    // V95: JUMP or BR_IF crossing loop boundaries must fail verification
+    let code = r#"
+FUNC bad_jump() -> i64
+  %c = CONST bool true
+  BR_IF %c .inside_loop
+  LOOP l1
+    INVARIANT true
+    DECREASES 0
+    BREAK_IF %c
+    LABEL .inside_loop
+    %x = CONST i64 42
+  END_LOOP l1
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V95");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
+        "Jumping into loop from outside MUST fail verification!"
+    );
+}
+
 
 
 

@@ -50,20 +50,8 @@ pub enum IvlExpr {
 
 impl From<&Expr> for IvlExpr {
     fn from(e: &Expr) -> Self {
-        match e {
-            Expr::Var(v) => IvlExpr::Var(v.clone()),
-            Expr::IntConst(n) => IvlExpr::IntConst(*n),
-            Expr::FloatConst(f) => IvlExpr::IntConst(*f as i64),
-            Expr::BoolConst(b) => IvlExpr::BoolConst(*b),
-            Expr::Len(v) => IvlExpr::Len(v.clone()),
-            Expr::Binary { op, lhs, rhs } => IvlExpr::Binary {
-                op: op.clone(),
-                lhs: Box::new(IvlExpr::from(lhs.as_ref())),
-                rhs: Box::new(IvlExpr::from(rhs.as_ref())),
-                is_unsigned: false,
-            },
-            Expr::Not(inner) => IvlExpr::Not(Box::new(IvlExpr::from(inner.as_ref()))),
-        }
+        let empty = HashSet::new();
+        IvlLowerer::expr_to_ivl_typed(e, &empty)
     }
 }
 
@@ -248,6 +236,96 @@ impl IvlLowerer {
                     val: Box::new(Self::subst_expr_map(val, map)),
                 }
             }
+        }
+    }
+
+    /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (u64 / u8)
+    pub fn collect_unsigned_vars(func: &Function) -> HashSet<String> {
+        let mut unsigned = HashSet::new();
+        if matches!(func.return_ty, Some(Type::U64 | Type::U8)) {
+            unsigned.insert("ret".to_string());
+            unsigned.insert("%ret".to_string());
+        }
+        for p in &func.params {
+            if matches!(p.ty, Type::U64 | Type::U8) {
+                let clean = p.name.trim_start_matches('%').to_string();
+                unsigned.insert(clean.clone());
+                unsigned.insert(format!("%{}", clean));
+            }
+        }
+        for si in &func.instructions {
+            match &si.inst {
+                Instruction::AssignConst { dest, ty, val } => {
+                    if matches!(ty, Type::U64 | Type::U8) || matches!(val, Value::U64(_)) {
+                        let clean = dest.trim_start_matches('%').to_string();
+                        unsigned.insert(clean.clone());
+                        unsigned.insert(format!("%{}", clean));
+                    }
+                }
+                Instruction::Binary { dest, ty, .. } => {
+                    if matches!(ty, Type::U64 | Type::U8) {
+                        let clean = dest.trim_start_matches('%').to_string();
+                        unsigned.insert(clean.clone());
+                        unsigned.insert(format!("%{}", clean));
+                    }
+                }
+                Instruction::Load8 { dest, .. } => {
+                    let clean = dest.trim_start_matches('%').to_string();
+                    unsigned.insert(clean.clone());
+                    unsigned.insert(format!("%{}", clean));
+                }
+                Instruction::AllocSlice { dest, elem_ty, .. } => {
+                    if matches!(elem_ty, Type::U64 | Type::U8) {
+                        let clean = dest.trim_start_matches('%').to_string();
+                        unsigned.insert(clean.clone());
+                        unsigned.insert(format!("%{}", clean));
+                    }
+                }
+                _ => {}
+            }
+        }
+        unsigned
+    }
+
+    /// Kiểm tra biểu thức có chứa biến hoặc hằng số không dấu hay không
+    pub fn expr_has_unsigned(e: &Expr, unsigned_vars: &HashSet<String>) -> bool {
+        match e {
+            Expr::Var(v) => {
+                let clean = v.trim_start_matches('%');
+                unsigned_vars.contains(v) || unsigned_vars.contains(clean) || unsigned_vars.contains(&format!("%{}", clean))
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                Self::expr_has_unsigned(lhs, unsigned_vars) || Self::expr_has_unsigned(rhs, unsigned_vars)
+            }
+            Expr::Not(inner) => Self::expr_has_unsigned(inner, unsigned_vars),
+            Expr::IntConst(n) => (*n as u64) > (i64::MAX as u64),
+            Expr::Len(_) | Expr::FloatConst(_) | Expr::BoolConst(_) => false,
+        }
+    }
+
+    /// Hạ cấp biểu thức Expr sang IvlExpr có xét kiểu dấu (signed vs unsigned) cho các phép toán
+    pub fn expr_to_ivl_typed(e: &Expr, unsigned_vars: &HashSet<String>) -> IvlExpr {
+        match e {
+            Expr::Var(v) => IvlExpr::Var(v.clone()),
+            Expr::IntConst(n) => IvlExpr::IntConst(*n),
+            Expr::FloatConst(f) => IvlExpr::IntConst(*f as i64),
+            Expr::BoolConst(b) => IvlExpr::BoolConst(*b),
+            Expr::Len(v) => IvlExpr::Len(v.clone()),
+            Expr::Binary { op, lhs, rhs } => {
+                let is_unsigned = match op {
+                    BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod => {
+                        Self::expr_has_unsigned(lhs, unsigned_vars) || Self::expr_has_unsigned(rhs, unsigned_vars)
+                    }
+                    _ => false,
+                };
+                IvlExpr::Binary {
+                    op: op.clone(),
+                    lhs: Box::new(Self::expr_to_ivl_typed(lhs, unsigned_vars)),
+                    rhs: Box::new(Self::expr_to_ivl_typed(rhs, unsigned_vars)),
+                    is_unsigned,
+                }
+            }
+            Expr::Not(inner) => IvlExpr::Not(Box::new(Self::expr_to_ivl_typed(inner, unsigned_vars))),
         }
     }
 
@@ -658,7 +736,7 @@ impl IvlLowerer {
                     is_memory: false,
                 });
             }
-            Instruction::Syscall { dest, rax, rdx, .. } => {
+            Instruction::Syscall { dest, rax, rdi, rsi, rdx, r10, r8, r9 } => {
                 let target = dest.clone().or_else(|| Some("%rax".to_string()));
                 if let Some(d) = target {
                     let clean_d = d.trim_start_matches('%').to_string();
@@ -707,6 +785,30 @@ impl IvlLowerer {
                             then_val: Box::new(lte_count),
                             else_val: Box::new(IvlExpr::BoolConst(true)),
                         },
+                    });
+                }
+
+                // Havoc buffer memory for any buffer passed in syscall arguments (rdi, rsi, rdx, r10, r8, r9)
+                let mut havoc_mems = Vec::new();
+                for arg_opt in [Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()] {
+                    if let Some(Operand::Reg(r)) = arg_opt {
+                        let actual = buffer_aliases.and_then(|a| a.get(r)).unwrap_or(r);
+                        let clean = actual.trim_start_matches('%').to_string();
+                        if buffer_sizes.contains_key(actual)
+                            || buffer_sizes.contains_key(r)
+                            || buffer_sizes.contains_key(&clean)
+                            || buffer_aliases.map_or(false, |a| a.contains_key(r) || a.contains_key(&clean))
+                        {
+                            if !havoc_mems.contains(&clean) {
+                                havoc_mems.push(clean);
+                            }
+                        }
+                    }
+                }
+                if !havoc_mems.is_empty() {
+                    stmts.push(IvlStmt::Havoc {
+                        vars: havoc_mems,
+                        is_memory: true,
                     });
                 }
             }

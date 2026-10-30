@@ -224,12 +224,13 @@ impl Verifier {
         buffer_sizes: &std::collections::HashMap<String, usize>,
         buffer_aliases: &std::collections::HashMap<String, String>,
         program: Option<&Program>,
+        unsigned_vars: &std::collections::HashSet<String>,
     ) -> Vec<crate::ivl::IvlStmt> {
         let mut stmts = Vec::new();
         match &s_inst.inst {
             Instruction::Assert(e) => {
                 stmts.push(crate::ivl::IvlStmt::Assert {
-                    cond: crate::ivl::IvlExpr::from(e),
+                    cond: crate::ivl::IvlLowerer::expr_to_ivl_typed(e, unsigned_vars),
                     goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
                     category: PropertyCategory::Functional,
                     loc: s_inst.loc.clone(),
@@ -474,9 +475,10 @@ impl Verifier {
                             }
                         }
 
+                        let callee_unsigned = crate::ivl::IvlLowerer::collect_unsigned_vars(callee);
                         for c_si in &callee.instructions {
                             if let Instruction::Require(req) = &c_si.inst {
-                                let req_ivl = crate::ivl::IvlExpr::from(req);
+                                let req_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(req, &callee_unsigned);
                                 let subst_req = crate::ivl::IvlLowerer::subst_expr_map(&req_ivl, &param_map);
                                 stmts.push(crate::ivl::IvlStmt::Assert {
                                     cond: subst_req,
@@ -519,7 +521,7 @@ impl Verifier {
                             );
                             for c_si in &callee.instructions {
                                 if let Instruction::Ensure(ens) = &c_si.inst {
-                                    let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                                    let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, &callee_unsigned);
                                     let subst_ens = crate::ivl::IvlLowerer::subst_expr_map(&ens_ivl, &ens_map);
                                     stmts.push(crate::ivl::IvlStmt::Assume { cond: subst_ens });
                                 }
@@ -557,6 +559,7 @@ impl Verifier {
         loop_ctx: Option<&LoopContext>,
         loop_exit_out: Option<&mut crate::ivl::IvlExpr>,
         havoc_counter: &mut usize,
+        unsigned_vars: &std::collections::HashSet<String>,
     ) -> Vec<crate::ivl::IvlStmt> {
         let mut stmts = Vec::new();
         let has_branch = slice.iter().any(|s| matches!(s.inst, Instruction::BrIf { .. } | Instruction::RetIf { .. }));
@@ -572,7 +575,7 @@ impl Verifier {
             let s_inst = &slice[idx];
             match &s_inst.inst {
                 Instruction::Require(req) => {
-                    let cond = Self::mk_implies(&active, crate::ivl::IvlExpr::from(req));
+                    let cond = Self::mk_implies(&active, crate::ivl::IvlLowerer::expr_to_ivl_typed(req, unsigned_vars));
                     stmts.push(crate::ivl::IvlStmt::Assume { cond });
                 }
                 Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) => {}
@@ -663,7 +666,7 @@ impl Verifier {
                         if let Some(op) = val {
                             let op_expr = crate::ivl::IvlLowerer::operand_to_expr(op);
                             for ens in ensures {
-                                let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                                let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, unsigned_vars);
                                 let mapped_ens = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, canon_ret, &op_expr);
                                 stmts.push(crate::ivl::IvlStmt::Assert {
                                     cond: Self::mk_implies(&take_ret, mapped_ens),
@@ -674,7 +677,7 @@ impl Verifier {
                             }
                         } else {
                             for ens in ensures {
-                                let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                                let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, unsigned_vars);
                                 stmts.push(crate::ivl::IvlStmt::Assert {
                                     cond: Self::mk_implies(&take_ret, ens_ivl),
                                     goal_name: format!("Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)", func.name, s_inst.loc.line),
@@ -708,7 +711,7 @@ impl Verifier {
                             stmts.extend(Self::guard_stmts(vec![assign_ret], &active, havoc_counter));
                         }
                         for ens in ensures {
-                            let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                            let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, unsigned_vars);
                             let goal_name = if has_loop {
                                 format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name)
                             } else if has_branch {
@@ -875,8 +878,8 @@ impl Verifier {
                         match &b_si.inst {
                             Instruction::Loop(_) => inner_depth += 1,
                             Instruction::EndLoop(_) => inner_depth = inner_depth.saturating_sub(1),
-                            Instruction::Invariant(e) if inner_depth == 0 => loop_invs.push(crate::ivl::IvlExpr::from(e)),
-                            Instruction::Decreases(e) if inner_depth == 0 => loop_decs.push(crate::ivl::IvlExpr::from(e)),
+                            Instruction::Invariant(e) if inner_depth == 0 => loop_invs.push(crate::ivl::IvlLowerer::expr_to_ivl_typed(e, unsigned_vars)),
+                            Instruction::Decreases(e) if inner_depth == 0 => loop_decs.push(crate::ivl::IvlLowerer::expr_to_ivl_typed(e, unsigned_vars)),
                             _ => {}
                         }
                     }
@@ -954,6 +957,7 @@ impl Verifier {
                             Some(&ind_ctx),
                             Some(&mut dummy_exit),
                             havoc_counter,
+                            unsigned_vars,
                         ));
 
                         // Cuối thân vòng lặp: chỉ những nhánh không BREAK, không CONTINUE, không RET mới quay lại đầu vòng lặp.
@@ -1038,6 +1042,7 @@ impl Verifier {
                         Some(&exit_ctx),
                         Some(&mut exit_cond),
                         havoc_counter,
+                        unsigned_vars,
                     );
                     // Tránh sinh lại Assert trong body ở Step 3 (vì đã được chứng minh ở Step 2)
                     let body_exit_no_asserts: Vec<crate::ivl::IvlStmt> = body_exit_stmts
@@ -1058,7 +1063,7 @@ impl Verifier {
                 Instruction::EndLoop(_) => {}
 
                 _other => {
-                    let raw = Self::lower_inst_with_checks(func, s_inst, buffer_sizes, buffer_aliases, program);
+                    let raw = Self::lower_inst_with_checks(func, s_inst, buffer_sizes, buffer_aliases, program, unsigned_vars);
                     stmts.extend(Self::guard_stmts(raw, &active, havoc_counter));
                 }
             }
@@ -1084,11 +1089,45 @@ impl Verifier {
         let mut results = Vec::new();
 
         // 0a. Static Well-Formedness: Loop Structure Check (Matching LOOP <lbl> ... END_LOOP <lbl>)
+        // and Cross-Loop Jump Validation
+        let mut label_loop_nesting: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut cur_nesting: Vec<String> = Vec::new();
+        for s_inst in &func.instructions {
+            match &s_inst.inst {
+                Instruction::Loop(lbl) => cur_nesting.push(lbl.clone()),
+                Instruction::EndLoop(_) => { cur_nesting.pop(); }
+                Instruction::Label(lbl) => { label_loop_nesting.insert(lbl.clone(), cur_nesting.clone()); }
+                _ => {}
+            }
+        }
+
         let mut loop_stack: Vec<(&str, &crate::ast::Loc)> = Vec::new();
+        cur_nesting.clear();
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Loop(lbl) => {
+                    cur_nesting.push(lbl.clone());
                     loop_stack.push((lbl.as_str(), &s_inst.loc));
+                }
+                Instruction::Jump(target) | Instruction::BrIf { target, .. } => {
+                    if let Some(target_nesting) = label_loop_nesting.get(target) {
+                        if target_nesting != &cur_nesting {
+                            results.push(VerificationResult::Failed {
+                                goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, s_inst.loc.line),
+                                category: PropertyCategory::Safety,
+                                reason: format!("Jump or branch to '{}' crosses loop boundaries (jumping across loop blocks is not allowed; use structured BREAK_IF/CONTINUE_IF instead)", target),
+                                counter_example: None,
+                                stack_trace: vec![StackFrame {
+                                    file: func.file.clone(),
+                                    line: s_inst.loc.line,
+                                    function: func.name.clone(),
+                                    snippet: s_inst.loc.text.clone(),
+                                    role: format!("Cross-loop jump to '{}'", target),
+                                }],
+                            });
+                            return results;
+                        }
+                    }
                 }
                 Instruction::BreakIf(_) | Instruction::ContinueIf(_) => {
                     if loop_stack.is_empty() {
@@ -1113,6 +1152,7 @@ impl Verifier {
                     }
                 }
                 Instruction::EndLoop(lbl) => {
+                    cur_nesting.pop();
                     match loop_stack.pop() {
                         Some((open_lbl, _)) if open_lbl == lbl => {}
                         Some((open_lbl, open_loc)) => {
@@ -1308,9 +1348,10 @@ impl Verifier {
             return results;
         }
 
+        let unsigned_vars = crate::ivl::IvlLowerer::collect_unsigned_vars(func);
         let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
         let mut havoc_counter = 0usize;
-        let all_stmts = Self::lower_slice(func, &func.instructions, &buffer_sizes, &buffer_aliases, program, &mut vc, &mut results, &ensures, &canon_ret, has_loop, None, None, &mut havoc_counter);
+        let all_stmts = Self::lower_slice(func, &func.instructions, &buffer_sizes, &buffer_aliases, program, &mut vc, &mut results, &ensures, &canon_ret, has_loop, None, None, &mut havoc_counter, &unsigned_vars);
         stmts.extend(all_stmts);
         results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
 

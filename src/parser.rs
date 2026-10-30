@@ -1203,9 +1203,12 @@ impl Parser {
         if let Ok(num) = s.parse::<i64>() {
             return Ok(Expr::IntConst(num));
         }
+        if let Ok(unum) = s.parse::<u64>() {
+            return Ok(Expr::IntConst(unum as i64));
+        }
         if let Ok(_flt) = s.parse::<f64>() {
             return Err(ParseError {
-                line_no: 0,
+                line_no,
                 message: "Floating-point numbers are not supported in Light contracts (use scaled integers instead)".into(),
             });
         }

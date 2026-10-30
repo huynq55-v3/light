@@ -555,15 +555,13 @@ impl MachineCodeEmitter {
                     let buf_off = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(buf)).cloned().unwrap_or(0);
                     let target_off = buf_off + offset;
                     let bytes = content.as_bytes();
-                    if target_off + bytes.len() + 1 > self.data_section.len() {
-                        self.data_section.resize(target_off + bytes.len() + 1, 0);
+                    if target_off + bytes.len() > self.data_section.len() {
+                        self.data_section.resize(target_off + bytes.len(), 0);
                     }
 
                     // Runtime machine code emission: dynamic string copy from literal pool
                     let lit_off = self.data_section.len();
-                    let mut lit_bytes = bytes.to_vec();
-                    lit_bytes.push(0);
-                    self.data_section.extend_from_slice(&lit_bytes);
+                    self.data_section.extend_from_slice(bytes);
                     let lit_vaddr = base_data_vaddr + (lit_off as u64);
 
                     // Destination pointer in Rdi:
@@ -584,7 +582,7 @@ impl MachineCodeEmitter {
                     self.emit_mov_reg_imm64(X86Reg::Rsi, lit_vaddr as i64);
 
                     // Count in Rcx:
-                    self.emit_mov_reg_imm64(X86Reg::Rcx, lit_bytes.len() as i64);
+                    self.emit_mov_reg_imm64(X86Reg::Rcx, bytes.len() as i64);
 
                     // cld; rep movsb
                     self.code.push(0xfc);
