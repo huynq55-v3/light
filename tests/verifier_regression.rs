@@ -2099,6 +2099,153 @@ END_FUNC
     assert_eq!(status.code(), Some(88), "mmap -> write 88 -> read 88 -> munmap phải thành công và trả về đúng exit code 88!");
 }
 
+#[test]
+fn test_v64_arena_allocator_verification_and_native_execution() {
+    let code = r#"
+# Căn chỉnh 8-byte (được Z3 chứng minh)
+FUNC align8(size: i64) -> i64
+  REQUIRE size >= 0 && size <= 1073741824
+  %tmp = ADD i64 size 7
+  %mask = CONST i64 -8
+  %aligned = BAND i64 %tmp %mask
+  ENSURE %aligned >= size && %aligned <= size + 7
+  RET %aligned
+END_FUNC
+
+# Kiểm tra còn đủ bộ nhớ (được Z3 chứng minh)
+FUNC arena_can_alloc(used: i64, capacity: i64, req_size: i64) -> bool
+  REQUIRE used >= 0 && capacity >= used && req_size >= 0 && req_size <= 1073741824
+  %rem = SUB i64 capacity used
+  %ok = GTE i64 %rem req_size
+  RET %ok
+END_FUNC
+
+# Khởi tạo Arena (sys_mmap)
+FUNC arena_create(capacity: i64) -> i64
+  REQUIRE capacity > 0 && capacity <= 1073741824
+  %total = ADD i64 capacity 24
+  %c_9 = CONST i64 9
+  %c_0 = CONST i64 0
+  %c_3 = CONST i64 3
+  %c_34 = CONST i64 34
+  %c_neg1 = CONST i64 -1
+  %mmap_ptr = SYSCALL %c_9 %c_0 %total %c_3 %c_34 %c_neg1 %c_0
+
+  %failed = LT i64 %mmap_ptr 0
+  BR_IF %failed .create_fail
+
+  %base_ptr = ADD i64 %mmap_ptr 24
+  %off_0 = CONST i64 0
+  %off_8 = CONST i64 8
+  %off_16 = CONST i64 16
+  STORE64 %mmap_ptr %off_0 %base_ptr
+  STORE64 %mmap_ptr %off_8 capacity
+  STORE64 %mmap_ptr %off_16 %c_0
+  RET %mmap_ptr
+
+LABEL .create_fail
+  RET %c_0
+END_FUNC
+
+# Cấp phát từ Arena
+FUNC arena_alloc(arena: i64, req_size: i64) -> i64
+  REQUIRE arena > 0 && req_size > 0 && req_size <= 1073741824
+  %off_0 = CONST i64 0
+  %off_8 = CONST i64 8
+  %off_16 = CONST i64 16
+
+  %base_ptr = LOAD64 arena %off_0
+  %capacity = LOAD64 arena %off_8
+  %used = LOAD64 arena %off_16
+
+  %aligned = CALL align8 req_size
+  %rem = SUB i64 %capacity %used
+  %can_alloc = GTE i64 %rem %aligned
+  BR_IF %can_alloc .do_alloc
+
+  %zero = CONST i64 0
+  RET %zero
+
+LABEL .do_alloc
+  %res_ptr = ADD i64 %base_ptr %used
+  %new_used = ADD i64 %used %aligned
+  STORE64 arena %off_16 %new_used
+  RET %res_ptr
+END_FUNC
+
+# Hủy Arena (sys_munmap)
+FUNC arena_destroy(arena: i64) -> i64
+  REQUIRE arena > 0
+  %off_8 = CONST i64 8
+  %capacity = LOAD64 arena %off_8
+  %total = ADD i64 %capacity 24
+  %c_11 = CONST i64 11
+  %c_0 = CONST i64 0
+  %res = SYSCALL %c_11 arena %total %c_0 %c_0 %c_0 %c_0
+  RET %res
+END_FUNC
+
+FUNC main() -> i64
+  # Tạo arena 64KB
+  %cap = CONST i64 65536
+  %arena = CALL arena_create %cap
+
+  # Cấp phát chunk 1: 10 bytes (align lên 16)
+  %sz1 = CONST i64 10
+  %chunk1 = CALL arena_alloc %arena %sz1
+  %val42 = CONST i64 42
+  %c_0 = CONST i64 0
+  STORE8 %chunk1 %c_0 %val42
+
+  # Cấp phát chunk 2: 20 bytes (align lên 24)
+  %sz2 = CONST i64 20
+  %chunk2 = CALL arena_alloc %arena %sz2
+  %val55 = CONST i64 55
+  STORE8 %chunk2 %c_0 %val55
+
+  # Đọc lại giá trị từ 2 chunk
+  %r1 = LOAD8 %chunk1 %c_0
+  %r2 = LOAD8 %chunk2 %c_0
+  %sum = ADD i64 %r1 %r2
+
+  # Hủy arena
+  %d = CALL arena_destroy %arena
+
+  RET %sum
+END_FUNC
+"#;
+
+    let program = Parser::parse(code).expect("Parse V64");
+
+    // 1. Kiểm tra Formal Verification với Z3 cho các hàm logic của Arena
+    let align_results = Verifier::verify_function(&program.functions[0], Some(&program));
+    assert!(
+        align_results.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "align8 phải được Z3 verify 100%! Got: {:?}",
+        align_results
+    );
+
+    let can_alloc_results = Verifier::verify_function(&program.functions[1], Some(&program));
+    assert!(
+        can_alloc_results.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "arena_can_alloc phải được Z3 verify 100%! Got: {:?}",
+        can_alloc_results
+    );
+
+    // 2. Biên dịch AOT ra ELF64 và chạy thực tế trên Linux
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT V64");
+
+    let tmp_bin = format!("/tmp/light_test_v64_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V64");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+
+    // 42 + 55 = 97
+    assert_eq!(status.code(), Some(97), "Arena Allocator: cấp phát động 2 chunk, ghi, đọc và giải phóng phải trả về exit code 97!");
+}
+
 
 
 

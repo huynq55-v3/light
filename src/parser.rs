@@ -425,7 +425,7 @@ impl Parser {
             }
             return Ok(Instruction::Jump(parts[1].to_string()));
         }
-        if parts[0] == "BR_IF" {
+        if parts[0] == "BR_IF" || parts[0] == "BRANCH_IF" {
             if parts.len() < 3 {
                 return Err(ParseError {
                     line_no,

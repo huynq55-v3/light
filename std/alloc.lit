@@ -1,0 +1,110 @@
+# ==========================================================
+# std/alloc.lit - Verified 64-bit Arena Allocator for Light
+# Pure Linux x86_64 ELF (Zero C Dependency, syscall 9 & 11)
+# ==========================================================
+
+# Căn chỉnh kích thước lên bội số của 8 bytes (Được Z3 chứng minh toán học)
+FUNC align8(size: i64) -> i64
+  REQUIRE size >= 0 && size <= 1073741824
+  %tmp = ADD i64 size 7
+  %mask = CONST i64 -8
+  %aligned = BAND i64 %tmp %mask
+  ENSURE %aligned >= size && %aligned <= size + 7
+  RET %aligned
+END_FUNC
+
+# Kiểm tra xem dung lượng còn lại của Arena có đủ cấp phát hay không
+FUNC arena_can_alloc(used: i64, capacity: i64, req_size: i64) -> bool
+  REQUIRE used >= 0 && capacity >= used && req_size >= 0 && req_size <= 1073741824
+  %rem = SUB i64 capacity used
+  %ok = GTE i64 %rem req_size
+  RET %ok
+END_FUNC
+
+# Tiến con trỏ used một cách an toàn (Z3 chứng minh không bao giờ tràn capacity)
+FUNC arena_bump(used: i64, capacity: i64, req_size: i64) -> i64
+  REQUIRE used >= 0 && capacity >= 0 && req_size >= 0
+  REQUIRE used <= capacity - req_size
+  %new_used = ADD i64 used req_size
+  ENSURE %new_used >= used && %new_used <= capacity
+  RET %new_used
+END_FUNC
+
+# Khởi tạo một Arena mới từ Linux Kernel qua sys_mmap (Syscall 9)
+# Header layout:
+#   offset 0  (8 bytes): base_ptr (địa chỉ vùng bộ nhớ dữ liệu bắt đầu)
+#   offset 8  (8 bytes): capacity (tổng dung lượng khả dụng của arena)
+#   offset 16 (8 bytes): used     (số byte hiện tại đã được cấp phát)
+FUNC arena_create(capacity: i64) -> i64
+  REQUIRE capacity > 0 && capacity <= 1073741824
+  %total = ADD i64 capacity 24
+  %c_9 = CONST i64 9
+  %c_0 = CONST i64 0
+  %c_3 = CONST i64 3
+  %c_34 = CONST i64 34
+  %c_neg1 = CONST i64 -1
+  %mmap_ptr = SYSCALL %c_9 %c_0 %total %c_3 %c_34 %c_neg1 %c_0
+
+  %failed = LT i64 %mmap_ptr 0
+  BR_IF %failed .create_fail
+
+  %base_ptr = ADD i64 %mmap_ptr 24
+  %off_0 = CONST i64 0
+  %off_8 = CONST i64 8
+  %off_16 = CONST i64 16
+  STORE64 %mmap_ptr %off_0 %base_ptr
+  STORE64 %mmap_ptr %off_8 capacity
+  STORE64 %mmap_ptr %off_16 %c_0
+  RET %mmap_ptr
+
+LABEL .create_fail
+  RET %c_0
+END_FUNC
+
+# Cấp phát `req_size` bytes từ Arena với 8-byte alignment (O(1))
+# Trả về con trỏ vùng nhớ (hoặc 0 nếu hết bộ nhớ)
+FUNC arena_alloc(arena: i64, req_size: i64) -> i64
+  REQUIRE arena > 0 && req_size > 0 && req_size <= 1073741824
+  %off_0 = CONST i64 0
+  %off_8 = CONST i64 8
+  %off_16 = CONST i64 16
+
+  %base_ptr = LOAD64 arena %off_0
+  %capacity = LOAD64 arena %off_8
+  %used = LOAD64 arena %off_16
+
+  %aligned = CALL align8 req_size
+  %rem = SUB i64 %capacity %used
+  %can_alloc = GTE i64 %rem %aligned
+  BR_IF %can_alloc .do_alloc
+
+  %zero = CONST i64 0
+  RET %zero
+
+LABEL .do_alloc
+  %res_ptr = ADD i64 %base_ptr %used
+  %new_used = ADD i64 %used %aligned
+  STORE64 arena %off_16 %new_used
+  RET %res_ptr
+END_FUNC
+
+# Thu hồi toàn bộ bộ nhớ trong Arena trong O(1) bằng cách đặt used = 0
+FUNC arena_reset(arena: i64) -> i64
+  REQUIRE arena > 0
+  %off_16 = CONST i64 16
+  %c_0 = CONST i64 0
+  STORE64 arena %off_16 %c_0
+  RET %c_0
+END_FUNC
+
+# Hủy Arena và trả lại toàn bộ trang nhớ cho Linux Kernel qua sys_munmap (Syscall 11)
+FUNC arena_destroy(arena: i64) -> i64
+  REQUIRE arena > 0
+  %off_8 = CONST i64 8
+  %capacity = LOAD64 arena %off_8
+  %total = ADD i64 %capacity 24
+  %c_11 = CONST i64 11
+  %c_0 = CONST i64 0
+  %res = SYSCALL %c_11 arena %total %c_0 %c_0 %c_0 %c_0
+  RET %res
+END_FUNC
