@@ -152,7 +152,21 @@ impl Verifier {
             }
             Instruction::Load8 { buf, offset, .. } | Instruction::Store8 { buf, offset, .. } => {
                 let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
-                if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
+                let clean_buf = actual_buf.trim_start_matches('%');
+                let is_slice_param = func.params.iter().any(|p| {
+                    p.name.trim_start_matches('%') == clean_buf
+                        && matches!(p.ty, Type::Slice(_) | Type::Array(_, _))
+                });
+
+                let bound_expr_opt = if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
+                    Some(crate::ivl::IvlExpr::IntConst(sz as i64))
+                } else if is_slice_param {
+                    Some(crate::ivl::IvlExpr::Len(clean_buf.to_string()))
+                } else {
+                    None
+                };
+
+                if let Some(bound_expr) = bound_expr_opt {
                     let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
                     let in_bounds = crate::ivl::IvlExpr::Binary {
                         op: BinOp::And,
@@ -164,7 +178,7 @@ impl Verifier {
                         rhs: Box::new(crate::ivl::IvlExpr::Binary {
                             op: BinOp::Lt,
                             lhs: Box::new(off_expr),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(sz as i64)),
+                            rhs: Box::new(bound_expr),
                         }),
                     };
                     stmts.push(crate::ivl::IvlStmt::Assert {
@@ -178,6 +192,12 @@ impl Verifier {
             }
             Instruction::Load64 { buf, offset, .. } | Instruction::Store64 { buf, offset, .. } => {
                 let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
+                let clean_buf = actual_buf.trim_start_matches('%');
+                let is_slice_param = func.params.iter().any(|p| {
+                    p.name.trim_start_matches('%') == clean_buf
+                        && matches!(p.ty, Type::Slice(_) | Type::Array(_, _))
+                });
+
                 if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
                     let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
                     let max_off = (sz as i64) - 8;
@@ -204,6 +224,32 @@ impl Verifier {
                         category: PropertyCategory::Safety,
                         loc: s_inst.loc.clone(),
                     });
+                } else if is_slice_param {
+                    let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
+                    let max_off = crate::ivl::IvlExpr::Binary {
+                        op: BinOp::Sub,
+                        lhs: Box::new(crate::ivl::IvlExpr::Len(clean_buf.to_string())),
+                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(8)),
+                    };
+                    let in_bounds = crate::ivl::IvlExpr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(crate::ivl::IvlExpr::Binary {
+                            op: BinOp::Gte,
+                            lhs: Box::new(off_expr.clone()),
+                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                        }),
+                        rhs: Box::new(crate::ivl::IvlExpr::Binary {
+                            op: BinOp::Lte,
+                            lhs: Box::new(off_expr),
+                            rhs: Box::new(max_off),
+                        }),
+                    };
+                    stmts.push(crate::ivl::IvlStmt::Assert {
+                        cond: in_bounds,
+                        goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
                 }
                 stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
             }
@@ -218,17 +264,29 @@ impl Verifier {
                                 loc: s_inst.loc.clone(),
                             });
                         }
-                        for c_si in &callee.instructions {
-                            if let Instruction::Require(req) = &c_si.inst {
-                                let mut req_ivl = crate::ivl::IvlExpr::from(req);
-                                for (i, p) in callee.params.iter().enumerate() {
-                                    if i < args.len() {
-                                        let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
-                                        req_ivl = crate::ivl::IvlLowerer::subst_expr(&req_ivl, &p.name, &arg_expr);
+
+                        // Xây dựng bảng ánh xạ tham số đồng thời (Simultaneous Substitution Map)
+                        let mut param_map = std::collections::HashMap::new();
+                        for (i, p) in callee.params.iter().enumerate() {
+                            if i < args.len() {
+                                let p_clean = p.name.trim_start_matches('%').to_string();
+                                let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
+                                if let Operand::Reg(r) = &args[i] {
+                                    let r_clean = r.trim_start_matches('%');
+                                    if let Some(&sz) = buffer_sizes.get(r).or_else(|| buffer_sizes.get(r_clean)) {
+                                        param_map.insert(format!("{}_len", p_clean), crate::ivl::IvlExpr::IntConst(sz as i64));
                                     }
                                 }
+                                param_map.insert(p_clean, arg_expr);
+                            }
+                        }
+
+                        for c_si in &callee.instructions {
+                            if let Instruction::Require(req) = &c_si.inst {
+                                let req_ivl = crate::ivl::IvlExpr::from(req);
+                                let subst_req = crate::ivl::IvlLowerer::subst_expr_map(&req_ivl, &param_map);
                                 stmts.push(crate::ivl::IvlStmt::Assert {
-                                    cond: req_ivl,
+                                    cond: subst_req,
                                     goal_name: format!("Function '{}' - Line {}: Verify REQUIRE contract of '{}'", func.name, s_inst.loc.line, func_name),
                                     category: PropertyCategory::Safety,
                                     loc: s_inst.loc.clone(),
@@ -241,18 +299,16 @@ impl Verifier {
                                 is_memory: false,
                             });
                             let callee_ret = Self::find_canonical_ret_var(callee).unwrap_or_else(|| "ret".to_string());
+                            let mut ens_map = param_map;
+                            ens_map.insert(
+                                callee_ret.trim_start_matches('%').to_string(),
+                                crate::ivl::IvlExpr::Var(d.trim_start_matches('%').to_string()),
+                            );
                             for c_si in &callee.instructions {
                                 if let Instruction::Ensure(ens) = &c_si.inst {
-                                    let mut ens_ivl = crate::ivl::IvlExpr::from(ens);
-                                    for (i, p) in callee.params.iter().enumerate() {
-                                        if i < args.len() {
-                                            let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
-                                            ens_ivl = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &p.name, &arg_expr);
-                                        }
-                                    }
-                                    let d_expr = crate::ivl::IvlExpr::Var(d.trim_start_matches('%').to_string());
-                                    ens_ivl = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, &callee_ret, &d_expr);
-                                    stmts.push(crate::ivl::IvlStmt::Assume { cond: ens_ivl });
+                                    let ens_ivl = crate::ivl::IvlExpr::from(ens);
+                                    let subst_ens = crate::ivl::IvlLowerer::subst_expr_map(&ens_ivl, &ens_map);
+                                    stmts.push(crate::ivl::IvlStmt::Assume { cond: subst_ens });
                                 }
                             }
                         }
@@ -1116,35 +1172,40 @@ impl Verifier {
                 Self::collect_vars(e, &mut ensure_vars);
             }
         }
-        // Ưu tiên 1: Thanh ghi ở lệnh RET nào có xuất hiện trực tiếp trong ENSURE
+        // Thu thập tất cả các thanh ghi trả về (cả RET và RET_IF)
+        let mut ret_regs = Vec::new();
         for s_inst in func.instructions.iter().rev() {
-            if let Instruction::Ret(Some(Operand::Reg(r))) = &s_inst.inst {
-                let clean = r.trim_start_matches('%');
-                if ensure_vars.contains(clean) {
-                    return Some(clean.to_string());
-                }
+            match &s_inst.inst {
+                Instruction::Ret(Some(Operand::Reg(r))) => ret_regs.push(r.trim_start_matches('%').to_string()),
+                Instruction::RetIf { val: Some(Operand::Reg(r)), .. } => ret_regs.push(r.trim_start_matches('%').to_string()),
+                _ => {}
             }
         }
-        // Ưu tiên 2: Tìm biến trong ENSURE không phải là param của hàm (ví dụ "ret", "res", "result", v.v.)
+        // Ưu tiên 1: Biến nào trong ret_regs có mặt trực tiếp trong ensure_vars
+        for r in &ret_regs {
+            if ensure_vars.contains(r) {
+                return Some(r.clone());
+            }
+        }
+        // Ưu tiên 2: Tên quy ước chuẩn: "ret", "res", "result" nếu có trong ensure_vars
+        for standard in &["ret", "res", "result"] {
+            if ensure_vars.contains(*standard) {
+                return Some(standard.to_string());
+            }
+        }
+        // Ưu tiên 3: Thanh ghi trả về đầu tiên tìm thấy
+        if let Some(first_ret) = ret_regs.first() {
+            return Some(first_ret.clone());
+        }
+        // Ưu tiên 4: Biến trong ENSURE không phải là param của hàm
         let param_names: std::collections::HashSet<String> = func
             .params
             .iter()
             .map(|p| p.name.trim_start_matches('%').to_string())
             .collect();
         for ev in &ensure_vars {
-            if !param_names.contains(ev) && (ev == "ret" || ev == "res" || ev == "result") {
-                return Some(ev.clone());
-            }
-        }
-        for ev in &ensure_vars {
             if !param_names.contains(ev) {
                 return Some(ev.clone());
-            }
-        }
-        // Ưu tiên 3: Nếu ENSURE không có biến riêng, lấy thanh ghi ở lệnh RET cuối cùng
-        for s_inst in func.instructions.iter().rev() {
-            if let Instruction::Ret(Some(Operand::Reg(r))) = &s_inst.inst {
-                return Some(r.trim_start_matches('%').to_string());
             }
         }
         None

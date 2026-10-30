@@ -122,7 +122,7 @@ FUNC str_starts_with(s: slice<u8>, offset: i64, prefix: slice<u8>) -> bool
 
   LOOP match_loop
     INVARIANT %i >= 0 && %i <= len(prefix)
-    INVARIANT offset + len(prefix) <= len(s)
+    INVARIANT len(prefix) <= len(s) - offset
     DECREASES len(prefix) - %i
 
     %done = GTE i64 %i %len_p
@@ -278,28 +278,32 @@ FUNC str_parse_i64(s: slice<u8>) -> i64
   RET %res
 END_FUNC
 
-# --- Backward-Compatibility Aliases ---
+# --- Backward-Compatibility Aliases (with full ENSURE contracts) ---
 FUNC str_char_at(s: slice<u8>, idx: i64) -> i64
   REQUIRE idx >= 0 && idx < len(s)
   %r = CALL str_byte_at s idx
+  ENSURE %r >= 0 && %r <= 255
   RET %r
 END_FUNC
 
 FUNC find_char(s: slice<u8>, target: i64) -> i64
   REQUIRE len(s) >= 0 && target >= 0 && target <= 255
   %r = CALL str_find_byte s target
+  ENSURE %r >= -1 && %r < len(s)
   RET %r
 END_FUNC
 
 FUNC find_char_from(s: slice<u8>, start_idx: i64, target: i64) -> i64
   REQUIRE start_idx >= 0 && start_idx <= len(s) && target >= 0 && target <= 255
   %r = CALL str_find_byte_from s start_idx target
+  ENSURE %r >= start_idx && %r <= len(s)
   RET %r
 END_FUNC
 
 FUNC skip_whitespace(s: slice<u8>, start_idx: i64) -> i64
   REQUIRE start_idx >= 0 && start_idx <= len(s)
   %r = CALL str_skip_ws s start_idx
+  ENSURE %r >= start_idx && %r <= len(s)
   RET %r
 END_FUNC
 
@@ -330,5 +334,6 @@ END_FUNC
 FUNC digit_to_int(c: i64) -> i64
   REQUIRE c >= 48 && c <= 57
   %r = CALL chr_to_digit c
+  ENSURE %r >= 0 && %r <= 9
   RET %r
 END_FUNC

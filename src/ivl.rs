@@ -249,6 +249,70 @@ impl IvlLowerer {
         }
     }
 
+    /// Thay thế đồng thời nhiều biến cùng lúc (tránh lỗi Variable Capture khi gọi hàm)
+    pub fn subst_expr_map(expr: &IvlExpr, map: &HashMap<String, IvlExpr>) -> IvlExpr {
+        match expr {
+            IvlExpr::Var(v) => {
+                let clean = v.trim_start_matches('%');
+                if let Some(to) = map.get(clean) {
+                    to.clone()
+                } else {
+                    expr.clone()
+                }
+            }
+            IvlExpr::IntConst(_) | IvlExpr::BoolConst(_) => expr.clone(),
+            IvlExpr::Len(v) => {
+                let clean = v.trim_start_matches('%');
+                let len_key = format!("{}_len", clean);
+                if let Some(to_len) = map.get(&len_key) {
+                    to_len.clone()
+                } else if let Some(IvlExpr::Var(to_var)) = map.get(clean) {
+                    IvlExpr::Len(to_var.clone())
+                } else {
+                    expr.clone()
+                }
+            }
+            IvlExpr::Binary { op, lhs, rhs } => IvlExpr::Binary {
+                op: op.clone(),
+                lhs: Box::new(Self::subst_expr_map(lhs, map)),
+                rhs: Box::new(Self::subst_expr_map(rhs, map)),
+            },
+            IvlExpr::Ite { cond, then_val, else_val } => IvlExpr::Ite {
+                cond: Box::new(Self::subst_expr_map(cond, map)),
+                then_val: Box::new(Self::subst_expr_map(then_val, map)),
+                else_val: Box::new(Self::subst_expr_map(else_val, map)),
+            },
+            IvlExpr::Not(e) => IvlExpr::Not(Box::new(Self::subst_expr_map(e, map))),
+            IvlExpr::BitNot(e) => IvlExpr::BitNot(Box::new(Self::subst_expr_map(e, map))),
+            IvlExpr::Mask8(e) => IvlExpr::Mask8(Box::new(Self::subst_expr_map(e, map))),
+            IvlExpr::Select { mem, offset } => {
+                let clean_mem = mem.trim_start_matches('%');
+                let new_mem = if let Some(IvlExpr::Var(to_var)) = map.get(clean_mem) {
+                    to_var.clone()
+                } else {
+                    mem.clone()
+                };
+                IvlExpr::Select {
+                    mem: new_mem,
+                    offset: Box::new(Self::subst_expr_map(offset, map)),
+                }
+            }
+            IvlExpr::Store { mem, offset, val } => {
+                let clean_mem = mem.trim_start_matches('%');
+                let new_mem = if let Some(IvlExpr::Var(to_var)) = map.get(clean_mem) {
+                    to_var.clone()
+                } else {
+                    mem.clone()
+                };
+                IvlExpr::Store {
+                    mem: new_mem,
+                    offset: Box::new(Self::subst_expr_map(offset, map)),
+                    val: Box::new(Self::subst_expr_map(val, map)),
+                }
+            }
+        }
+    }
+
     /// Thu thập tất cả các biến bị sửa đổi trong một dải lệnh
     pub fn collect_modified_vars(instructions: &[SpannedInstruction]) -> HashSet<String> {
         let mut modified = HashSet::new();
@@ -276,21 +340,37 @@ impl IvlLowerer {
         modified
     }
 
-    /// Thu thập bí danh các buffer (ví dụ %ptr = SLICE_PTR %buf hoặc %alias = MOV %buf)
+    /// Thu thập bí danh các buffer (kể cả tham số slice<T>: %ptr = SLICE_PTR s hoặc %alias = MOV s)
     pub fn extract_buffer_aliases(func: &Function) -> HashMap<String, String> {
         let mut aliases = HashMap::new();
         let buffer_sizes = Self::extract_buffer_sizes(func);
+        let slice_params: HashSet<String> = func
+            .params
+            .iter()
+            .filter(|p| matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
+            .map(|p| p.name.trim_start_matches('%').to_string())
+            .collect();
+
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::SlicePtr { dest, slice } => {
-                    let root = aliases.get(slice).cloned().unwrap_or_else(|| slice.clone());
-                    aliases.insert(dest.clone(), root);
+                    let s_clean = slice.trim_start_matches('%').to_string();
+                    let root = aliases
+                        .get(slice)
+                        .or_else(|| aliases.get(&s_clean))
+                        .cloned()
+                        .unwrap_or(s_clean);
+                    aliases.insert(dest.clone(), root.clone());
+                    aliases.insert(dest.trim_start_matches('%').to_string(), root);
                 }
                 Instruction::Mov { dest, src } => {
-                    if let Some(root) = aliases.get(src).cloned() {
-                        aliases.insert(dest.clone(), root);
-                    } else if buffer_sizes.contains_key(src) {
-                        aliases.insert(dest.clone(), src.clone());
+                    let s_clean = src.trim_start_matches('%').to_string();
+                    if let Some(root) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
+                        aliases.insert(dest.clone(), root.clone());
+                        aliases.insert(dest.trim_start_matches('%').to_string(), root);
+                    } else if buffer_sizes.contains_key(src) || slice_params.contains(&s_clean) {
+                        aliases.insert(dest.clone(), s_clean.clone());
+                        aliases.insert(dest.trim_start_matches('%').to_string(), s_clean);
                     }
                 }
                 _ => {}

@@ -2249,6 +2249,91 @@ END_FUNC
     assert_eq!(status.code(), Some(97), "Arena Allocator: cấp phát động 2 chunk, ghi, đọc và giải phóng phải trả về exit code 97!");
 }
 
+#[test]
+fn test_v65_simultaneous_substitution_prevents_variable_capture() {
+    let code = r#"
+FUNC foo(a: i64, b: i64) -> i64
+  REQUIRE a < b
+  %res = CONST i64 1
+  ENSURE %res == 1
+  RET %res
+END_FUNC
+
+FUNC caller() -> i64
+  %b = CONST i64 10
+  %a = CONST i64 20
+  # foo %b %a truyền %b (10) vào a, %a (20) vào b => a < b là 10 < 20 (Đúng!)
+  # Nếu thế tuần tự: a -> b biến thành b < b, rồi b -> a biến thành a < a (Sai!)
+  %r = CALL foo %b %a
+  RET %r
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V65");
+    let caller_func = program.functions.iter().find(|f| f.name == "caller").unwrap();
+    let results = Verifier::verify_function(caller_func, Some(&program));
+    let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_ok, "Caller phải PASS REQUIRE của foo nhờ simultaneous substitution! Got: {:?}", results);
+}
+
+#[test]
+fn test_v66_slice_param_out_of_bounds_detection() {
+    let code = r#"
+FUNC bad_read(s: slice<u8>) -> i64
+  # Thiếu REQUIRE ràng buộc len(s) > 10
+  %ptr = SLICE_PTR s
+  %idx = CONST i64 10
+  %val = LOAD8 %ptr %idx
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V66");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
+    assert!(has_failed, "LOAD8 trên tham số slice<u8> khi chưa kiểm tra len(s) phải báo FAILED bounds check! Got: {:?}", results);
+}
+
+#[test]
+fn test_v67_buffer_name_collision_different_functions() {
+    let code = r#"
+FUNC func_a() -> i64
+  %buf = ALLOC slice<u8> 16
+  STORE_STR %buf "Hello\0"
+  %len = SLICE_LEN %buf
+  RET %len
+END_FUNC
+
+FUNC main() -> i64
+  %buf = ALLOC slice<u8> 64
+  # Nếu bị đụng độ key buffer, main sẽ ghi đè hoặc dùng nhầm buffer 16 byte của func_a
+  STORE_STR %buf "A very long string that would overflow a 16 byte buffer easily!\0"
+  %len_a = CALL func_a
+  %len_main = SLICE_LEN %buf
+  # len_a (5) + len_main (64 chars)
+  %sum = ADD i64 %len_a %len_main
+  RET %sum
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V67");
+    for func in &program.functions {
+        let results = Verifier::verify_function(func, Some(&program));
+        let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+        assert!(all_ok, "Hàm {} phải verified! Got: {:?}", func.name, results);
+    }
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT V67");
+
+    let tmp_bin = format!("/tmp/light_test_v67_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V67");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+
+    // func_a strlen is 5, main strlen is 63 => 5 + 63 = 68
+    assert_eq!(status.code(), Some(68), "Không được có đụng độ buffer giữa func_a và main, kết quả phải là 68!");
+}
+
+
 
 
 

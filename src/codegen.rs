@@ -132,6 +132,11 @@ impl MachineCodeEmitter {
         self.code.push(0x05);
     }
 
+    #[inline]
+    fn buf_key(func_name: &str, buf: &str) -> String {
+        format!("{}::{}", func_name, buf.trim_start_matches('%'))
+    }
+
     /// Emit: ret (C3)
     pub fn emit_ret(&mut self) {
         self.code.push(0xc3);
@@ -143,18 +148,20 @@ impl MachineCodeEmitter {
             for si in &func.instructions {
                 match &si.inst {
                     Instruction::AllocSlice { dest, len, .. } => {
-                        if !self.buffer_offsets.contains_key(dest) {
+                        let key = Self::buf_key(&func.name, dest);
+                        if !self.buffer_offsets.contains_key(&key) {
                             let offset = self.data_section.len();
                             self.data_section.resize(offset + len + 16, 0);
-                            self.buffer_offsets.insert(dest.clone(), offset);
-                            self.slice_capacities.insert(dest.clone(), *len);
+                            self.buffer_offsets.insert(key.clone(), offset);
+                            self.slice_capacities.insert(key, *len);
                         }
                     }
                     Instruction::Alloc { dest, size } => {
-                        if !self.buffer_offsets.contains_key(dest) {
+                        let key = Self::buf_key(&func.name, dest);
+                        if !self.buffer_offsets.contains_key(&key) {
                             let offset = self.data_section.len();
                             self.data_section.resize(offset + size + 16, 0);
-                            self.buffer_offsets.insert(dest.clone(), offset);
+                            self.buffer_offsets.insert(key, offset);
                         }
                     }
                     _ => {}
@@ -259,11 +266,12 @@ impl MachineCodeEmitter {
                         slots.insert(format!("{}_len", clean), next_slot);
                         next_slot += 8;
                     }
-                    if !self.buffer_offsets.contains_key(dest) {
+                    let key = Self::buf_key(&func.name, dest);
+                    if !self.buffer_offsets.contains_key(&key) {
                         let offset = self.data_section.len();
                         self.data_section.resize(offset + len + 16, 0);
-                        self.buffer_offsets.insert(dest.clone(), offset);
-                        self.slice_capacities.insert(dest.clone(), *len);
+                        self.buffer_offsets.insert(key.clone(), offset);
+                        self.slice_capacities.insert(key, *len);
                     }
                 }
                 Instruction::Call { dest: Some(d), .. } | Instruction::Syscall { dest: Some(d), .. } => {
@@ -340,22 +348,26 @@ impl MachineCodeEmitter {
                         let inner = &r[4..r.len() - 1].trim();
                         let clean = inner.trim_start_matches('%');
                         let len_name = format!("{}_len", clean);
+                        let key = Self::buf_key(&func.name, inner);
                         if let Some(&slot) = slots.get(&len_name) {
                             emitter.emit_load_stack(target, slot);
-                        } else if let Some(&cap) = emitter.slice_capacities.get(*inner) {
+                        } else if let Some(&cap) = emitter.slice_capacities.get(&key).or_else(|| emitter.slice_capacities.get(*inner)) {
                             emitter.emit_mov_reg_imm64(target, cap as i64);
                         } else {
                             emitter.emit_mov_reg_imm64(target, 0);
                         }
-                    } else if let Some(&buf_off) = emitter.buffer_offsets.get(r) {
-                        let vaddr = base_data_vaddr + (buf_off as u64);
-                        emitter.emit_mov_reg_imm64(target, vaddr as i64);
                     } else {
-                        let clean = r.trim_start_matches('%');
-                        if let Some(&slot) = slots.get(clean) {
-                            emitter.emit_load_stack(target, slot);
+                        let key = Self::buf_key(&func.name, r);
+                        if let Some(&buf_off) = emitter.buffer_offsets.get(&key).or_else(|| emitter.buffer_offsets.get(r)) {
+                            let vaddr = base_data_vaddr + (buf_off as u64);
+                            emitter.emit_mov_reg_imm64(target, vaddr as i64);
                         } else {
-                            emitter.emit_mov_reg_imm64(target, 0);
+                            let clean = r.trim_start_matches('%');
+                            if let Some(&slot) = slots.get(clean) {
+                                emitter.emit_load_stack(target, slot);
+                            } else {
+                                emitter.emit_mov_reg_imm64(target, 0);
+                            }
                         }
                     }
                 }
@@ -386,12 +398,13 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::Alloc { dest, size } => {
-                    let offset = if let Some(&off) = self.buffer_offsets.get(dest) {
+                    let key = Self::buf_key(&func.name, dest);
+                    let offset = if let Some(&off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(dest)) {
                         off
                     } else {
                         let offset = self.data_section.len();
                         self.data_section.resize(offset + size + 16, 0);
-                        self.buffer_offsets.insert(dest.clone(), offset);
+                        self.buffer_offsets.insert(key, offset);
                         offset
                     };
                     let clean = dest.trim_start_matches('%');
@@ -402,7 +415,8 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::AllocSlice { dest, len, .. } => {
-                    let offset = self.buffer_offsets[dest];
+                    let key = Self::buf_key(&func.name, dest);
+                    let offset = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(dest)).copied().unwrap_or(0);
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
                     let vaddr = base_data_vaddr + (offset as u64);
@@ -418,7 +432,8 @@ impl MachineCodeEmitter {
                 Instruction::SlicePtr { dest, slice } => {
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
-                    if let Some(&buf_off) = self.buffer_offsets.get(slice) {
+                    let key = Self::buf_key(&func.name, slice);
+                    if let Some(&buf_off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(slice)) {
                         let vaddr = base_data_vaddr + (buf_off as u64);
                         self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
                     } else {
@@ -434,6 +449,8 @@ impl MachineCodeEmitter {
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
                     let sl_clean = slice.trim_start_matches('%');
+                    let key = Self::buf_key(&func.name, slice);
+
                     if let Some(&s_slot) = slots.get(sl_clean) {
                         self.emit_load_stack(X86Reg::Rax, s_slot);
                         // Inline strlen on RAX:
@@ -453,7 +470,14 @@ impl MachineCodeEmitter {
                             0xeb, 0xf4,
                             0x48, 0x89, 0xc8,
                         ]);
-                    } else if let Some(&cap) = self.slice_capacities.get(slice) {
+                        // Nếu strlen == 0 và đây là biến ALLOC slice cục bộ có capacity > 0, fallback về capacity:
+                        if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
+                            // test rax, rax (48 85 c0)
+                            // jnz +10 (75 0a) -> nhảy qua mov rax, imm64
+                            self.code.extend_from_slice(&[0x48, 0x85, 0xc0, 0x75, 0x0a]);
+                            self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
+                        }
+                    } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
                         self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
                     } else {
                         self.emit_mov_reg_imm64(X86Reg::Rax, 0);
@@ -462,7 +486,8 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::StoreStr { buf, offset, content } => {
-                    let buf_off = self.buffer_offsets.get(buf).cloned().unwrap_or(0);
+                    let key = Self::buf_key(&func.name, buf);
+                    let buf_off = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(buf)).cloned().unwrap_or(0);
                     let target_off = buf_off + offset;
                     let bytes = content.as_bytes();
                     if target_off + bytes.len() + 1 > self.data_section.len() {
@@ -505,7 +530,8 @@ impl MachineCodeEmitter {
                 Instruction::Mov { dest, src } => {
                     let d_clean = dest.trim_start_matches('%');
                     let d_slot = slots[d_clean];
-                    if let Some(&buf_off) = self.buffer_offsets.get(src) {
+                    let key = Self::buf_key(&func.name, src);
+                    if let Some(&buf_off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(src)) {
                         let vaddr = base_data_vaddr + (buf_off as u64);
                         self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
                     } else {

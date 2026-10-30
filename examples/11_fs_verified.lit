@@ -15,7 +15,8 @@ FUNC main() -> i64
 
   # Read it back into buffer
   %read_buf = ALLOC slice<u8> 64
-  %bytes_read = CALL fs_read_file %filename %read_buf
+  %cap = CONST i64 64
+  %bytes_read = CALL fs_read_file %filename %read_buf %cap
 
   # Guard: ensure read was successful and read > 0 bytes before printing
   %zero = CONST i64 0

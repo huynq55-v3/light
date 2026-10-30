@@ -1,0 +1,13 @@
+# Syntax: gitignore rules
+
+# Ignore files and directories for all sections from gitignore file
+# Default: True
+gitignore-import-and-ignore: True
+
+# Ignore files and directories for tree
+# and contents sections (<content full_path="...">...</content>)
+ignore-tree-and-content:
+  - "bootstrap/"
+  - "target/"
+  - "example/"
+  - "test/"

@@ -116,7 +116,7 @@ FUNC fs_write(path: slice<u8>, content: slice<u8>, count: i64) -> i64
   RET %bytes
 END_FUNC
 
-# High-level file writing: write entire slice to file
+# High-level file writing: write entire null-terminated slice to file
 FUNC fs_write_all(path: slice<u8>, content: slice<u8>) -> i64
   REQUIRE len(path) > 0 && len(content) >= 0
 
@@ -127,23 +127,24 @@ FUNC fs_write_all(path: slice<u8>, content: slice<u8>) -> i64
   RET %bytes
 END_FUNC
 
-# --- Backward-Compatibility Aliases ---
-FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>) -> i64
-  REQUIRE len(path) > 0 && len(out_buf) >= 0
-  %cap = SLICE_LEN out_buf
-  %r = CALL fs_read path out_buf %cap
-  ENSURE %r >= -4096 && %r <= len(out_buf)
+# --- Backward-Compatibility Aliases (with full ENSURE contracts) ---
+FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count >= 0 && count <= len(out_buf)
+  %r = CALL fs_read path out_buf count
+  ENSURE %r >= -4096 && %r <= count
   RET %r
 END_FUNC
 
 FUNC fs_write_file(path: slice<u8>, content: slice<u8>) -> i64
   REQUIRE len(path) > 0 && len(content) >= 0
   %r = CALL fs_write_all path content
+  ENSURE %r >= -4096 && %r <= len(content)
   RET %r
 END_FUNC
 
 FUNC fs_write_file_bytes(path: slice<u8>, content: slice<u8>, count: i64) -> i64
   REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
   %r = CALL fs_write path content count
+  ENSURE %r >= -4096 && %r <= count
   RET %r
 END_FUNC

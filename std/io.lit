@@ -44,30 +44,35 @@ FUNC sys_exit(code: i64) -> i64
   %rdx = CONST i64 0
   %res = SYSCALL %rax %rdi %rsi %rdx
 
+  ENSURE code >= 0 && code <= 255
   RET code
 END_FUNC
 
-# --- Backward-Compatibility Aliases ---
+# --- Backward-Compatibility Aliases (with full ENSURE contracts) ---
 FUNC std_print_slice(s: slice<u8>, count: i64) -> i64
   REQUIRE count >= 0 && count <= len(s)
   %r = CALL io_write s count
+  ENSURE %r >= -4096 && %r <= count
   RET %r
 END_FUNC
 
 FUNC std_print_all(s: slice<u8>) -> i64
   REQUIRE len(s) >= 0
   %r = CALL io_print s
+  ENSURE %r >= -4096 && %r <= len(s)
   RET %r
 END_FUNC
 
 FUNC std_print(s: slice<u8>, count: i64) -> i64
   REQUIRE count >= 0 && count <= len(s)
   %r = CALL io_write s count
+  ENSURE %r >= -4096 && %r <= count
   RET %r
 END_FUNC
 
 FUNC std_exit(code: i64) -> i64
   REQUIRE code >= 0 && code <= 255
   %r = CALL sys_exit code
+  ENSURE %r >= 0 && %r <= 255
   RET %r
 END_FUNC
