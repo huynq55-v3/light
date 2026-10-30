@@ -353,14 +353,11 @@ impl MachineCodeEmitter {
                         self.emit_store_stack(X86Reg::Rax, slot);
                     } else if idx == 1 {
                         if clean.contains("argv0") || clean == "argv_0" {
-                            // mov rax, [rbp + 16] (48 8b 45 10)
+                            // Direct binary path pointer argv[0]: mov rax, [rbp + 16] (48 8b 45 10)
                             self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x10]);
-                        } else if clean == "argv" {
-                            // lea rax, [rbp + 16] (48 8d 45 10)
-                            self.code.extend_from_slice(&[0x48, 0x8d, 0x45, 0x10]);
                         } else {
-                            // mov rax, [rbp + 24] (48 8b 45 18)
-                            self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
+                            // Standard Linux C ABI: argv pointer array (char**): lea rax, [rbp + 16] (48 8d 45 10)
+                            self.code.extend_from_slice(&[0x48, 0x8d, 0x45, 0x10]);
                         }
                         self.emit_store_stack(X86Reg::Rax, slot);
                     } else if idx == 2 {
@@ -561,8 +558,6 @@ impl MachineCodeEmitter {
                     if target_off + bytes.len() + 1 > self.data_section.len() {
                         self.data_section.resize(target_off + bytes.len() + 1, 0);
                     }
-                    self.data_section[target_off..target_off + bytes.len()].copy_from_slice(bytes);
-                    self.data_section[target_off + bytes.len()] = 0;
 
                     // Runtime machine code emission: dynamic string copy from literal pool
                     let lit_off = self.data_section.len();
@@ -1001,6 +996,7 @@ impl MachineCodeEmitter {
 
     /// Đóng gói mã máy x86_64 thành file thực thi nhị phân Linux ELF64 hoàn chỉnh
     pub fn emit_elf64(&self, output_path: &str) -> std::io::Result<()> {
+        let _ = std::fs::remove_file(output_path);
         let mut file = File::create(output_path)?;
 
         let elf_header_size = 64usize;
@@ -1053,6 +1049,8 @@ impl MachineCodeEmitter {
         let mut perms = file.metadata()?.permissions();
         perms.set_mode(0o755);
         file.set_permissions(perms)?;
+        file.sync_all()?;
+        drop(file);
 
         Ok(())
     }

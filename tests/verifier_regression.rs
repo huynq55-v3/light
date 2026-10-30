@@ -1,4 +1,3 @@
-use light::ast::Expr;
 use light::parser::Parser;
 use light::verifier::{PropertyCategory, VerificationResult, Verifier};
 
@@ -660,16 +659,17 @@ END_FUNC
 fn test_v20_parser_operator_precedence_and_unary_minus() {
     // V20: Expressions like %x - -5 and a - b + c and %x * %y
     let expr1 = Parser::parse_expr("%x - -5", 1).expect("parse expr1");
-    let smt1 = Verifier::expr_to_smt(&expr1);
+    let vc = light::vcgen::VcGen::new();
+    let smt1 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr1));
     assert_eq!(smt1, "(bvsub x (bvneg (_ bv5 64)))");
 
     let expr2 = Parser::parse_expr("10 - 5 + 2", 1).expect("parse expr2");
-    let smt2 = Verifier::expr_to_smt(&expr2);
+    let smt2 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr2));
     // Left-associative: (10 - 5) + 2
     assert_eq!(smt2, "(bvadd (bvsub (_ bv10 64) (_ bv5 64)) (_ bv2 64))");
 
     let expr3 = Parser::parse_expr("%x * %y", 1).expect("parse expr3");
-    let smt3 = Verifier::expr_to_smt(&expr3);
+    let smt3 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr3));
     assert_eq!(smt3, "(bvmul x y)");
 }
 
@@ -863,11 +863,12 @@ END_FUNC
 fn test_v26_parenthesized_expressions_in_contracts() {
     // V26: Complex parenthesized expressions parsed with proper precedence
     let expr1 = Parser::parse_expr("(%a + %b) * 2 == %res", 1).expect("parse expr1");
-    let smt1 = Verifier::expr_to_smt(&expr1);
+    let vc = light::vcgen::VcGen::new();
+    let smt1 = vc.expr_to_bool(&light::ivl::IvlExpr::from(&expr1));
     assert_eq!(smt1, "(= (bvmul (bvadd a b) (_ bv2 64)) res)");
 
     let expr2 = Parser::parse_expr("(%x > 0 && %y > 0) || %z == 0", 1).expect("parse expr2");
-    let smt2_bool = Verifier::expr_to_smt_bool(&expr2);
+    let smt2_bool = vc.expr_to_bool(&light::ivl::IvlExpr::from(&expr2));
     assert_eq!(smt2_bool, "(or (and (bvsgt x (_ bv0 64)) (bvsgt y (_ bv0 64))) (= z (_ bv0 64)))");
 }
 
@@ -1014,11 +1015,12 @@ END_FUNC
 fn test_v31_unary_minus_expressions_parsed_as_subtraction() {
     // V31: Unary minus (-%a, -(%a + %b)) parsed as (0 - expr)
     let expr1 = Parser::parse_expr("-%a", 1).expect("parse -%a");
-    let smt1 = Verifier::expr_to_smt(&expr1);
+    let vc = light::vcgen::VcGen::new();
+    let smt1 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr1));
     assert_eq!(smt1, "(bvsub (_ bv0 64) a)");
 
     let expr2 = Parser::parse_expr("-(%a + %b)", 1).expect("parse -(%a + %b)");
-    let smt2 = Verifier::expr_to_smt(&expr2);
+    let smt2 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr2));
     assert_eq!(smt2, "(bvsub (_ bv0 64) (bvadd a b))");
 }
 
@@ -1117,16 +1119,17 @@ END_FUNC
 
 #[test]
 fn test_v35_subst_expr_vars_len_preserves_length() {
-    // V35: subst_expr_vars directly maps Expr::Len to {arr}_len without fabricating invalid names
+    // V35: subst_expr_map directly maps IvlExpr::Len to {arr}_len without fabricating invalid names
     let mut map = std::collections::HashMap::new();
-    map.insert("buf_len".to_string(), "buf_length_val".to_string());
-    map.insert("buf".to_string(), "buf_ptr_v0".to_string());
+    map.insert("buf_len".to_string(), light::ivl::IvlExpr::Var("buf_length_val".to_string()));
+    map.insert("buf".to_string(), light::ivl::IvlExpr::Var("buf_ptr_v0".to_string()));
 
-    let expr = Expr::Len("buf".to_string());
-    let substituted = Verifier::subst_expr_vars(&expr, &map);
-    assert_eq!(substituted, Expr::Var("buf_length_val".to_string()));
+    let expr = light::ivl::IvlExpr::Len("buf".to_string());
+    let substituted = light::ivl::IvlLowerer::subst_expr_map(&expr, &map);
+    assert_eq!(substituted, light::ivl::IvlExpr::Var("buf_length_val".to_string()));
 
-    let smt = Verifier::expr_to_smt(&substituted);
+    let vc = light::vcgen::VcGen::new();
+    let smt = vc.expr_to_bv(&substituted);
     assert_eq!(smt, "buf_length_val");
 }
 

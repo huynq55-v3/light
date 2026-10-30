@@ -217,12 +217,6 @@ impl Verifier {
         }
     }
 
-    #[allow(dead_code)]
-    #[inline]
-    pub fn smt_usize(n: usize) -> String {
-        format!("(_ bv{} 64)", n)
-    }
-
     /// Hạ cấp một lệnh sang chuỗi IVL kèm đầy đủ các kiểm chứng an toàn (Safety & Functional Asserts)
     fn lower_inst_with_checks(
         func: &Function,
@@ -1215,15 +1209,19 @@ impl Verifier {
         }
 
         // 0d. Memory Sort Consistency Check: Prevent mixing 8-bit and 64-bit accesses on same buffer
+        let buffer_sizes = crate::ivl::IvlLowerer::extract_buffer_sizes(func);
+        let buffer_aliases = crate::ivl::IvlLowerer::extract_buffer_aliases(func);
         let mut has_mem8 = std::collections::HashSet::new();
         let mut has_mem64 = std::collections::HashSet::new();
         for s in &func.instructions {
             match &s.inst {
                 Instruction::Load8 { buf, .. } | Instruction::Store8 { buf, .. } => {
-                    has_mem8.insert(buf.trim_start_matches('%').to_string());
+                    let actual = buffer_aliases.get(buf).unwrap_or(buf);
+                    has_mem8.insert(actual.trim_start_matches('%').to_string());
                 }
                 Instruction::Load64 { buf, .. } | Instruction::Store64 { buf, .. } => {
-                    has_mem64.insert(buf.trim_start_matches('%').to_string());
+                    let actual = buffer_aliases.get(buf).unwrap_or(buf);
+                    has_mem64.insert(actual.trim_start_matches('%').to_string());
                 }
                 _ => {}
             }
@@ -1267,8 +1265,6 @@ impl Verifier {
             }
         }
 
-        let buffer_sizes = crate::ivl::IvlLowerer::extract_buffer_sizes(func);
-        let buffer_aliases = crate::ivl::IvlLowerer::extract_buffer_aliases(func);
         let mut stmts = Vec::new();
 
         // 1. Khởi tạo và khai báo các tham số đầu vào của hàm
@@ -1461,238 +1457,69 @@ impl Verifier {
         }
     }
 
-    /// Phân tích Definite Assignment chuẩn xác qua CFG Forward Dataflow Analysis
+    /// Phân tích Definite Assignment chuẩn xác qua duyệt luồng tiến (Forward Jump & Structured Loop)
     fn check_definite_assignment_cfg(func: &Function) -> Option<VerificationResult> {
-        let n = func.instructions.len();
-        if n == 0 {
-            return None;
-        }
-
-        let mut initial_vars = std::collections::HashSet::new();
-        for p in &func.params {
-            let clean = p.name.trim_start_matches('%').to_string();
-            initial_vars.insert(clean.clone());
+        let mut defined: std::collections::HashSet<String> = func.params.iter().flat_map(|p| {
+            let c = p.name.trim_start_matches('%').to_string();
             if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
-                initial_vars.insert(format!("{}_len", clean));
+                vec![c.clone(), format!("{}_len", c)]
+            } else {
+                vec![c]
             }
-        }
-        let mut all_ret_vars = std::collections::HashSet::new();
-        all_ret_vars.insert("ret".to_string());
-        all_ret_vars.insert("result".to_string());
-        all_ret_vars.insert("res".to_string());
+        }).collect();
+
+        let mut all_ret_vars: std::collections::HashSet<String> =
+            ["ret", "result", "res"].into_iter().map(String::from).collect();
         if let Some(cr) = Self::find_canonical_ret_var(func) {
             all_ret_vars.insert(cr.trim_start_matches('%').to_string());
         }
         for s in &func.instructions {
-            match &s.inst {
-                Instruction::Ret(Some(Operand::Reg(r))) => {
-                    all_ret_vars.insert(r.trim_start_matches('%').to_string());
-                }
-                Instruction::RetIf { val: Some(Operand::Reg(r)), .. } => {
-                    all_ret_vars.insert(r.trim_start_matches('%').to_string());
-                }
-                _ => {}
+            if let Instruction::Ret(Some(Operand::Reg(r))) | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } = &s.inst {
+                all_ret_vars.insert(r.trim_start_matches('%').to_string());
             }
         }
 
-        let mut label_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut loop_starts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut loop_ends: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut loop_stack: Vec<(String, usize)> = Vec::new();
-        let mut inst_enclosing_loop: Vec<Option<(usize, usize)>> = vec![None; n];
+        // Lưu trạng thái tập biến tại các nhánh nhảy tiến tới LABEL hoặc thoát LOOP
+        let mut incoming_label: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+        let mut loop_exit_states: Vec<Option<std::collections::HashSet<String>>> = Vec::new();
+        let mut reachable = true;
 
-        for (idx, s_inst) in func.instructions.iter().enumerate() {
+        for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Label(lbl) => {
-                    label_map.insert(lbl.clone(), idx);
+                    if let Some(inc) = incoming_label.remove(lbl) {
+                        if reachable {
+                            defined.retain(|v| inc.contains(v));
+                        } else {
+                            defined = inc;
+                            reachable = true;
+                        }
+                    }
                 }
-                Instruction::Loop(l) => {
-                    loop_starts.insert(l.clone(), idx);
-                    loop_stack.push((l.clone(), idx));
+                Instruction::Loop(_) => {
+                    loop_exit_states.push(None);
                 }
-                Instruction::EndLoop(l) => {
-                    loop_ends.insert(l.clone(), idx);
-                    if let Some((st_lbl, _)) = loop_stack.last() {
-                        if st_lbl == l {
-                            loop_stack.pop();
+                Instruction::EndLoop(_) => {
+                    if let Some(opt_exit) = loop_exit_states.pop() {
+                        if let Some(exit_defs) = opt_exit {
+                            defined = exit_defs;
+                            reachable = true;
+                        } else {
+                            reachable = false;
                         }
                     }
                 }
                 _ => {}
             }
-            if let Some((_, st_idx)) = loop_stack.last() {
-                inst_enclosing_loop[idx] = Some((*st_idx, 0));
-            }
-        }
 
-        for (name, st_idx) in &loop_starts {
-            if let Some(&end_idx) = loop_ends.get(name) {
-                for item in inst_enclosing_loop.iter_mut().take(end_idx + 1).skip(*st_idx) {
-                    if let Some((s, e)) = item {
-                        if *s == *st_idx {
-                            *e = end_idx;
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for i in 0..n {
-            let s_inst = &func.instructions[i];
-            let mut fallthrough = true;
-            match &s_inst.inst {
-                Instruction::Jump(tgt) => {
-                    fallthrough = false;
-                    if let Some(&tgt_idx) = label_map.get(tgt) {
-                        preds[tgt_idx].push(i);
-                    }
-                }
-                Instruction::BrIf { target, .. } => {
-                    if let Some(&tgt_idx) = label_map.get(target) {
-                        preds[tgt_idx].push(i);
-                    }
-                }
-                Instruction::Ret(_) => {
-                    fallthrough = false;
-                }
-                Instruction::RetIf { .. } => {}
-                Instruction::BreakIf(_) => {
-                    if let Some((_, end_idx)) = inst_enclosing_loop[i] {
-                        if end_idx + 1 < n {
-                            preds[end_idx + 1].push(i);
-                        }
-                    }
-                }
-                Instruction::ContinueIf(_) => {
-                    if let Some((st_idx, _)) = inst_enclosing_loop[i] {
-                        preds[st_idx].push(i);
-                    }
-                }
-                Instruction::EndLoop(l) => {
-                    if let Some(&st_idx) = loop_starts.get(l) {
-                        preds[st_idx].push(i);
-                    }
-                }
-                _ => {}
-            }
-            if fallthrough && i + 1 < n {
-                preds[i + 1].push(i);
-            }
-        }
-
-        // Reachability analysis
-        let mut reachable = std::collections::HashSet::new();
-        let mut worklist = vec![0];
-        reachable.insert(0);
-        while let Some(curr) = worklist.pop() {
-            let mut succs = Vec::new();
-            let s_inst = &func.instructions[curr];
-            let mut fallthrough = true;
-            match &s_inst.inst {
-                Instruction::Jump(tgt) => {
-                    fallthrough = false;
-                    if let Some(&tgt_idx) = label_map.get(tgt) {
-                        succs.push(tgt_idx);
-                    }
-                }
-                Instruction::BrIf { target, .. } => {
-                    if let Some(&tgt_idx) = label_map.get(target) {
-                        succs.push(tgt_idx);
-                    }
-                }
-                Instruction::Ret(_) => {
-                    fallthrough = false;
-                }
-                Instruction::RetIf { .. } => {}
-                Instruction::BreakIf(_) => {
-                    if let Some((_, end_idx)) = inst_enclosing_loop[curr] {
-                        if end_idx + 1 < n {
-                            succs.push(end_idx + 1);
-                        }
-                    }
-                }
-                Instruction::ContinueIf(_) => {
-                    if let Some((st_idx, _)) = inst_enclosing_loop[curr] {
-                        succs.push(st_idx);
-                    }
-                }
-                Instruction::EndLoop(l) => {
-                    if let Some(&st_idx) = loop_starts.get(l) {
-                        succs.push(st_idx);
-                    }
-                }
-                _ => {}
-            }
-            if fallthrough && curr + 1 < n {
-                succs.push(curr + 1);
-            }
-            for succ in succs {
-                if reachable.insert(succ) {
-                    worklist.push(succ);
-                }
-            }
-        }
-
-        let mut universe = initial_vars.clone();
-        for s_inst in &func.instructions {
-            Self::collect_defined_vars(&s_inst.inst, &mut universe);
-        }
-
-        let mut in_sets: Vec<std::collections::HashSet<String>> = vec![std::collections::HashSet::new(); n];
-        let mut out_sets: Vec<std::collections::HashSet<String>> = vec![universe.clone(); n];
-        out_sets[0] = initial_vars.clone();
-        Self::collect_defined_vars(&func.instructions[0].inst, &mut out_sets[0]);
-
-        let mut changed = true;
-        let mut iterations = 0;
-        while changed && iterations < 1000 {
-            changed = false;
-            iterations += 1;
-            for i in 0..n {
-                if !reachable.contains(&i) {
-                    continue;
-                }
-                let new_in = if i == 0 {
-                    initial_vars.clone()
-                } else {
-                    let active_preds: Vec<usize> = preds[i]
-                        .iter()
-                        .copied()
-                        .filter(|p| reachable.contains(p))
-                        .collect();
-                    if active_preds.is_empty() {
-                        initial_vars.clone()
-                    } else {
-                        let mut intersect = out_sets[active_preds[0]].clone();
-                        for p in &active_preds[1..] {
-                            intersect.retain(|v| out_sets[*p].contains(v));
-                        }
-                        intersect
-                    }
-                };
-
-                let mut new_out = new_in.clone();
-                Self::collect_defined_vars(&func.instructions[i].inst, &mut new_out);
-
-                if new_in != in_sets[i] || new_out != out_sets[i] {
-                    in_sets[i] = new_in;
-                    out_sets[i] = new_out;
-                    changed = true;
-                }
-            }
-        }
-
-        for i in 0..n {
-            if !reachable.contains(&i) {
+            if !reachable {
                 continue;
             }
-            let s_inst = &func.instructions[i];
+
             let mut used_regs = Vec::new();
             Self::collect_used_vars(&s_inst.inst, &all_ret_vars, &mut used_regs);
-
             for clean in used_regs {
-                if !in_sets[i].contains(&clean) {
+                if !defined.contains(&clean) {
                     return Some(VerificationResult::Failed {
                         goal_name: format!("Function '{}' - Line {}: SSA Definite Assignment", func.name, s_inst.loc.line),
                         category: PropertyCategory::Safety,
@@ -1708,8 +1535,37 @@ impl Verifier {
                     });
                 }
             }
-        }
 
+            Self::collect_defined_vars(&s_inst.inst, &mut defined);
+
+            match &s_inst.inst {
+                Instruction::BrIf { target, .. } => {
+                    incoming_label
+                        .entry(target.clone())
+                        .and_modify(|set| set.retain(|v| defined.contains(v)))
+                        .or_insert_with(|| defined.clone());
+                }
+                Instruction::Jump(target) => {
+                    incoming_label
+                        .entry(target.clone())
+                        .and_modify(|set| set.retain(|v| defined.contains(v)))
+                        .or_insert_with(|| defined.clone());
+                    reachable = false;
+                }
+                Instruction::BreakIf(_) => {
+                    if let Some(opt_exit) = loop_exit_states.last_mut() {
+                        match opt_exit {
+                            Some(set) => set.retain(|v| defined.contains(v)),
+                            None => *opt_exit = Some(defined.clone()),
+                        }
+                    }
+                }
+                Instruction::Ret(_) => {
+                    reachable = false;
+                }
+                _ => {}
+            }
+        }
         None
     }
 
@@ -1777,114 +1633,6 @@ impl Verifier {
                 Self::collect_vars(rhs, vars);
             }
             _ => {}
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn expr_to_smt_bool(expr: &Expr) -> String {
-        match expr {
-            Expr::Var(name) => {
-                let clean = name.trim_start_matches('%');
-                format!("(distinct {} (_ bv0 64))", clean)
-            }
-            Expr::IntConst(n) => {
-                if *n != 0 { "true".into() } else { "false".into() }
-            }
-            Expr::BoolConst(b) => if *b { "true".into() } else { "false".into() },
-            Expr::Not(inner) => format!("(not {})", Self::expr_to_smt_bool(inner)),
-            Expr::Binary { op: BinOp::And, lhs, rhs } => {
-                format!("(and {} {})", Self::expr_to_smt_bool(lhs), Self::expr_to_smt_bool(rhs))
-            }
-            Expr::Binary { op: BinOp::Or, lhs, rhs } => {
-                format!("(or {} {})", Self::expr_to_smt_bool(lhs), Self::expr_to_smt_bool(rhs))
-            }
-            Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::Xor | BinOp::Shl | BinOp::Shr | BinOp::Sar, .. } => {
-                format!("(distinct {} (_ bv0 64))", Self::expr_to_smt(expr))
-            }
-            _ => Self::expr_to_smt(expr),
-        }
-    }
-
-    /// Chuyển đổi biểu thức Expr sang chuỗi logic SMT-LIB2 (Bit-Vector 64-bit)
-    #[allow(dead_code)]
-    pub fn expr_to_smt(expr: &Expr) -> String {
-        match expr {
-            Expr::Var(name) => {
-                let clean = name.trim_start_matches('%');
-                clean.to_string()
-            }
-            Expr::IntConst(n) => Self::smt_bv64(*n),
-            Expr::FloatConst(f) => format!("{}", f),
-            Expr::BoolConst(b) => if *b { "true".into() } else { "false".into() },
-            Expr::Not(inner) => format!("(not {})", Self::expr_to_smt_bool(inner)),
-            Expr::Len(arr) => format!("{}_len", arr.trim_start_matches('%')),
-            Expr::Binary { op, lhs, rhs } => {
-                if matches!(op, BinOp::And | BinOp::Or) {
-                    let b1 = Self::expr_to_smt_bool(lhs);
-                    let b2 = Self::expr_to_smt_bool(rhs);
-                    return match op {
-                        BinOp::And => format!("(and {} {})", b1, b2),
-                        BinOp::Or => format!("(or {} {})", b1, b2),
-                        _ => unreachable!(),
-                    };
-                }
-                let s1 = Self::expr_to_smt(lhs);
-                let s2 = Self::expr_to_smt(rhs);
-                match op {
-                    BinOp::Add => format!("(bvadd {} {})", s1, s2),
-                    BinOp::Sub => format!("(bvsub {} {})", s1, s2),
-                    BinOp::Mul => format!("(bvmul {} {})", s1, s2),
-                    BinOp::Div => format!("(bvsdiv {} {})", s1, s2),
-                    BinOp::Mod => format!("(bvsrem {} {})", s1, s2),
-                    BinOp::BitAnd => format!("(bvand {} {})", s1, s2),
-                    BinOp::BitOr => format!("(bvor {} {})", s1, s2),
-                    BinOp::Xor => format!("(bvxor {} {})", s1, s2),
-                    BinOp::Shl => format!("(bvshl {} (bvand {} (_ bv63 64)))", s1, s2),
-                    BinOp::Shr => format!("(bvlshr {} (bvand {} (_ bv63 64)))", s1, s2),
-                    BinOp::Sar => format!("(bvashr {} (bvand {} (_ bv63 64)))", s1, s2),
-                    BinOp::Eq => format!("(= {} {})", s1, s2),
-                    BinOp::Neq => format!("(not (= {} {}))", s1, s2),
-                    BinOp::Lt => format!("(bvslt {} {})", s1, s2),
-                    BinOp::Lte => format!("(bvsle {} {})", s1, s2),
-                    BinOp::Gt => format!("(bvsgt {} {})", s1, s2),
-                    BinOp::Gte => format!("(bvsge {} {})", s1, s2),
-                    BinOp::And | BinOp::Or => unreachable!(),
-                }
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn subst_expr_vars(expr: &Expr, map: &std::collections::HashMap<String, String>) -> Expr {
-        match expr {
-            Expr::Var(v) => {
-                let clean = v.trim_start_matches('%');
-                if let Some(repl) = map.get(clean) {
-                    Expr::Var(repl.clone())
-                } else {
-                    Expr::Var(v.clone())
-                }
-            }
-            Expr::IntConst(c) => Expr::IntConst(*c),
-            Expr::FloatConst(c) => Expr::FloatConst(*c),
-            Expr::BoolConst(c) => Expr::BoolConst(*c),
-            Expr::Len(v) => {
-                let clean = v.trim_start_matches('%');
-                let len_key = format!("{}_len", clean);
-                if let Some(len_repl) = map.get(&len_key) {
-                    Expr::Var(len_repl.clone())
-                } else if let Some(repl) = map.get(clean) {
-                    Expr::Len(repl.clone())
-                } else {
-                    Expr::Len(v.clone())
-                }
-            }
-            Expr::Binary { op, lhs, rhs } => Expr::Binary {
-                op: op.clone(),
-                lhs: Box::new(Self::subst_expr_vars(lhs, map)),
-                rhs: Box::new(Self::subst_expr_vars(rhs, map)),
-            },
-            Expr::Not(e) => Expr::Not(Box::new(Self::subst_expr_vars(e, map))),
         }
     }
 

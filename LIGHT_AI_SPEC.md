@@ -82,6 +82,11 @@ Binary operations take exactly 2 operands. Specifying the type explicitly (`i64`
 - `JUMP <name>`: Unconditional forward jump.
 - `BR_IF %cond <name>`: Conditional forward jump when `%cond` is true.
 
+> **Linux CLI ABI for `FUNC main`:**
+> - `FUNC main()`: Zero parameters.
+> - `FUNC main(argc: i64, argv: ptr)` (hoặc `argv: i64`): `argc` được nạp từ `[rbp + 8]`, `argv` nhận con trỏ mảng tham số dòng lệnh `char *argv[]` (`lea rax, [rbp + 16]`). Truy cập từng tham số bằng `LOAD64 argv 0` (`argv[0]`), `LOAD64 argv 8` (`argv[1]`), v.v.
+> - Nếu tham số thứ hai đặt tên là `%argv0` hoặc `%argv_0`, nó sẽ trực tiếp chứa con trỏ chuỗi `argv[0]` (đường dẫn thực thi).
+
 ### V. Memory & Slices (Safe Zero-Overhead Memory)
 - `%buf = ALLOC slice<u8> <size_in_bytes>` or `ALLOC %buf <size_in_bytes>`: Allocate contiguous buffer memory in data section.
 - `STORE8 %buf/%ptr %offset %val`: Store 1 byte (0..255) at address `%buf + %offset`.
