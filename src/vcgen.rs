@@ -69,13 +69,13 @@ impl VcGen {
             }
             IvlExpr::Select { mem, offset } => {
                 let clean_m = mem.trim_start_matches('%');
-                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| clean_m.to_string());
+                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| format!("{}_mem_0", clean_m));
                 let off = self.expr_to_bv(offset);
                 format!("(select {} {})", m, off)
             }
             IvlExpr::Store { mem, offset, val } => {
                 let clean_m = mem.trim_start_matches('%');
-                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| clean_m.to_string());
+                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| format!("{}_mem_0", clean_m));
                 let off = self.expr_to_bv(offset);
                 let v = self.expr_to_bv(val);
                 format!("(store {} {} {})", m, off, v)
@@ -179,7 +179,7 @@ impl VcGen {
         match expr {
             IvlExpr::Var(v) => {
                 let clean = v.trim_start_matches('%');
-                if !self.current_mem.contains_key(clean) && !self.declared_mems.contains(clean) {
+                if !self.declared_mems.contains(clean) {
                     let mapped = self.current_val.get(clean).cloned().unwrap_or_else(|| clean.to_string());
                     vars.insert(mapped);
                 }
@@ -282,8 +282,9 @@ impl VcGen {
                     }
                     for nm in needed_mems {
                         if !self.current_mem.contains_key(&nm) {
-                            self.declared_mems.insert(nm.clone());
-                            self.current_mem.insert(nm.clone(), nm);
+                            let init_mem = format!("{}_mem_0", nm);
+                            self.declared_mems.insert(init_mem.clone());
+                            self.current_mem.insert(nm, init_mem);
                         }
                     }
 
@@ -312,7 +313,9 @@ impl VcGen {
                     Self::collect_mem_names(cond, &mut needed_mems);
                     for nm in needed_mems {
                         if !self.current_mem.contains_key(&nm) {
-                            self.declared_mems.insert(nm);
+                            let init_mem = format!("{}_mem_0", nm);
+                            self.declared_mems.insert(init_mem.clone());
+                            self.current_mem.insert(nm, init_mem);
                         }
                     }
                     let cond_smt = self.expr_to_bool(cond);
@@ -343,7 +346,9 @@ impl VcGen {
                     Self::collect_mem_names(cond, &mut needed_mems);
                     for nm in needed_mems {
                         if !self.current_mem.contains_key(&nm) {
-                            self.declared_mems.insert(nm);
+                            let init_mem = format!("{}_mem_0", nm);
+                            self.declared_mems.insert(init_mem.clone());
+                            self.current_mem.insert(nm, init_mem);
                         }
                     }
                     let cond_smt = self.expr_to_bool(cond);

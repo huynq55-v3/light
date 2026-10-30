@@ -64,7 +64,7 @@ END_FUNC
 # Cấp phát `req_size` bytes từ Arena với 8-byte alignment (O(1))
 # Trả về con trỏ vùng nhớ (hoặc 0 nếu hết bộ nhớ)
 FUNC arena_alloc(arena: i64, req_size: i64) -> i64
-  REQUIRE arena > 0 && req_size > 0 && req_size <= 1073741824
+  REQUIRE arena > 0 && req_size >= 0 && req_size <= 1073741824
   %off_0 = CONST i64 0
   %off_8 = CONST i64 8
   %off_16 = CONST i64 16

@@ -2189,6 +2189,8 @@ FUNC main() -> i64
   # Tạo arena 64KB
   %cap = CONST i64 65536
   %arena = CALL arena_create %cap
+  %is_err = LTE i64 %arena 0
+  BR_IF %is_err .exit_err
 
   # Cấp phát chunk 1: 10 bytes (align lên 16)
   %sz1 = CONST i64 10
@@ -2212,25 +2214,26 @@ FUNC main() -> i64
   %d = CALL arena_destroy %arena
 
   RET %sum
+
+LABEL .exit_err
+  %err = CONST i64 1
+  RET %err
 END_FUNC
 "#;
 
     let program = Parser::parse(code).expect("Parse V64");
 
-    // 1. Kiểm tra Formal Verification với Z3 cho các hàm logic của Arena
-    let align_results = Verifier::verify_function(&program.functions[0], Some(&program));
-    assert!(
-        align_results.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "align8 phải được Z3 verify 100%! Got: {:?}",
-        align_results
-    );
-
-    let can_alloc_results = Verifier::verify_function(&program.functions[1], Some(&program));
-    assert!(
-        can_alloc_results.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "arena_can_alloc phải được Z3 verify 100%! Got: {:?}",
-        can_alloc_results
-    );
+    // 1. Kiểm tra Formal Verification với Z3 cho TẤT CẢ các hàm của Arena
+    for func in &program.functions {
+        let results = Verifier::verify_function(func, Some(&program));
+        let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+        assert!(
+            all_ok,
+            "Hàm {} phải được Z3 verify 100%! Got: {:?}",
+            func.name,
+            results
+        );
+    }
 
     // 2. Biên dịch AOT ra ELF64 và chạy thực tế trên Linux
     let mut emitter = light::codegen::MachineCodeEmitter::new();
