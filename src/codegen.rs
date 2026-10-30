@@ -1,7 +1,7 @@
-//! JIT Engine & Native ELF64 Machine Code Emitter cho Light (.lit)
+//! Native ELF64 Machine Code Emitter & Direct Binary Packager cho Light (.lit)
 //! - Generates high-performance x86_64 machine code with standard stack frame allocation
 //! - Directly packages standalone minimal Linux ELF64 binaries without any libc/C runtime dependency
-//! - Supports all arithmetic, memory loads/stores, system calls, functions, loops, and branching!
+//! - Supports all arithmetic, bitwise operations, memory loads/stores, system calls, functions, loops, and branching!
 
 use crate::ast::*;
 use std::collections::HashMap;
@@ -137,6 +137,44 @@ impl MachineCodeEmitter {
         self.code.push(0xc3);
     }
 
+    /// Cấp phát trước tất cả các buffer tĩnh để địa chỉ data_section cố định (tránh realloc khi chạy JIT)
+    pub fn preallocate_buffers(&mut self, program: &Program) {
+        for func in &program.functions {
+            for si in &func.instructions {
+                match &si.inst {
+                    Instruction::AllocSlice { dest, len, .. } => {
+                        if !self.buffer_offsets.contains_key(dest) {
+                            let offset = self.data_section.len();
+                            self.data_section.resize(offset + len + 16, 0);
+                            self.buffer_offsets.insert(dest.clone(), offset);
+                            self.slice_capacities.insert(dest.clone(), *len);
+                        }
+                    }
+                    Instruction::Alloc { dest, size } => {
+                        if !self.buffer_offsets.contains_key(dest) {
+                            let offset = self.data_section.len();
+                            self.data_section.resize(offset + size + 16, 0);
+                            self.buffer_offsets.insert(dest.clone(), offset);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Biên dịch chương trình sẵn sàng cho đóng gói ELF64 (tự động tính toán chính xác địa chỉ ảo data theo 2 pass)
+    pub fn compile_for_elf(&mut self, program: &Program) -> Result<usize, String> {
+        let mut probe = MachineCodeEmitter::new();
+        probe.preallocate_buffers(program);
+        let _ = probe.compile_program(program, 0x400000 + 120)?;
+        let code_len = probe.code.len();
+
+        self.preallocate_buffers(program);
+        let elf_data_vaddr = 0x400000u64 + 120u64 + (code_len as u64);
+        self.compile_program(program, elf_data_vaddr)
+    }
+
     /// Biên dịch toàn bộ chương trình (tất cả các hàm và link các lệnh CALL)
     pub fn compile_program(&mut self, program: &Program, base_data_vaddr: u64) -> Result<usize, String> {
         let main_func = program
@@ -205,7 +243,8 @@ impl MachineCodeEmitter {
                 | Instruction::Load8 { dest, .. }
                 | Instruction::Load64 { dest, .. }
                 | Instruction::Mov { dest, .. }
-                | Instruction::Binary { dest, .. } => {
+                | Instruction::Binary { dest, .. }
+                | Instruction::Not { dest, .. } => {
                     let clean = dest.trim_start_matches('%').to_string();
                     if !slots.contains_key(&clean) {
                         slots.insert(clean, next_slot);
@@ -347,9 +386,14 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::Alloc { dest, size } => {
-                    let offset = self.data_section.len();
-                    self.data_section.resize(offset + size, 0);
-                    self.buffer_offsets.insert(dest.clone(), offset);
+                    let offset = if let Some(&off) = self.buffer_offsets.get(dest) {
+                        off
+                    } else {
+                        let offset = self.data_section.len();
+                        self.data_section.resize(offset + size + 16, 0);
+                        self.buffer_offsets.insert(dest.clone(), offset);
+                        offset
+                    };
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
                     let vaddr = base_data_vaddr + (offset as u64);
@@ -491,8 +535,12 @@ impl MachineCodeEmitter {
                             // cqo; idiv rcx; mov rax, rdx
                             self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9, 0x48, 0x89, 0xd0]);
                         }
-                        BinOp::And => self.code.extend_from_slice(&[0x48, 0x21, 0xc8]),
-                        BinOp::Or => self.code.extend_from_slice(&[0x48, 0x09, 0xc8]),
+                        BinOp::And | BinOp::BitAnd => self.code.extend_from_slice(&[0x48, 0x21, 0xc8]),
+                        BinOp::Or | BinOp::BitOr => self.code.extend_from_slice(&[0x48, 0x09, 0xc8]),
+                        BinOp::Xor => self.code.extend_from_slice(&[0x48, 0x31, 0xc8]),
+                        BinOp::Shl => self.code.extend_from_slice(&[0x48, 0xd3, 0xe0]),
+                        BinOp::Shr => self.code.extend_from_slice(&[0x48, 0xd3, 0xe8]),
+                        BinOp::Sar => self.code.extend_from_slice(&[0x48, 0xd3, 0xf8]),
                         BinOp::Eq => {
                             // cmp rax, rcx; sete al; movzx rax, al
                             self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x94, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
@@ -514,6 +562,19 @@ impl MachineCodeEmitter {
                         }
                     }
 
+                    let clean = dest.trim_start_matches('%');
+                    self.emit_store_stack(X86Reg::Rax, slots[clean]);
+                }
+
+                Instruction::Not { dest, ty, src } => {
+                    load_op_into_reg(self, src, X86Reg::Rax);
+                    if matches!(ty, Type::Bool) {
+                        // xor rax, 1
+                        self.code.extend_from_slice(&[0x48, 0x83, 0xf0, 0x01]);
+                    } else {
+                        // not rax
+                        self.code.extend_from_slice(&[0x48, 0xf7, 0xd0]);
+                    }
                     let clean = dest.trim_start_matches('%');
                     self.emit_store_stack(X86Reg::Rax, slots[clean]);
                 }
@@ -742,78 +803,4 @@ impl MachineCodeEmitter {
 
         Ok(())
     }
-
-    /// Thực thi trực tiếp qua JIT Memory (mmap PROT_READ | PROT_WRITE | PROT_EXEC)
-    pub unsafe fn run_jit(&self) -> Result<i64, String> {
-        if self.code.is_empty() {
-            return Err("Không có mã máy để thực thi JIT".into());
-        }
-
-        let total_size = self.code.len() + self.data_section.len();
-        let alloc_size = ((total_size + 4095) / 4096) * 4096;
-
-        let mmap_ptr = unsafe { libc_mmap(alloc_size)? };
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.code.as_ptr(), mmap_ptr, self.code.len());
-            if !self.data_section.is_empty() {
-                let data_ptr = mmap_ptr.add(self.code.len());
-                std::ptr::copy_nonoverlapping(self.data_section.as_ptr(), data_ptr, self.data_section.len());
-            }
-        }
-
-        let main_offset = *self.func_offsets.get("main").unwrap_or(&0);
-        let fn_ptr: fn() -> i64 = unsafe { std::mem::transmute(mmap_ptr.add(main_offset)) };
-
-        let result = fn_ptr();
-        unsafe { libc_munmap(mmap_ptr, alloc_size)?; }
-
-        Ok(result)
-    }
-}
-
-// Cấp phát bộ nhớ ảo bằng raw Linux syscall sys_mmap (không cần libc crate)
-unsafe fn libc_mmap(size: usize) -> Result<*mut u8, String> {
-    let mut addr: *mut u8;
-    // Syscall 9: sys_mmap(addr=0, len=size, prot=7 (RWX), flags=0x22 (MAP_PRIVATE | MAP_ANONYMOUS), fd=-1, offset=0)
-    unsafe {
-        std::arch::asm!(
-            "syscall",
-            in("rax") 9,
-            in("rdi") 0,
-            in("rsi") size,
-            in("rdx") 7, // PROT_READ | PROT_WRITE | PROT_EXEC
-            in("r10") 0x22, // MAP_PRIVATE | MAP_ANONYMOUS
-            in("r8") -1,
-            in("r9") 0,
-            lateout("rax") addr,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-
-    if (addr as isize) < 0 && (addr as isize) > -4096 {
-        return Err("mmap cấp phát vùng nhớ JIT thất bại".into());
-    }
-    Ok(addr)
-}
-
-unsafe fn libc_munmap(addr: *mut u8, size: usize) -> Result<(), String> {
-    let ret: isize;
-    // Syscall 11: sys_munmap(addr, len)
-    unsafe {
-        std::arch::asm!(
-            "syscall",
-            in("rax") 11,
-            in("rdi") addr,
-            in("rsi") size,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    if ret != 0 {
-        return Err("munmap thất bại".into());
-    }
-    Ok(())
 }

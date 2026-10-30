@@ -41,7 +41,7 @@ Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at comp
 - `DECREASES <expr>`: Loop ranking function (expression strictly decreases towards 0, proving termination and avoiding infinite loops).
 - `ASSERT <expr>`: Static assertion at a specific execution point.
 
-*Supported expressions in contracts:* `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, `len(%slice)`.
+*Supported expressions in contracts:* `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, `^`, `<<`, `>>`, `len(%slice)`.
 
 ### II. Constants & Value Movement
 - `%dest = CONST <type> <val>`: Load typed constant (`%x = CONST i64 42`, `%flag = CONST bool true`).
@@ -61,8 +61,13 @@ Binary operations take exactly 2 operands (no nested expressions):
 - `%dest = LTE %a %b`: Less than or equal
 - `%dest = GT %a %b`: Greater than
 - `%dest = GTE %a %b`: Greater than or equal
-- `%dest = AND %a %b`: Logical AND
-- `%dest = OR %a %b`: Logical OR
+- `%dest = AND %a %b`: Logical AND (bool) hoặc Bitwise AND (i64 / `AND i64` / `BAND`)
+- `%dest = OR %a %b`: Logical OR (bool) hoặc Bitwise OR (i64 / `OR i64` / `BOR`)
+- `%dest = XOR %a %b`: Bitwise XOR (i64) hoặc Logical XOR (bool)
+- `%dest = SHL %a %b`: Shift Left (dịch trái `a << b`)
+- `%dest = SHR %a %b`: Logical Shift Right (dịch phải logic chèn 0)
+- `%dest = SAR %a %b`: Arithmetic Shift Right (dịch phải số học bảo toàn dấu)
+- `%dest = NOT %a`: Logical NOT (bool) hoặc Bitwise NOT (i64 / `NOT i64` / `BITNOT`)
 
 ### IV. Functions & Control Flow
 - `%dest = CALL <func_name> [arg1 arg2 ...]`: Call function with positional arguments.

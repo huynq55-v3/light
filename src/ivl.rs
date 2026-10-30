@@ -30,6 +30,7 @@ pub enum IvlExpr {
         else_val: Box<IvlExpr>,
     },
     Not(Box<IvlExpr>),
+    BitNot(Box<IvlExpr>),
     Len(String),
     /// SMT Theory of Arrays: select(mem, offset) - Đọc từ ô nhớ
     Select {
@@ -210,6 +211,7 @@ impl IvlLowerer {
                 else_val: Box::new(Self::subst_expr(else_val, from, to)),
             },
             IvlExpr::Not(e) => IvlExpr::Not(Box::new(Self::subst_expr(e, from, to))),
+            IvlExpr::BitNot(e) => IvlExpr::BitNot(Box::new(Self::subst_expr(e, from, to))),
             IvlExpr::Mask8(e) => IvlExpr::Mask8(Box::new(Self::subst_expr(e, from, to))),
             IvlExpr::Select { mem, offset } => {
                 let clean_mem = mem.trim_start_matches('%');
@@ -255,6 +257,8 @@ impl IvlLowerer {
                 Instruction::AssignConst { dest, .. }
                 | Instruction::Mov { dest, .. }
                 | Instruction::Binary { dest, .. }
+                | Instruction::Not { dest, .. }
+                | Instruction::Alloc { dest, .. }
                 | Instruction::AllocSlice { dest, .. }
                 | Instruction::SlicePtr { dest, .. }
                 | Instruction::SliceLen { dest, .. }
@@ -393,6 +397,19 @@ impl IvlLowerer {
                         lhs: Box::new(e1),
                         rhs: Box::new(e2),
                     },
+                    is_memory: false,
+                });
+            }
+            Instruction::Not { dest, ty, src } => {
+                let e = Self::operand_to_expr(src);
+                let expr = if matches!(ty, Type::Bool) {
+                    IvlExpr::Not(Box::new(e))
+                } else {
+                    IvlExpr::BitNot(Box::new(e))
+                };
+                stmts.push(IvlStmt::Assign {
+                    dest: dest.clone(),
+                    expr,
                     is_memory: false,
                 });
             }

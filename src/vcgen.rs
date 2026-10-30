@@ -97,6 +97,12 @@ impl VcGen {
                     BinOp::Gte => format!("(ite (bvsge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
                     BinOp::And => format!("(ite (and (distinct {} (_ bv0 64)) (distinct {} (_ bv0 64))) (_ bv1 64) (_ bv0 64))", s1, s2),
                     BinOp::Or => format!("(ite (or (distinct {} (_ bv0 64)) (distinct {} (_ bv0 64))) (_ bv1 64) (_ bv0 64))", s1, s2),
+                    BinOp::BitAnd => format!("(bvand {} {})", s1, s2),
+                    BinOp::BitOr => format!("(bvor {} {})", s1, s2),
+                    BinOp::Xor => format!("(bvxor {} {})", s1, s2),
+                    BinOp::Shl => format!("(bvshl {} (bvand {} (_ bv63 64)))", s1, s2),
+                    BinOp::Shr => format!("(bvlshr {} (bvand {} (_ bv63 64)))", s1, s2),
+                    BinOp::Sar => format!("(bvashr {} (bvand {} (_ bv63 64)))", s1, s2),
                 }
             }
             IvlExpr::Ite { cond, then_val, else_val } => {
@@ -108,6 +114,10 @@ impl VcGen {
             IvlExpr::Not(e) => {
                 let s = self.expr_to_bv(e);
                 format!("(ite (= {} (_ bv0 64)) (_ bv1 64) (_ bv0 64))", s)
+            }
+            IvlExpr::BitNot(e) => {
+                let s = self.expr_to_bv(e);
+                format!("(bvnot {})", s)
             }
             IvlExpr::Mask8(e) => {
                 let s = self.expr_to_bv(e);
@@ -138,6 +148,11 @@ impl VcGen {
                         let b1 = self.expr_to_bool(lhs);
                         let b2 = self.expr_to_bool(rhs);
                         format!("(or {} {})", b1, b2)
+                    }
+                    BinOp::Xor => {
+                        let b1 = self.expr_to_bool(lhs);
+                        let b2 = self.expr_to_bool(rhs);
+                        format!("(xor {} {})", b1, b2)
                     }
                     _ => {
                         let bv = self.expr_to_bv(expr);
@@ -191,7 +206,7 @@ impl VcGen {
                 self.collect_scalar_vars(then_val, vars);
                 self.collect_scalar_vars(else_val, vars);
             }
-            IvlExpr::Not(inner) => self.collect_scalar_vars(inner, vars),
+            IvlExpr::Not(inner) | IvlExpr::BitNot(inner) => self.collect_scalar_vars(inner, vars),
             IvlExpr::Mask8(inner) => self.collect_scalar_vars(inner, vars),
             _ => {}
         }
@@ -217,7 +232,7 @@ impl VcGen {
                 Self::collect_mem_names(then_val, mems);
                 Self::collect_mem_names(else_val, mems);
             }
-            IvlExpr::Not(inner) => Self::collect_mem_names(inner, mems),
+            IvlExpr::Not(inner) | IvlExpr::BitNot(inner) => Self::collect_mem_names(inner, mems),
             IvlExpr::Mask8(inner) => Self::collect_mem_names(inner, mems),
             _ => {}
         }

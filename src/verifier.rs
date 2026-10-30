@@ -961,6 +961,9 @@ impl Verifier {
             let mut used_regs = Vec::new();
             match &s_inst.inst {
                 Instruction::Mov { src, .. } => used_regs.push(src),
+                Instruction::Not { src, .. } => {
+                    if let Operand::Reg(r) = src { used_regs.push(r); }
+                }
                 Instruction::Binary { src1, src2, .. } => {
                     if let Operand::Reg(r) = src1 { used_regs.push(r); }
                     if let Operand::Reg(r) = src2 { used_regs.push(r); }
@@ -1025,6 +1028,7 @@ impl Verifier {
                 Instruction::AssignConst { dest, .. }
                 | Instruction::Mov { dest, .. }
                 | Instruction::Binary { dest, .. }
+                | Instruction::Not { dest, .. }
                 | Instruction::AllocSlice { dest, .. }
                 | Instruction::SlicePtr { dest, .. }
                 | Instruction::SliceLen { dest, .. }
@@ -1181,7 +1185,7 @@ impl Verifier {
             Expr::Binary { op: BinOp::Or, lhs, rhs } => {
                 format!("(or {} {})", Self::expr_to_smt_bool(lhs), Self::expr_to_smt_bool(rhs))
             }
-            Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => {
+            Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::Xor | BinOp::Shl | BinOp::Shr | BinOp::Sar, .. } => {
                 format!("(distinct {} (_ bv0 64))", Self::expr_to_smt(expr))
             }
             _ => Self::expr_to_smt(expr),
@@ -1219,6 +1223,12 @@ impl Verifier {
                     BinOp::Mul => format!("(bvmul {} {})", s1, s2),
                     BinOp::Div => format!("(bvsdiv {} {})", s1, s2),
                     BinOp::Mod => format!("(bvsrem {} {})", s1, s2),
+                    BinOp::BitAnd => format!("(bvand {} {})", s1, s2),
+                    BinOp::BitOr => format!("(bvor {} {})", s1, s2),
+                    BinOp::Xor => format!("(bvxor {} {})", s1, s2),
+                    BinOp::Shl => format!("(bvshl {} (bvand {} (_ bv63 64)))", s1, s2),
+                    BinOp::Shr => format!("(bvlshr {} (bvand {} (_ bv63 64)))", s1, s2),
+                    BinOp::Sar => format!("(bvashr {} (bvand {} (_ bv63 64)))", s1, s2),
                     BinOp::Eq => format!("(= {} {})", s1, s2),
                     BinOp::Neq => format!("(not (= {} {}))", s1, s2),
                     BinOp::Lt => format!("(bvslt {} {})", s1, s2),

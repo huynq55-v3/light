@@ -1,0 +1,106 @@
+# ==============================================================================
+# BÀI 4: TÌM KIẾM TUYẾN TÍNH TRONG BUFFER (find_byte)
+# Kiểm chứng an toàn bộ nhớ trong vòng lặp (Loop Invariant + Bounds + RET_IF)
+#
+# Khế ước:
+#   - Hậu điều kiện (ENSURE): %ret >= 0 && %ret <= 16
+#   - Invariant: %i >= 0 && %i <= 16
+#   - Ranking function (DECREASES): 16 - %i
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC find_byte(target: i64) -> i64
+  # Hậu điều kiện: Index trả về luôn nằm trong đoạn [0, 16] (16 nghĩa là không tìm thấy)
+  ENSURE %ret >= 0 && %ret <= 16
+
+  # Cấp phát buffer 16 bytes
+  %buf = ALLOC slice<u8> 16
+
+  # Ghi dữ liệu mẫu "LIGHT-LANG-Z3!\0" (15 bytes + null) vào buffer
+  STORE_STR %buf 0 "LIGHT-LANG-Z3!\0"
+
+  %i = CONST i64 0
+  %c_16 = CONST i64 16
+
+  LOOP find_loop
+    # Bất biến vòng lặp: %i luôn nằm trong giới hạn an toàn [0, 16]
+    INVARIANT %i >= 0 && %i <= 16
+    # Hàm giảm chứng minh vòng lặp luôn dừng
+    DECREASES 16 - %i
+
+    # Điều kiện dừng khi duyệt hết 16 bytes
+    %done = GTE i64 %i %c_16
+    BREAK_IF %done
+
+    # Đọc 1 byte tại vị trí %i:
+    # Z3 chứng minh toán học: nhờ Invariant (%i <= 16) và chưa Break (%i < 16)
+    # nên 0 <= %i < 16 -> An toàn bộ nhớ tuyệt đối (Không Out-of-Bounds)!
+    %val = LOAD8 %buf %i
+
+    # Kiểm tra nếu khớp ký tự tìm kiếm -> Early return ngay lập tức
+    %found = EQ i64 %val target
+    RET_IF %found %i
+
+    # Tăng biến đếm và cập nhật trạng thái vòng lặp
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP find_loop
+
+  # Kết thúc vòng lặp mà không tìm thấy -> Trả về 16 (Not found)
+  RET %c_16
+END_FUNC
+
+FUNC main() -> i64
+  %false_b = CONST bool false
+
+  # Test Case 1: Tìm 'L' (ASCII 76) -> xuất hiện ngay tại index 0 (kích hoạt RET_IF)
+  %t1 = CONST i64 76
+  %r1 = CALL find_byte %t1
+  %exp1 = CONST i64 0
+  %ok1 = EQ i64 %r1 %exp1
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # Test Case 2: Tìm 'G' (ASCII 71) -> xuất hiện tại index 2 (kích hoạt RET_IF)
+  %t2 = CONST i64 71
+  %r2 = CALL find_byte %t2
+  %exp2 = CONST i64 2
+  %ok2 = EQ i64 %r2 %exp2
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # Test Case 3: Tìm '3' (ASCII 51) -> xuất hiện tại index 12 (kích hoạt RET_IF)
+  %t3 = CONST i64 51
+  %r3 = CALL find_byte %t3
+  %exp3 = CONST i64 12
+  %ok3 = EQ i64 %r3 %exp3
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # Test Case 4: Tìm 'X' (ASCII 88) -> Không có trong chuỗi -> trả về 16
+  %t4 = CONST i64 88
+  %r4 = CALL find_byte %t4
+  %exp4 = CONST i64 16
+  %ok4 = EQ i64 %r4 %exp4
+  %fail4 = EQ bool %ok4 %false_b
+  BR_IF %fail4 test_failed
+
+  # Banner thông báo thành công
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] find_byte: Loop memory safety & early return verified!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] find_byte test assertion failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC

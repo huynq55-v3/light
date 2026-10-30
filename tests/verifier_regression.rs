@@ -1903,6 +1903,157 @@ END_FUNC
     assert!(all_passed, "MOV buffer alias sau khi STORE8 không được gây Sort Conflict và phải verify đúng 42! Got: {:?}", results);
 }
 
+#[test]
+fn test_v57_bitwise_operations_verification_and_vm() {
+    let code = r#"
+FUNC test_bitwise(a: i64, b: i64) -> i64
+  REQUIRE a == 60 && b == 13
+  # 60 = 0011 1100
+  # 13 = 0000 1101
+
+  # AND = 0000 1100 = 12
+  %and_res = AND i64 a b
+  ASSERT %and_res == 12
+
+  # OR = 0011 1101 = 61
+  %or_res = OR i64 a b
+  ASSERT %or_res == 61
+
+  # XOR = 0011 0001 = 49
+  %xor_res = XOR a b
+  ASSERT %xor_res == 49
+
+  # SHL a 2 = 60 << 2 = 240
+  %two = CONST i64 2
+  %shl_res = SHL a %two
+  ASSERT %shl_res == 240
+
+  # SHR a 2 = 60 >> 2 = 15
+  %shr_res = SHR a %two
+  ASSERT %shr_res == 15
+
+  ENSURE %xor_res == 49
+  RET %xor_res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V57");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Bitwise AND, OR, XOR, SHL, SHR phải được Z3 verify thành công! Got: {:?}", results);
+}
+
+#[test]
+fn test_v58_not_operator_bitwise_and_bool() {
+    let code = r#"
+FUNC test_not(flag: bool, x: i64) -> i64
+  REQUIRE flag == true && x == 0
+  %not_flag = NOT flag
+  ASSERT %not_flag == false
+
+  # Bitwise NOT trên 0 là -1 (0xFFFFFFFFFFFFFFFF)
+  %not_x = NOT i64 x
+  ASSERT %not_x == -1
+
+  RET %not_x
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V58");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Toán tử NOT cho cả bool và i64 phải verify thành công! Got: {:?}", results);
+}
+
+#[test]
+fn test_v59_contract_bitwise_operators() {
+    let code = r#"
+FUNC test_contract_ops(a: i64) -> i64
+  REQUIRE (a ^ a) == 0 && (a << 1) == a * 2
+  %res = CONST i64 0
+  ENSURE %res == 0
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V59");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Biểu thức hợp đồng chứa ^ và << phải verify thành công! Got: {:?}", results);
+}
+
+#[test]
+fn test_v60_bitwise_and_vs_logical_and_soundness() {
+    let code = r#"
+FUNC test_soundness() -> i64
+  # 2 & 1 = 0 trong bitwise (BitAnd)
+  %two = CONST i64 2
+  %one = CONST i64 1
+  %bit = AND i64 %two %one
+  ASSERT %bit == 0
+
+  # Logic AND trên bool
+  %t1 = CONST bool true
+  %t2 = CONST bool true
+  %log = AND %t1 %t2
+  ASSERT %log == true
+
+  # Cú pháp BAND / BOR tường minh
+  %band_res = BAND %two %one
+  ASSERT %band_res == 0
+  %bor_res = BOR %two %one
+  ASSERT %bor_res == 3
+
+  RET %bit
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V60");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Phân biệt tuyệt đối giữa BitAnd (2 & 1 = 0) và Logical AND phải verify PASS! Got: {:?}", results);
+}
+
+#[test]
+fn test_v61_shift_masked_at_64_bits_soundness() {
+    let code = r#"
+FUNC test_shift_64() -> i64
+  %one = CONST i64 1
+  %c_64 = CONST i64 64
+  # x86_64 CPU masks shift count với 63: 1 << (64 & 63) == 1 << 0 == 1
+  %res = SHL %one %c_64
+  ASSERT %res == 1
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V61");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "Phép SHL với 64 bit phải được SMT mask 63 khớp với x86_64! Got: {:?}", results);
+}
+
+#[test]
+fn test_v62_alloc_in_aot_execution() {
+    let code = r#"
+FUNC main() -> i64
+  ALLOC %buf 32
+  %c_0 = CONST i64 0
+  %c_77 = CONST i64 77
+  STORE8 %buf %c_0 %c_77
+  %val = LOAD8 %buf %c_0
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V62");
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT");
+
+    let tmp_bin = format!("/tmp/light_test_v62_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(77), "AOT Alloc và Load8 phải trả về đúng exit code 77!");
+}
+
+
+
 
 
 

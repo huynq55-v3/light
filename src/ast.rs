@@ -23,6 +23,7 @@ pub enum Value {
     Bool(bool),
     Ptr(usize),
     /// Slice Fat Pointer: con trỏ, độ dài, và tên buffer gốc
+    #[allow(dead_code)]
     Slice {
         ptr: usize,
         len: usize,
@@ -51,6 +52,12 @@ pub enum BinOp {
     Gte,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    Xor,
+    Shl,
+    Shr,
+    Sar,
 }
 
 /// Các biểu thức logic dùng trong kiểm chứng (Verification Expressions)
@@ -105,6 +112,12 @@ pub enum Instruction {
         dest: String,
         src1: Operand,
         src2: Operand,
+    },
+    /// Phủ định logic hoặc đảo bit: %dest = NOT <type> %src hoặc %dest = NOT %src
+    Not {
+        dest: String,
+        ty: Type,
+        src: Operand,
     },
 
     /// Gọi hàm: %dest = CALL func_name arg1 arg2 ...

@@ -1,0 +1,38 @@
+# ==============================================================================
+# BÀI 4 (MUTATION BUG): ĐỌC BỘ NHỚ TRƯỚC KHI KIỂM TRA BREAK_IF
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC find_byte_buggy(target: i64) -> i64
+  ENSURE %ret >= 0 && %ret <= 16
+
+  %buf = ALLOC slice<u8> 16
+  %i = CONST i64 0
+  %c_16 = CONST i64 16
+
+  LOOP find_loop
+    INVARIANT %i >= 0 && %i <= 16
+    DECREASES 16 - %i
+
+    # LỖI KINH ĐIỂN: Đọc bộ nhớ TRƯỚC KHI kiểm tra dừng (BREAK_IF)!
+    # Tại bước lặp cuối khi %i = 16, LOAD8 sẽ đọc vượt ngoài 16 bytes (index 16 không hợp lệ)!
+    %val = LOAD8 %buf %i
+
+    %done = GTE i64 %i %c_16
+    BREAK_IF %done
+
+    %found = EQ i64 %val target
+    RET_IF %found %i
+
+    %next_i = ADD i64 %i 1
+    %i = MOV %next_i
+  END_LOOP find_loop
+
+  RET %c_16
+END_FUNC
+
+FUNC main() -> i64
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC

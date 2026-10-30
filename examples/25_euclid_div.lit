@@ -1,0 +1,120 @@
+# ==============================================================================
+# BÀI 5: THUẬT TOÁN CHIA EUCLID BẰNG PHÉP TRỪ LIÊN TIẾP (int_div)
+# Kiểm chứng bất biến vòng lặp (Loop Invariant) liên kết nhiều biến
+#
+# Khế ước:
+#   - Tiền điều kiện: REQUIRE a >= 0 && a <= 1000 && b > 0 && b <= 100
+#   - Invariant phương trình toán học: %quot * b + %rem == a
+#   - Invariant miền giá trị: %rem >= 0 && %rem <= a && %quot >= 0 && %quot <= a
+#   - Ranking function: DECREASES %rem
+#   - Hậu điều kiện: ENSURE %quot * b + %rem == a
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC int_div(a: i64, b: i64) -> i64
+  # Tiền điều kiện: a trong [0, 1000], số chia b trong [1, 100]
+  REQUIRE a >= 0 && a <= 1000 && b > 0 && b <= 100
+
+  # Khởi tạo thương số %quot = 0, số dư ban đầu %rem = a
+  %rem = MOV a
+  %quot = CONST i64 0
+
+  LOOP div_loop
+    # Bất biến 1: Miền giá trị của %rem và %quot
+    INVARIANT %rem >= 0 && %rem <= a
+    INVARIANT %quot >= 0 && %quot <= a
+
+    # Bất biến 2: Bảo toàn đẳng thức Euclid a = %quot * b + %rem qua từng vòng lặp!
+    INVARIANT %quot * b + %rem == a
+
+    # Ranking function: %rem giảm nghiêm ngặt sau mỗi bước lặp
+    DECREASES %rem
+
+    # Điều kiện dừng: Khi số dư %rem nhỏ hơn số chia b
+    %done = LT i64 %rem b
+    BREAK_IF %done
+
+    # Trừ liên tiếp và tăng thương số
+    %next_rem = SUB i64 %rem b
+    %next_quot = ADD i64 %quot 1
+
+    # Cập nhật trạng thái vòng lặp
+    %rem = MOV %next_rem
+    %quot = MOV %next_quot
+  END_LOOP div_loop
+
+  # Kiểm chứng tính chất số dư: 0 <= %rem < b
+  ASSERT %rem >= 0 && %rem < b
+
+  # Cam kết hậu điều kiện: Thương và số dư thỏa mãn a = %quot * b + %rem
+  ENSURE %quot * b + %rem == a
+  RET %quot
+END_FUNC
+
+FUNC main() -> i64
+  %false_b = CONST bool false
+
+  # Test Case 1: 14 / 3 = 4 (14 = 4 * 3 + 2, rem = 2)
+  %a1 = CONST i64 14
+  %b1 = CONST i64 3
+  %q1 = CALL int_div %a1 %b1
+  %exp1 = CONST i64 4
+  %ok1 = EQ i64 %q1 %exp1
+  %fail1 = EQ bool %ok1 %false_b
+  BR_IF %fail1 test_failed
+
+  # Test Case 2: 100 / 10 = 10 (chia hết, rem = 0)
+  %a2 = CONST i64 100
+  %b2 = CONST i64 10
+  %q2 = CALL int_div %a2 %b2
+  %exp2 = CONST i64 10
+  %ok2 = EQ i64 %q2 %exp2
+  %fail2 = EQ bool %ok2 %false_b
+  BR_IF %fail2 test_failed
+
+  # Test Case 3: 5 / 10 = 0 (số bị chia < số chia -> thương 0, rem = 5)
+  %a3 = CONST i64 5
+  %b3 = CONST i64 10
+  %q3 = CALL int_div %a3 %b3
+  %exp3 = CONST i64 0
+  %ok3 = EQ i64 %q3 %exp3
+  %fail3 = EQ bool %ok3 %false_b
+  BR_IF %fail3 test_failed
+
+  # Test Case 4: 0 / 7 = 0 (a = 0)
+  %a4 = CONST i64 0
+  %b4 = CONST i64 7
+  %q4 = CALL int_div %a4 %b4
+  %exp4 = CONST i64 0
+  %ok4 = EQ i64 %q4 %exp4
+  %fail4 = EQ bool %ok4 %false_b
+  BR_IF %fail4 test_failed
+
+  # Test Case 5: 1000 / 1 = 1000 (biên tối đa của REQUIRE)
+  %a5 = CONST i64 1000
+  %b5 = CONST i64 1
+  %q5 = CALL int_div %a5 %b5
+  %exp5 = CONST i64 1000
+  %ok5 = EQ i64 %q5 %exp5
+  %fail5 = EQ bool %ok5 %false_b
+  BR_IF %fail5 test_failed
+
+  # Banner thông báo thành công
+  %msg_pass = ALLOC slice<u8> 80
+  STORE_STR %msg_pass "✅ [PASS] int_div: Euclid division verified by Z3 SMT & executed!\n"
+  %len_pass = SLICE_LEN %msg_pass
+  %dummy_p = CALL std_print_slice %msg_pass %len_pass
+
+  %exit_zero = CONST i64 0
+  RET %exit_zero
+
+LABEL test_failed
+  %msg_fail = ALLOC slice<u8> 48
+  STORE_STR %msg_fail "❌ [FAIL] int_div assertion failed!\n"
+  %len_fail = SLICE_LEN %msg_fail
+  %dummy_f = CALL std_print_slice %msg_fail %len_fail
+
+  %exit_one = CONST i64 1
+  RET %exit_one
+END_FUNC

@@ -26,7 +26,7 @@ Light integrates a verification condition generator (VCGen) modeled after Boogie
 ### 3. ⚡️ Direct Linux x86_64 Code Generation
 - Generates standalone Linux x86_64 ELF executables directly without requiring `libc` or external linkers.
 - Provides low-level Linux syscall support (`sys_read`, `sys_write`, `sys_open`, `sys_close`, `sys_exit`).
-- Includes a reference interpreter (VM) for rapid development and testing.
+- Executes programs natively via AOT compile-and-run sandbox (similar to `go run`).
 
 ---
 
@@ -37,7 +37,7 @@ Light integrates a verification condition generator (VCGen) modeled after Boogie
 - Rust & Cargo (1.70+)
 - Z3 SMT Solver (`z3` CLI installed and available in `$PATH`)
 
-### 1. Run a Program via Reference VM
+### 1. Run a Program Natively
 ```bash
 cargo run -- run examples/08_slice_safe.lit
 ```
@@ -120,8 +120,7 @@ END_FUNC
 │   ├── ivl.rs             # Boogie-style Intermediate Verification Language (IVL)
 │   ├── vcgen.rs           # SMT-LIB2 Verification Condition Generator (QF_ABV)
 │   ├── verifier.rs        # Verification pipeline & Hoare logic engine
-│   ├── vm.rs              # Reference Virtual Machine / interpreter
-│   ├── jit.rs             # Direct x86_64 Machine Code Emitter & ELF64 Packager
+│   ├── codegen.rs         # Direct x86_64 Machine Code Emitter & ELF64 Packager
 │   └── main.rs            # CLI Entrypoint (run, verify, build)
 ├── stdlib/                # Standard Library routines (.lit)
 │   ├── io.lit             # I/O and printing helpers

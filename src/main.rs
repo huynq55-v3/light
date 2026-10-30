@@ -1,17 +1,16 @@
 mod ast;
+mod codegen;
 mod ivl;
-mod jit;
 mod parser;
 mod vcgen;
 mod verifier;
-mod vm;
 
-use jit::MachineCodeEmitter;
+use codegen::MachineCodeEmitter;
 use parser::Parser;
 use verifier::{VerificationResult, Verifier};
-use vm::VirtualMachine;
 use std::env;
 use std::fs;
+use std::process::Command;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -34,13 +33,6 @@ fn main() {
                 return;
             }
             execute_file(&args[2], true);
-        }
-        "jit" => {
-            if args.len() < 3 {
-                eprintln!("Error: Missing .lit source file path for JIT execution!");
-                return;
-            }
-            execute_jit(&args[2]);
         }
         "build" => {
             if args.len() < 3 {
@@ -69,13 +61,12 @@ fn main() {
 
 fn print_usage() {
     println!("Usage:");
-    println!("  cargo run -- run <file.lit>               # Verify contracts via Z3 & run on Safe VM");
-    println!("  cargo run -- jit <file.lit>               # Direct x86_64 JIT execution via RAM");
-    println!("  cargo run -- build <file.lit> -o <bin>    # Emit standalone minimal ELF64 binary (~300B)");
+    println!("  cargo run -- run <file.lit>               # Verify contracts via Z3 & run natively (AOT compile-and-exec)");
+    println!("  cargo run -- build <file.lit> -o <bin>    # Emit standalone minimal ELF64 binary (~1KB)");
     println!("  cargo run -- verify <file.lit>            # Mathematical formal verification only\n");
 }
 
-fn execute_file(file_path: &str, run_vm: bool) {
+fn execute_file(file_path: &str, run_binary: bool) {
     println!("📂 Loading source file: {}", file_path);
     println!("⚡ Parsing flat SSA instructions & resolving IMPORTs...");
     let program = match Parser::parse_file(file_path) {
@@ -95,50 +86,35 @@ fn execute_file(file_path: &str, run_vm: bool) {
         std::process::exit(1);
     }
 
-    if run_vm {
-        println!("\n🚀 Executing program on Safe Virtual Machine...");
-        let main_func = program.functions.iter().find(|f| f.name == "main");
-        if let Some(func) = main_func {
-            let mut vm = VirtualMachine::with_program(&program);
-            match vm.run_function(func, &[]) {
-                Ok(ret) => {
-                    if let Some(val) = ret {
-                        println!("✨ main() returned: {:?}", val);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("❌ VM runtime error: {}", e);
-                }
-            }
-        }
-    }
-}
-
-fn execute_jit(file_path: &str) {
-    println!("📂 Loading source file for JIT: {}", file_path);
-    let program = match Parser::parse_file(file_path) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("❌ {}", e);
+    if run_binary {
+        println!("\n🚀 Compiling & Executing standalone native ELF64 binary...");
+        let pid = std::process::id();
+        let tmp_bin = format!("/tmp/light_run_{}_{}", pid, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        
+        let mut emitter = MachineCodeEmitter::new();
+        if let Err(e) = emitter.compile_for_elf(&program) {
+            eprintln!("❌ Code generation error: {}", e);
             std::process::exit(1);
         }
-    };
-    if !run_verification(&program) {
-        eprintln!("\n❌ JIT ABORTED: Contract verification failed!");
-        std::process::exit(1);
-    }
 
-    println!("\n⚡ [JIT] Emitting native x86_64 machine code for all functions...");
-    let mut emitter = MachineCodeEmitter::new();
-    let data_vaddr = emitter.data_section.as_ptr() as u64;
-    emitter.compile_program(&program, data_vaddr).expect("Compile program");
+        if let Err(e) = emitter.emit_elf64(&tmp_bin) {
+            eprintln!("❌ ELF packaging error: {}", e);
+            std::process::exit(1);
+        }
 
-    println!("🔥 Generated {} bytes of native x86_64 machine code!", emitter.code.len());
-    println!("🚀 Calling CPU directly via mmap PROT_EXEC...");
-    unsafe {
-        match emitter.run_jit() {
-            Ok(code) => println!("✨ Exit code from native JIT: {}", code),
-            Err(e) => eprintln!("❌ JIT Error: {}", e),
+        let status = Command::new(&tmp_bin).status();
+        let _ = fs::remove_file(&tmp_bin);
+
+        match status {
+            Ok(s) => {
+                if let Some(code) = s.code() {
+                    println!("✨ Process finished with exit code: {}", code);
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Process execution failed: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -160,15 +136,7 @@ fn build_elf(file_path: &str, output_path: &str) {
 
     println!("\n🛠️ [Codegen] Packaging standalone Linux ELF64 executable...");
     let mut emitter = MachineCodeEmitter::new();
-    
-    // Estimate code size in pass 1
-    let _ = emitter.compile_program(&program, 0x400000 + 120);
-    let code_len = emitter.code.len();
-
-    // Pass 2 with exact data virtual address
-    let mut emitter = MachineCodeEmitter::new();
-    let elf_data_vaddr = 0x400000u64 + 120u64 + (code_len as u64);
-    emitter.compile_program(&program, elf_data_vaddr).expect("Compile program");
+    emitter.compile_for_elf(&program).expect("Compile program");
 
     emitter.emit_elf64(output_path).expect("Emit ELF");
     let metadata = fs::metadata(output_path).expect("Metadata");

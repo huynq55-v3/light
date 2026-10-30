@@ -798,8 +798,43 @@ impl Parser {
                         rdx: Self::parse_operand(parts[6]),
                     });
                 }
+                "NOT" | "BITNOT" => {
+                    let is_bitnot = op == "BITNOT";
+                    let (ty, src) = if parts.len() == 4 {
+                        let default_ty = if is_bitnot { Type::I64 } else { Type::Bool };
+                        (default_ty, Self::parse_operand(parts[3]))
+                    } else if parts.len() >= 5 {
+                        let t = Self::parse_type(parts[3], line_no)?;
+                        (t, Self::parse_operand(parts[4]))
+                    } else {
+                        return Err(ParseError {
+                            line_no,
+                            message: "Syntax: %dest = NOT %src or %dest = NOT <type> %src".into(),
+                        });
+                    };
+                    return Ok(Instruction::Not { dest, ty, src });
+                }
                 "ADD" | "SUB" | "MUL" | "DIV" | "MOD" | "EQ" | "NEQ" | "LT" | "LTE" | "GT" | "GTE"
-                | "AND" | "OR" => {
+                | "AND" | "OR" | "BAND" | "BOR" | "XOR" | "SHL" | "SHR" | "SAR" => {
+                    let (ty, src1, src2) = if parts.len() == 5 {
+                        let default_ty = match op {
+                            "BAND" | "BOR" | "XOR" | "SHL" | "SHR" | "SAR" => Type::I64,
+                            _ => match op {
+                                "EQ" | "NEQ" | "LT" | "LTE" | "GT" | "GTE" | "AND" | "OR" => Type::Bool,
+                                _ => Type::I64,
+                            },
+                        };
+                        (default_ty, Self::parse_operand(parts[3]), Self::parse_operand(parts[4]))
+                    } else if parts.len() >= 6 {
+                        let t = Self::parse_type(parts[3], line_no)?;
+                        (t, Self::parse_operand(parts[4]), Self::parse_operand(parts[5]))
+                    } else {
+                        return Err(ParseError {
+                            line_no,
+                            message: format!("Syntax: %dest = {} src1 src2 or %dest = {} <type> src1 src2", op, op),
+                        });
+                    };
+
                     let bin_op = match op {
                         "ADD" => BinOp::Add,
                         "SUB" => BinOp::Sub,
@@ -812,24 +847,15 @@ impl Parser {
                         "LTE" => BinOp::Lte,
                         "GT" => BinOp::Gt,
                         "GTE" => BinOp::Gte,
-                        "AND" => BinOp::And,
-                        "OR" => BinOp::Or,
+                        "BAND" => BinOp::BitAnd,
+                        "BOR" => BinOp::BitOr,
+                        "AND" => if matches!(ty, Type::Bool) { BinOp::And } else { BinOp::BitAnd },
+                        "OR" => if matches!(ty, Type::Bool) { BinOp::Or } else { BinOp::BitOr },
+                        "XOR" => BinOp::Xor,
+                        "SHL" => BinOp::Shl,
+                        "SHR" => BinOp::Shr,
+                        "SAR" => BinOp::Sar,
                         _ => unreachable!(),
-                    };
-                    let (ty, src1, src2) = if parts.len() == 5 {
-                        let default_ty = match bin_op {
-                            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::And | BinOp::Or => Type::Bool,
-                            _ => Type::I64,
-                        };
-                        (default_ty, Self::parse_operand(parts[3]), Self::parse_operand(parts[4]))
-                    } else if parts.len() >= 6 {
-                        let t = Self::parse_type(parts[3], line_no)?;
-                        (t, Self::parse_operand(parts[4]), Self::parse_operand(parts[5]))
-                    } else {
-                        return Err(ParseError {
-                            line_no,
-                            message: format!("Syntax: %dest = {} src1 src2 or %dest = {} <type> src1 src2", op, op),
-                        });
                     };
                     return Ok(Instruction::Binary {
                         op: bin_op,
@@ -886,10 +912,38 @@ impl Parser {
             } else if ch == ')' {
                 depth -= 1;
             } else if depth == 0 && &bytes[i..i + pat_bytes.len()] == pat_bytes {
-                // Tránh bắt nhầm '<' hoặc '>' khi nó là một phần của '<=' hoặc '>='
-                if (pat == "<" || pat == ">") && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
-                    i += 1;
-                    continue;
+                // Tránh bắt nhầm '<' hoặc '>' khi nó là một phần của '<=', '>=', '<<', hoặc '>>'
+                if pat == "<" {
+                    if (i + 1 < bytes.len() && (bytes[i + 1] == b'=' || bytes[i + 1] == b'<'))
+                        || (i > 0 && bytes[i - 1] == b'<')
+                    {
+                        i += 1;
+                        continue;
+                    }
+                }
+                if pat == ">" {
+                    if (i + 1 < bytes.len() && (bytes[i + 1] == b'=' || bytes[i + 1] == b'>'))
+                        || (i > 0 && bytes[i - 1] == b'>')
+                    {
+                        i += 1;
+                        continue;
+                    }
+                }
+                if pat == "&" {
+                    if (i + 1 < bytes.len() && bytes[i + 1] == b'&')
+                        || (i > 0 && bytes[i - 1] == b'&')
+                    {
+                        i += 1;
+                        continue;
+                    }
+                }
+                if pat == "|" {
+                    if (i + 1 < bytes.len() && bytes[i + 1] == b'|')
+                        || (i > 0 && bytes[i - 1] == b'|')
+                    {
+                        i += 1;
+                        continue;
+                    }
                 }
                 return Some(i);
             }
@@ -927,6 +981,39 @@ impl Parser {
             });
         }
 
+        // 2b. Phép bitwise Or: |
+        if let Some(pos) = Self::find_top_level(s, "|") {
+            let lhs = Self::parse_expr(&s[..pos], line_no)?;
+            let rhs = Self::parse_expr(&s[pos + 1..], line_no)?;
+            return Ok(Expr::Binary {
+                op: BinOp::BitOr,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        // 2c. Phép bitwise Xor: ^
+        if let Some(pos) = Self::find_top_level(s, "^") {
+            let lhs = Self::parse_expr(&s[..pos], line_no)?;
+            let rhs = Self::parse_expr(&s[pos + 1..], line_no)?;
+            return Ok(Expr::Binary {
+                op: BinOp::Xor,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        // 2d. Phép bitwise And: &
+        if let Some(pos) = Self::find_top_level(s, "&") {
+            let lhs = Self::parse_expr(&s[..pos], line_no)?;
+            let rhs = Self::parse_expr(&s[pos + 1..], line_no)?;
+            return Ok(Expr::Binary {
+                op: BinOp::BitAnd,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
         // 3. Phép so sánh: ==, !=, <=, >=, <, >
         let comparisons = [
             ("==", BinOp::Eq),
@@ -938,6 +1025,20 @@ impl Parser {
         ];
 
         for (sym, op) in comparisons {
+            if let Some(pos) = Self::find_top_level(s, sym) {
+                let lhs = Self::parse_expr(&s[..pos], line_no)?;
+                let rhs = Self::parse_expr(&s[pos + sym.len()..], line_no)?;
+                return Ok(Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                });
+            }
+        }
+
+        // 3b. Phép dịch bit: <<, >>
+        let shifts = [("<<", BinOp::Shl), (">>", BinOp::Shr)];
+        for (sym, op) in shifts {
             if let Some(pos) = Self::find_top_level(s, sym) {
                 let lhs = Self::parse_expr(&s[..pos], line_no)?;
                 let rhs = Self::parse_expr(&s[pos + sym.len()..], line_no)?;

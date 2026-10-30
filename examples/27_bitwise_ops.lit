@@ -1,0 +1,54 @@
+# ==============================================================================
+# BÀI 27: TẬP LỆNH BITWISE & LOGIC HỆ THỐNG (.lit)
+# Kiểm chứng toán học hình thức các phép toán bit: AND, OR, XOR, SHL, SHR, SAR, NOT
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC bitwise_demo(val: i64) -> i64
+  # Giả sử val trong khoảng [1, 100]
+  REQUIRE val > 0 && val <= 100
+
+  # 1. Phép XOR với chính nó luôn bằng 0
+  %zero = XOR val val
+  ASSERT %zero == 0
+
+  # 2. Phép dịch trái 1 bit tương đương nhân đôi: (val << 1) == val * 2
+  %c_1 = CONST i64 1
+  %doubled = SHL val %c_1
+  ASSERT %doubled == val * 2
+
+  # 3. Phép dịch phải 1 bit: (doubled >> 1) == val
+  %restored = SHR %doubled %c_1
+  ASSERT %restored == val
+
+  # 4. Phép Bitwise AND với 0 luôn bằng 0
+  %c_0 = CONST i64 0
+  %and_zero = AND i64 val %c_0
+  ASSERT %and_zero == 0
+
+  # 5. Phép Bitwise OR với 0 luôn giữ nguyên giá trị
+  %or_val = OR i64 val %c_0
+  ASSERT %or_val == val
+
+  # 6. Đảo bit 2 lần: NOT (NOT val) == val
+  %inv1 = NOT i64 val
+  %inv2 = NOT i64 %inv1
+  ASSERT %inv2 == val
+
+  ENSURE %zero == 0 && %restored == val
+  RET %zero
+END_FUNC
+
+FUNC main() -> i64
+  %c_42 = CONST i64 42
+  %res = CALL bitwise_demo %c_42
+
+  %msg = ALLOC slice<u8> 128
+  STORE_STR %msg "✅ [PASS] Bitwise ISA Operations (XOR, SHL, SHR, AND, OR, NOT) verified!\n"
+  %len = SLICE_LEN %msg
+  %dummy = CALL std_print_slice %msg %len
+
+  %zero_exit = CONST i64 0
+  RET %zero_exit
+END_FUNC

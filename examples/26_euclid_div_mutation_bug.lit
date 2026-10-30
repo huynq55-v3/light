@@ -1,0 +1,42 @@
+# ==============================================================================
+# BÀI 5 (MUTATION BUG): VI PHẠM BẤT BIẾN TOÁN HỌC (Invariant Preservation Violation)
+# ==============================================================================
+
+IMPORT "../stdlib/io.lit"
+
+FUNC int_div_buggy(a: i64, b: i64) -> i64
+  REQUIRE a >= 0 && a <= 1000 && b > 0 && b <= 100
+
+  %rem = MOV a
+  %quot = CONST i64 0
+
+  LOOP div_loop
+    INVARIANT %rem >= 0 && %rem <= a
+    INVARIANT %quot >= 0 && %quot <= a
+
+    # Bất biến toán học đòi hỏi đẳng thức a = %quot * b + %rem
+    INVARIANT %quot * b + %rem == a
+    DECREASES %rem
+
+    %done = LT i64 %rem b
+    BREAK_IF %done
+
+    %next_rem = SUB i64 %rem b
+
+    # BUG CỐ Ý: Lập trình viên tăng %quot lên 2 thay vì 1!
+    %c_2 = CONST i64 2
+    %next_quot = ADD i64 %quot %c_2
+
+    %rem = MOV %next_rem
+    %quot = MOV %next_quot
+  END_LOOP div_loop
+
+  ASSERT %rem >= 0 && %rem < b
+  ENSURE %quot * b + %rem == a
+  RET %quot
+END_FUNC
+
+FUNC main() -> i64
+  %zero = CONST i64 0
+  RET %zero
+END_FUNC
