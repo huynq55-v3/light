@@ -2329,9 +2329,649 @@ END_FUNC
     let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
     let _ = std::fs::remove_file(&tmp_bin);
 
-    // func_a strlen is 5, main strlen is 63 => 5 + 63 = 68
-    assert_eq!(status.code(), Some(68), "Không được có đụng độ buffer giữa func_a và main, kết quả phải là 68!");
+    // func_a slice len is 16, main slice len is 64 => 16 + 64 = 80
+    assert_eq!(status.code(), Some(80), "Không được có đụng độ buffer giữa func_a và main, kết quả phải là 80!");
 }
+
+#[test]
+fn test_v72_slice_fat_pointer_call_abi_runtime() {
+    // V72: Verify passing slice<u8> across functions receives both ptr and len via System V ABI
+    let code = r#"
+FUNC get_slice_len(s: slice<u8>) -> i64
+  REQUIRE len(s) >= 0
+  %l = SLICE_LEN s
+  ENSURE %l == len(s)
+  RET %l
+END_FUNC
+
+FUNC main() -> i64
+  %buf = ALLOC slice<u8> 42
+  STORE_STR %buf "Hello World"
+  # slice capacity is 42. Calling get_slice_len must receive len = 42 in 2nd ABI register (RSI)
+  %res = CALL get_slice_len %buf
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V72");
+    for func in &program.functions {
+        let results = Verifier::verify_function(func, Some(&program));
+        let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+        assert!(all_ok, "Hàm {} phải verified! Got: {:?}", func.name, results);
+    }
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT V72");
+
+    let tmp_bin = format!("/tmp/light_test_v72_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V72");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(42), "get_slice_len phải đọc đúng độ dài slice là 42 từ slot _len!");
+}
+
+#[test]
+fn test_v73_parser_modulo_without_space_and_escaped_comment() {
+    // V73: Modulo without space e.g. %a%2 or (a+b)%2, and escaped quotes in comments
+    let code = r#"
+FUNC parse_modulo_test(a: i64) -> i64
+  REQUIRE a > 0 && a%2 == 0
+  # Comment with escaped quote \" and then a comment char # inside string:
+  %dummy = CONST i64 0
+  %rem = MOD i64 a 2
+  ENSURE %rem == 0
+  RET %rem
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V73");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_ok, "V73: Expressions with a%2 and comments with escaped quotes must parse and verify! Got: {:?}", results);
+}
+
+#[test]
+fn test_v74_call_havocs_memory_slice_argument() {
+    // V74: Soundness test for interprocedural memory modification.
+    // If func caller writes 42 to %buf[0], then calls a helper that takes %buf and writes 99,
+    // the verifier must NOT assume %buf[0] is still 42 after the CALL!
+    let code = r#"
+FUNC helper_write(b: slice<u8>) -> i64
+  REQUIRE len(b) > 0
+  STORE8 b 0 99
+  RET 0
+END_FUNC
+
+FUNC main_unsound_check() -> i64
+  %buf = ALLOC slice<u8> 16
+  STORE8 %buf 0 42
+  %dummy = CALL helper_write %buf
+  # Caller asserts that %buf[0] is still 42. Since helper_write mutated it,
+  # the SMT solver must FAIL this assert (cannot prove %val == 42 because %buf was havoc'd).
+  %val = LOAD8 %buf 0
+  ASSERT %val == 42
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V74");
+    let results = Verifier::verify_function(&program.functions[1], Some(&program));
+    let has_failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { category: PropertyCategory::Functional, .. }));
+    assert!(has_failed, "V74: Caller must NOT assume memory is unchanged after passing slice to helper! Got: {:?}", results);
+}
+
+
+
+#[test]
+fn test_v68_continue_if_omitted_counter_update_termination_fails() {
+    // V68: Soundness check for CONTINUE_IF in loop.
+    // When %skip is true (%i == 2), skipping the counter increment %i = ADD %i 1
+    // causes an infinite loop at runtime. Verifier must FAIL on termination step!
+    let code = r#"
+FUNC loop_with_bad_continue(n: i64) -> i64
+  REQUIRE n >= 5 && n <= 10
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %skip = EQ i64 %i 2
+    CONTINUE_IF %skip
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %i == n
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V68");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { category: PropertyCategory::Termination, .. }));
+    assert!(has_failed, "V68: CONTINUE_IF without counter update must FAIL termination check! Got: {:?}", results);
+}
+
+#[test]
+fn test_v69_undefined_var_in_contract_fails_static_assignment() {
+    // V69: Typo in ENSURE or ASSERT variable must fail SSA Definite Assignment check
+    let code_ensure_typo = r#"
+FUNC typo_in_ensure(x: i64) -> i64
+  REQUIRE x >= 0
+  %res = ADD i64 x 1
+  ENSURE %resutl >= 0
+  RET %res
+END_FUNC
+"#;
+    let prog1 = Parser::parse(code_ensure_typo).expect("Parse V69 ENSURE typo");
+    let res1 = Verifier::verify_function(&prog1.functions[0], Some(&prog1));
+    let failed1 = res1.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("resutl")));
+    assert!(failed1, "Typo in ENSURE variable '%resutl' must fail SSA check! Got: {:?}", res1);
+
+    let code_assert_typo = r#"
+FUNC typo_in_assert(x: i64) -> i64
+  REQUIRE x >= 0
+  %res = ADD i64 x 1
+  ASSERT %undefined_var > 0
+  RET %res
+END_FUNC
+"#;
+    let prog2 = Parser::parse(code_assert_typo).expect("Parse V69 ASSERT typo");
+    let res2 = Verifier::verify_function(&prog2.functions[0], Some(&prog2));
+    let failed2 = res2.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("undefined_var")));
+    assert!(failed2, "Typo in ASSERT variable '%undefined_var' must fail SSA check! Got: {:?}", res2);
+}
+
+#[test]
+fn test_v70_arbitrary_unstructured_jump_yields_unknown() {
+    // V70: Arbitrary backward JUMP (unstructured loop outside LOOP block) must return Unknown
+    let code = r#"
+FUNC test_free_jump() -> i64
+  LABEL .loop_head
+  %res = CONST i64 42
+  JUMP .loop_head
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V70");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let has_unknown = results.iter().any(|r| matches!(r, VerificationResult::Unknown { .. }));
+    assert!(has_unknown, "Arbitrary backward JUMP must return Unknown! Got: {:?}", results);
+}
+
+#[test]
+fn test_v71_codegen_epilogue_not_skipped_when_instruction_ends_with_c3_byte() {
+    // V71: Regression test for codegen epilogue omission bug.
+    // An immediate with MSB = 0xC3 has 0xC3 as its last byte in little-endian.
+    // 0xC300_0000_0000_0000 as i64 is -4395504899778281472.
+    // If the function does not have an explicit RET at the end, codegen must NOT skip
+    // the epilogue just because code.last() == Some(&0xC3)!
+    let code = r#"
+FUNC func_ending_in_c3() -> i64
+  %c = CONST i64 -4395504899778281472
+  # Function does not end with RET statement; codegen default epilogue must be emitted!
+END_FUNC
+
+FUNC main() -> i64
+  %dummy = CALL func_ending_in_c3
+  %ret = CONST i64 42
+  RET %ret
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V71");
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT V71");
+
+    let tmp_bin = format!("/tmp/light_test_v71_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V71");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(42), "Hàm func_ending_in_c3 phải return an toàn về main và main thoát với code 42!");
+}
+
+#[test]
+fn test_v75_break_cond_reassigned_after_break() {
+    // V75: Condition variable reassigned after BREAK_IF must not cause unsound vacuous truth or false failure
+    let code = r#"
+FUNC test_reassigned_break(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 10
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    # Reassign %done to true after break point
+    %done = CONST bool true
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %i == n
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V75");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V75 test failed: BREAK_IF condition reassigned must verify correctly without vacuous truth! Got: {:?}", results);
+}
+
+#[test]
+fn test_v76_continue_if_with_counter_reassignment() {
+    // V76: Loop with CONTINUE_IF where condition variable is reassigned
+    let code = r#"
+FUNC test_continue_reassign(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 10
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %done = GTE i64 %i n
+    BREAK_IF %done
+    %skip = LT i64 %i 0
+    CONTINUE_IF %skip
+    %skip = CONST bool true
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  ENSURE %i == n
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V76");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V76 test failed: CONTINUE_IF with reassigned condition must verify! Got: {:?}", results);
+}
+
+#[test]
+fn test_v77_nested_loops_decreases_isolation() {
+    // V77: Nested loops with multi-decreases and CONTINUE_IF in both inner and outer loops
+    let code = r#"
+FUNC test_nested_decreases(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 5
+  %i = CONST i64 0
+  LOOP outer
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %d1 = GTE i64 %i n
+    BREAK_IF %d1
+    %j = CONST i64 0
+    LOOP inner
+      INVARIANT %j >= 0 && %j <= 3
+      DECREASES 3 - %j
+      %d2 = GTE i64 %j 3
+      BREAK_IF %d2
+      %j = ADD i64 %j 1
+    END_LOOP inner
+    %i = ADD i64 %i 1
+  END_LOOP outer
+  ENSURE %i == n
+  RET %i
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V77");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V77 test failed: Nested loops decreases isolation failed! Got: {:?}", results);
+}
+
+#[test]
+fn test_v78_slice_ptr_and_mov_length_propagation() {
+    // V78: Verification and Codegen for SLICE_PTR and MOV slice length propagation
+    let code = r#"
+FUNC test_slice_alias(s: slice<u8>) -> i64
+  REQUIRE len(s) == 10
+  %ptr = SLICE_PTR s
+  %len1 = SLICE_LEN %ptr
+  ASSERT %len1 == 10
+  %mov_ptr = MOV %ptr
+  %len2 = SLICE_LEN %mov_ptr
+  ASSERT %len2 == 10
+  ENSURE %ret == 10
+  RET %len2
+END_FUNC
+
+FUNC main() -> i64
+  %arr = ALLOC slice<u8> 10
+  %ptr = SLICE_PTR %arr
+  %res = CALL test_slice_alias %ptr
+  RET %res
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V78");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V78 verifier failed: Slice length propagation failed in IVL/Verifier! Got: {:?}", results);
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&program).expect("Compile AOT V78");
+
+    let tmp_bin = format!("/tmp/light_test_v78_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V78");
+
+    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(10), "V78 runtime test failed: SLICE_LEN on aliased MOV/SLICE_PTR should return 10!");
+}
+
+#[test]
+fn test_v79_multi_hop_buffer_size_propagation() {
+    // V79: Multi-hop alias chain (%a -> %b -> %c -> %d) verifies memory bounds with fixed-point
+    let code = r#"
+FUNC test_multihop_buf() -> i64
+  ALLOC %a 16
+  %b = MOV %a
+  %c = SLICE_PTR %b
+  %d = MOV %c
+  STORE8 %d 15 42
+  %val = LOAD8 %d 15
+  ASSERT %val == 42
+  RET %val
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V79");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V79 failed: Multi-hop fixed-point buffer size and alias propagation failed! Got: {:?}", results);
+}
+
+#[test]
+fn test_v80_slice_modified_in_loop_havocs_length() {
+    // V80: Invariant len(s) == 10 verified when s is rebound via MOV in loop body
+    let code = r#"
+FUNC test_loop_rebind(s: slice<u8>, s2: slice<u8>) -> i64
+  REQUIRE len(s) == 10 && len(s2) == 10
+  %curr = MOV s
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 5
+    INVARIANT len(%curr) == 10
+    DECREASES 5 - %i
+    %done = GTE i64 %i 5
+    BREAK_IF %done
+    %curr = MOV s2
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  %final_len = SLICE_LEN %curr
+  ASSERT %final_len == 10
+  RET %final_len
+END_FUNC
+"#;
+    let program = Parser::parse(code).expect("Parse V80");
+    let results = Verifier::verify_function(&program.functions[0], Some(&program));
+    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
+    assert!(all_passed, "V80 failed: Slice rebind in loop must havoc length and verify with invariant! Got: {:?}", results);
+}
+
+#[test]
+fn test_v81_loop_structure_validation_mismatched_and_unclosed() {
+    // V81a: Mismatched END_LOOP must fail verifier
+    let code_mismatched = r#"
+FUNC test_mismatch() -> i64
+  %done = CONST bool true
+  LOOP loop_a
+    BREAK_IF %done
+  END_LOOP loop_b
+  RET 0
+END_FUNC
+"#;
+    let prog_mismatch = Parser::parse(code_mismatched).expect("Parse V81a");
+    let res_mismatch = Verifier::verify_function(&prog_mismatch.functions[0], Some(&prog_mismatch));
+    let failed_mismatch = res_mismatch.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Mismatched END_LOOP")));
+    assert!(failed_mismatch, "Mismatched END_LOOP must fail verification! Got: {:?}", res_mismatch);
+
+    // V81b: Unclosed LOOP must fail verifier and codegen
+    let code_unclosed = r#"
+FUNC main() -> i64
+  %done = CONST bool true
+  LOOP loop_never_closed
+    BREAK_IF %done
+  RET 0
+END_FUNC
+"#;
+    let prog_unclosed = Parser::parse(code_unclosed).expect("Parse V81b");
+    let res_unclosed = Verifier::verify_function(&prog_unclosed.functions[0], Some(&prog_unclosed));
+    let failed_unclosed = res_unclosed.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Unclosed LOOP")));
+    assert!(failed_unclosed, "Unclosed LOOP must fail verification! Got: {:?}", res_unclosed);
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    let codegen_err = emitter.compile_for_elf(&prog_unclosed);
+    assert!(codegen_err.is_err(), "Codegen must return Err for unclosed LOOP!");
+    assert!(codegen_err.unwrap_err().contains("Unclosed LOOP"));
+
+    // V81c: Undefined JUMP target must fail verifier
+    let code_undefined_jump = r#"
+FUNC test_undefined_jump() -> i64
+  JUMP .non_existent_label
+  RET 0
+END_FUNC
+"#;
+    let prog_jump = Parser::parse(code_undefined_jump).expect("Parse V81c");
+    let res_jump = Verifier::verify_function(&prog_jump.functions[0], Some(&prog_jump));
+    let failed_jump = res_jump.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Undefined label") || reason.contains("not defined")));
+    assert!(failed_jump, "Undefined JUMP target must fail verification! Got: {:?}", res_jump);
+}
+
+#[test]
+fn test_v82_break_continue_outside_loop() {
+    let code_break = r#"
+FUNC main() -> i64
+  %t = CONST bool true
+  BREAK_IF %t
+  RET 0
+END_FUNC
+"#;
+    let prog_b = Parser::parse(code_break).expect("Parse V82 Break");
+    let res_b = Verifier::verify_function(&prog_b.functions[0], Some(&prog_b));
+    let failed_b = res_b.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("BREAK_IF must be placed inside a LOOP")));
+    assert!(failed_b, "BREAK_IF outside loop must fail verifier! Got: {:?}", res_b);
+
+    let mut emitter_b = light::codegen::MachineCodeEmitter::new();
+    let err_b = emitter_b.compile_for_elf(&prog_b);
+    assert!(err_b.is_err(), "BREAK_IF outside loop must fail codegen!");
+    assert!(err_b.unwrap_err().contains("BREAK_IF outside of LOOP"));
+
+    let code_cont = r#"
+FUNC main() -> i64
+  %t = CONST bool true
+  CONTINUE_IF %t
+  RET 0
+END_FUNC
+"#;
+    let prog_c = Parser::parse(code_cont).expect("Parse V82 Continue");
+    let res_c = Verifier::verify_function(&prog_c.functions[0], Some(&prog_c));
+    let failed_c = res_c.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("CONTINUE_IF must be placed inside a LOOP")));
+    assert!(failed_c, "CONTINUE_IF outside loop must fail verifier! Got: {:?}", res_c);
+
+    let mut emitter_c = light::codegen::MachineCodeEmitter::new();
+    let err_c = emitter_c.compile_for_elf(&prog_c);
+    assert!(err_c.is_err(), "CONTINUE_IF outside loop must fail codegen!");
+    assert!(err_c.unwrap_err().contains("CONTINUE_IF outside of LOOP"));
+}
+
+#[test]
+fn test_v83_slice_rebind_different_length_requires_invariant() {
+    // V83: When a slice alias is rebound in loop, its length is havoced and unsound ASSERT fails without invariant
+    let code_unsound = r#"
+FUNC test_unsound_rebind(s: slice<u8>, s2: slice<u8>) -> i64
+  REQUIRE len(s) == 10 && len(s2) == 5
+  %curr = MOV s
+  %i = CONST i64 0
+  LOOP l1
+    INVARIANT %i >= 0 && %i <= 5
+    DECREASES 5 - %i
+    %done = GTE i64 %i 5
+    BREAK_IF %done
+    %curr = MOV s2
+    %i = ADD i64 %i 1
+  END_LOOP l1
+  %final_len = SLICE_LEN %curr
+  ASSERT %final_len == 10
+  RET %final_len
+END_FUNC
+"#;
+    let prog = Parser::parse(code_unsound).expect("Parse V83 Unsound");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    let has_failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
+    assert!(has_failed, "Rebinding slice in loop with different length without invariant MUST fail post-loop ASSERT! Got: {:?}", res);
+}
+
+#[test]
+fn test_v84_runtime_store_str_codegen_and_execution() {
+    // V84: STORE_STR must execute at runtime via rep movsb machine code
+    let code = r#"
+FUNC main() -> i64
+  %buf = ALLOC slice<u8> 16
+  STORE8 %buf 0 88
+  STORE8 %buf 1 88
+  STORE_STR %buf 0 "OK"
+  %c0 = LOAD8 %buf 0
+  %c1 = LOAD8 %buf 1
+  # 'O' = 79, 'K' = 75
+  %eq0 = EQ i64 %c0 79
+  %eq1 = EQ i64 %c1 75
+  %and = AND %eq0 %eq1
+  BR_IF %and .good
+  RET 1
+LABEL .good
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V84");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    for r in &res {
+        if let VerificationResult::Failed { reason, .. } = r {
+            panic!("V84 verification failed: {}", reason);
+        }
+    }
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&prog).expect("Compile V84");
+    let elf_path = format!("/tmp/light_test_v84_{}", std::process::id());
+    emitter.emit_elf64(&elf_path).expect("Emit ELF V84");
+    std::process::Command::new("chmod").args(["+x", &elf_path]).output().expect("chmod");
+
+    let out = std::process::Command::new(&elf_path).output().expect("Exec V84");
+    let _ = std::fs::remove_file(&elf_path);
+    assert_eq!(out.status.code(), Some(0), "V84 runtime STORE_STR must produce exit code 0");
+}
+
+#[test]
+fn test_v85_unsigned_arithmetic_div_and_comparisons() {
+    // V85: U64 division and comparisons use unsigned semantics (bvudiv, bvult, setb, div)
+    let code = r#"
+FUNC unsigned_math() -> i64
+  %a = CONST u64 18446744073709551615
+  %b = CONST u64 10
+  %is_lt = LT u64 %a %b
+  ASSERT %is_lt == false
+  %res = DIV u64 %a %b
+  ASSERT %res > 0
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V85");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    let has_failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
+    assert!(!has_failed, "V85: Unsigned arithmetic and comparison contracts must verify! Got: {:?}", res);
+}
+
+#[test]
+fn test_v86_load64_unaligned_fails_alignment_check() {
+    // V86: LOAD64 on non-8-byte aligned offset (e.g. offset 1) must fail 8-byte alignment assert
+    let code = r#"
+FUNC unaligned_load(p: i64) -> i64
+  %off = CONST i64 1
+  %val = LOAD64 p %off
+  RET %val
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V86");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    let failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("8-byte alignment check")));
+    assert!(failed, "V86: LOAD64 with offset 1 must fail 8-byte alignment check! Got: {:?}", res);
+}
+
+#[test]
+fn test_v87_cfg_branch_unassigned_variable_fails() {
+    // V87: CFG definite assignment must detect variable assigned only in one branch
+    let code = r#"
+FUNC bad_branch(cond: bool) -> i64
+  BR_IF cond .then
+  JUMP .merge
+LABEL .then
+  %x = CONST i64 100
+LABEL .merge
+  %res = ADD i64 %x 1
+  RET %res
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V87");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    let failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("SSA Definite Assignment")));
+    assert!(failed, "V87: %x defined only in one branch must fail CFG Definite Assignment! Got: {:?}", res);
+}
+
+#[test]
+fn test_v88_mixed_memory_sort_load8_and_load64_fails() {
+    // V88: Mixing LOAD8 and LOAD64 on same buffer must fail static memory sort consistency
+    let code = r#"
+FUNC mixed_sort() -> i64
+  %buf = ALLOC slice<u8> 16
+  STORE8 %buf 0 1
+  %w = LOAD64 %buf 0
+  RET %w
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V88");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    let failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Memory Sort Consistency")));
+    assert!(failed, "V88: Mixing LOAD8 and LOAD64 on same buffer must fail Memory Sort Consistency! Got: {:?}", res);
+}
+
+#[test]
+fn test_v89_main_with_argc_argv_runtime() {
+    // V89: main(argc, argv) receiving command line arguments from Linux kernel stack without segfault
+    let code = r#"
+FUNC main(argc: i64, argv: i64) -> i64
+  %ok = GTE i64 argc 1
+  BR_IF %ok .success
+  RET 1
+LABEL .success
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V89");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    for r in &res {
+        if let VerificationResult::Failed { reason, .. } = r {
+            panic!("V89 verification failed: {}", reason);
+        }
+    }
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&prog).expect("Compile V89");
+    let elf_path = format!("/tmp/light_test_v89_{}", std::process::id());
+    emitter.emit_elf64(&elf_path).expect("Emit ELF V89");
+    std::process::Command::new("chmod").args(["+x", &elf_path]).output().expect("chmod");
+
+    let out = std::process::Command::new(&elf_path).output().expect("Exec V89");
+    let _ = std::fs::remove_file(&elf_path);
+    assert_eq!(out.status.code(), Some(0), "V89 main(argc, argv) must run cleanly and return 0");
+}
+
+#[test]
+fn test_v90_f64_rejection_type_check() {
+    // V90: Parser or verifier must reject f64 with clear error
+    let code_parser = r#"
+FUNC float_fn(x: f64) -> i64
+  RET 0
+END_FUNC
+"#;
+    let parse_res = Parser::parse(code_parser);
+    assert!(parse_res.is_err(), "Parser must reject f64 type! Got: {:?}", parse_res);
+    assert!(parse_res.unwrap_err().message.contains("Floating-point type 'f64' is not yet supported"));
+}
+
+
+
+
 
 
 

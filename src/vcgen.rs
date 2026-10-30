@@ -80,21 +80,57 @@ impl VcGen {
                 let v = self.expr_to_bv(val);
                 format!("(store {} {} {})", m, off, v)
             }
-            IvlExpr::Binary { op, lhs, rhs } => {
+            IvlExpr::Binary { op, lhs, rhs, is_unsigned } => {
                 let s1 = self.expr_to_bv(lhs);
                 let s2 = self.expr_to_bv(rhs);
                 match op {
                     BinOp::Add => format!("(bvadd {} {})", s1, s2),
                     BinOp::Sub => format!("(bvsub {} {})", s1, s2),
                     BinOp::Mul => format!("(bvmul {} {})", s1, s2),
-                    BinOp::Div => format!("(bvsdiv {} {})", s1, s2),
-                    BinOp::Mod => format!("(bvsrem {} {})", s1, s2),
+                    BinOp::Div => {
+                        if *is_unsigned {
+                            format!("(bvudiv {} {})", s1, s2)
+                        } else {
+                            format!("(bvsdiv {} {})", s1, s2)
+                        }
+                    }
+                    BinOp::Mod => {
+                        if *is_unsigned {
+                            format!("(bvurem {} {})", s1, s2)
+                        } else {
+                            format!("(bvsrem {} {})", s1, s2)
+                        }
+                    }
                     BinOp::Eq => format!("(ite (= {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
                     BinOp::Neq => format!("(ite (distinct {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
-                    BinOp::Lt => format!("(ite (bvslt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
-                    BinOp::Lte => format!("(ite (bvsle {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
-                    BinOp::Gt => format!("(ite (bvsgt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
-                    BinOp::Gte => format!("(ite (bvsge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2),
+                    BinOp::Lt => {
+                        if *is_unsigned {
+                            format!("(ite (bvult {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        } else {
+                            format!("(ite (bvslt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        }
+                    }
+                    BinOp::Lte => {
+                        if *is_unsigned {
+                            format!("(ite (bvule {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        } else {
+                            format!("(ite (bvsle {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        }
+                    }
+                    BinOp::Gt => {
+                        if *is_unsigned {
+                            format!("(ite (bvugt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        } else {
+                            format!("(ite (bvsgt {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        }
+                    }
+                    BinOp::Gte => {
+                        if *is_unsigned {
+                            format!("(ite (bvuge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        } else {
+                            format!("(ite (bvsge {} {}) (_ bv1 64) (_ bv0 64))", s1, s2)
+                        }
+                    }
                     BinOp::And => format!("(ite (and (distinct {} (_ bv0 64)) (distinct {} (_ bv0 64))) (_ bv1 64) (_ bv0 64))", s1, s2),
                     BinOp::Or => format!("(ite (or (distinct {} (_ bv0 64)) (distinct {} (_ bv0 64))) (_ bv1 64) (_ bv0 64))", s1, s2),
                     BinOp::BitAnd => format!("(bvand {} {})", s1, s2),
@@ -126,19 +162,73 @@ impl VcGen {
         }
     }
 
+    /// Chuyển đổi biểu thức bộ nhớ (Array) sang chuỗi SMT-LIB2
+    pub fn expr_to_mem(&self, expr: &IvlExpr) -> String {
+        match expr {
+            IvlExpr::Var(v) => {
+                let clean = v.trim_start_matches('%');
+                if self.declared_mems.contains(clean) {
+                    clean.to_string()
+                } else if let Some(m) = self.current_mem.get(clean) {
+                    m.clone()
+                } else {
+                    format!("{}_mem_0", clean)
+                }
+            }
+            IvlExpr::Store { mem, offset, val } => {
+                let clean_m = mem.trim_start_matches('%');
+                let m = self.current_mem.get(clean_m).cloned().unwrap_or_else(|| format!("{}_mem_0", clean_m));
+                let off = self.expr_to_bv(offset);
+                let v = self.expr_to_bv(val);
+                format!("(store {} {} {})", m, off, v)
+            }
+            IvlExpr::Ite { cond, then_val, else_val } => {
+                let c = self.expr_to_bool(cond);
+                let t = self.expr_to_mem(then_val);
+                let e = self.expr_to_mem(else_val);
+                format!("(ite {} {} {})", c, t, e)
+            }
+            _ => self.expr_to_bv(expr),
+        }
+    }
+
     /// Chuyển đổi biểu thức sang biểu thức logic Boolean chuẩn của SMT
     pub fn expr_to_bool(&self, expr: &IvlExpr) -> String {
         match expr {
-            IvlExpr::Binary { op, lhs, rhs } => {
+            IvlExpr::Binary { op, lhs, rhs, is_unsigned } => {
                 let s1 = self.expr_to_bv(lhs);
                 let s2 = self.expr_to_bv(rhs);
                 match op {
                     BinOp::Eq => format!("(= {} {})", s1, s2),
                     BinOp::Neq => format!("(distinct {} {})", s1, s2),
-                    BinOp::Lt => format!("(bvslt {} {})", s1, s2),
-                    BinOp::Lte => format!("(bvsle {} {})", s1, s2),
-                    BinOp::Gt => format!("(bvsgt {} {})", s1, s2),
-                    BinOp::Gte => format!("(bvsge {} {})", s1, s2),
+                    BinOp::Lt => {
+                        if *is_unsigned {
+                            format!("(bvult {} {})", s1, s2)
+                        } else {
+                            format!("(bvslt {} {})", s1, s2)
+                        }
+                    }
+                    BinOp::Lte => {
+                        if *is_unsigned {
+                            format!("(bvule {} {})", s1, s2)
+                        } else {
+                            format!("(bvsle {} {})", s1, s2)
+                        }
+                    }
+                    BinOp::Gt => {
+                        if *is_unsigned {
+                            format!("(bvugt {} {})", s1, s2)
+                        } else {
+                            format!("(bvsgt {} {})", s1, s2)
+                        }
+                    }
+                    BinOp::Gte => {
+                        if *is_unsigned {
+                            format!("(bvuge {} {})", s1, s2)
+                        } else {
+                            format!("(bvsge {} {})", s1, s2)
+                        }
+                    }
                     BinOp::And => {
                         let b1 = self.expr_to_bool(lhs);
                         let b2 = self.expr_to_bool(rhs);
@@ -238,6 +328,26 @@ impl VcGen {
         }
     }
 
+    /// Thu thập tên các bộ đệm bộ nhớ trong biểu thức bộ nhớ (kể cả trong IvlExpr::Var của Ite)
+    pub fn collect_mem_expr_names(expr: &IvlExpr, mems: &mut HashSet<String>) {
+        match expr {
+            IvlExpr::Var(m) => {
+                mems.insert(m.trim_start_matches('%').to_string());
+            }
+            IvlExpr::Store { mem, offset, val } => {
+                mems.insert(mem.trim_start_matches('%').to_string());
+                Self::collect_mem_names(offset, mems);
+                Self::collect_mem_names(val, mems);
+            }
+            IvlExpr::Ite { cond, then_val, else_val } => {
+                Self::collect_mem_names(cond, mems);
+                Self::collect_mem_expr_names(then_val, mems);
+                Self::collect_mem_expr_names(else_val, mems);
+            }
+            _ => Self::collect_mem_names(expr, mems),
+        }
+    }
+
     /// Thực thi kiểm chứng một chuỗi vi lệnh IVL
     pub fn verify_sequence(
         &mut self,
@@ -253,33 +363,13 @@ impl VcGen {
                     let mut needed_vars = HashSet::new();
                     let mut needed_mems = HashSet::new();
 
+                    self.collect_scalar_vars(expr, &mut needed_vars);
                     if *is_memory {
-                        if let IvlExpr::Ite { cond, then_val, else_val } = expr {
-                            self.collect_scalar_vars(cond, &mut needed_vars);
-                            if let IvlExpr::Var(m) = then_val.as_ref() {
-                                needed_mems.insert(m.trim_start_matches('%').to_string());
-                            } else {
-                                Self::collect_mem_names(then_val, &mut needed_mems);
-                            }
-                            if let IvlExpr::Var(m) = else_val.as_ref() {
-                                needed_mems.insert(m.trim_start_matches('%').to_string());
-                            } else {
-                                Self::collect_mem_names(else_val, &mut needed_mems);
-                            }
-                        } else {
-                            self.collect_scalar_vars(expr, &mut needed_vars);
-                            Self::collect_mem_names(expr, &mut needed_mems);
-                        }
+                        Self::collect_mem_expr_names(expr, &mut needed_mems);
                     } else {
-                        self.collect_scalar_vars(expr, &mut needed_vars);
                         Self::collect_mem_names(expr, &mut needed_mems);
                     }
 
-                    for nv in needed_vars {
-                        if !self.declared_mems.contains(&nv) {
-                            self.declared_vars.insert(nv);
-                        }
-                    }
                     for nm in needed_mems {
                         if !self.current_mem.contains_key(&nm) {
                             let init_mem = format!("{}_mem_0", nm);
@@ -287,16 +377,22 @@ impl VcGen {
                             self.current_mem.insert(nm, init_mem);
                         }
                     }
+                    for nv in needed_vars {
+                        if !self.declared_mems.contains(&nv) && !self.current_mem.contains_key(&nv) {
+                            self.declared_vars.insert(nv);
+                        }
+                    }
 
                     self.step_counter += 1;
                     let clean = dest.trim_start_matches('%');
-                    let val_smt = self.expr_to_bv(expr);
                     if *is_memory {
+                        let val_smt = self.expr_to_mem(expr);
                         let ver = format!("{}_mem_{}", clean, self.step_counter);
                         self.declared_mems.insert(ver.clone());
                         self.assertions_smt.push(format!("(assert (= {} {}))", ver, val_smt));
                         self.current_mem.insert(clean.to_string(), ver);
                     } else {
+                        let val_smt = self.expr_to_bv(expr);
                         let ver = format!("{}_v{}", clean, self.step_counter);
                         self.declared_vars.insert(ver.clone());
                         self.assertions_smt.push(format!("(assert (= {} {}))", ver, val_smt));
@@ -414,6 +510,7 @@ mod tests {
                     op: BinOp::Add,
                     lhs: Box::new(IvlExpr::Var("x".to_string())),
                     rhs: Box::new(IvlExpr::IntConst(5)),
+                    is_unsigned: false,
                 },
                 is_memory: false,
             },
@@ -423,6 +520,7 @@ mod tests {
                     op: BinOp::Eq,
                     lhs: Box::new(IvlExpr::Var("y".to_string())),
                     rhs: Box::new(IvlExpr::IntConst(15)),
+                    is_unsigned: false,
                 },
                 goal_name: "test y == 15".to_string(),
                 category: PropertyCategory::Functional,
@@ -434,6 +532,7 @@ mod tests {
                     op: BinOp::Eq,
                     lhs: Box::new(IvlExpr::Var("y".to_string())),
                     rhs: Box::new(IvlExpr::IntConst(999)),
+                    is_unsigned: false,
                 },
                 goal_name: "test y == 999".to_string(),
                 category: PropertyCategory::Functional,
@@ -503,6 +602,7 @@ mod tests {
                     op: BinOp::Eq,
                     lhs: Box::new(IvlExpr::Var("val0".to_string())),
                     rhs: Box::new(IvlExpr::IntConst(42)),
+                    is_unsigned: false,
                 },
                 goal_name: "test memory read after write val0 == 42".to_string(),
                 category: PropertyCategory::Safety,
@@ -514,6 +614,7 @@ mod tests {
                     op: BinOp::Eq,
                     lhs: Box::new(IvlExpr::Var("val1".to_string())),
                     rhs: Box::new(IvlExpr::IntConst(100)),
+                    is_unsigned: false,
                 },
                 goal_name: "test memory non-aliasing at offset 1 val1 == 100".to_string(),
                 category: PropertyCategory::Safety,

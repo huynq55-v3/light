@@ -226,12 +226,20 @@ impl Parser {
 
     fn strip_inline_comment(line: &str) -> String {
         let mut in_str = false;
+        let mut escaped = false;
         let mut res = String::new();
         for ch in line.chars() {
-            if ch == '"' {
-                in_str = !in_str;
-            }
-            if ch == '#' && !in_str {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+            } else if ch == '"' {
+                in_str = true;
+            } else if ch == '#' {
                 break;
             }
             res.push(ch);
@@ -245,7 +253,10 @@ impl Parser {
             "i64" => Ok(Type::I64),
             "u64" => Ok(Type::U64),
             "u8" => Ok(Type::U8),
-            "f64" => Ok(Type::F64),
+            "f64" => Err(ParseError {
+                line_no,
+                message: "Floating-point type 'f64' is not yet supported in Light SMT verifier (planned for future QF_FP support)".into(),
+            }),
             "bool" => Ok(Type::Bool),
             "ptr" => Ok(Type::Ptr),
             _ => {
@@ -274,7 +285,7 @@ impl Parser {
                 }
                 Err(ParseError {
                     line_no,
-                    message: format!("Unsupported type: '{}'. Supported: i64, u64, u8, f64, bool, ptr, arr<T, N>, slice<T>", s),
+                    message: format!("Unsupported type: '{}'. Supported: i64, u64, u8, bool, ptr, arr<T, N>, slice<T>", s),
                 })
             }
         }
@@ -1119,9 +1130,14 @@ impl Parser {
             if ch == '*' || ch == '/' || ch == '%' {
                 let left_part = s[..i].trim();
                 let right_part = s[i + 1..].trim();
-                // Nếu là dấu '%', phải có khoảng trắng phía sau hoặc không phải là tiền tố thanh ghi '%var'
-                if ch == '%' && !s[i + 1..].starts_with(' ') {
-                    continue;
+                // Nếu là dấu '%', nó chỉ là toán tử Modulo nếu phía sau KHÔNG PHẢI là tên định danh biến/thanh ghi.
+                // Tên biến/thanh ghi: bắt đầu bằng chữ cái hoặc '_' (vd: %a, %i, %_tmp).
+                // Nếu phía sau là dấu cách, số, dấu ngoặc '(', '-' (unary), thì đó là phép toán Modulo!
+                if ch == '%' {
+                    let rem = s[i + 1..].trim_start();
+                    if rem.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+                        continue;
+                    }
                 }
                 if !left_part.is_empty()
                     && !right_part.is_empty()
@@ -1187,8 +1203,11 @@ impl Parser {
         if let Ok(num) = s.parse::<i64>() {
             return Ok(Expr::IntConst(num));
         }
-        if let Ok(flt) = s.parse::<f64>() {
-            return Ok(Expr::FloatConst(flt));
+        if let Ok(_flt) = s.parse::<f64>() {
+            return Err(ParseError {
+                line_no: 0,
+                message: "Floating-point numbers are not supported in Light contracts (use scaled integers instead)".into(),
+            });
         }
 
         Ok(Expr::Var(s.to_string()))

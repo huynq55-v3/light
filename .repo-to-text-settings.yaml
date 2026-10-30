@@ -9,5 +9,5 @@ gitignore-import-and-ignore: True
 ignore-tree-and-content:
   - "bootstrap/"
   - "target/"
-  - "example/"
-  - "test/"
+  - "examples/"
+  - "tests/"

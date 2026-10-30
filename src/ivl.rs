@@ -22,6 +22,7 @@ pub enum IvlExpr {
         op: BinOp,
         lhs: Box<IvlExpr>,
         rhs: Box<IvlExpr>,
+        is_unsigned: bool,
     },
     /// Biểu thức điều kiện Phi-node: ite(cond, then_expr, else_expr)
     Ite {
@@ -59,6 +60,7 @@ impl From<&Expr> for IvlExpr {
                 op: op.clone(),
                 lhs: Box::new(IvlExpr::from(lhs.as_ref())),
                 rhs: Box::new(IvlExpr::from(rhs.as_ref())),
+                is_unsigned: false,
             },
             Expr::Not(inner) => IvlExpr::Not(Box::new(IvlExpr::from(inner.as_ref()))),
         }
@@ -200,10 +202,11 @@ impl IvlLowerer {
                     expr.clone()
                 }
             }
-            IvlExpr::Binary { op, lhs, rhs } => IvlExpr::Binary {
+            IvlExpr::Binary { op, lhs, rhs, is_unsigned } => IvlExpr::Binary {
                 op: op.clone(),
                 lhs: Box::new(Self::subst_expr(lhs, from, to)),
                 rhs: Box::new(Self::subst_expr(rhs, from, to)),
+                is_unsigned: *is_unsigned,
             },
             IvlExpr::Ite { cond, then_val, else_val } => IvlExpr::Ite {
                 cond: Box::new(Self::subst_expr(cond, from, to)),
@@ -272,10 +275,11 @@ impl IvlLowerer {
                     expr.clone()
                 }
             }
-            IvlExpr::Binary { op, lhs, rhs } => IvlExpr::Binary {
+            IvlExpr::Binary { op, lhs, rhs, is_unsigned } => IvlExpr::Binary {
                 op: op.clone(),
                 lhs: Box::new(Self::subst_expr_map(lhs, map)),
                 rhs: Box::new(Self::subst_expr_map(rhs, map)),
+                is_unsigned: *is_unsigned,
             },
             IvlExpr::Ite { cond, then_val, else_val } => IvlExpr::Ite {
                 cond: Box::new(Self::subst_expr_map(cond, map)),
@@ -314,21 +318,34 @@ impl IvlLowerer {
     }
 
     /// Thu thập tất cả các biến bị sửa đổi trong một dải lệnh
-    pub fn collect_modified_vars(instructions: &[SpannedInstruction]) -> HashSet<String> {
+    pub fn collect_modified_vars(
+        instructions: &[SpannedInstruction],
+        aliases: Option<&HashMap<String, String>>,
+    ) -> HashSet<String> {
         let mut modified = HashSet::new();
         for si in instructions {
             match &si.inst {
                 Instruction::AssignConst { dest, .. }
-                | Instruction::Mov { dest, .. }
                 | Instruction::Binary { dest, .. }
                 | Instruction::Not { dest, .. }
-                | Instruction::Alloc { dest, .. }
-                | Instruction::AllocSlice { dest, .. }
-                | Instruction::SlicePtr { dest, .. }
                 | Instruction::SliceLen { dest, .. }
                 | Instruction::Load8 { dest, .. }
                 | Instruction::Load64 { dest, .. } => {
                     modified.insert(dest.trim_start_matches('%').to_string());
+                }
+                Instruction::Alloc { dest, .. }
+                | Instruction::AllocSlice { dest, .. } => {
+                    let clean = dest.trim_start_matches('%').to_string();
+                    modified.insert(clean.clone());
+                    modified.insert(format!("{}_len", clean));
+                }
+                Instruction::Mov { dest, .. }
+                | Instruction::SlicePtr { dest, .. } => {
+                    let clean = dest.trim_start_matches('%').to_string();
+                    modified.insert(clean.clone());
+                    if aliases.is_some_and(|a| a.contains_key(&clean) || a.contains_key(dest)) {
+                        modified.insert(format!("{}_len", clean));
+                    }
                 }
                 Instruction::Call { dest: Some(dest), .. }
                 | Instruction::Syscall { dest: Some(dest), .. } => {
@@ -351,29 +368,49 @@ impl IvlLowerer {
             .map(|p| p.name.trim_start_matches('%').to_string())
             .collect();
 
-        for s_inst in &func.instructions {
-            match &s_inst.inst {
-                Instruction::SlicePtr { dest, slice } => {
-                    let s_clean = slice.trim_start_matches('%').to_string();
-                    let root = aliases
-                        .get(slice)
-                        .or_else(|| aliases.get(&s_clean))
-                        .cloned()
-                        .unwrap_or(s_clean);
-                    aliases.insert(dest.clone(), root.clone());
-                    aliases.insert(dest.trim_start_matches('%').to_string(), root);
-                }
-                Instruction::Mov { dest, src } => {
-                    let s_clean = src.trim_start_matches('%').to_string();
-                    if let Some(root) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
-                        aliases.insert(dest.clone(), root.clone());
-                        aliases.insert(dest.trim_start_matches('%').to_string(), root);
-                    } else if buffer_sizes.contains_key(src) || slice_params.contains(&s_clean) {
-                        aliases.insert(dest.clone(), s_clean.clone());
-                        aliases.insert(dest.trim_start_matches('%').to_string(), s_clean);
+        for sp in &slice_params {
+            aliases.insert(sp.clone(), sp.clone());
+            aliases.insert(format!("%{}", sp), sp.clone());
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for s_inst in &func.instructions {
+                match &s_inst.inst {
+                    Instruction::SlicePtr { dest, slice } => {
+                        let s_clean = slice.trim_start_matches('%').to_string();
+                        let d_clean = dest.trim_start_matches('%').to_string();
+                        let root = aliases
+                            .get(slice)
+                            .or_else(|| aliases.get(&s_clean))
+                            .cloned()
+                            .unwrap_or_else(|| s_clean.clone());
+                        if !aliases.contains_key(&d_clean) {
+                            aliases.insert(dest.clone(), root.clone());
+                            aliases.insert(d_clean, root);
+                            changed = true;
+                        }
                     }
+                    Instruction::Mov { dest, src } => {
+                        let s_clean = src.trim_start_matches('%').to_string();
+                        let d_clean = dest.trim_start_matches('%').to_string();
+                        if let Some(root) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
+                            if !aliases.contains_key(&d_clean) {
+                                aliases.insert(dest.clone(), root.clone());
+                                aliases.insert(d_clean, root);
+                                changed = true;
+                            }
+                        } else if buffer_sizes.contains_key(src) || buffer_sizes.contains_key(&s_clean) || slice_params.contains(&s_clean) {
+                            if !aliases.contains_key(&d_clean) {
+                                aliases.insert(dest.clone(), s_clean.clone());
+                                aliases.insert(d_clean, s_clean);
+                                changed = true;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         aliases
@@ -406,22 +443,48 @@ impl IvlLowerer {
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Alloc { dest, size } => {
+                    let clean = dest.trim_start_matches('%').to_string();
                     buffer_sizes.insert(dest.clone(), *size);
+                    buffer_sizes.insert(clean, *size);
                 }
                 Instruction::AllocSlice { dest, len, .. } => {
+                    let clean = dest.trim_start_matches('%').to_string();
                     buffer_sizes.insert(dest.clone(), *len);
-                }
-                Instruction::SlicePtr { dest, slice } => {
-                    if let Some(&sz) = buffer_sizes.get(slice) {
-                        buffer_sizes.insert(dest.clone(), sz);
-                    }
-                }
-                Instruction::Mov { dest, src } => {
-                    if let Some(&sz) = buffer_sizes.get(src) {
-                        buffer_sizes.insert(dest.clone(), sz);
-                    }
+                    buffer_sizes.insert(clean, *len);
                 }
                 _ => {}
+            }
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for s_inst in &func.instructions {
+                match &s_inst.inst {
+                    Instruction::SlicePtr { dest, slice } => {
+                        let s_clean = slice.trim_start_matches('%');
+                        let d_clean = dest.trim_start_matches('%').to_string();
+                        if let Some(&sz) = buffer_sizes.get(slice).or_else(|| buffer_sizes.get(s_clean)) {
+                            if !buffer_sizes.contains_key(&d_clean) {
+                                buffer_sizes.insert(dest.clone(), sz);
+                                buffer_sizes.insert(d_clean, sz);
+                                changed = true;
+                            }
+                        }
+                    }
+                    Instruction::Mov { dest, src } => {
+                        let s_clean = src.trim_start_matches('%');
+                        let d_clean = dest.trim_start_matches('%').to_string();
+                        if let Some(&sz) = buffer_sizes.get(src).or_else(|| buffer_sizes.get(s_clean)) {
+                            if !buffer_sizes.contains_key(&d_clean) {
+                                buffer_sizes.insert(dest.clone(), sz);
+                                buffer_sizes.insert(d_clean, sz);
+                                changed = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         buffer_sizes
@@ -450,6 +513,7 @@ impl IvlLowerer {
             }
             Instruction::Mov { dest, src } => {
                 let s_clean = src.trim_start_matches('%');
+                let d_clean = dest.trim_start_matches('%');
                 if buffer_sizes.contains_key(s_clean)
                     || buffer_sizes.contains_key(src)
                     || buffer_aliases.map(|a| a.contains_key(s_clean) || a.contains_key(src)).unwrap_or(false)
@@ -457,6 +521,18 @@ impl IvlLowerer {
                     stmts.push(IvlStmt::Assign {
                         dest: dest.clone(),
                         expr: IvlExpr::IntConst(0),
+                        is_memory: false,
+                    });
+                    let actual_src = resolve_buf(src);
+                    let actual_clean = actual_src.trim_start_matches('%');
+                    let len_expr = if let Some(&sz) = buffer_sizes.get(&actual_src).or_else(|| buffer_sizes.get(src)) {
+                        IvlExpr::IntConst(sz as i64)
+                    } else {
+                        IvlExpr::Var(format!("{}_len", actual_clean))
+                    };
+                    stmts.push(IvlStmt::Assign {
+                        dest: format!("{}_len", d_clean),
+                        expr: len_expr,
                         is_memory: false,
                     });
                 } else {
@@ -467,15 +543,17 @@ impl IvlLowerer {
                     });
                 }
             }
-            Instruction::Binary { op, dest, src1, src2, .. } => {
+            Instruction::Binary { op, ty, dest, src1, src2 } => {
                 let e1 = Self::operand_to_expr(src1);
                 let e2 = Self::operand_to_expr(src2);
+                let is_unsigned = matches!(ty, Type::U64 | Type::U8);
                 stmts.push(IvlStmt::Assign {
                     dest: dest.clone(),
                     expr: IvlExpr::Binary {
                         op: op.clone(),
                         lhs: Box::new(e1),
                         rhs: Box::new(e2),
+                        is_unsigned,
                     },
                     is_memory: false,
                 });
@@ -503,7 +581,7 @@ impl IvlLowerer {
             }
             Instruction::SliceLen { dest, slice } => {
                 let actual_slice = resolve_buf(slice);
-                let s_clean = actual_slice.trim_start_matches('%');
+                let sl_clean = slice.trim_start_matches('%');
                 if let Some(&size) = buffer_sizes.get(&actual_slice).or_else(|| buffer_sizes.get(slice)) {
                     stmts.push(IvlStmt::Assign {
                         dest: dest.clone(),
@@ -513,13 +591,14 @@ impl IvlLowerer {
                 } else {
                     stmts.push(IvlStmt::Assign {
                         dest: dest.clone(),
-                        expr: IvlExpr::Var(format!("{}_len", s_clean)),
+                        expr: IvlExpr::Var(format!("{}_len", sl_clean)),
                         is_memory: false,
                     });
                 }
             }
             Instruction::SlicePtr { dest, slice } => {
                 let s_clean = slice.trim_start_matches('%');
+                let d_clean = dest.trim_start_matches('%');
                 if buffer_sizes.contains_key(s_clean)
                     || buffer_sizes.contains_key(slice)
                     || buffer_aliases.map(|a| a.contains_key(s_clean) || a.contains_key(slice)).unwrap_or(false)
@@ -527,6 +606,18 @@ impl IvlLowerer {
                     stmts.push(IvlStmt::Assign {
                         dest: dest.clone(),
                         expr: IvlExpr::IntConst(0),
+                        is_memory: false,
+                    });
+                    let actual_src = resolve_buf(slice);
+                    let actual_clean = actual_src.trim_start_matches('%');
+                    let len_expr = if let Some(&sz) = buffer_sizes.get(&actual_src).or_else(|| buffer_sizes.get(slice)) {
+                        IvlExpr::IntConst(sz as i64)
+                    } else {
+                        IvlExpr::Var(format!("{}_len", actual_clean))
+                    };
+                    stmts.push(IvlStmt::Assign {
+                        dest: format!("{}_len", d_clean),
+                        expr: len_expr,
                         is_memory: false,
                     });
                 } else {
@@ -556,12 +647,15 @@ impl IvlLowerer {
                             op: BinOp::Gte,
                             lhs: Box::new(IvlExpr::Var(clean_d.to_string())),
                             rhs: Box::new(IvlExpr::IntConst(0)),
+                            is_unsigned: false,
                         }),
                         rhs: Box::new(IvlExpr::Binary {
                             op: BinOp::Lte,
                             lhs: Box::new(IvlExpr::Var(clean_d.to_string())),
                             rhs: Box::new(IvlExpr::IntConst(255)),
+                            is_unsigned: false,
                         }),
+                        is_unsigned: false,
                     },
                 });
             }
@@ -630,49 +724,57 @@ impl IvlLowerer {
                     is_memory: false,
                 });
             }
-            Instruction::Syscall { dest: Some(d), rax, rdx, .. } => {
-                let clean_d = d.trim_start_matches('%').to_string();
-                stmts.push(IvlStmt::Havoc {
-                    vars: vec![clean_d.clone()],
-                    is_memory: false,
-                });
-                // Mô hình hóa khế ước hệ điều hành Linux Kernel x86_64:
-                // 1. Mọi syscall khi lỗi đều trả về trong khoảng -4095..-1 (tức luôn >= -4096)
-                stmts.push(IvlStmt::Assume {
-                    cond: IvlExpr::Binary {
-                        op: BinOp::Gte,
-                        lhs: Box::new(IvlExpr::Var(clean_d.clone())),
-                        rhs: Box::new(IvlExpr::IntConst(-4096)),
-                    },
-                });
-                // 2. sys_read (rax=0) và sys_write (rax=1) không bao giờ đọc/ghi vượt quá count (rdx)
-                let rax_expr = Self::operand_to_expr(rax);
-                let rdx_expr = Self::operand_to_expr(rdx);
-                let is_read_or_write = IvlExpr::Binary {
-                    op: BinOp::Or,
-                    lhs: Box::new(IvlExpr::Binary {
-                        op: BinOp::Eq,
-                        lhs: Box::new(rax_expr.clone()),
-                        rhs: Box::new(IvlExpr::IntConst(0)),
-                    }),
-                    rhs: Box::new(IvlExpr::Binary {
-                        op: BinOp::Eq,
-                        lhs: Box::new(rax_expr),
-                        rhs: Box::new(IvlExpr::IntConst(1)),
-                    }),
-                };
-                let lte_count = IvlExpr::Binary {
-                    op: BinOp::Lte,
-                    lhs: Box::new(IvlExpr::Var(clean_d)),
-                    rhs: Box::new(rdx_expr),
-                };
-                stmts.push(IvlStmt::Assume {
-                    cond: IvlExpr::Ite {
-                        cond: Box::new(is_read_or_write),
-                        then_val: Box::new(lte_count),
-                        else_val: Box::new(IvlExpr::BoolConst(true)),
-                    },
-                });
+            Instruction::Syscall { dest, rax, rdx, .. } => {
+                let target = dest.clone().or_else(|| Some("%rax".to_string()));
+                if let Some(d) = target {
+                    let clean_d = d.trim_start_matches('%').to_string();
+                    stmts.push(IvlStmt::Havoc {
+                        vars: vec![clean_d.clone()],
+                        is_memory: false,
+                    });
+                    // Mô hình hóa khế ước hệ điều hành Linux Kernel x86_64:
+                    // 1. Mọi syscall khi lỗi đều trả về trong khoảng -4095..-1 (tức luôn >= -4096)
+                    stmts.push(IvlStmt::Assume {
+                        cond: IvlExpr::Binary {
+                            op: BinOp::Gte,
+                            lhs: Box::new(IvlExpr::Var(clean_d.clone())),
+                            rhs: Box::new(IvlExpr::IntConst(-4096)),
+                            is_unsigned: false,
+                        },
+                    });
+                    // 2. sys_read (rax=0) và sys_write (rax=1) không bao giờ đọc/ghi vượt quá count (rdx)
+                    let rax_expr = Self::operand_to_expr(rax);
+                    let rdx_expr = Self::operand_to_expr(rdx);
+                    let is_read_or_write = IvlExpr::Binary {
+                        op: BinOp::Or,
+                        lhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Eq,
+                            lhs: Box::new(rax_expr.clone()),
+                            rhs: Box::new(IvlExpr::IntConst(0)),
+                            is_unsigned: false,
+                        }),
+                        rhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Eq,
+                            lhs: Box::new(rax_expr),
+                            rhs: Box::new(IvlExpr::IntConst(1)),
+                            is_unsigned: false,
+                        }),
+                        is_unsigned: false,
+                    };
+                    let lte_count = IvlExpr::Binary {
+                        op: BinOp::Lte,
+                        lhs: Box::new(IvlExpr::Var(clean_d)),
+                        rhs: Box::new(rdx_expr),
+                        is_unsigned: false,
+                    };
+                    stmts.push(IvlStmt::Assume {
+                        cond: IvlExpr::Ite {
+                            cond: Box::new(is_read_or_write),
+                            then_val: Box::new(lte_count),
+                            else_val: Box::new(IvlExpr::BoolConst(true)),
+                        },
+                    });
+                }
             }
             _ => {}
         }

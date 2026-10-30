@@ -161,7 +161,8 @@ impl MachineCodeEmitter {
                         if !self.buffer_offsets.contains_key(&key) {
                             let offset = self.data_section.len();
                             self.data_section.resize(offset + size + 16, 0);
-                            self.buffer_offsets.insert(key, offset);
+                            self.buffer_offsets.insert(key.clone(), offset);
+                            self.slice_capacities.insert(key, *size);
                         }
                     }
                     _ => {}
@@ -223,7 +224,7 @@ impl MachineCodeEmitter {
     pub fn compile_function(
         &mut self,
         func: &Function,
-        _program: &Program,
+        program: &Program,
         base_data_vaddr: u64,
     ) -> Result<(), String> {
         let mut slots: HashMap<String, i32> = HashMap::new();
@@ -244,17 +245,23 @@ impl MachineCodeEmitter {
         for si in &func.instructions {
             match &si.inst {
                 Instruction::AssignConst { dest, .. }
-                | Instruction::Alloc { dest, .. }
-                | Instruction::SlicePtr { dest, .. }
                 | Instruction::SliceLen { dest, .. }
                 | Instruction::Load8 { dest, .. }
                 | Instruction::Load64 { dest, .. }
-                | Instruction::Mov { dest, .. }
                 | Instruction::Binary { dest, .. }
                 | Instruction::Not { dest, .. } => {
                     let clean = dest.trim_start_matches('%').to_string();
                     if !slots.contains_key(&clean) {
                         slots.insert(clean, next_slot);
+                        next_slot += 8;
+                    }
+                }
+                Instruction::Alloc { dest, .. } => {
+                    let clean = dest.trim_start_matches('%').to_string();
+                    if !slots.contains_key(&clean) {
+                        slots.insert(clean.clone(), next_slot);
+                        next_slot += 8;
+                        slots.insert(format!("{}_len", clean), next_slot);
                         next_slot += 8;
                     }
                 }
@@ -285,6 +292,36 @@ impl MachineCodeEmitter {
             }
         }
 
+        // Fixed-point propagation for Mov and SlicePtr to ensure any chained alias (a -> b -> c) gets _len slots
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for si in &func.instructions {
+                match &si.inst {
+                    Instruction::Mov { dest, src } | Instruction::SlicePtr { dest, slice: src } => {
+                        let clean = dest.trim_start_matches('%').to_string();
+                        if !slots.contains_key(&clean) {
+                            slots.insert(clean.clone(), next_slot);
+                            next_slot += 8;
+                            changed = true;
+                        }
+                        let s_clean = src.trim_start_matches('%').to_string();
+                        let s_len_name = format!("{}_len", s_clean);
+                        let d_len_name = format!("{}_len", clean);
+                        let key = Self::buf_key(&func.name, src);
+                        if slots.contains_key(&s_len_name) || self.slice_capacities.contains_key(&key) || self.slice_capacities.contains_key(src) {
+                            if !slots.contains_key(&d_len_name) {
+                                slots.insert(d_len_name, next_slot);
+                                next_slot += 8;
+                                changed = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Frame size aligned to 16 bytes
         let frame_size = ((next_slot + 15) / 16) * 16;
 
@@ -304,7 +341,9 @@ impl MachineCodeEmitter {
         if func.name == "main" {
             // Linux raw ELF entry point stack layout:
             // [rbp + 8]: argc
+            // [rbp + 16]: argv[0] (binary name)
             // [rbp + 24]: argv[1]
+            // [rbp + 32]: argv[2]
             for (idx, p) in func.params.iter().enumerate() {
                 let clean = p.name.trim_start_matches('%');
                 if let Some(&slot) = slots.get(clean) {
@@ -313,12 +352,24 @@ impl MachineCodeEmitter {
                         self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x08]);
                         self.emit_store_stack(X86Reg::Rax, slot);
                     } else if idx == 1 {
-                        // mov rax, [rbp + 24] (48 8b 45 18)
-                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
+                        if clean.contains("argv0") || clean == "argv_0" {
+                            // mov rax, [rbp + 16] (48 8b 45 10)
+                            self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x10]);
+                        } else if clean == "argv" {
+                            // lea rax, [rbp + 16] (48 8d 45 10)
+                            self.code.extend_from_slice(&[0x48, 0x8d, 0x45, 0x10]);
+                        } else {
+                            // mov rax, [rbp + 24] (48 8b 45 18)
+                            self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
+                        }
                         self.emit_store_stack(X86Reg::Rax, slot);
                     } else if idx == 2 {
                         // mov rax, [rbp + 32] (48 8b 45 20)
                         self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x20]);
+                        self.emit_store_stack(X86Reg::Rax, slot);
+                    } else if idx == 3 {
+                        // mov rax, [rbp + 40] (48 8b 45 28)
+                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x28]);
                         self.emit_store_stack(X86Reg::Rax, slot);
                     }
                 }
@@ -328,8 +379,25 @@ impl MachineCodeEmitter {
             for p in &func.params {
                 let clean = p.name.trim_start_matches('%');
                 if let Some(&slot) = slots.get(clean) {
-                    if reg_idx < abi_regs.len() {
-                        self.emit_store_stack(abi_regs[reg_idx], slot);
+                    if reg_idx >= abi_regs.len() {
+                        return Err(format!(
+                            "Function '{}' exceeds maximum 6 ABI register slots for incoming parameters (note: slice<T> consumes 2 slots)",
+                            func.name
+                        ));
+                    }
+                    self.emit_store_stack(abi_regs[reg_idx], slot);
+                    reg_idx += 1;
+                }
+                if matches!(p.ty, Type::Slice(_)) {
+                    let len_name = format!("{}_len", clean);
+                    if let Some(&len_slot) = slots.get(&len_name) {
+                        if reg_idx >= abi_regs.len() {
+                            return Err(format!(
+                                "Function '{}' exceeds maximum 6 ABI register slots for incoming parameters (note: slice<T> consumes 2 slots)",
+                                func.name
+                            ));
+                        }
+                        self.emit_store_stack(abi_regs[reg_idx], len_slot);
                         reg_idx += 1;
                     }
                 }
@@ -404,7 +472,8 @@ impl MachineCodeEmitter {
                     } else {
                         let offset = self.data_section.len();
                         self.data_section.resize(offset + size + 16, 0);
-                        self.buffer_offsets.insert(key, offset);
+                        self.buffer_offsets.insert(key.clone(), offset);
+                        self.slice_capacities.insert(key, *size);
                         offset
                     };
                     let clean = dest.trim_start_matches('%');
@@ -412,6 +481,12 @@ impl MachineCodeEmitter {
                     let vaddr = base_data_vaddr + (offset as u64);
                     self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
                     self.emit_store_stack(X86Reg::Rax, slot);
+
+                    let len_name = format!("{}_len", clean);
+                    if let Some(&slot_len) = slots.get(&len_name) {
+                        self.emit_mov_reg_imm64(X86Reg::Rax, *size as i64);
+                        self.emit_store_stack(X86Reg::Rax, slot_len);
+                    }
                 }
 
                 Instruction::AllocSlice { dest, len, .. } => {
@@ -440,43 +515,36 @@ impl MachineCodeEmitter {
                         let sl_clean = slice.trim_start_matches('%');
                         if let Some(&s_slot) = slots.get(sl_clean) {
                             self.emit_load_stack(X86Reg::Rax, s_slot);
+                        } else {
+                            self.emit_mov_reg_imm64(X86Reg::Rax, 0);
                         }
                     }
                     self.emit_store_stack(X86Reg::Rax, slot);
+
+                    // Copy độ dài slice {slice}_len -> {dest}_len nếu có
+                    let sl_clean = slice.trim_start_matches('%');
+                    let s_len_name = format!("{}_len", sl_clean);
+                    let d_len_name = format!("{}_len", clean);
+                    if let Some(&d_len_slot) = slots.get(&d_len_name) {
+                        if let Some(&s_len_slot) = slots.get(&s_len_name) {
+                            self.emit_load_stack(X86Reg::Rax, s_len_slot);
+                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
+                        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
+                            self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
+                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
+                        }
+                    }
                 }
 
                 Instruction::SliceLen { dest, slice } => {
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
                     let sl_clean = slice.trim_start_matches('%');
+                    let len_name = format!("{}_len", sl_clean);
                     let key = Self::buf_key(&func.name, slice);
 
-                    if let Some(&s_slot) = slots.get(sl_clean) {
-                        self.emit_load_stack(X86Reg::Rax, s_slot);
-                        // Inline strlen on RAX:
-                        // 31 c9: xor ecx, ecx
-                        // 8a 14 08: mov dl, byte ptr [rax + rcx]
-                        // 84 d2: test dl, dl
-                        // 74 05: jz +5 (to mov rax, rcx)
-                        // 48 ff c1: inc rcx
-                        // eb f4: jmp -12 (to mov dl, [rax + rcx])
-                        // 48 89 c8: mov rax, rcx
-                        self.code.extend_from_slice(&[
-                            0x31, 0xc9,
-                            0x8a, 0x14, 0x08,
-                            0x84, 0xd2,
-                            0x74, 0x05,
-                            0x48, 0xff, 0xc1,
-                            0xeb, 0xf4,
-                            0x48, 0x89, 0xc8,
-                        ]);
-                        // Nếu strlen == 0 và đây là biến ALLOC slice cục bộ có capacity > 0, fallback về capacity:
-                        if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
-                            // test rax, rax (48 85 c0)
-                            // jnz +10 (75 0a) -> nhảy qua mov rax, imm64
-                            self.code.extend_from_slice(&[0x48, 0x85, 0xc0, 0x75, 0x0a]);
-                            self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
-                        }
+                    if let Some(&l_slot) = slots.get(&len_name) {
+                        self.emit_load_stack(X86Reg::Rax, l_slot);
                     } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
                         self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
                     } else {
@@ -495,6 +563,37 @@ impl MachineCodeEmitter {
                     }
                     self.data_section[target_off..target_off + bytes.len()].copy_from_slice(bytes);
                     self.data_section[target_off + bytes.len()] = 0;
+
+                    // Runtime machine code emission: dynamic string copy from literal pool
+                    let lit_off = self.data_section.len();
+                    let mut lit_bytes = bytes.to_vec();
+                    lit_bytes.push(0);
+                    self.data_section.extend_from_slice(&lit_bytes);
+                    let lit_vaddr = base_data_vaddr + (lit_off as u64);
+
+                    // Destination pointer in Rdi:
+                    let clean = buf.trim_start_matches('%');
+                    if let Some(&slot) = slots.get(clean) {
+                        self.emit_load_stack(X86Reg::Rdi, slot);
+                    } else {
+                        let buf_vaddr = base_data_vaddr + (buf_off as u64);
+                        self.emit_mov_reg_imm64(X86Reg::Rdi, buf_vaddr as i64);
+                    }
+                    if *offset > 0 {
+                        // add rdi, offset (48 81 c7 disp32)
+                        self.code.extend_from_slice(&[0x48, 0x81, 0xc7]);
+                        self.code.extend_from_slice(&(*offset as i32).to_le_bytes());
+                    }
+
+                    // Source pointer in Rsi:
+                    self.emit_mov_reg_imm64(X86Reg::Rsi, lit_vaddr as i64);
+
+                    // Count in Rcx:
+                    self.emit_mov_reg_imm64(X86Reg::Rcx, lit_bytes.len() as i64);
+
+                    // cld; rep movsb
+                    self.code.push(0xfc);
+                    self.code.extend_from_slice(&[0xf3, 0xa4]);
                 }
 
                 Instruction::Load8 { dest, buf, offset } => {
@@ -543,23 +642,51 @@ impl MachineCodeEmitter {
                         }
                     }
                     self.emit_store_stack(X86Reg::Rax, d_slot);
+
+                    // Copy độ dài slice {src}_len -> {dest}_len nếu có
+                    let s_clean = src.trim_start_matches('%');
+                    let s_len_name = format!("{}_len", s_clean);
+                    let d_len_name = format!("{}_len", d_clean);
+                    if let Some(&d_len_slot) = slots.get(&d_len_name) {
+                        if let Some(&s_len_slot) = slots.get(&s_len_name) {
+                            self.emit_load_stack(X86Reg::Rax, s_len_slot);
+                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
+                        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(src)) {
+                            self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
+                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
+                        }
+                    }
                 }
 
-                Instruction::Binary { op, dest, src1, src2, .. } => {
+                Instruction::Binary { op, ty, dest, src1, src2 } => {
+                    if matches!(ty, Type::F64) {
+                        return Err(format!("Floating-point type 'f64' is not supported in Light x86_64 codegen"));
+                    }
                     load_op_into_reg(self, src1, X86Reg::Rax);
                     load_op_into_reg(self, src2, X86Reg::Rcx);
+                    let is_unsigned = matches!(ty, Type::U64 | Type::U8);
 
                     match op {
                         BinOp::Add => self.code.extend_from_slice(&[0x48, 0x01, 0xc8]),
                         BinOp::Sub => self.code.extend_from_slice(&[0x48, 0x29, 0xc8]),
                         BinOp::Mul => self.code.extend_from_slice(&[0x48, 0x0f, 0xaf, 0xc1]),
                         BinOp::Div => {
-                            // cqo; idiv rcx
-                            self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9]);
+                            if is_unsigned {
+                                // xor rdx, rdx; div rcx
+                                self.code.extend_from_slice(&[0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1]);
+                            } else {
+                                // cqo; idiv rcx
+                                self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9]);
+                            }
                         }
                         BinOp::Mod => {
-                            // cqo; idiv rcx; mov rax, rdx
-                            self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9, 0x48, 0x89, 0xd0]);
+                            if is_unsigned {
+                                // xor rdx, rdx; div rcx; mov rax, rdx
+                                self.code.extend_from_slice(&[0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1, 0x48, 0x89, 0xd0]);
+                            } else {
+                                // cqo; idiv rcx; mov rax, rdx
+                                self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9, 0x48, 0x89, 0xd0]);
+                            }
                         }
                         BinOp::And | BinOp::BitAnd => self.code.extend_from_slice(&[0x48, 0x21, 0xc8]),
                         BinOp::Or | BinOp::BitOr => self.code.extend_from_slice(&[0x48, 0x09, 0xc8]),
@@ -575,16 +702,36 @@ impl MachineCodeEmitter {
                             self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x95, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
                         }
                         BinOp::Lt => {
-                            self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9c, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            if is_unsigned {
+                                // cmp rax, rcx; setb al; movzx rax, al
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x92, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            } else {
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9c, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            }
                         }
                         BinOp::Lte => {
-                            self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9e, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            if is_unsigned {
+                                // cmp rax, rcx; setbe al; movzx rax, al
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x96, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            } else {
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9e, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            }
                         }
                         BinOp::Gt => {
-                            self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9f, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            if is_unsigned {
+                                // cmp rax, rcx; seta al; movzx rax, al
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x97, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            } else {
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9f, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            }
                         }
                         BinOp::Gte => {
-                            self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9d, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            if is_unsigned {
+                                // cmp rax, rcx; setae al; movzx rax, al
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x93, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            } else {
+                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9d, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
+                            }
                         }
                     }
 
@@ -639,46 +786,106 @@ impl MachineCodeEmitter {
                 Instruction::BreakIf(cond) => {
                     if let Some((_, end_lbl)) = loop_stack.last() {
                         let clean = cond.trim_start_matches('%');
-                        self.emit_load_stack(X86Reg::Rax, slots[clean]);
+                        let &slot = slots.get(clean).ok_or_else(|| {
+                            format!("Undefined variable '%{}' in BREAK_IF in function '{}'", clean, func.name)
+                        })?;
+                        self.emit_load_stack(X86Reg::Rax, slot);
                         self.code.extend_from_slice(&[0x48, 0x85, 0xc0]);
                         self.code.extend_from_slice(&[0x0f, 0x85]);
                         let fix = self.code.len();
                         self.code.extend_from_slice(&[0, 0, 0, 0]);
                         jump_fixups.push((fix, end_lbl.clone(), true));
+                    } else {
+                        return Err(format!("BREAK_IF outside of LOOP in function '{}'", func.name));
                     }
                 }
 
                 Instruction::ContinueIf(cond) => {
                     if let Some((start_lbl, _)) = loop_stack.last() {
                         let clean = cond.trim_start_matches('%');
-                        self.emit_load_stack(X86Reg::Rax, slots[clean]);
+                        let &slot = slots.get(clean).ok_or_else(|| {
+                            format!("Undefined variable '%{}' in CONTINUE_IF in function '{}'", clean, func.name)
+                        })?;
+                        self.emit_load_stack(X86Reg::Rax, slot);
                         self.code.extend_from_slice(&[0x48, 0x85, 0xc0]);
                         self.code.extend_from_slice(&[0x0f, 0x85]);
                         let fix = self.code.len();
                         self.code.extend_from_slice(&[0, 0, 0, 0]);
                         jump_fixups.push((fix, start_lbl.clone(), true));
+                    } else {
+                        return Err(format!("CONTINUE_IF outside of LOOP in function '{}'", func.name));
                     }
                 }
 
-                Instruction::EndLoop(_name) => {
+                Instruction::EndLoop(name) => {
                     if let Some((start_lbl, end_lbl)) = loop_stack.pop() {
+                        let expected_end_lbl = format!("__loop_end_{}", name);
+                        if end_lbl != expected_end_lbl {
+                            return Err(format!(
+                                "Mismatched END_LOOP '{}' in function '{}' (expected '{}')",
+                                name,
+                                func.name,
+                                end_lbl.trim_start_matches("__loop_end_")
+                            ));
+                        }
                         self.code.push(0xe9);
                         let fix = self.code.len();
                         self.code.extend_from_slice(&[0, 0, 0, 0]);
                         jump_fixups.push((fix, start_lbl, false));
                         label_offsets.insert(end_lbl, self.code.len());
+                    } else {
+                        return Err(format!("Unexpected END_LOOP '{}' without matching LOOP in function '{}'", name, func.name));
                     }
                 }
 
                 Instruction::Call { dest, func_name, args } => {
                     // System V AMD64 ABI: Rdi, Rsi, Rdx, Rcx, R8, R9
+                    let target_func = program.functions.iter().find(|f| f.name == *func_name);
                     let mut reg_idx = 0;
 
-                    for arg in args {
-                        if reg_idx >= abi_regs.len() { break; }
+                    for (arg_idx, arg) in args.iter().enumerate() {
+                        if reg_idx >= abi_regs.len() {
+                            return Err(format!(
+                                "Call to '{}' in function '{}' exceeds maximum 6 ABI register slots (note: slice<T> consumes 2 slots)",
+                                func_name, func.name
+                            ));
+                        }
                         let target_reg = abi_regs[reg_idx];
                         load_op_into_reg(self, arg, target_reg);
                         reg_idx += 1;
+
+                        // Nếu callee parameter tại vị trí này là Type::Slice, truyền tiếp len vào thanh ghi tiếp theo
+                        if let Some(callee) = target_func {
+                            if let Some(param) = callee.params.get(arg_idx) {
+                                if matches!(param.ty, Type::Slice(_)) {
+                                    if reg_idx >= abi_regs.len() {
+                                        return Err(format!(
+                                            "Call to '{}' in function '{}' exceeds maximum 6 ABI register slots (note: slice<T> consumes 2 slots)",
+                                            func_name, func.name
+                                        ));
+                                    }
+                                    let len_reg = abi_regs[reg_idx];
+                                    match arg {
+                                        Operand::Reg(r) => {
+                                            let clean = r.trim_start_matches('%');
+                                            let len_name = format!("{}_len", clean);
+                                            let key = Self::buf_key(&func.name, r);
+                                            if let Some(&l_slot) = slots.get(&len_name) {
+                                                self.emit_load_stack(len_reg, l_slot);
+                                            } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(r)) {
+                                                self.emit_mov_reg_imm64(len_reg, cap as i64);
+                                            } else {
+                                                self.emit_mov_reg_imm64(len_reg, 0);
+                                            }
+                                        }
+                                        _ => {
+                                            self.emit_mov_reg_imm64(len_reg, 0);
+                                        }
+                                    }
+                                    reg_idx += 1;
+                                }
+                            }
+                        }
                     }
 
                     // call rel32 (E8 disp32)
@@ -705,7 +912,11 @@ impl MachineCodeEmitter {
 
                     if let Some(d) = dest {
                         let clean = d.trim_start_matches('%');
-                        self.emit_store_stack(X86Reg::Rax, slots[clean]);
+                        if let Some(&slot) = slots.get(clean) {
+                            self.emit_store_stack(X86Reg::Rax, slot);
+                        }
+                    } else if let Some(&slot) = slots.get("rax") {
+                        self.emit_store_stack(X86Reg::Rax, slot);
                     }
                 }
 
@@ -754,11 +965,24 @@ impl MachineCodeEmitter {
             }
         }
 
-        // Epilogue default if not already returned
-        if self.code.last() != Some(&0xc3) {
-            self.code.extend_from_slice(&[0x48, 0x89, 0xec]);
-            self.code.push(0x5d);
-            self.emit_ret();
+        // Validate all LOOP blocks were closed
+        if let Some((start_lbl, _)) = loop_stack.last() {
+            let loop_name = start_lbl.trim_start_matches("__loop_start_");
+            return Err(format!("Unclosed LOOP '{}' in function '{}' (missing END_LOOP)", loop_name, func.name));
+        }
+
+        // Epilogue default if not already returned via Instruction::Ret
+        let ends_with_ret = func.instructions.last().is_some_and(|s| matches!(s.inst, Instruction::Ret(_)));
+        if !ends_with_ret {
+            if func.name == "main" {
+                self.emit_mov_reg_imm64(X86Reg::Rdi, 0);
+                self.emit_mov_reg_imm64(X86Reg::Rax, 60);
+                self.emit_syscall();
+            } else {
+                self.code.extend_from_slice(&[0x48, 0x89, 0xec]);
+                self.code.push(0x5d);
+                self.emit_ret();
+            }
         }
 
         // Resolve jump_fixups within function

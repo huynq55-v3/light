@@ -1,16 +1,24 @@
-mod ast;
-mod codegen;
-mod ivl;
-mod parser;
-mod vcgen;
-mod verifier;
-
-use codegen::MachineCodeEmitter;
-use parser::Parser;
-use verifier::{VerificationResult, Verifier};
+use light::ast;
+use light::codegen::MachineCodeEmitter;
+use light::parser::Parser;
+use light::verifier::{VerificationResult, Verifier};
 use std::env;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
+
+/// RAII Guard đảm bảo dọn sạch file binary tạm trong /tmp kể cả khi panic hoặc ngắt
+struct TempFileGuard {
+    path: PathBuf,
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if self.path.exists() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -90,6 +98,7 @@ fn execute_file(file_path: &str, run_binary: bool) {
         println!("\n🚀 Compiling & Executing standalone native ELF64 binary...");
         let pid = std::process::id();
         let tmp_bin = format!("/tmp/light_run_{}_{}", pid, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let _guard = TempFileGuard { path: PathBuf::from(&tmp_bin) };
         
         let mut emitter = MachineCodeEmitter::new();
         if let Err(e) = emitter.compile_for_elf(&program) {
@@ -103,7 +112,7 @@ fn execute_file(file_path: &str, run_binary: bool) {
         }
 
         let status = Command::new(&tmp_bin).status();
-        let _ = fs::remove_file(&tmp_bin);
+        drop(_guard);
 
         match status {
             Ok(s) => {

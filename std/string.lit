@@ -230,6 +230,7 @@ FUNC str_skip_ws(s: slice<u8>, start_idx: i64) -> i64
 END_FUNC
 
 # Parse positive integer from slice between `start` and `end`
+# Chặn tràn số nguyên có dấu 64-bit (max_safe = 922337203685477580, tức (i64::MAX - 9) / 10)
 FUNC str_parse_i64_range(s: slice<u8>, start: i64, end: i64) -> i64
   REQUIRE start >= 0 && start <= end && end <= len(s)
 
@@ -239,9 +240,11 @@ FUNC str_parse_i64_range(s: slice<u8>, start: i64, end: i64) -> i64
   %c_zero = CONST i64 48
   %c_nine = CONST i64 57
   %ten = CONST i64 10
+  %max_safe = CONST i64 922337203685477579
 
   LOOP parse_from_loop
     INVARIANT %i >= start && %i <= end
+    INVARIANT %acc >= 0 && %acc <= 9223372036854775799
     DECREASES end - %i
 
     %done = GTE i64 %i end
@@ -255,6 +258,10 @@ FUNC str_parse_i64_range(s: slice<u8>, start: i64, end: i64) -> i64
     %is_not_digit = EQ bool %is_d %false_b
     BREAK_IF %is_not_digit
 
+    # Kiểm tra an toàn trước khi nhân: nếu acc > max_safe thì dừng lặp tránh tràn số âm
+    %overflow_risk = GT i64 %acc %max_safe
+    BREAK_IF %overflow_risk
+
     %digit = SUB i64 %c %c_zero
     %mul = MUL i64 %acc %ten
     %next_acc = ADD i64 %mul %digit
@@ -264,6 +271,7 @@ FUNC str_parse_i64_range(s: slice<u8>, start: i64, end: i64) -> i64
     %i = MOV %next_i
   END_LOOP parse_from_loop
 
+  ENSURE %acc >= 0
   RET %acc
 END_FUNC
 

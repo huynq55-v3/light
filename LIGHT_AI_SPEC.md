@@ -49,44 +49,47 @@ Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at comp
 - `%dest = MOV %src`: Copy value between registers/variables.
 
 ### III. Arithmetic & Logic Operations (Explicitly Typed Flat TAC)
-Binary operations take exactly 2 operands. Specifying the type explicitly (`i64`, `bool`) is strongly recommended:
+Binary operations take exactly 2 operands. Specifying the type explicitly (`i64`, `u64`, `u8`, `bool`) is strongly recommended:
 - `%dest = ADD <type> %a %b`: Addition
 - `%dest = SUB <type> %a %b`: Subtraction
 - `%dest = MUL <type> %a %b`: Multiplication
-- `%dest = DIV <type> %a %b`: Signed integer division (automatically checked for division by zero)
-- `%dest = MOD <type> %a %b`: Signed modulo
+- `%dest = DIV <type> %a %b`: Integer division (signed for `i64` via `idiv`/`bvsdiv`, unsigned for `u64`/`u8` via `div`/`bvudiv`; automatically checked for division-by-zero and signed overflow `i64::MIN / -1`)
+- `%dest = MOD <type> %a %b`: Modulo (signed for `i64` via `idiv`/`bvsrem`, unsigned for `u64`/`u8` via `div`/`bvurem`)
 - `%dest = EQ <type> %a %b`: Equal (`bool` result)
 - `%dest = NEQ <type> %a %b`: Not equal (`bool` result)
-- `%dest = LT <type> %a %b`: Less than (`bool` result)
-- `%dest = LTE <type> %a %b`: Less than or equal (`bool` result)
-- `%dest = GT <type> %a %b`: Greater than (`bool` result)
-- `%dest = GTE <type> %a %b`: Greater than or equal (`bool` result)
-- `%dest = AND <type> %a %b`: Logical AND (`bool`) or Bitwise AND (`i64` / `BAND`)
-- `%dest = OR <type> %a %b`: Logical OR (`bool`) or Bitwise OR (`i64` / `BOR`)
-- `%dest = XOR <type> %a %b`: Bitwise XOR (`i64`) or Logical XOR (`bool`)
+- `%dest = LT <type> %a %b`: Less than (signed for `i64` via `setl`/`bvslt`, unsigned for `u64`/`u8` via `setb`/`bvult`)
+- `%dest = LTE <type> %a %b`: Less than or equal (signed for `i64` via `setle`/`bvsle`, unsigned for `u64`/`u8` via `setbe`/`bvule`)
+- `%dest = GT <type> %a %b`: Greater than (signed for `i64` via `setg`/`bvsgt`, unsigned for `u64`/`u8` via `seta`/`bvugt`)
+- `%dest = GTE <type> %a %b`: Greater than or equal (signed for `i64` via `setge`/`bvsge`, unsigned for `u64`/`u8` via `setae`/`bvuge`)
+- `%dest = AND <type> %a %b`: Logical AND (`bool`) or Bitwise AND (`i64`/`u64`/`u8` / `BAND`)
+- `%dest = OR <type> %a %b`: Logical OR (`bool`) or Bitwise OR (`i64`/`u64`/`u8` / `BOR`)
+- `%dest = XOR <type> %a %b`: Bitwise XOR (`i64`/`u64`/`u8`) or Logical XOR (`bool`)
 - `%dest = SHL <type> %a %b`: Shift Left (x86_64 masked at 63 bits)
 - `%dest = SHR <type> %a %b`: Logical Shift Right (chèn 0)
 - `%dest = SAR <type> %a %b`: Arithmetic Shift Right (bảo toàn dấu)
 - `%dest = NOT <type> %a`: Logical NOT (`bool`) or Bitwise NOT (`i64` / `BITNOT`)
 
+> **Note on Types:** Floating-point `f64` is intentionally unsupported in the current version and rejected at parse/compile time to ensure 100% sound mathematical verification within the QF_ABV bitvector theory.
+
 ### IV. Functions & Control Flow
-- `%dest = CALL <func_name> <arg1> <arg2> ...`: Call function with positional space-separated arguments.
-- `RET %val`: Return value from function (in `FUNC main()`, terminates process with exit code).
+- `%dest = CALL <func_name> <arg1> <arg2> ...`: Call function with positional space-separated arguments (System V AMD64 ABI; passing a `slice<T>` passes fat pointer: 2 ABI registers pointer + length).
+- `RET [%val]`: Return value from function (in `FUNC main()`, terminates process with exit code; omitting `RET` in `main()` automatically emits `sys_exit(0)`).
 - `RET_IF %cond [%val]`: Early conditional return `%val` if `%cond` is true.
 - `LOOP <label>` ... `END_LOOP <label>`: Structured loop block.
 - `BREAK_IF %cond`: Exit innermost loop when `%cond` is true.
 - `CONTINUE_IF %cond`: Jump to next loop iteration when `%cond` is true.
 - `LABEL <name>`: Branch target label.
-- `JUMP <name>`: Unconditional jump.
-- `BR_IF %cond <name>`: Conditional jump when `%cond` is true.
+- `JUMP <name>`: Unconditional forward jump.
+- `BR_IF %cond <name>`: Conditional forward jump when `%cond` is true.
 
 ### V. Memory & Slices (Safe Zero-Overhead Memory)
-- `%buf = ALLOC slice<u8> <size_in_bytes>`: Allocate contiguous memory on the stack/BSS.
+- `%buf = ALLOC slice<u8> <size_in_bytes>` or `ALLOC %buf <size_in_bytes>`: Allocate contiguous buffer memory in data section.
 - `STORE8 %buf/%ptr %offset %val`: Store 1 byte (0..255) at address `%buf + %offset`.
 - `%dest = LOAD8 %buf/%ptr %offset`: Read 1 byte from address `%buf + %offset`.
-- `STORE64 %buf/%ptr %offset %val`: Store 8 bytes (i64) at address `%buf + %offset`.
-- `%dest = LOAD64 %buf/%ptr %offset`: Read 8 bytes (i64) from address `%buf + %offset`.
-- `STORE_STR %buf [<offset>] "string\n"`: Store string literal into `%buf` at `<offset>` (defaults to 0).
+- `STORE64 %buf/%ptr %offset %val`: Store 8 bytes (i64/u64) at address `%buf + %offset`. Must be 8-byte aligned (`%offset % 8 == 0`).
+- `%dest = LOAD64 %buf/%ptr %offset`: Read 8 bytes (i64/u64) from address `%buf + %offset`. Must be 8-byte aligned (`%offset % 8 == 0`).
+- **Memory Sort Soundness Rule:** To guarantee formal verification soundness in SMT QF_ABV array theory, 8-bit operations (`LOAD8`/`STORE8`) and 64-bit operations (`LOAD64`/`STORE64`) cannot be mixed on the same buffer.
+- `STORE_STR %buf [<offset>] "string\n"`: Store string literal into `%buf` at runtime via `rep movsb` machine code.
 - `%len = SLICE_LEN %buf`: Get length in bytes.
 - `%ptr = SLICE_PTR %buf`: Extract raw 64-bit pointer.
 
