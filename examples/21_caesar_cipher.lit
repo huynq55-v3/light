@@ -7,7 +7,7 @@
 #   2. Ghi 1 byte (STORE8) vào offset 0 cách ly hoàn toàn, KHÔNG làm hỏng byte ở offset 1 (%unchanged == 66).
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC encrypt_first_char(key: i64) -> i64
   # Tiền điều kiện: key nằm trong khoảng [1, 5]

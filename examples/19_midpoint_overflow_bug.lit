@@ -6,7 +6,7 @@
 # (Arithmetic Overflow) thành số âm, làm vi phạm hậu điều kiện ENSURE!
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC bad_midpoint(a: i64, b: i64) -> i64
   # Tiền điều kiện: 0 <= a <= b

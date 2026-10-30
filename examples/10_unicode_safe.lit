@@ -1,7 +1,7 @@
 # Example 10: SAFE UNICODE UTF-8 EXECUTION
 # Allocating 19 bytes for "Nguyễn Quang Huy\n" (18 bytes name + 1 byte newline)
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   # EXACT ALLOCATION: 18 UTF-8 bytes for "Nguyễn Quang Huy" + 1 byte '\n' = 19 bytes

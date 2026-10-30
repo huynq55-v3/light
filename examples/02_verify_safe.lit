@@ -11,7 +11,8 @@ FUNC sum_to_n(n: i64) -> i64
   LOOP count_loop
     # Bất biến vòng lặp (Loop Invariant) cho cả %i và %sum
     INVARIANT %i >= 0 && %i <= n
-    INVARIANT %sum >= 0
+    INVARIANT %sum >= 0 && %sum <= %i * 10000
+    DECREASES n - %i
 
     %cond = GTE i64 %i n
     BREAK_IF %cond

@@ -1,7 +1,7 @@
 # Ví dụ 7: CỐ TÌNH TRUYỀN LEN = 35 VÀO SLICE 28 BYTES
 # Z3 PHẢI CHẶN ĐỨNG VÀ BÁO LỖI NGAY TẠI ĐIỂM GỌI HÀM!
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   # Khởi tạo slice 28 bytes

@@ -1,0 +1,149 @@
+# ==============================================================================
+# LIGHT STANDARD LIBRARY: std/fs.lit
+# Formally verified Linux raw syscall filesystem module using Z3 SMT Solver
+# ==============================================================================
+
+# Linux sys_open (rax = 2): open file at null-terminated path
+# flags: 0 = O_RDONLY, 1 = O_WRONLY, 2 = O_RDWR, 577 = O_WRONLY|O_CREAT|O_TRUNC
+# mode: permission mode (e.g. 420 for 0o644, 493 for 0o755)
+FUNC sys_open(path: slice<u8>, flags: i64, mode: i64) -> i64
+  REQUIRE len(path) > 0
+
+  %rdi = SLICE_PTR path
+  %rsi = MOV flags
+  %rdx = MOV mode
+  %rax = CONST i64 2
+  %fd = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %fd >= -4096
+  RET %fd
+END_FUNC
+
+# Linux sys_read (rax = 0): read up to count bytes from fd into buffer
+FUNC sys_read(fd: i64, buf: slice<u8>, count: i64) -> i64
+  REQUIRE fd >= 0 && count >= 0 && count <= len(buf)
+
+  %rdi = MOV fd
+  %rsi = SLICE_PTR buf
+  %rdx = MOV count
+  %rax = CONST i64 0
+  %bytes_read = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %bytes_read >= -4096 && %bytes_read <= count
+  RET %bytes_read
+END_FUNC
+
+# Linux sys_write (rax = 1): write count bytes from buffer to fd
+FUNC sys_write(fd: i64, buf: slice<u8>, count: i64) -> i64
+  REQUIRE fd >= 0 && count >= 0 && count <= len(buf)
+
+  %rdi = MOV fd
+  %rsi = SLICE_PTR buf
+  %rdx = MOV count
+  %rax = CONST i64 1
+  %bytes_written = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %bytes_written >= -4096 && %bytes_written <= count
+  RET %bytes_written
+END_FUNC
+
+# Linux sys_close (rax = 3): close file descriptor
+FUNC sys_close(fd: i64) -> i64
+  REQUIRE fd >= 0
+
+  %rdi = MOV fd
+  %rsi = CONST i64 0
+  %rdx = CONST i64 0
+  %rax = CONST i64 3
+  %res = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %res >= -4096
+  RET %res
+END_FUNC
+
+# Linux sys_unlink (rax = 87): delete a file path
+FUNC sys_unlink(path: slice<u8>) -> i64
+  REQUIRE len(path) > 0
+
+  %rdi = SLICE_PTR path
+  %rsi = CONST i64 0
+  %rdx = CONST i64 0
+  %rax = CONST i64 87
+  %res = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %res >= -4096
+  RET %res
+END_FUNC
+
+# High-level file reading: read up to `count` bytes into `out_buf`
+FUNC fs_read(path: slice<u8>, out_buf: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count >= 0 && count <= len(out_buf)
+
+  %flags = CONST i64 0
+  %mode = CONST i64 0
+  %fd = CALL sys_open path %flags %mode
+
+  %zero = CONST i64 0
+  %is_err = LT i64 %fd %zero
+  RET_IF %is_err %fd
+
+  %bytes = CALL sys_read %fd out_buf count
+  %dummy = CALL sys_close %fd
+
+  ENSURE %bytes >= -4096 && %bytes <= count
+  RET %bytes
+END_FUNC
+
+# High-level file writing: write exact `count` bytes from buffer to file
+FUNC fs_write(path: slice<u8>, content: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
+
+  # Unlink first to prevent ETXTBSY if overwriting an executable
+  %dummy_ul = CALL sys_unlink path
+
+  %flags = CONST i64 577
+  %mode = CONST i64 493
+  %fd = CALL sys_open path %flags %mode
+
+  %zero = CONST i64 0
+  %is_err = LT i64 %fd %zero
+  RET_IF %is_err %fd
+
+  %bytes = CALL sys_write %fd content count
+  %dummy = CALL sys_close %fd
+
+  ENSURE %bytes >= -4096 && %bytes <= count
+  RET %bytes
+END_FUNC
+
+# High-level file writing: write entire slice to file
+FUNC fs_write_all(path: slice<u8>, content: slice<u8>) -> i64
+  REQUIRE len(path) > 0 && len(content) >= 0
+
+  %len = SLICE_LEN content
+  %bytes = CALL fs_write path content %len
+
+  ENSURE %bytes >= -4096 && %bytes <= len(content)
+  RET %bytes
+END_FUNC
+
+# --- Backward-Compatibility Aliases ---
+FUNC fs_read_file(path: slice<u8>, out_buf: slice<u8>) -> i64
+  REQUIRE len(path) > 0 && len(out_buf) >= 0
+  %cap = SLICE_LEN out_buf
+  %r = CALL fs_read path out_buf %cap
+  ENSURE %r >= -4096 && %r <= len(out_buf)
+  RET %r
+END_FUNC
+
+FUNC fs_write_file(path: slice<u8>, content: slice<u8>) -> i64
+  REQUIRE len(path) > 0 && len(content) >= 0
+  %r = CALL fs_write_all path content
+  RET %r
+END_FUNC
+
+FUNC fs_write_file_bytes(path: slice<u8>, content: slice<u8>, count: i64) -> i64
+  REQUIRE len(path) > 0 && count >= 0 && count <= len(content)
+  %r = CALL fs_write path content count
+  RET %r
+END_FUNC

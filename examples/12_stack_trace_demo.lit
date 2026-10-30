@@ -2,7 +2,7 @@
 # Call std_print_slice from main with invalid length (35 > 28)
 # to see full multi-frame Verification Stack Trace!
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   %msg = ALLOC slice<u8> 28

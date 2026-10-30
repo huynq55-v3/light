@@ -1,7 +1,7 @@
 # Ví dụ 6: Sử dụng Thư Viện Chuẩn THỰC SỰ thông qua lệnh CALL
-# Gọi trực tiếp hàm std_print từ stdlib/io.lit
+# Gọi trực tiếp hàm std_print từ std/io.lit
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   # Chuẩn bị thông điệp

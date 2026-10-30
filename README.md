@@ -122,10 +122,11 @@ END_FUNC
 │   ├── verifier.rs        # Verification pipeline & Hoare logic engine
 │   ├── codegen.rs         # Direct x86_64 Machine Code Emitter & ELF64 Packager
 │   └── main.rs            # CLI Entrypoint (run, verify, build)
-├── stdlib/                # Standard Library routines (.lit)
+├── std/                   # Standard Library routines (.lit)
 │   ├── io.lit             # I/O and printing helpers
 │   ├── string.lit         # String manipulation
-│   └── fs.lit             # Basic file operations
+│   ├── fs.lit             # Basic file operations
+│   └── alloc.lit          # Arena allocator & dynamic memory management
 ├── tests/                 # Test suites & formal verification regression tests
 ├── examples/              # Example Light programs
 ├── LIGHT_AI_SPEC.md       # AI & LLM Specification Guide

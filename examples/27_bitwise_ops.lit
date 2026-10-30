@@ -3,7 +3,7 @@
 # Kiểm chứng toán học hình thức các phép toán bit: AND, OR, XOR, SHL, SHR, SAR, NOT
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC bitwise_demo(val: i64) -> i64
   # Giả sử val trong khoảng [1, 100]

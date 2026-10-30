@@ -2,7 +2,7 @@
 # BÀI 3 (MUTATION BUG): LỖI GHI ĐÈ LÀM HỎNG BYTE LÂN CẬN (Memory Corruption Bug)
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC encrypt_first_char_buggy(key: i64) -> i64
   REQUIRE key >= 1 && key <= 5

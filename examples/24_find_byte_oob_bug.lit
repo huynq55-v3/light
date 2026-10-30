@@ -2,7 +2,7 @@
 # BÀI 4 (MUTATION BUG): ĐỌC BỘ NHỚ TRƯỚC KHI KIỂM TRA BREAK_IF
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC find_byte_buggy(target: i64) -> i64
   ENSURE %ret >= 0 && %ret <= 16

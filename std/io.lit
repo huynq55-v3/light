@@ -1,0 +1,73 @@
+# ==============================================================================
+# LIGHT STANDARD LIBRARY: std/io.lit
+# Formally verified I/O & Process Control module using Z3 SMT Solver
+# ==============================================================================
+
+# Safely write `count` bytes from slice to stdout (fd = 1)
+FUNC io_write(s: slice<u8>, count: i64) -> i64
+  REQUIRE count >= 0 && count <= len(s)
+
+  %ptr = SLICE_PTR s
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %ptr
+  %rdx = MOV count
+  %written = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %written >= -4096 && %written <= count
+  RET %written
+END_FUNC
+
+# Safely print an entire byte slice to stdout
+FUNC io_print(s: slice<u8>) -> i64
+  REQUIRE len(s) >= 0
+
+  %len = SLICE_LEN s
+  %ptr = SLICE_PTR s
+  %rax = CONST i64 1
+  %rdi = CONST i64 1
+  %rsi = MOV %ptr
+  %rdx = MOV %len
+  %written = SYSCALL %rax %rdi %rsi %rdx
+
+  ENSURE %written >= -4096 && %written <= len(s)
+  RET %written
+END_FUNC
+
+# Safely terminate process with an exit status code (0..255)
+FUNC sys_exit(code: i64) -> i64
+  REQUIRE code >= 0 && code <= 255
+
+  %rax = CONST i64 60
+  %rdi = MOV code
+  %rsi = CONST i64 0
+  %rdx = CONST i64 0
+  %res = SYSCALL %rax %rdi %rsi %rdx
+
+  RET code
+END_FUNC
+
+# --- Backward-Compatibility Aliases ---
+FUNC std_print_slice(s: slice<u8>, count: i64) -> i64
+  REQUIRE count >= 0 && count <= len(s)
+  %r = CALL io_write s count
+  RET %r
+END_FUNC
+
+FUNC std_print_all(s: slice<u8>) -> i64
+  REQUIRE len(s) >= 0
+  %r = CALL io_print s
+  RET %r
+END_FUNC
+
+FUNC std_print(s: slice<u8>, count: i64) -> i64
+  REQUIRE count >= 0 && count <= len(s)
+  %r = CALL io_write s count
+  RET %r
+END_FUNC
+
+FUNC std_exit(code: i64) -> i64
+  REQUIRE code >= 0 && code <= 255
+  %r = CALL sys_exit code
+  RET %r
+END_FUNC

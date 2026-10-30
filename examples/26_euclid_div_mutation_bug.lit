@@ -2,7 +2,7 @@
 # BÀI 5 (MUTATION BUG): VI PHẠM BẤT BIẾN TOÁN HỌC (Invariant Preservation Violation)
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC int_div_buggy(a: i64, b: i64) -> i64
   REQUIRE a >= 0 && a <= 1000 && b > 0 && b <= 100

@@ -7,7 +7,7 @@
 #   - Loop ranking function (DECREASES n - %i) proving halting
 #   - Postcondition guarantee: ENSURE %acc >= 0
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 # Function: sum_to_n
 # Calculates the sum from 1 to n: sum = 1 + 2 + ... + n

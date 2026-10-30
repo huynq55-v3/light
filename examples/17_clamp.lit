@@ -7,7 +7,7 @@
 #   - Hậu điều kiện (ENSURE): %ret >= low && %ret <= high
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC clamp(val: i64, low: i64, high: i64) -> i64
   # Tiền điều kiện: Giới hạn dưới low phải nhỏ hơn hoặc bằng giới hạn trên high

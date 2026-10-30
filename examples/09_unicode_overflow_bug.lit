@@ -2,7 +2,7 @@
 # "Nguyễn Quang Huy" has 16 display characters, but takes 18 UTF-8 bytes!
 # Allocating only 16 bytes WILL TRIGGER Z3 BUFFER OVERFLOW ERROR!
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   # BUG: Allocating only 16 bytes assuming ASCII

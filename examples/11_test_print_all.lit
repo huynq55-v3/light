@@ -1,5 +1,5 @@
 # Example 11: TEST std_print_all
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   %msg = ALLOC slice<u8> 18

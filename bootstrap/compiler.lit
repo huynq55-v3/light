@@ -1,5 +1,5 @@
 # ==============================================================================
-# LIGHT STANDARD LIBRARY: stdlib/io.lit
+# LIGHT STANDARD LIBRARY: std/io.lit
 # Formally verified I/O & Process Control module using Z3 SMT Solver
 # ==============================================================================
 
@@ -67,7 +67,7 @@ FUNC std_exit(code: i64) -> i64
 END_FUNC
 
 # ==============================================================================
-# LIGHT STANDARD LIBRARY: stdlib/string.lit
+# LIGHT STANDARD LIBRARY: std/string.lit
 # Formally verified string and character manipulation module using Z3 SMT Solver
 # Powers Lexing and Parsing for the Self-Hosting Compiler
 # ==============================================================================
@@ -355,7 +355,7 @@ FUNC parse_int_from(s: slice<u8>, start: i64, end: i64) -> i64
 END_FUNC
 
 # ==============================================================================
-# LIGHT STANDARD LIBRARY: stdlib/fs.lit
+# LIGHT STANDARD LIBRARY: std/fs.lit
 # Formally verified Linux raw syscall filesystem module using Z3 SMT Solver
 # ==============================================================================
 

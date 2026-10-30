@@ -7,7 +7,7 @@
 #   chẳng hạn trường hợp low > high (ví dụ low = 10, high = 5).
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC clamp_mutated(val: i64, low: i64, high: i64) -> i64
   # MUTATION BUG: Dòng tiền điều kiện REQUIRE low <= high ĐÃ BỊ BỎ!

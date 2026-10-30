@@ -1,5 +1,5 @@
-IMPORT "../stdlib/io.lit"
-IMPORT "../stdlib/fs.lit"
+IMPORT "../std/io.lit"
+IMPORT "../std/fs.lit"
 
 FUNC main() -> i64
   # Prepare null-terminated filename

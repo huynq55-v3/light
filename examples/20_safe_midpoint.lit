@@ -7,7 +7,7 @@
 # Do b >= a >= 0 nên (b - a) <= b <= i64::MAX -> KHÔNG BAO GIỜ TRÀN SỐ!
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC safe_midpoint(a: i64, b: i64) -> i64
   # Tiền điều kiện: a >= 0 && b >= a

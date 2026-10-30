@@ -48,52 +48,56 @@ Placed at the top of functions or loop bodies. Verified by Z3 SMT solver at comp
   > **Note for AI:** Always specify the type explicitly (`i64` or `bool`). The compiler requires explicit typing for deterministic assembly code generation.
 - `%dest = MOV %src`: Copy value between registers/variables.
 
-### III. Arithmetic & Logic Operations (Flat TAC)
-Binary operations take exactly 2 operands (no nested expressions):
-- `%dest = ADD %a %b`: Addition
-- `%dest = SUB %a %b`: Subtraction
-- `%dest = MUL %a %b`: Multiplication
-- `%dest = DIV %a %b`: Signed integer division (automatically checked for division by zero)
-- `%dest = MOD %a %b`: Signed modulo
-- `%dest = EQ %a %b`: Equal (`bool` result)
-- `%dest = NEQ %a %b`: Not equal (`bool` result)
-- `%dest = LT %a %b`: Less than
-- `%dest = LTE %a %b`: Less than or equal
-- `%dest = GT %a %b`: Greater than
-- `%dest = GTE %a %b`: Greater than or equal
-- `%dest = AND %a %b`: Logical AND (bool) hoặc Bitwise AND (i64 / `AND i64` / `BAND`)
-- `%dest = OR %a %b`: Logical OR (bool) hoặc Bitwise OR (i64 / `OR i64` / `BOR`)
-- `%dest = XOR %a %b`: Bitwise XOR (i64) hoặc Logical XOR (bool)
-- `%dest = SHL %a %b`: Shift Left (dịch trái `a << b`)
-- `%dest = SHR %a %b`: Logical Shift Right (dịch phải logic chèn 0)
-- `%dest = SAR %a %b`: Arithmetic Shift Right (dịch phải số học bảo toàn dấu)
-- `%dest = NOT %a`: Logical NOT (bool) hoặc Bitwise NOT (i64 / `NOT i64` / `BITNOT`)
+### III. Arithmetic & Logic Operations (Explicitly Typed Flat TAC)
+Binary operations take exactly 2 operands. Specifying the type explicitly (`i64`, `bool`) is strongly recommended:
+- `%dest = ADD <type> %a %b`: Addition
+- `%dest = SUB <type> %a %b`: Subtraction
+- `%dest = MUL <type> %a %b`: Multiplication
+- `%dest = DIV <type> %a %b`: Signed integer division (automatically checked for division by zero)
+- `%dest = MOD <type> %a %b`: Signed modulo
+- `%dest = EQ <type> %a %b`: Equal (`bool` result)
+- `%dest = NEQ <type> %a %b`: Not equal (`bool` result)
+- `%dest = LT <type> %a %b`: Less than (`bool` result)
+- `%dest = LTE <type> %a %b`: Less than or equal (`bool` result)
+- `%dest = GT <type> %a %b`: Greater than (`bool` result)
+- `%dest = GTE <type> %a %b`: Greater than or equal (`bool` result)
+- `%dest = AND <type> %a %b`: Logical AND (`bool`) or Bitwise AND (`i64` / `BAND`)
+- `%dest = OR <type> %a %b`: Logical OR (`bool`) or Bitwise OR (`i64` / `BOR`)
+- `%dest = XOR <type> %a %b`: Bitwise XOR (`i64`) or Logical XOR (`bool`)
+- `%dest = SHL <type> %a %b`: Shift Left (x86_64 masked at 63 bits)
+- `%dest = SHR <type> %a %b`: Logical Shift Right (chèn 0)
+- `%dest = SAR <type> %a %b`: Arithmetic Shift Right (bảo toàn dấu)
+- `%dest = NOT <type> %a`: Logical NOT (`bool`) or Bitwise NOT (`i64` / `BITNOT`)
 
 ### IV. Functions & Control Flow
-- `%dest = CALL <func_name> [arg1 arg2 ...]`: Call function with positional arguments.
+- `%dest = CALL <func_name> <arg1> <arg2> ...`: Call function with positional space-separated arguments.
 - `RET %val`: Return value from function (in `FUNC main()`, terminates process with exit code).
+- `RET_IF %cond [%val]`: Early conditional return `%val` if `%cond` is true.
 - `LOOP <label>` ... `END_LOOP <label>`: Structured loop block.
 - `BREAK_IF %cond`: Exit innermost loop when `%cond` is true.
+- `CONTINUE_IF %cond`: Jump to next loop iteration when `%cond` is true.
 - `LABEL <name>`: Branch target label.
 - `JUMP <name>`: Unconditional jump.
 - `BR_IF %cond <name>`: Conditional jump when `%cond` is true.
 
 ### V. Memory & Slices (Safe Zero-Overhead Memory)
 - `%buf = ALLOC slice<u8> <size_in_bytes>`: Allocate contiguous memory on the stack/BSS.
-- `STORE8 %buf %offset %val`: Store 1 byte (0..255) at `%buf + %offset`.
-- `%dest = LOAD8 %buf %offset`: Read 1 byte from `%buf + %offset`.
-- `STORE64 %buf %offset %val`: Store 8 bytes (i64) at `%buf + %offset`.
-- `%dest = LOAD64 %buf %offset`: Read 8 bytes (i64) from `%buf + %offset`.
-- `STORE_STR %buf "string\n"`: Store null-terminated string literal into `%buf`.
+- `STORE8 %buf/%ptr %offset %val`: Store 1 byte (0..255) at address `%buf + %offset`.
+- `%dest = LOAD8 %buf/%ptr %offset`: Read 1 byte from address `%buf + %offset`.
+- `STORE64 %buf/%ptr %offset %val`: Store 8 bytes (i64) at address `%buf + %offset`.
+- `%dest = LOAD64 %buf/%ptr %offset`: Read 8 bytes (i64) from address `%buf + %offset`.
+- `STORE_STR %buf [<offset>] "string\n"`: Store string literal into `%buf` at `<offset>` (defaults to 0).
 - `%len = SLICE_LEN %buf`: Get length in bytes.
-- `%ptr = SLICE_PTR %buf`: Get raw memory pointer.
+- `%ptr = SLICE_PTR %buf`: Extract raw 64-bit pointer.
 
 ### VI. Linux Bare-Metal Syscall (Zero libc)
-- `SYSCALL`: Direct Linux x86_64 kernel syscall using pre-loaded physical registers (`%rax`, `%rdi`, `%rsi`, `%rdx`, `%r10`, `%r8`). Result returned in `%rax`.
+- `%dest = SYSCALL %rax %rdi %rsi %rdx [%r10 [%r8 [%r9]]]`: Direct Linux x86_64 syscall.
   - `sys_read`: `%rax = 0`, `%rdi = fd`, `%rsi = buf_ptr`, `%rdx = count`
   - `sys_write`: `%rax = 1`, `%rdi = fd (1=stdout)`, `%rsi = buf_ptr`, `%rdx = count`
   - `sys_open`: `%rax = 2`, `%rdi = path_ptr`, `%rsi = flags`, `%rdx = mode`
   - `sys_close`: `%rax = 3`, `%rdi = fd`
+  - `sys_mmap`: `%rax = 9`, `%rdi = addr`, `%rsi = len`, `%rdx = prot`, `%r10 = flags`, `%r8 = fd`, `%r9 = off`
+  - `sys_munmap`: `%rax = 11`, `%rdi = addr`, `%rsi = len`
   - `sys_exit`: `%rax = 60`, `%rdi = exit_code`
 
 ---

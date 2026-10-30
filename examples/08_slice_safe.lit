@@ -1,7 +1,7 @@
 # Ví dụ 8: GỌI HÀM AN TOÀN VỚI SLICE
 # len = 27 <= len(%greeting) (28 bytes) -> Z3 PASS!
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC main() -> i64
   # Khởi tạo slice 28 bytes

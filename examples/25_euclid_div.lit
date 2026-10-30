@@ -10,7 +10,7 @@
 #   - Hậu điều kiện: ENSURE %quot * b + %rem == a
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC int_div(a: i64, b: i64) -> i64
   # Tiền điều kiện: a trong [0, 1000], số chia b trong [1, 100]

@@ -550,10 +550,48 @@ impl IvlLowerer {
                     is_memory: false,
                 });
             }
-            Instruction::Syscall { dest: Some(d), .. } => {
+            Instruction::Syscall { dest: Some(d), rax, rdx, .. } => {
+                let clean_d = d.trim_start_matches('%').to_string();
                 stmts.push(IvlStmt::Havoc {
-                    vars: vec![d.clone()],
+                    vars: vec![clean_d.clone()],
                     is_memory: false,
+                });
+                // Mô hình hóa khế ước hệ điều hành Linux Kernel x86_64:
+                // 1. Mọi syscall khi lỗi đều trả về trong khoảng -4095..-1 (tức luôn >= -4096)
+                stmts.push(IvlStmt::Assume {
+                    cond: IvlExpr::Binary {
+                        op: BinOp::Gte,
+                        lhs: Box::new(IvlExpr::Var(clean_d.clone())),
+                        rhs: Box::new(IvlExpr::IntConst(-4096)),
+                    },
+                });
+                // 2. sys_read (rax=0) và sys_write (rax=1) không bao giờ đọc/ghi vượt quá count (rdx)
+                let rax_expr = Self::operand_to_expr(rax);
+                let rdx_expr = Self::operand_to_expr(rdx);
+                let is_read_or_write = IvlExpr::Binary {
+                    op: BinOp::Or,
+                    lhs: Box::new(IvlExpr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(rax_expr.clone()),
+                        rhs: Box::new(IvlExpr::IntConst(0)),
+                    }),
+                    rhs: Box::new(IvlExpr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(rax_expr),
+                        rhs: Box::new(IvlExpr::IntConst(1)),
+                    }),
+                };
+                let lte_count = IvlExpr::Binary {
+                    op: BinOp::Lte,
+                    lhs: Box::new(IvlExpr::Var(clean_d)),
+                    rhs: Box::new(rdx_expr),
+                };
+                stmts.push(IvlStmt::Assume {
+                    cond: IvlExpr::Ite {
+                        cond: Box::new(is_read_or_write),
+                        then_val: Box::new(lte_count),
+                        else_val: Box::new(IvlExpr::BoolConst(true)),
+                    },
                 });
             }
             _ => {}

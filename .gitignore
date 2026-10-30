@@ -3,4 +3,5 @@ hello_bin
 *.out
 *.bin
 lightc*
+test_out.txt
 

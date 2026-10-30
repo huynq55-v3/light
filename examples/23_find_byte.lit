@@ -8,7 +8,7 @@
 #   - Ranking function (DECREASES): 16 - %i
 # ==============================================================================
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 FUNC find_byte(target: i64) -> i64
   # Hậu điều kiện: Index trả về luôn nằm trong đoạn [0, 16] (16 nghĩa là không tìm thấy)

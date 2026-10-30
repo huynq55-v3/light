@@ -6,7 +6,7 @@
 #   - Loop ranking function (DECREASES) proving halting/termination
 #   - Postcondition guarantees (ENSURE)
 
-IMPORT "../stdlib/io.lit"
+IMPORT "../std/io.lit"
 
 # Function: is_prime
 # Determines if an integer n is prime.
