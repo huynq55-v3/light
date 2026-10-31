@@ -54,6 +54,39 @@ impl Parser {
 
         let parent_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
 
+        let mut functions = Vec::new();
+        Self::parse_lines(
+            &source,
+            &canonical.display().to_string(),
+            Some((parent_dir, visited)),
+            &mut functions,
+        )?;
+        for func in functions {
+            if all_functions.iter().any(|f| f.name == func.name) {
+                return Err(ParseError {
+                    line_no: func.start_line,
+                    message: format!("Duplicate function definition: '{}'", func.name),
+                });
+            }
+            all_functions.push(func);
+        }
+
+        Ok(())
+    }
+
+    /// Parse từ chuỗi (không kèm import ngoài)
+    pub fn parse(source: &str) -> Result<Program, ParseError> {
+        let mut functions = Vec::new();
+        Self::parse_lines(source, "<memory>", None, &mut functions)?;
+        Ok(Program { functions })
+    }
+
+    fn parse_lines(
+        source: &str,
+        file_label: &str,
+        mut import_ctx: Option<(&Path, &mut HashSet<PathBuf>)>,
+        out_functions: &mut Vec<Function>,
+    ) -> Result<(), ParseError> {
         let mut current_func: Option<Function> = None;
 
         for (idx, raw_line) in source.lines().enumerate() {
@@ -72,7 +105,6 @@ impl Parser {
 
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
 
-            // Handle IMPORT "relative/path.lit"
             if parts[0] == "IMPORT" {
                 if current_func.is_some() {
                     return Err(ParseError {
@@ -80,18 +112,19 @@ impl Parser {
                         message: "IMPORT directives must be placed at the file top-level outside functions".into(),
                     });
                 }
-                let first_quote = trimmed.find('"').ok_or_else(|| ParseError {
-                    line_no,
-                    message: "IMPORT syntax requires double quotes: IMPORT \"file.lit\"".into(),
-                })?;
-                let last_quote = trimmed.rfind('"').ok_or_else(|| ParseError {
-                    line_no,
-                    message: "Missing closing quote in IMPORT".into(),
-                })?;
-                let import_rel_path = &trimmed[first_quote + 1..last_quote];
-                let resolved_path = parent_dir.join(import_rel_path);
-
-                Self::parse_file_recursive(&resolved_path, visited, all_functions)?;
+                if let Some((parent_dir, ref mut visited)) = import_ctx {
+                    let first_quote = trimmed.find('"').ok_or_else(|| ParseError {
+                        line_no,
+                        message: "IMPORT syntax requires double quotes: IMPORT \"file.lit\"".into(),
+                    })?;
+                    let last_quote = trimmed.rfind('"').ok_or_else(|| ParseError {
+                        line_no,
+                        message: "Missing closing quote in IMPORT".into(),
+                    })?;
+                    let import_rel_path = &trimmed[first_quote + 1..last_quote];
+                    let resolved_path = parent_dir.join(import_rel_path);
+                    Self::parse_file_recursive(&resolved_path, visited, out_functions)?;
+                }
                 continue;
             }
 
@@ -102,21 +135,20 @@ impl Parser {
                         message: "Nested function definitions are not allowed".into(),
                     });
                 }
-                let file_str = canonical.display().to_string();
-                let func = Self::parse_func_signature(trimmed, &file_str, line_no)?;
+                let func = Self::parse_func_signature(trimmed, file_label, line_no)?;
                 current_func = Some(func);
                 continue;
             }
 
             if parts[0] == "END_FUNC" {
                 if let Some(func) = current_func.take() {
-                    if all_functions.iter().any(|f| f.name == func.name) {
+                    if out_functions.iter().any(|f| f.name == func.name) {
                         return Err(ParseError {
                             line_no,
                             message: format!("Duplicate function definition: '{}'", func.name),
                         });
                     }
-                    all_functions.push(func);
+                    out_functions.push(func);
                 } else {
                     return Err(ParseError {
                         line_no,
@@ -135,7 +167,7 @@ impl Parser {
             func.instructions.push(SpannedInstruction {
                 inst,
                 loc: Loc {
-                    file: canonical.display().to_string(),
+                    file: file_label.to_string(),
                     line: line_no,
                     text: trimmed.to_string(),
                 },
@@ -150,78 +182,6 @@ impl Parser {
         }
 
         Ok(())
-    }
-
-    /// Parse từ chuỗi (không kèm import ngoài)
-    #[allow(dead_code)]
-    pub fn parse(source: &str) -> Result<Program, ParseError> {
-        let mut functions = Vec::new();
-        let mut current_func: Option<Function> = None;
-
-        for (idx, raw_line) in source.lines().enumerate() {
-            let line_no = idx + 1;
-            let line = raw_line.trim();
-
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let clean_line = Self::strip_inline_comment(line);
-            let trimmed = clean_line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-
-            if parts[0] == "FUNC" {
-                if current_func.is_some() {
-                    return Err(ParseError {
-                        line_no,
-                        message: "Nested function definitions are not allowed".into(),
-                    });
-                }
-                let func = Self::parse_func_signature(trimmed, "<memory>", line_no)?;
-                current_func = Some(func);
-                continue;
-            }
-
-            if parts[0] == "END_FUNC" {
-                if let Some(func) = current_func.take() {
-                    functions.push(func);
-                } else {
-                    return Err(ParseError {
-                        line_no,
-                        message: "Encountered END_FUNC without an active function block".into(),
-                    });
-                }
-                continue;
-            }
-
-            let func = current_func.as_mut().ok_or_else(|| ParseError {
-                line_no,
-                message: format!("Instruction '{}' must be placed inside a FUNC ... END_FUNC block", parts[0]),
-            })?;
-
-            let inst = Self::parse_instruction(trimmed, line_no)?;
-            func.instructions.push(SpannedInstruction {
-                inst,
-                loc: Loc {
-                    file: "<memory>".into(),
-                    line: line_no,
-                    text: trimmed.to_string(),
-                },
-            });
-        }
-
-        if let Some(func) = current_func {
-            return Err(ParseError {
-                line_no: 0,
-                message: format!("Hàm '{}' chưa được đóng bằng END_FUNC", func.name),
-            });
-        }
-
-        Ok(Program { functions })
     }
 
     fn strip_inline_comment(line: &str) -> String {
@@ -374,30 +334,17 @@ impl Parser {
         }
 
         // --- CÁC CHỈ THỊ KIỂM CHỨNG TOÁN HỌC (Z3) ---
-        if parts[0] == "REQUIRE" {
-            let expr_str = line.strip_prefix("REQUIRE").unwrap().trim();
+        if matches!(parts[0], "REQUIRE" | "ENSURE" | "INVARIANT" | "DECREASES" | "ASSERT") {
+            let kw = parts[0];
+            let expr_str = line.strip_prefix(kw).unwrap().trim();
             let expr = Self::parse_expr(expr_str, line_no)?;
-            return Ok(Instruction::Require(expr));
-        }
-        if parts[0] == "ENSURE" {
-            let expr_str = line.strip_prefix("ENSURE").unwrap().trim();
-            let expr = Self::parse_expr(expr_str, line_no)?;
-            return Ok(Instruction::Ensure(expr));
-        }
-        if parts[0] == "INVARIANT" {
-            let expr_str = line.strip_prefix("INVARIANT").unwrap().trim();
-            let expr = Self::parse_expr(expr_str, line_no)?;
-            return Ok(Instruction::Invariant(expr));
-        }
-        if parts[0] == "DECREASES" {
-            let expr_str = line.strip_prefix("DECREASES").unwrap().trim();
-            let expr = Self::parse_expr(expr_str, line_no)?;
-            return Ok(Instruction::Decreases(expr));
-        }
-        if parts[0] == "ASSERT" {
-            let expr_str = line.strip_prefix("ASSERT").unwrap().trim();
-            let expr = Self::parse_expr(expr_str, line_no)?;
-            return Ok(Instruction::Assert(expr));
+            return Ok(match kw {
+                "REQUIRE" => Instruction::Require(expr),
+                "ENSURE" => Instruction::Ensure(expr),
+                "INVARIANT" => Instruction::Invariant(expr),
+                "DECREASES" => Instruction::Decreases(expr),
+                _ => Instruction::Assert(expr),
+            });
         }
 
         if parts[0] == "CALL" {
@@ -486,36 +433,30 @@ impl Parser {
                 });
             }
             let dest = parts[1].to_string();
-            let size = parts[2].parse::<usize>().map_err(|_| ParseError {
+            let len = parts[2].parse::<usize>().map_err(|_| ParseError {
                 line_no,
                 message: format!("Allocation size must be a positive integer: {}", parts[2]),
             })?;
-            return Ok(Instruction::Alloc { dest, size });
-        }
-        if parts[0] == "STORE8" {
-            if parts.len() < 4 {
-                return Err(ParseError {
-                    line_no,
-                    message: "Syntax: STORE8 %buf offset val".into(),
-                });
-            }
-            return Ok(Instruction::Store8 {
-                buf: parts[1].to_string(),
-                offset: Self::parse_operand(parts[2]),
-                val: Self::parse_operand(parts[3]),
+            return Ok(Instruction::Alloc {
+                dest,
+                elem_ty: Type::U8,
+                len,
             });
         }
-        if parts[0] == "STORE64" {
+        if parts[0] == "STORE8" || parts[0] == "STORE64" {
             if parts.len() < 4 {
                 return Err(ParseError {
                     line_no,
-                    message: "Syntax: STORE64 %buf offset val".into(),
+                    message: format!("Syntax: {} %buf offset val", parts[0]),
                 });
             }
-            return Ok(Instruction::Store64 {
-                buf: parts[1].to_string(),
-                offset: Self::parse_operand(parts[2]),
-                val: Self::parse_operand(parts[3]),
+            let buf = parts[1].to_string();
+            let offset = Self::parse_operand(parts[2]);
+            let val = Self::parse_operand(parts[3]);
+            return Ok(if parts[0] == "STORE8" {
+                Instruction::Store8 { buf, offset, val }
+            } else {
+                Instruction::Store64 { buf, offset, val }
             });
         }
         if parts[0] == "STORE_STR" {
@@ -628,7 +569,7 @@ impl Parser {
                             line_no,
                             message: format!("Allocation size must be an integer: {}", parts[3]),
                         })?;
-                        return Ok(Instruction::AllocSlice {
+                        return Ok(Instruction::Alloc {
                             dest,
                             elem_ty: Type::U8,
                             len,
@@ -647,7 +588,7 @@ impl Parser {
                     })?;
                     match ty {
                         Type::Slice(elem) => {
-                            return Ok(Instruction::AllocSlice {
+                            return Ok(Instruction::Alloc {
                                 dest,
                                 elem_ty: *elem,
                                 len,
@@ -661,28 +602,18 @@ impl Parser {
                         }
                     }
                 }
-                "SLICE_PTR" => {
+                "SLICE_PTR" | "SLICE_LEN" => {
                     if parts.len() < 4 {
                         return Err(ParseError {
                             line_no,
-                            message: "Syntax: %ptr = SLICE_PTR %slice".into(),
+                            message: format!("Syntax: %dest = {} %slice", op),
                         });
                     }
-                    return Ok(Instruction::SlicePtr {
-                        dest,
-                        slice: parts[3].to_string(),
-                    });
-                }
-                "SLICE_LEN" => {
-                    if parts.len() < 4 {
-                        return Err(ParseError {
-                            line_no,
-                            message: "Syntax: %len = SLICE_LEN %slice".into(),
-                        });
-                    }
-                    return Ok(Instruction::SliceLen {
-                        dest,
-                        slice: parts[3].to_string(),
+                    let slice = parts[3].to_string();
+                    return Ok(if op == "SLICE_PTR" {
+                        Instruction::SlicePtr { dest, slice }
+                    } else {
+                        Instruction::SliceLen { dest, slice }
                     });
                 }
                 "CALL" => {
@@ -774,30 +705,19 @@ impl Parser {
                         src: parts[3].to_string(),
                     });
                 }
-                "LOAD8" => {
+                "LOAD8" | "LOAD64" => {
                     if parts.len() < 5 {
                         return Err(ParseError {
                             line_no,
-                            message: "Syntax: %dest = LOAD8 %buf %offset".into(),
+                            message: format!("Syntax: %dest = {} %buf %offset", op),
                         });
                     }
-                    return Ok(Instruction::Load8 {
-                        dest,
-                        buf: parts[3].to_string(),
-                        offset: Self::parse_operand(parts[4]),
-                    });
-                }
-                "LOAD64" => {
-                    if parts.len() < 5 {
-                        return Err(ParseError {
-                            line_no,
-                            message: "Syntax: %dest = LOAD64 %buf %offset".into(),
-                        });
-                    }
-                    return Ok(Instruction::Load64 {
-                        dest,
-                        buf: parts[3].to_string(),
-                        offset: Self::parse_operand(parts[4]),
+                    let buf = parts[3].to_string();
+                    let offset = Self::parse_operand(parts[4]);
+                    return Ok(if op == "LOAD8" {
+                        Instruction::Load8 { dest, buf, offset }
+                    } else {
+                        Instruction::Load64 { dest, buf, offset }
                     });
                 }
                 "SYSCALL" => {

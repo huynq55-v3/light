@@ -38,7 +38,6 @@ impl PropertyCategory {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum VerificationResult {
     /// Đã kiểm chứng thành công 100%: UNSAT (Không tồn tại phản ví dụ gây lỗi)
@@ -142,6 +141,59 @@ impl Verifier {
         }
     }
 
+    /// Phát sinh các mệnh đề kiểm chứng quy nạp (Step 2: Invariant) và dừng vòng lặp (Step 4a/4b: Decreases)
+    fn emit_loop_backedge_asserts(
+        guard: &IvlExpr,
+        invariants: &[IvlExpr],
+        decreases: &[IvlExpr],
+        loop_id: usize,
+        loc: &Loc,
+        inv_goal: String,
+        dec_goal_a: String,
+        dec_goal_b: String,
+        stmts: &mut Vec<IvlStmt>,
+    ) {
+        for inv in invariants {
+            stmts.push(IvlStmt::Assert {
+                cond: Self::mk_implies(guard, inv.clone()),
+                goal_name: inv_goal.clone(),
+                category: PropertyCategory::Inductive,
+                loc: loc.clone(),
+            });
+        }
+        for (d_idx, dec) in decreases.iter().enumerate() {
+            let old_r = IvlExpr::Var(format!("__rank_init_{}_{}", loop_id, d_idx));
+            stmts.push(IvlStmt::Assert {
+                cond: Self::mk_implies(
+                    guard,
+                    IvlExpr::Binary {
+                        op: BinOp::Gte,
+                        lhs: Box::new(old_r.clone()),
+                        rhs: Box::new(IvlExpr::IntConst(0)),
+                        is_unsigned: false,
+                    },
+                ),
+                goal_name: dec_goal_a.clone(),
+                category: PropertyCategory::Termination,
+                loc: loc.clone(),
+            });
+            stmts.push(IvlStmt::Assert {
+                cond: Self::mk_implies(
+                    guard,
+                    IvlExpr::Binary {
+                        op: BinOp::Lt,
+                        lhs: Box::new(dec.clone()),
+                        rhs: Box::new(old_r),
+                        is_unsigned: false,
+                    },
+                ),
+                goal_name: dec_goal_b.clone(),
+                category: PropertyCategory::Termination,
+                loc: loc.clone(),
+            });
+        }
+    }
+
     /// Bọc điều kiện luồng chạy `active` vào mọi vi lệnh IVL cơ bản (Assign, Assert, Assume, Havoc)
     fn guard_stmts(
         raw_stmts: Vec<IvlStmt>,
@@ -203,7 +255,6 @@ impl Verifier {
                         });
                     }
                 }
-                other => out.push(other),
             }
         }
         out
@@ -398,54 +449,17 @@ impl Verifier {
                     local_loop_exit = Self::mk_or(local_loop_exit, cont_var_expr.clone());
                     if let Some(lctx) = loop_ctx {
                         if lctx.verify_inductive && !Self::is_false(&take_cont) {
-                            for inv in lctx.invariants {
-                                stmts.push(IvlStmt::Assert {
-                                    cond: Self::mk_implies(&take_cont, inv.clone()),
-                                    goal_name: format!(
-                                        "Function '{}' - Line {}: Loop Step 2: Invariant preservation on CONTINUE_IF",
-                                        func.name, s_inst.loc.line
-                                    ),
-                                    category: PropertyCategory::Inductive,
-                                    loc: s_inst.loc.clone(),
-                                });
-                            }
-                            for (d_idx, dec) in lctx.decreases.iter().enumerate() {
-                                let old_r = IvlExpr::Var(format!("__rank_init_{}_{}", lctx.loop_id, d_idx));
-                                stmts.push(IvlStmt::Assert {
-                                    cond: Self::mk_implies(
-                                        &take_cont,
-                                        IvlExpr::Binary {
-                                            op: BinOp::Gte,
-                                            lhs: Box::new(old_r.clone()),
-                                            rhs: Box::new(IvlExpr::IntConst(0)),
-                                            is_unsigned: false,
-                                        },
-                                    ),
-                                    goal_name: format!(
-                                        "Function '{}' - Line {}: Step 4a: Termination Step on CONTINUE_IF (DECREASES bounded below >= 0)",
-                                        func.name, s_inst.loc.line
-                                    ),
-                                    category: PropertyCategory::Termination,
-                                    loc: s_inst.loc.clone(),
-                                });
-                                stmts.push(IvlStmt::Assert {
-                                    cond: Self::mk_implies(
-                                        &take_cont,
-                                        IvlExpr::Binary {
-                                            op: BinOp::Lt,
-                                            lhs: Box::new(dec.clone()),
-                                            rhs: Box::new(old_r),
-                                            is_unsigned: false,
-                                        },
-                                    ),
-                                    goal_name: format!(
-                                        "Function '{}' - Line {}: Step 4b: Termination Step on CONTINUE_IF (DECREASES ranking strictly decreases)",
-                                        func.name, s_inst.loc.line
-                                    ),
-                                    category: PropertyCategory::Termination,
-                                    loc: s_inst.loc.clone(),
-                                });
-                            }
+                            Self::emit_loop_backedge_asserts(
+                                &take_cont,
+                                lctx.invariants,
+                                lctx.decreases,
+                                lctx.loop_id,
+                                &s_inst.loc,
+                                format!("Function '{}' - Line {}: Loop Step 2: Invariant preservation on CONTINUE_IF", func.name, s_inst.loc.line),
+                                format!("Function '{}' - Line {}: Step 4a: Termination Step on CONTINUE_IF (DECREASES bounded below >= 0)", func.name, s_inst.loc.line),
+                                format!("Function '{}' - Line {}: Step 4b: Termination Step on CONTINUE_IF (DECREASES ranking strictly decreases)", func.name, s_inst.loc.line),
+                                &mut stmts,
+                            );
                         }
                     }
                     active = Self::mk_and(active, Self::mk_not(cont_var_expr));
@@ -622,45 +636,17 @@ impl Verifier {
                     // sẽ quay lại đầu vòng lặp -> Phải thỏa mãn Invariant (Step 2) và Decreases (Step 4a, 4b)!
                     if verify_this_loop {
                         let latch_active = Self::mk_and(active.clone(), Self::mk_not(body_any_exit));
-                        for inv in &loop_invs {
-                            stmts.push(IvlStmt::Assert {
-                                cond: Self::mk_implies(&latch_active, inv.clone()),
-                                goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
-                                category: PropertyCategory::Inductive,
-                                loc: slice[idx].loc.clone(),
-                            });
-                        }
-                        for (d_idx, dec) in loop_decs.iter().enumerate() {
-                            let old_r = IvlExpr::Var(format!("__rank_init_{}_{}", loop_id, d_idx));
-                            stmts.push(IvlStmt::Assert {
-                                cond: Self::mk_implies(
-                                    &latch_active,
-                                    IvlExpr::Binary {
-                                        op: BinOp::Gte,
-                                        lhs: Box::new(old_r.clone()),
-                                        rhs: Box::new(IvlExpr::IntConst(0)),
-                                        is_unsigned: false,
-                                    },
-                                ),
-                                goal_name: format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
-                                category: PropertyCategory::Termination,
-                                loc: slice[idx].loc.clone(),
-                            });
-                            stmts.push(IvlStmt::Assert {
-                                cond: Self::mk_implies(
-                                    &latch_active,
-                                    IvlExpr::Binary {
-                                        op: BinOp::Lt,
-                                        lhs: Box::new(dec.clone()),
-                                        rhs: Box::new(old_r),
-                                        is_unsigned: false,
-                                    },
-                                ),
-                                goal_name: format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
-                                category: PropertyCategory::Termination,
-                                loc: slice[idx].loc.clone(),
-                            });
-                        }
+                        Self::emit_loop_backedge_asserts(
+                            &latch_active,
+                            &loop_invs,
+                            &loop_decs,
+                            loop_id,
+                            &slice[idx].loc,
+                            format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
+                            format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
+                            format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
+                            &mut stmts,
+                        );
                     }
 
                     // Sau END_LOOP (Step 3 - Exit Step): để đi tiếp xuống các lệnh sau vòng lặp,
@@ -854,14 +840,15 @@ impl Verifier {
             }
         }
 
+        let ctx = FunctionBufferContext::analyze(func, program);
+
         // 0c. Static Well-Formedness: SSA Definite Assignment Check via CFG Forward Dataflow Analysis
-        if let Some(err) = Self::check_definite_assignment_cfg(func) {
+        if let Some(err) = Self::check_definite_assignment_cfg(func, &ctx) {
             results.push(err);
             return results;
         }
 
         // 0d. Memory Sort Consistency Check: Prevent mixing 8-bit (LOAD8/STORE8/STORE_STR) and 64-bit (LOAD64/STORE64) accesses on same buffer
-        let ctx = FunctionBufferContext::analyze(func, program);
         let mut has_mem8 = HashSet::new();
         let mut has_mem64 = HashSet::new();
         for s in &func.instructions {
@@ -977,35 +964,28 @@ impl Verifier {
     }
 
     /// Alias cho `verify_function` nhằm tương thích ngược với các test case
-    #[allow(dead_code)]
     #[inline]
     pub fn verify_function_ivl(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
         Self::verify_function(func, program)
     }
 
     /// Thu thập các biến được định nghĩa bởi một instruction
-    fn collect_defined_vars(inst: &Instruction, out: &mut HashSet<String>) {
+    fn collect_defined_vars(inst: &Instruction, ctx: &FunctionBufferContext, out: &mut HashSet<String>) {
         match inst {
             Instruction::AssignConst { dest, .. }
             | Instruction::Binary { dest, .. }
             | Instruction::Not { dest, .. }
             | Instruction::SliceLen { dest, .. }
             | Instruction::Load8 { dest, .. }
-            | Instruction::Load64 { dest, .. } => {
-                out.insert(IvlLowerer::clean_name(dest).to_string());
-            }
-            Instruction::Mov { dest, src } | Instruction::SlicePtr { dest, slice: src } => {
-                let clean_dest = IvlLowerer::clean_name(dest).to_string();
-                let clean_src = IvlLowerer::clean_name(src);
-                out.insert(clean_dest.clone());
-                if out.contains(&format!("{}_len", clean_src)) {
-                    out.insert(format!("{}_len", clean_dest));
-                }
-            }
-            Instruction::AllocSlice { dest, .. } | Instruction::Alloc { dest, .. } => {
+            | Instruction::Load64 { dest, .. }
+            | Instruction::Mov { dest, .. }
+            | Instruction::SlicePtr { dest, .. }
+            | Instruction::Alloc { dest, .. } => {
                 let clean = IvlLowerer::clean_name(dest).to_string();
                 out.insert(clean.clone());
-                out.insert(format!("{}_len", clean));
+                if ctx.is_known_buffer(dest) {
+                    out.insert(format!("{}_len", clean));
+                }
             }
             Instruction::Call { dest: Some(d), .. } | Instruction::Syscall { dest: Some(d), .. } => {
                 out.insert(IvlLowerer::clean_name(d).to_string());
@@ -1111,7 +1091,7 @@ impl Verifier {
     }
 
     /// Phân tích Definite Assignment chuẩn xác qua duyệt luồng tiến (Forward Jump & Structured Loop)
-    fn check_definite_assignment_cfg(func: &Function) -> Option<VerificationResult> {
+    fn check_definite_assignment_cfg(func: &Function, ctx: &FunctionBufferContext) -> Option<VerificationResult> {
         let mut defined: HashSet<String> = func
             .params
             .iter()
@@ -1195,7 +1175,7 @@ impl Verifier {
                 }
             }
 
-            Self::collect_defined_vars(&s_inst.inst, &mut defined);
+            Self::collect_defined_vars(&s_inst.inst, ctx, &mut defined);
 
             match &s_inst.inst {
                 Instruction::BrIf { target, .. } => {
@@ -1316,6 +1296,7 @@ impl Verifier {
         query: &str,
         stack_trace: Vec<StackFrame>,
     ) -> VerificationResult {
+        let _spawn_guard = crate::codegen::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Tìm binary z3: ưu tiên ~/.local/bin/z3 hoặc z3 trong PATH
         let home = std::env::var("HOME").unwrap_or_default();
         let local_z3 = format!("{}/.local/bin/z3", home);
@@ -1341,6 +1322,7 @@ impl Verifier {
                 };
             }
         };
+        drop(_spawn_guard);
 
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(query.as_bytes());

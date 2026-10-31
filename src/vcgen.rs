@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Universal Verification Condition Generator (VCGen)
 //! Thực thi kiểm chứng toán học thuần túy trên các vi lệnh IVL (`Assign`, `Assume`, `Havoc`, `Assert`)
 //! kết hợp với Lý thuyết Mảng và Bộ nhớ SMT (QF_ABV: Quantifier-Free BitVectors & Arrays).
@@ -348,6 +347,32 @@ impl VcGen {
         }
     }
 
+    /// Đảm bảo mọi biến vô hướng và mảng bộ nhớ xuất hiện trong `expr` đều được khai báo trong SMT
+    fn register_expr_decls(&mut self, expr: &IvlExpr, is_memory_assign: bool) {
+        let mut needed_vars = HashSet::new();
+        let mut needed_mems = HashSet::new();
+
+        self.collect_scalar_vars(expr, &mut needed_vars);
+        if is_memory_assign {
+            Self::collect_mem_expr_names(expr, &mut needed_mems);
+        } else {
+            Self::collect_mem_names(expr, &mut needed_mems);
+        }
+
+        for nm in needed_mems {
+            if !self.current_mem.contains_key(&nm) {
+                let init_mem = format!("{}_mem_0", nm);
+                self.declared_mems.insert(init_mem.clone());
+                self.current_mem.insert(nm, init_mem);
+            }
+        }
+        for nv in needed_vars {
+            if !self.declared_mems.contains(&nv) && !self.current_mem.contains_key(&nv) {
+                self.declared_vars.insert(nv);
+            }
+        }
+    }
+
     /// Thực thi kiểm chứng một chuỗi vi lệnh IVL
     pub fn verify_sequence(
         &mut self,
@@ -360,28 +385,7 @@ impl VcGen {
         for stmt in stmts {
             match stmt {
                 IvlStmt::Assign { dest, expr, is_memory } => {
-                    let mut needed_vars = HashSet::new();
-                    let mut needed_mems = HashSet::new();
-
-                    self.collect_scalar_vars(expr, &mut needed_vars);
-                    if *is_memory {
-                        Self::collect_mem_expr_names(expr, &mut needed_mems);
-                    } else {
-                        Self::collect_mem_names(expr, &mut needed_mems);
-                    }
-
-                    for nm in needed_mems {
-                        if !self.current_mem.contains_key(&nm) {
-                            let init_mem = format!("{}_mem_0", nm);
-                            self.declared_mems.insert(init_mem.clone());
-                            self.current_mem.insert(nm, init_mem);
-                        }
-                    }
-                    for nv in needed_vars {
-                        if !self.declared_mems.contains(&nv) && !self.current_mem.contains_key(&nv) {
-                            self.declared_vars.insert(nv);
-                        }
-                    }
+                    self.register_expr_decls(expr, *is_memory);
 
                     self.step_counter += 1;
                     let clean = dest.trim_start_matches('%');
@@ -400,20 +404,7 @@ impl VcGen {
                     }
                 }
                 IvlStmt::Assume { cond } => {
-                    let mut needed_vars = HashSet::new();
-                    self.collect_scalar_vars(cond, &mut needed_vars);
-                    for nv in needed_vars {
-                        self.declared_vars.insert(nv);
-                    }
-                    let mut needed_mems = HashSet::new();
-                    Self::collect_mem_names(cond, &mut needed_mems);
-                    for nm in needed_mems {
-                        if !self.current_mem.contains_key(&nm) {
-                            let init_mem = format!("{}_mem_0", nm);
-                            self.declared_mems.insert(init_mem.clone());
-                            self.current_mem.insert(nm, init_mem);
-                        }
-                    }
+                    self.register_expr_decls(cond, false);
                     let cond_smt = self.expr_to_bool(cond);
                     self.assertions_smt.push(format!("(assert {})", cond_smt));
                 }
@@ -433,20 +424,7 @@ impl VcGen {
                     }
                 }
                 IvlStmt::Assert { cond, goal_name, category, loc } => {
-                    let mut needed_vars = HashSet::new();
-                    self.collect_scalar_vars(cond, &mut needed_vars);
-                    for nv in needed_vars {
-                        self.declared_vars.insert(nv);
-                    }
-                    let mut needed_mems = HashSet::new();
-                    Self::collect_mem_names(cond, &mut needed_mems);
-                    for nm in needed_mems {
-                        if !self.current_mem.contains_key(&nm) {
-                            let init_mem = format!("{}_mem_0", nm);
-                            self.declared_mems.insert(init_mem.clone());
-                            self.current_mem.insert(nm, init_mem);
-                        }
-                    }
+                    self.register_expr_decls(cond, false);
                     let cond_smt = self.expr_to_bool(cond);
 
                     let mut query = String::from("(set-logic QF_ABV)\n");
@@ -476,7 +454,6 @@ impl VcGen {
                     let res = Verifier::solve_query(goal_name, *category, &query, stack_trace);
                     results.push(res);
                 }
-                IvlStmt::Comment(_) => {}
             }
         }
 

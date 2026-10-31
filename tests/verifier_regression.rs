@@ -3311,3 +3311,26 @@ END_FUNC
     );
 }
 
+#[test]
+fn test_v104_signed_right_shift_in_contracts_uses_arithmetic_shift() {
+    // V104: Signed right shift `>>` in contracts (REQUIRE/ENSURE/ASSERT) on `i64` must lower to
+    // arithmetic shift right (`BinOp::Sar` -> `bvashr`), preserving negative sign bits!
+    // Meanwhile `u64` right shift `>>` continues to use logical shift right (`BinOp::Shr` -> `bvlshr`).
+    let code = r#"
+FUNC test_signed_sar(x: i64) -> i64
+  REQUIRE x == -8
+  ENSURE %res == (x >> 1) && %res == -4
+  %res = SAR i64 x 1
+  RET %res
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V104");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V104: signed `>>` in contract must match `SAR i64` (-8 >> 1 == -4)! Got: {:?}",
+        res
+    );
+}
+
+

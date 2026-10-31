@@ -22,13 +22,6 @@ pub enum Value {
     F64(f64),
     Bool(bool),
     Ptr(usize),
-    /// Slice Fat Pointer: con trỏ, độ dài, và tên buffer gốc
-    #[allow(dead_code)]
-    Slice {
-        ptr: usize,
-        len: usize,
-        buf_name: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,8 +122,8 @@ pub enum Instruction {
     },
 
     // --- BỘ NHỚ AN TOÀN (BUFFER, ARRAYS & SLICES) ---
-    /// Cấp phát slice an toàn: %dest = ALLOC slice<T> <len>
-    AllocSlice {
+    /// Cấp phát bộ nhớ / slice cục bộ an toàn: `ALLOC %buf <size>` hoặc `%dest = ALLOC slice<T> <len>`
+    Alloc {
         dest: String,
         elem_ty: Type,
         len: usize,
@@ -144,11 +137,6 @@ pub enum Instruction {
     SliceLen {
         dest: String,
         slice: String,
-    },
-    /// Cấp phát bộ nhớ cục bộ an toàn: ALLOC %buf size
-    Alloc {
-        dest: String,
-        size: usize,
     },
     /// Ghi 1 byte vào bộ nhớ: STORE8 %buf %offset %val
     Store8 {

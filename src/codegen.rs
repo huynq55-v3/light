@@ -8,8 +8,12 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex;
 
-#[allow(dead_code)]
+/// Khóa đồng bộ toàn cục giữa bước tạo/đóng file thực thi ELF (`emit_elf64`) và bước `fork()`/`spawn()` tiến trình con
+/// nhằm ngăn chặn triệt để lỗi race condition `ETXTBSY (Text file busy)` của Linux Kernel khi chạy đa luồng.
+pub static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum X86Reg {
@@ -142,30 +146,41 @@ impl MachineCodeEmitter {
         self.code.push(0xc3);
     }
 
+    /// Emit function return or sys_exit(rax) if inside `main`
+    fn emit_return_or_exit(&mut self, is_main: bool) {
+        if is_main {
+            self.emit_mov_reg_reg(X86Reg::Rdi, X86Reg::Rax);
+            self.emit_mov_reg_imm64(X86Reg::Rax, 60);
+            self.emit_syscall();
+        } else {
+            self.code.extend_from_slice(&[0x48, 0x89, 0xec]); // mov rsp, rbp
+            self.code.push(0x5d); // pop rbp
+            self.emit_ret();
+        }
+    }
+
+    /// Emit `test rax, rax; jnz rel32` from stack slot and record jump fixup
+    fn emit_cond_jump(&mut self, slot: i32, target: String, jump_fixups: &mut Vec<(usize, String)>) {
+        self.emit_load_stack(X86Reg::Rax, slot);
+        self.code.extend_from_slice(&[0x48, 0x85, 0xc0]); // test rax, rax
+        self.code.extend_from_slice(&[0x0f, 0x85]); // jnz rel32
+        let fix = self.code.len();
+        self.code.extend_from_slice(&[0, 0, 0, 0]);
+        jump_fixups.push((fix, target));
+    }
+
     /// Cấp phát trước tất cả các buffer tĩnh để địa chỉ data_section cố định (tránh realloc khi chạy JIT)
     pub fn preallocate_buffers(&mut self, program: &Program) {
         for func in &program.functions {
             for si in &func.instructions {
-                match &si.inst {
-                    Instruction::AllocSlice { dest, len, .. } => {
-                        let key = Self::buf_key(&func.name, dest);
-                        if !self.buffer_offsets.contains_key(&key) {
-                            let offset = self.data_section.len();
-                            self.data_section.resize(offset + len + 16, 0);
-                            self.buffer_offsets.insert(key.clone(), offset);
-                            self.slice_capacities.insert(key, *len);
-                        }
+                if let Instruction::Alloc { dest, len, .. } = &si.inst {
+                    let key = Self::buf_key(&func.name, dest);
+                    if !self.buffer_offsets.contains_key(&key) {
+                        let offset = self.data_section.len();
+                        self.data_section.resize(offset + len + 16, 0);
+                        self.buffer_offsets.insert(key.clone(), offset);
+                        self.slice_capacities.insert(key, *len);
                     }
-                    Instruction::Alloc { dest, size } => {
-                        let key = Self::buf_key(&func.name, dest);
-                        if !self.buffer_offsets.contains_key(&key) {
-                            let offset = self.data_section.len();
-                            self.data_section.resize(offset + size + 16, 0);
-                            self.buffer_offsets.insert(key.clone(), offset);
-                            self.slice_capacities.insert(key, *size);
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -241,7 +256,8 @@ impl MachineCodeEmitter {
             }
         }
 
-        // 2. Collect all local registers & variables defined in instructions
+        // 2. Collect all local registers & variables defined in instructions using shared FunctionBufferContext
+        let buf_ctx = crate::ivl::FunctionBufferContext::analyze(func, Some(program));
         for si in &func.instructions {
             match &si.inst {
                 Instruction::AssignConst { dest, .. }
@@ -249,23 +265,23 @@ impl MachineCodeEmitter {
                 | Instruction::Load8 { dest, .. }
                 | Instruction::Load64 { dest, .. }
                 | Instruction::Binary { dest, .. }
-                | Instruction::Not { dest, .. } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    if !slots.contains_key(&clean) {
-                        slots.insert(clean, next_slot);
-                        next_slot += 8;
-                    }
-                }
-                Instruction::Alloc { dest, .. } => {
+                | Instruction::Not { dest, .. }
+                | Instruction::Mov { dest, .. }
+                | Instruction::SlicePtr { dest, .. } => {
                     let clean = dest.trim_start_matches('%').to_string();
                     if !slots.contains_key(&clean) {
                         slots.insert(clean.clone(), next_slot);
                         next_slot += 8;
-                        slots.insert(format!("{}_len", clean), next_slot);
-                        next_slot += 8;
+                    }
+                    if buf_ctx.is_known_buffer(dest) {
+                        let len_name = format!("{}_len", clean);
+                        if !slots.contains_key(&len_name) {
+                            slots.insert(len_name, next_slot);
+                            next_slot += 8;
+                        }
                     }
                 }
-                Instruction::AllocSlice { dest, len, .. } => {
+                Instruction::Alloc { dest, len, .. } => {
                     let clean = dest.trim_start_matches('%').to_string();
                     if !slots.contains_key(&clean) {
                         slots.insert(clean.clone(), next_slot);
@@ -289,36 +305,6 @@ impl MachineCodeEmitter {
                     }
                 }
                 _ => {}
-            }
-        }
-
-        // Fixed-point propagation for Mov and SlicePtr to ensure any chained alias (a -> b -> c) gets _len slots
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for si in &func.instructions {
-                match &si.inst {
-                    Instruction::Mov { dest, src } | Instruction::SlicePtr { dest, slice: src } => {
-                        let clean = dest.trim_start_matches('%').to_string();
-                        if !slots.contains_key(&clean) {
-                            slots.insert(clean.clone(), next_slot);
-                            next_slot += 8;
-                            changed = true;
-                        }
-                        let s_clean = src.trim_start_matches('%').to_string();
-                        let s_len_name = format!("{}_len", s_clean);
-                        let d_len_name = format!("{}_len", clean);
-                        let key = Self::buf_key(&func.name, src);
-                        if slots.contains_key(&s_len_name) || self.slice_capacities.contains_key(&key) || self.slice_capacities.contains_key(src) {
-                            if !slots.contains_key(&d_len_name) {
-                                slots.insert(d_len_name, next_slot);
-                                next_slot += 8;
-                                changed = true;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
             }
         }
 
@@ -442,7 +428,7 @@ impl MachineCodeEmitter {
 
         // --- EMIT INSTRUCTIONS ---
         let mut label_offsets: HashMap<String, usize> = HashMap::new();
-        let mut jump_fixups: Vec<(usize, String, bool)> = Vec::new(); // (patch_pos, target, is_jnz)
+        let mut jump_fixups: Vec<(usize, String)> = Vec::new(); // (patch_pos, target)
         let mut loop_stack: Vec<(String, String)> = Vec::new(); // (start_label, end_label)
 
         for si in &func.instructions {
@@ -462,31 +448,7 @@ impl MachineCodeEmitter {
                     self.emit_store_stack(X86Reg::Rax, slot);
                 }
 
-                Instruction::Alloc { dest, size } => {
-                    let key = Self::buf_key(&func.name, dest);
-                    let offset = if let Some(&off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(dest)) {
-                        off
-                    } else {
-                        let offset = self.data_section.len();
-                        self.data_section.resize(offset + size + 16, 0);
-                        self.buffer_offsets.insert(key.clone(), offset);
-                        self.slice_capacities.insert(key, *size);
-                        offset
-                    };
-                    let clean = dest.trim_start_matches('%');
-                    let slot = slots[clean];
-                    let vaddr = base_data_vaddr + (offset as u64);
-                    self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
-                    self.emit_store_stack(X86Reg::Rax, slot);
-
-                    let len_name = format!("{}_len", clean);
-                    if let Some(&slot_len) = slots.get(&len_name) {
-                        self.emit_mov_reg_imm64(X86Reg::Rax, *size as i64);
-                        self.emit_store_stack(X86Reg::Rax, slot_len);
-                    }
-                }
-
-                Instruction::AllocSlice { dest, len, .. } => {
+                Instruction::Alloc { dest, len, .. } => {
                     let key = Self::buf_key(&func.name, dest);
                     let offset = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(dest)).copied().unwrap_or(0);
                     let clean = dest.trim_start_matches('%');
@@ -496,37 +458,38 @@ impl MachineCodeEmitter {
                     self.emit_store_stack(X86Reg::Rax, slot);
 
                     let len_name = format!("{}_len", clean);
-                    let slot_len = slots[&len_name];
-                    self.emit_mov_reg_imm64(X86Reg::Rax, *len as i64);
-                    self.emit_store_stack(X86Reg::Rax, slot_len);
+                    if let Some(&slot_len) = slots.get(&len_name) {
+                        self.emit_mov_reg_imm64(X86Reg::Rax, *len as i64);
+                        self.emit_store_stack(X86Reg::Rax, slot_len);
+                    }
                 }
 
-                Instruction::SlicePtr { dest, slice } => {
-                    let clean = dest.trim_start_matches('%');
-                    let slot = slots[clean];
-                    let key = Self::buf_key(&func.name, slice);
-                    if let Some(&buf_off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(slice)) {
+                Instruction::SlicePtr { dest, slice: src } | Instruction::Mov { dest, src } => {
+                    let d_clean = dest.trim_start_matches('%');
+                    let d_slot = slots[d_clean];
+                    let key = Self::buf_key(&func.name, src);
+                    if let Some(&buf_off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(src)) {
                         let vaddr = base_data_vaddr + (buf_off as u64);
                         self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
                     } else {
-                        let sl_clean = slice.trim_start_matches('%');
-                        if let Some(&s_slot) = slots.get(sl_clean) {
+                        let s_clean = src.trim_start_matches('%');
+                        if let Some(&s_slot) = slots.get(s_clean) {
                             self.emit_load_stack(X86Reg::Rax, s_slot);
                         } else {
                             self.emit_mov_reg_imm64(X86Reg::Rax, 0);
                         }
                     }
-                    self.emit_store_stack(X86Reg::Rax, slot);
+                    self.emit_store_stack(X86Reg::Rax, d_slot);
 
-                    // Copy độ dài slice {slice}_len -> {dest}_len nếu có
-                    let sl_clean = slice.trim_start_matches('%');
-                    let s_len_name = format!("{}_len", sl_clean);
-                    let d_len_name = format!("{}_len", clean);
+                    // Copy độ dài slice {src}_len -> {dest}_len nếu có
+                    let s_clean = src.trim_start_matches('%');
+                    let s_len_name = format!("{}_len", s_clean);
+                    let d_len_name = format!("{}_len", d_clean);
                     if let Some(&d_len_slot) = slots.get(&d_len_name) {
                         if let Some(&s_len_slot) = slots.get(&s_len_name) {
                             self.emit_load_stack(X86Reg::Rax, s_len_slot);
                             self.emit_store_stack(X86Reg::Rax, d_len_slot);
-                        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
+                        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(src)) {
                             self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
                             self.emit_store_stack(X86Reg::Rax, d_len_slot);
                         }
@@ -617,38 +580,6 @@ impl MachineCodeEmitter {
                     load_op_into_reg(self, offset, X86Reg::Rcx);
                     load_op_into_reg(self, val, X86Reg::Rdx);
                     self.emit_store64_indexed();
-                }
-
-                Instruction::Mov { dest, src } => {
-                    let d_clean = dest.trim_start_matches('%');
-                    let d_slot = slots[d_clean];
-                    let key = Self::buf_key(&func.name, src);
-                    if let Some(&buf_off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(src)) {
-                        let vaddr = base_data_vaddr + (buf_off as u64);
-                        self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
-                    } else {
-                        let s_clean = src.trim_start_matches('%');
-                        if let Some(&s_slot) = slots.get(s_clean) {
-                            self.emit_load_stack(X86Reg::Rax, s_slot);
-                        } else {
-                            self.emit_mov_reg_imm64(X86Reg::Rax, 0);
-                        }
-                    }
-                    self.emit_store_stack(X86Reg::Rax, d_slot);
-
-                    // Copy độ dài slice {src}_len -> {dest}_len nếu có
-                    let s_clean = src.trim_start_matches('%');
-                    let s_len_name = format!("{}_len", s_clean);
-                    let d_len_name = format!("{}_len", d_clean);
-                    if let Some(&d_len_slot) = slots.get(&d_len_name) {
-                        if let Some(&s_len_slot) = slots.get(&s_len_name) {
-                            self.emit_load_stack(X86Reg::Rax, s_len_slot);
-                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
-                        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(src)) {
-                            self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
-                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
-                        }
-                    }
                 }
 
                 Instruction::Binary { op, ty, dest, src1, src2 } => {
@@ -754,19 +685,12 @@ impl MachineCodeEmitter {
                     self.code.push(0xe9);
                     let fix = self.code.len();
                     self.code.extend_from_slice(&[0, 0, 0, 0]);
-                    jump_fixups.push((fix, target.clone(), false));
+                    jump_fixups.push((fix, target.clone()));
                 }
 
                 Instruction::BrIf { cond, target } => {
                     let clean = cond.trim_start_matches('%');
-                    self.emit_load_stack(X86Reg::Rax, slots[clean]);
-                    // test rax, rax (48 85 c0)
-                    self.code.extend_from_slice(&[0x48, 0x85, 0xc0]);
-                    // jnz rel32 (0F 85 disp32)
-                    self.code.extend_from_slice(&[0x0f, 0x85]);
-                    let fix = self.code.len();
-                    self.code.extend_from_slice(&[0, 0, 0, 0]);
-                    jump_fixups.push((fix, target.clone(), true));
+                    self.emit_cond_jump(slots[clean], target.clone(), &mut jump_fixups);
                 }
 
                 Instruction::Loop(name) => {
@@ -782,12 +706,7 @@ impl MachineCodeEmitter {
                         let &slot = slots.get(clean).ok_or_else(|| {
                             format!("Undefined variable '%{}' in BREAK_IF in function '{}'", clean, func.name)
                         })?;
-                        self.emit_load_stack(X86Reg::Rax, slot);
-                        self.code.extend_from_slice(&[0x48, 0x85, 0xc0]);
-                        self.code.extend_from_slice(&[0x0f, 0x85]);
-                        let fix = self.code.len();
-                        self.code.extend_from_slice(&[0, 0, 0, 0]);
-                        jump_fixups.push((fix, end_lbl.clone(), true));
+                        self.emit_cond_jump(slot, end_lbl.clone(), &mut jump_fixups);
                     } else {
                         return Err(format!("BREAK_IF outside of LOOP in function '{}'", func.name));
                     }
@@ -799,12 +718,7 @@ impl MachineCodeEmitter {
                         let &slot = slots.get(clean).ok_or_else(|| {
                             format!("Undefined variable '%{}' in CONTINUE_IF in function '{}'", clean, func.name)
                         })?;
-                        self.emit_load_stack(X86Reg::Rax, slot);
-                        self.code.extend_from_slice(&[0x48, 0x85, 0xc0]);
-                        self.code.extend_from_slice(&[0x0f, 0x85]);
-                        let fix = self.code.len();
-                        self.code.extend_from_slice(&[0, 0, 0, 0]);
-                        jump_fixups.push((fix, start_lbl.clone(), true));
+                        self.emit_cond_jump(slot, start_lbl.clone(), &mut jump_fixups);
                     } else {
                         return Err(format!("CONTINUE_IF outside of LOOP in function '{}'", func.name));
                     }
@@ -824,7 +738,7 @@ impl MachineCodeEmitter {
                         self.code.push(0xe9);
                         let fix = self.code.len();
                         self.code.extend_from_slice(&[0, 0, 0, 0]);
-                        jump_fixups.push((fix, start_lbl, false));
+                        jump_fixups.push((fix, start_lbl));
                         label_offsets.insert(end_lbl, self.code.len());
                     } else {
                         return Err(format!("Unexpected END_LOOP '{}' without matching LOOP in function '{}'", name, func.name));
@@ -924,16 +838,7 @@ impl MachineCodeEmitter {
                     if let Some(op) = val {
                         load_op_into_reg(self, op, X86Reg::Rax);
                     }
-                    if func.name == "main" {
-                        self.emit_mov_reg_reg(X86Reg::Rdi, X86Reg::Rax);
-                        self.emit_mov_reg_imm64(X86Reg::Rax, 60);
-                        self.emit_syscall();
-                    } else {
-                        // Epilogue
-                        self.code.extend_from_slice(&[0x48, 0x89, 0xec]); // mov rsp, rbp
-                        self.code.push(0x5d); // pop rbp
-                        self.emit_ret();
-                    }
+                    self.emit_return_or_exit(func.name == "main");
 
                     let fallthrough = self.code.len();
                     let rel = (fallthrough as i32) - (jz_fix as i32 + 4);
@@ -944,16 +849,7 @@ impl MachineCodeEmitter {
                     if let Some(op) = val {
                         load_op_into_reg(self, op, X86Reg::Rax);
                     }
-                    if func.name == "main" {
-                        self.emit_mov_reg_reg(X86Reg::Rdi, X86Reg::Rax);
-                        self.emit_mov_reg_imm64(X86Reg::Rax, 60);
-                        self.emit_syscall();
-                    } else {
-                        // Epilogue
-                        self.code.extend_from_slice(&[0x48, 0x89, 0xec]); // mov rsp, rbp
-                        self.code.push(0x5d); // pop rbp
-                        self.emit_ret();
-                    }
+                    self.emit_return_or_exit(func.name == "main");
                 }
             }
         }
@@ -968,18 +864,13 @@ impl MachineCodeEmitter {
         let ends_with_ret = func.instructions.last().is_some_and(|s| matches!(s.inst, Instruction::Ret(_)));
         if !ends_with_ret {
             if func.name == "main" {
-                self.emit_mov_reg_imm64(X86Reg::Rdi, 0);
-                self.emit_mov_reg_imm64(X86Reg::Rax, 60);
-                self.emit_syscall();
-            } else {
-                self.code.extend_from_slice(&[0x48, 0x89, 0xec]);
-                self.code.push(0x5d);
-                self.emit_ret();
+                self.emit_mov_reg_imm64(X86Reg::Rax, 0);
             }
+            self.emit_return_or_exit(func.name == "main");
         }
 
         // Resolve jump_fixups within function
-        for (patch_pos, target, _) in &jump_fixups {
+        for (patch_pos, target) in &jump_fixups {
             if let Some(&tgt_offset) = label_offsets.get(target) {
                 let rel32 = (tgt_offset as i64) - ((*patch_pos + 4) as i64);
                 let rel32_bytes = (rel32 as i32).to_le_bytes();
@@ -994,11 +885,15 @@ impl MachineCodeEmitter {
 
     /// Đóng gói mã máy x86_64 thành file thực thi nhị phân Linux ELF64 hoàn chỉnh
     pub fn emit_elf64(&self, output_path: &str) -> std::io::Result<()> {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::remove_file(output_path);
+        static ATOMIC_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = ATOMIC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_path = format!(
-            "{}.tmp.{}.{}",
+            "{}.tmp.{}.{}.{}",
             output_path,
             std::process::id(),
+            seq,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())

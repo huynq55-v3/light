@@ -191,35 +191,13 @@ fn run_verification(program: &ast::Program) -> bool {
                     if let Some(ce) = counter_example {
                         eprintln!("     🔍 Z3 Counter-example:\n{}", ce);
                     }
-                    if !stack_trace.is_empty() {
-                        eprintln!("     📍 Verification Stack Trace (most recent call first):");
-                        for (idx, frame) in stack_trace.iter().enumerate() {
-                            let rel_file = if let Ok(cwd) = std::env::current_dir() {
-                                frame.file.strip_prefix(cwd.to_str().unwrap_or("")).unwrap_or(&frame.file).trim_start_matches('/')
-                            } else {
-                                &frame.file
-                            };
-                            eprintln!("       ↳ [{}] {}:{} in {}", idx + 1, rel_file, frame.line, frame.function);
-                            eprintln!("             | {}  <-- {}", frame.snippet, frame.role);
-                        }
-                    }
+                    print_stack_trace(&stack_trace);
                 }
                 VerificationResult::Unknown { goal_name, category, reason, stack_trace } => {
                     has_failure = true;
                     eprintln!("  ❓ [UNKNOWN - {}] {}", category.badge(), goal_name);
                     eprintln!("     Reason: {}", reason);
-                    if !stack_trace.is_empty() {
-                        eprintln!("     📍 Verification Stack Trace (most recent call first):");
-                        for (idx, frame) in stack_trace.iter().enumerate() {
-                            let rel_file = if let Ok(cwd) = std::env::current_dir() {
-                                frame.file.strip_prefix(cwd.to_str().unwrap_or("")).unwrap_or(&frame.file).trim_start_matches('/')
-                            } else {
-                                &frame.file
-                            };
-                            eprintln!("       ↳ [{}] {}:{} in {}", idx + 1, rel_file, frame.line, frame.function);
-                            eprintln!("             | {}  <-- {}", frame.snippet, frame.role);
-                        }
-                    }
+                    print_stack_trace(&stack_trace);
                 }
                 VerificationResult::SolverNotFound { goal_name, .. } => {
                     println!("  ⚠️ [NO Z3 CLI] {}", goal_name);
@@ -228,4 +206,21 @@ fn run_verification(program: &ast::Program) -> bool {
         }
     }
     !has_failure
+}
+
+fn print_stack_trace(stack_trace: &[light::verifier::StackFrame]) {
+    if !stack_trace.is_empty() {
+        eprintln!("     📍 Verification Stack Trace (most recent call first):");
+        let cwd = std::env::current_dir().ok();
+        let cwd_str = cwd.as_ref().and_then(|p| p.to_str()).unwrap_or("");
+        for (idx, frame) in stack_trace.iter().enumerate() {
+            let rel_file = frame
+                .file
+                .strip_prefix(cwd_str)
+                .unwrap_or(&frame.file)
+                .trim_start_matches('/');
+            eprintln!("       ↳ [{}] {}:{} in {}", idx + 1, rel_file, frame.line, frame.function);
+            eprintln!("             | {}  <-- {}", frame.snippet, frame.role);
+        }
+    }
 }

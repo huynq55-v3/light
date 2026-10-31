@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Intermediate Verification Language (IVL) & Control Flow Graph (CFG)
 //! Lấy cảm hứng từ kiến trúc Boogie (Microsoft Research) & Why3 (INRIA).
 //!
@@ -80,8 +79,6 @@ pub enum IvlStmt {
         vars: Vec<String>,
         is_memory: bool,
     },
-    /// Ghi chú / debug trace
-    Comment(String),
 }
 
 /// Ngữ cảnh thông tin kiểu và bộ đệm của một hàm sau khi chuẩn hóa
@@ -98,14 +95,13 @@ pub struct FunctionBufferContext {
 
 impl FunctionBufferContext {
     pub fn analyze(func: &Function, program: Option<&Program>) -> Self {
-        let buffer_sizes = IvlLowerer::extract_buffer_sizes(func);
-        let buffer_aliases = IvlLowerer::extract_buffer_aliases(func);
-        let slice_params = func
+        let slice_params: HashSet<String> = func
             .params
             .iter()
             .filter(|p| matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
             .map(|p| IvlLowerer::clean_name(&p.name).to_string())
             .collect();
+        let (buffer_sizes, buffer_aliases) = IvlLowerer::extract_buffers_and_aliases(func, &slice_params);
         let unsigned_vars = IvlLowerer::collect_unsigned_vars_with_prog(func, program);
         Self {
             buffer_sizes,
@@ -169,7 +165,6 @@ impl IvlLowerer {
                 Value::F64(f) => IvlExpr::IntConst(*f as i64),
                 Value::Bool(b) => IvlExpr::BoolConst(*b),
                 Value::Ptr(p) => IvlExpr::IntConst(*p as i64),
-                Value::Slice { len, .. } => IvlExpr::IntConst(*len as i64),
             },
         }
     }
@@ -245,11 +240,6 @@ impl IvlLowerer {
         }
     }
 
-    /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (u64 / u8)
-    pub fn collect_unsigned_vars(func: &Function) -> HashSet<String> {
-        Self::collect_unsigned_vars_with_prog(func, None)
-    }
-
     /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (u64 / u8) kèm thông tin toàn chương trình
     pub fn collect_unsigned_vars_with_prog(func: &Function, program: Option<&Program>) -> HashSet<String> {
         let mut unsigned = HashSet::new();
@@ -285,7 +275,7 @@ impl IvlLowerer {
                 Instruction::Load8 { dest, .. } => {
                     insert_both(&mut unsigned, dest);
                 }
-                Instruction::AllocSlice { dest, elem_ty, .. } => {
+                Instruction::Alloc { dest, elem_ty, .. } => {
                     if matches!(elem_ty, Type::U64 | Type::U8) {
                         insert_both(&mut unsigned, dest);
                     }
@@ -353,10 +343,16 @@ impl IvlLowerer {
                     BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod => {
                         Self::expr_has_unsigned(lhs, unsigned_vars) || Self::expr_has_unsigned(rhs, unsigned_vars)
                     }
+                    BinOp::Shr => Self::expr_has_unsigned(lhs, unsigned_vars),
                     _ => false,
                 };
+                let resolved_op = if matches!(op, BinOp::Shr) && !is_unsigned {
+                    BinOp::Sar
+                } else {
+                    op.clone()
+                };
                 IvlExpr::Binary {
-                    op: op.clone(),
+                    op: resolved_op,
                     lhs: Box::new(Self::expr_to_ivl_typed(lhs, unsigned_vars)),
                     rhs: Box::new(Self::expr_to_ivl_typed(rhs, unsigned_vars)),
                     is_unsigned,
@@ -410,105 +406,67 @@ impl IvlLowerer {
         (scalars, mems)
     }
 
-    /// Thu thập bí danh các buffer (kể cả tham số slice<T>: %ptr = SLICE_PTR s hoặc %alias = MOV s)
-    pub fn extract_buffer_aliases(func: &Function) -> HashMap<String, String> {
+    /// Thu thập đồng thời kích thước tĩnh của các buffer và chuỗi bí danh (alias) chỉ trong 1 pass fixed-point duy nhất
+    pub fn extract_buffers_and_aliases(
+        func: &Function,
+        slice_params: &HashSet<String>,
+    ) -> (HashMap<String, usize>, HashMap<String, String>) {
+        let mut buffer_sizes = HashMap::new();
         let mut aliases = HashMap::new();
-        let buffer_sizes = Self::extract_buffer_sizes(func);
-        let slice_params: HashSet<String> = func
-            .params
-            .iter()
-            .filter(|p| matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
-            .map(|p| Self::clean_name(&p.name).to_string())
-            .collect();
 
-        for sp in &slice_params {
+        for sp in slice_params {
             aliases.insert(sp.clone(), sp.clone());
             aliases.insert(format!("%{}", sp), sp.clone());
+        }
+
+        for s_inst in &func.instructions {
+            if let Instruction::Alloc { dest, len, .. } = &s_inst.inst {
+                let clean = Self::clean_name(dest).to_string();
+                buffer_sizes.insert(dest.clone(), *len);
+                buffer_sizes.insert(clean, *len);
+            }
         }
 
         let mut changed = true;
         while changed {
             changed = false;
             for s_inst in &func.instructions {
-                match &s_inst.inst {
-                    Instruction::SlicePtr { dest, slice } => {
-                        let s_clean = Self::clean_name(slice).to_string();
-                        let d_clean = Self::clean_name(dest).to_string();
-                        let root = aliases
-                            .get(slice)
-                            .or_else(|| aliases.get(&s_clean))
-                            .cloned()
-                            .unwrap_or_else(|| s_clean.clone());
+                if let Instruction::SlicePtr { dest, slice: src } | Instruction::Mov { dest, src } = &s_inst.inst {
+                    let s_clean = Self::clean_name(src).to_string();
+                    let d_clean = Self::clean_name(dest).to_string();
+
+                    if let Some(&sz) = buffer_sizes.get(src).or_else(|| buffer_sizes.get(&s_clean)) {
+                        if !buffer_sizes.contains_key(&d_clean) {
+                            buffer_sizes.insert(dest.clone(), sz);
+                            buffer_sizes.insert(d_clean.clone(), sz);
+                            changed = true;
+                        }
+                    }
+
+                    let root_opt = if let Some(r) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
+                        Some(r)
+                    } else if matches!(s_inst.inst, Instruction::SlicePtr { .. })
+                        || buffer_sizes.contains_key(src)
+                        || buffer_sizes.contains_key(&s_clean)
+                        || slice_params.contains(&s_clean)
+                    {
+                        Some(s_clean)
+                    } else {
+                        None
+                    };
+
+                    if let Some(root) = root_opt {
                         if !aliases.contains_key(&d_clean) {
                             aliases.insert(dest.clone(), root.clone());
                             aliases.insert(d_clean, root);
                             changed = true;
                         }
                     }
-                    Instruction::Mov { dest, src } => {
-                        let s_clean = Self::clean_name(src).to_string();
-                        let d_clean = Self::clean_name(dest).to_string();
-                        if let Some(root) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
-                            if !aliases.contains_key(&d_clean) {
-                                aliases.insert(dest.clone(), root.clone());
-                                aliases.insert(d_clean, root);
-                                changed = true;
-                            }
-                        } else if buffer_sizes.contains_key(src) || buffer_sizes.contains_key(&s_clean) || slice_params.contains(&s_clean) {
-                            if !aliases.contains_key(&d_clean) {
-                                aliases.insert(dest.clone(), s_clean.clone());
-                                aliases.insert(d_clean, s_clean);
-                                changed = true;
-                            }
-                        }
-                    }
-                    _ => {}
                 }
-            }
-        }
-        aliases
-    }
-
-    /// Thu thập độ dài các buffer tĩnh và lan truyền qua các bí danh
-    pub fn extract_buffer_sizes(func: &Function) -> HashMap<String, usize> {
-        let mut buffer_sizes = HashMap::new();
-        for s_inst in &func.instructions {
-            match &s_inst.inst {
-                Instruction::Alloc { dest, size } => {
-                    let clean = Self::clean_name(dest).to_string();
-                    buffer_sizes.insert(dest.clone(), *size);
-                    buffer_sizes.insert(clean, *size);
-                }
-                Instruction::AllocSlice { dest, len, .. } => {
-                    let clean = Self::clean_name(dest).to_string();
-                    buffer_sizes.insert(dest.clone(), *len);
-                    buffer_sizes.insert(clean, *len);
-                }
-                _ => {}
             }
         }
 
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for s_inst in &func.instructions {
-                match &s_inst.inst {
-                    Instruction::SlicePtr { dest, slice } | Instruction::Mov { dest, src: slice } => {
-                        let s_clean = Self::clean_name(slice);
-                        let d_clean = Self::clean_name(dest).to_string();
-                        if let Some(&sz) = buffer_sizes.get(slice).or_else(|| buffer_sizes.get(s_clean)) {
-                            if !buffer_sizes.contains_key(&d_clean) {
-                                buffer_sizes.insert(dest.clone(), sz);
-                                buffer_sizes.insert(d_clean, sz);
-                                changed = true;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        buffer_sizes
+        (buffer_sizes, aliases)
     }
 
     /// Hạ cấp DUY NHẤT (Single Source of Truth) một lệnh đơn lẻ thành chuỗi 4 vi lệnh IVL
@@ -652,7 +610,7 @@ impl IvlLowerer {
                 });
             }
 
-            Instruction::Alloc { dest, size: len } | Instruction::AllocSlice { dest, len, .. } => {
+            Instruction::Alloc { dest, len, .. } => {
                 let clean = Self::clean_name(dest);
                 stmts.push(IvlStmt::Assign {
                     dest: format!("{}_len", clean),
@@ -677,34 +635,9 @@ impl IvlLowerer {
             }
 
             Instruction::Load8 { dest, buf, offset } => {
+                Self::emit_mem8_checks(func, s_inst, buf, offset, ctx, &mut stmts);
                 let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
-
-                if let Some(bound_expr) = ctx.bound_expr(buf) {
-                    let in_bounds = IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(off_expr.clone()),
-                            rhs: Box::new(IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Lt,
-                            lhs: Box::new(off_expr.clone()),
-                            rhs: Box::new(bound_expr),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    };
-                    stmts.push(IvlStmt::Assert {
-                        cond: in_bounds,
-                        goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
-
                 let clean_d = Self::clean_name(dest).to_string();
                 stmts.push(IvlStmt::Assign {
                     dest: clean_d.clone(),
@@ -735,35 +668,10 @@ impl IvlLowerer {
             }
 
             Instruction::Store8 { buf, offset, val } => {
+                Self::emit_mem8_checks(func, s_inst, buf, offset, ctx, &mut stmts);
                 let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
                 let val_expr = Self::operand_to_expr(val);
-
-                if let Some(bound_expr) = ctx.bound_expr(buf) {
-                    let in_bounds = IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(off_expr.clone()),
-                            rhs: Box::new(IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Lt,
-                            lhs: Box::new(off_expr.clone()),
-                            rhs: Box::new(bound_expr),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    };
-                    stmts.push(IvlStmt::Assert {
-                        cond: in_bounds,
-                        goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
-
                 stmts.push(IvlStmt::Assign {
                     dest: root_buf.clone(),
                     expr: IvlExpr::Store {
@@ -890,23 +798,7 @@ impl IvlLowerer {
                         }
 
                         // Havoc all memory buffers passed as slice/pointer arguments to the callee
-                        let mut havoc_mems = Vec::new();
-                        for a in args {
-                            if let Operand::Reg(r) = a {
-                                if ctx.is_known_buffer(r) {
-                                    let root = ctx.resolve_root_buf(r);
-                                    if !havoc_mems.contains(&root) {
-                                        havoc_mems.push(root);
-                                    }
-                                }
-                            }
-                        }
-                        if !havoc_mems.is_empty() {
-                            stmts.push(IvlStmt::Havoc {
-                                vars: havoc_mems,
-                                is_memory: true,
-                            });
-                        }
+                        Self::emit_havoc_for_buffer_args(args.iter(), ctx, &mut stmts);
 
                         if let Some(d) = dest {
                             let clean_d = Self::clean_name(d).to_string();
@@ -992,29 +884,75 @@ impl IvlLowerer {
                 }
 
                 // Havoc buffer memory for any buffer passed in syscall arguments
-                let mut havoc_mems = Vec::new();
-                for arg_opt in [Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()] {
-                    if let Some(Operand::Reg(r)) = arg_opt {
-                        if ctx.is_known_buffer(r) {
-                            let root = ctx.resolve_root_buf(r);
-                            if !havoc_mems.contains(&root) {
-                                havoc_mems.push(root);
-                            }
-                        }
-                    }
-                }
-                if !havoc_mems.is_empty() {
-                    stmts.push(IvlStmt::Havoc {
-                        vars: havoc_mems,
-                        is_memory: true,
-                    });
-                }
+                let sys_args = [Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()];
+                Self::emit_havoc_for_buffer_args(sys_args.into_iter().flatten(), ctx, &mut stmts);
             }
 
             _ => {}
         }
 
         stmts
+    }
+
+    fn emit_havoc_for_buffer_args<'a, I>(
+        args: I,
+        ctx: &FunctionBufferContext,
+        stmts: &mut Vec<IvlStmt>,
+    ) where
+        I: Iterator<Item = &'a Operand>,
+    {
+        let mut havoc_mems = Vec::new();
+        for a in args {
+            if let Operand::Reg(r) = a {
+                if ctx.is_known_buffer(r) {
+                    let root = ctx.resolve_root_buf(r);
+                    if !havoc_mems.contains(&root) {
+                        havoc_mems.push(root);
+                    }
+                }
+            }
+        }
+        if !havoc_mems.is_empty() {
+            stmts.push(IvlStmt::Havoc {
+                vars: havoc_mems,
+                is_memory: true,
+            });
+        }
+    }
+
+    fn emit_mem8_checks(
+        func: &Function,
+        s_inst: &SpannedInstruction,
+        buf: &str,
+        offset: &Operand,
+        ctx: &FunctionBufferContext,
+        stmts: &mut Vec<IvlStmt>,
+    ) {
+        if let Some(bound_expr) = ctx.bound_expr(buf) {
+            let off_expr = Self::operand_to_expr(offset);
+            let in_bounds = IvlExpr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(IvlExpr::Binary {
+                    op: BinOp::Gte,
+                    lhs: Box::new(off_expr.clone()),
+                    rhs: Box::new(IvlExpr::IntConst(0)),
+                    is_unsigned: false,
+                }),
+                rhs: Box::new(IvlExpr::Binary {
+                    op: BinOp::Lt,
+                    lhs: Box::new(off_expr),
+                    rhs: Box::new(bound_expr),
+                    is_unsigned: false,
+                }),
+                is_unsigned: false,
+            };
+            stmts.push(IvlStmt::Assert {
+                cond: in_bounds,
+                goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                category: PropertyCategory::Safety,
+                loc: s_inst.loc.clone(),
+            });
+        }
     }
 
     fn emit_mem64_checks(
