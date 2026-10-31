@@ -99,16 +99,9 @@ pub enum Instruction {
 
     // --- TẬP LỆNH TÍNH TOÁN & THAO TÁC BIẾN (FLAT SSA / TAC) ---
     /// Gán hằng số: %reg = CONST <type> <val>
-    AssignConst {
-        dest: String,
-        ty: Type,
-        val: Value,
-    },
+    AssignConst { dest: String, ty: Type, val: Value },
     /// Copy giá trị: %reg = MOV %src
-    Mov {
-        dest: String,
-        src: String,
-    },
+    Mov { dest: String, src: String },
     /// Phép toán 2 ngôi: %dest = OP <type> %src1 %src2
     Binary {
         op: BinOp,
@@ -139,15 +132,9 @@ pub enum Instruction {
         len: usize,
     },
     /// Lấy con trỏ thô từ slice: %ptr = SLICE_PTR %slice
-    SlicePtr {
-        dest: String,
-        slice: String,
-    },
+    SlicePtr { dest: String, slice: String },
     /// Lấy độ dài của slice: %len = SLICE_LEN %slice
-    SliceLen {
-        dest: String,
-        slice: String,
-    },
+    SliceLen { dest: String, slice: String },
     /// Ghi 1 byte vào bộ nhớ: STORE8 %buf %offset %val
     Store8 {
         buf: String,
@@ -185,10 +172,7 @@ pub enum Instruction {
     /// Nhảy không điều kiện: JUMP <label>
     Jump(String),
     /// Nhảy có điều kiện: BR_IF %cond <label>
-    BrIf {
-        cond: String,
-        target: String,
-    },
+    BrIf { cond: String, target: String },
     /// Bắt đầu vòng lặp: LOOP <label>
     Loop(String),
     /// Thoát vòng lặp nếu điều kiện đúng: BREAK_IF %cond
@@ -213,10 +197,7 @@ pub enum Instruction {
     /// Trả về kết quả: RET %reg hoặc RET const
     Ret(Option<Operand>),
     /// Trả về có điều kiện: RET_IF %cond [%val]
-    RetIf {
-        cond: String,
-        val: Option<Operand>,
-    },
+    RetIf { cond: String, val: Option<Operand> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

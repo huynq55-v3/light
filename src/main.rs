@@ -69,9 +69,15 @@ fn main() {
 
 fn print_usage() {
     println!("Usage:");
-    println!("  cargo run -- run <file.lit>               # Verify contracts via Z3 & run natively (AOT compile-and-exec)");
-    println!("  cargo run -- build <file.lit> -o <bin>    # Emit standalone minimal ELF64 binary (~1KB)");
-    println!("  cargo run -- verify <file.lit>            # Mathematical formal verification only\n");
+    println!(
+        "  cargo run -- run <file.lit>               # Verify contracts via Z3 & run natively (AOT compile-and-exec)"
+    );
+    println!(
+        "  cargo run -- build <file.lit> -o <bin>    # Emit standalone minimal ELF64 binary (~1KB)"
+    );
+    println!(
+        "  cargo run -- verify <file.lit>            # Mathematical formal verification only\n"
+    );
 }
 
 fn execute_file(file_path: &str, run_binary: bool) {
@@ -79,7 +85,10 @@ fn execute_file(file_path: &str, run_binary: bool) {
     println!("⚡ Parsing flat SSA instructions & resolving IMPORTs...");
     let program = match Parser::parse_file(file_path) {
         Ok(p) => {
-            println!("✅ Valid syntax! Detected {} function(s).", p.functions.len());
+            println!(
+                "✅ Valid syntax! Detected {} function(s).",
+                p.functions.len()
+            );
             p
         }
         Err(e) => {
@@ -97,9 +106,18 @@ fn execute_file(file_path: &str, run_binary: bool) {
     if run_binary {
         println!("\n🚀 Compiling & Executing standalone native ELF64 binary...");
         let pid = std::process::id();
-        let tmp_bin = format!("/tmp/light_run_{}_{}", pid, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-        let _guard = TempFileGuard { path: PathBuf::from(&tmp_bin) };
-        
+        let tmp_bin = format!(
+            "/tmp/light_run_{}_{}",
+            pid,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let _guard = TempFileGuard {
+            path: PathBuf::from(&tmp_bin),
+        };
+
         let mut emitter = MachineCodeEmitter::new();
         if let Err(e) = emitter.compile_for_elf(&program) {
             eprintln!("❌ Code generation error: {}", e);
@@ -149,7 +167,11 @@ fn build_elf(file_path: &str, output_path: &str) {
 
     emitter.emit_elf64(output_path).expect("Emit ELF");
     let metadata = fs::metadata(output_path).expect("Metadata");
-    println!("🎉 Generated standalone executable: '{}' (Size: {} bytes!)", output_path, metadata.len());
+    println!(
+        "🎉 Generated standalone executable: '{}' (Size: {} bytes!)",
+        output_path,
+        metadata.len()
+    );
     println!("💡 You can run it directly: ./{}", output_path);
 }
 
@@ -160,10 +182,19 @@ fn run_verification(program: &ast::Program) -> bool {
         let results = Verifier::verify_function(func, Some(program));
         for res in results {
             match res {
-                VerificationResult::Verified { goal_name, category } => {
+                VerificationResult::Verified {
+                    goal_name,
+                    category,
+                } => {
                     println!("  🛡️ [PASS - {}] {}", category.badge(), goal_name);
                 }
-                VerificationResult::Failed { goal_name, category, reason, counter_example, stack_trace } => {
+                VerificationResult::Failed {
+                    goal_name,
+                    category,
+                    reason,
+                    counter_example,
+                    stack_trace,
+                } => {
                     has_failure = true;
                     eprintln!("  🚨 [FAIL - {}] {}", category.badge(), goal_name);
                     eprintln!("     Reason: {}", reason);
@@ -172,7 +203,12 @@ fn run_verification(program: &ast::Program) -> bool {
                     }
                     print_stack_trace(&stack_trace);
                 }
-                VerificationResult::Unknown { goal_name, category, reason, stack_trace } => {
+                VerificationResult::Unknown {
+                    goal_name,
+                    category,
+                    reason,
+                    stack_trace,
+                } => {
                     has_failure = true;
                     eprintln!("  ❓ [UNKNOWN - {}] {}", category.badge(), goal_name);
                     eprintln!("     Reason: {}", reason);
@@ -198,7 +234,13 @@ fn print_stack_trace(stack_trace: &[light::verifier::StackFrame]) {
                 .strip_prefix(cwd_str)
                 .unwrap_or(&frame.file)
                 .trim_start_matches('/');
-            eprintln!("       ↳ [{}] {}:{} in {}", idx + 1, rel_file, frame.line, frame.function);
+            eprintln!(
+                "       ↳ [{}] {}:{} in {}",
+                idx + 1,
+                rel_file,
+                frame.line,
+                frame.function
+            );
             eprintln!("             | {}  <-- {}", frame.snippet, frame.role);
         }
     }

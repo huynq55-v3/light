@@ -47,6 +47,53 @@ pub enum IvlExpr {
     Mask8(Box<IvlExpr>),
 }
 
+impl IvlExpr {
+    #[inline]
+    pub fn bin(op: BinOp, lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            is_unsigned: false,
+        }
+    }
+
+    #[inline]
+    pub fn and(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::And, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn or(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::Or, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn eq(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::Eq, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn neq(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::Neq, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn lt(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::Lt, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn lte(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::Lte, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn gte(lhs: IvlExpr, rhs: IvlExpr) -> Self {
+        Self::bin(BinOp::Gte, lhs, rhs)
+    }
+}
+
 impl From<&Expr> for IvlExpr {
     fn from(e: &Expr) -> Self {
         let empty = HashSet::new();
@@ -71,25 +118,21 @@ pub enum IvlStmt {
         loc: Loc,
     },
     /// Giả định tiên đề / nhánh rẽ: `assume cond`
-    Assume {
-        cond: IvlExpr,
-    },
+    Assume { cond: IvlExpr },
     /// Giải phóng biến thành tự do (Havoc): `havoc x, y, z`
-    Havoc {
-        vars: Vec<String>,
-        is_memory: bool,
-    },
+    Havoc { vars: Vec<String>, is_memory: bool },
 }
 
-/// Ngữ cảnh thông tin kiểu và bộ đệm của một hàm sau khi chuẩn hóa
+/// Ngữ cảnh thông tin kiểu và bộ đệm của một hàm.
+/// Bất biến kiến trúc: Mọi khóa (key) lưu trong các bảng của struct này đều là định danh chuẩn tắc (đã bỏ '%').
 pub struct FunctionBufferContext {
-    /// Kích thước tĩnh của các buffer (ALLOC / ALLOC slice<T>)
+    /// Kích thước tĩnh (tính theo bytes) của các buffer (`ALLOC` / `ALLOC slice<T>`)
     pub buffer_sizes: HashMap<String, usize>,
     /// Ánh xạ bí danh con trỏ/slice về tên buffer gốc (root buffer name, không có '%')
     pub buffer_aliases: HashMap<String, String>,
-    /// Tập hợp các tham số đầu vào có kiểu slice<T> hoặc arr<T, N> (không có '%')
+    /// Tập hợp các tham số đầu vào có kiểu `slice<T>` hoặc `arr<T, N>` (không có '%')
     pub slice_params: HashSet<String>,
-    /// Tập hợp các biến mang kiểu số nguyên không dấu (u64 / u8)
+    /// Tập hợp các biến mang kiểu số nguyên không dấu (`u64` / `u8`, không có '%')
     pub unsigned_vars: HashSet<String>,
 }
 
@@ -101,7 +144,8 @@ impl FunctionBufferContext {
             .filter(|p| matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
             .map(|p| IvlLowerer::clean_name(&p.name).to_string())
             .collect();
-        let (buffer_sizes, buffer_aliases) = IvlLowerer::extract_buffers_and_aliases(func, &slice_params);
+        let (buffer_sizes, buffer_aliases) =
+            IvlLowerer::extract_buffers_and_aliases(func, &slice_params);
         let unsigned_vars = IvlLowerer::collect_unsigned_vars_with_prog(func, program);
         Self {
             buffer_sizes,
@@ -112,30 +156,42 @@ impl FunctionBufferContext {
     }
 
     /// Tìm tên buffer gốc (đã bỏ '%') của một thanh ghi
-    pub fn resolve_root_buf<'a>(&'a self, reg: &'a str) -> String {
+    #[inline]
+    pub fn resolve_root_buf(&self, reg: &str) -> String {
         let clean = IvlLowerer::clean_name(reg);
         self.buffer_aliases
-            .get(reg)
-            .or_else(|| self.buffer_aliases.get(clean))
-            .map(|s| IvlLowerer::clean_name(s).to_string())
+            .get(clean)
+            .cloned()
             .unwrap_or_else(|| clean.to_string())
     }
 
     /// Kiểm tra xem một thanh ghi có đại diện cho một buffer/slice được quản lý bộ nhớ hay không
+    #[inline]
     pub fn is_known_buffer(&self, reg: &str) -> bool {
         let clean = IvlLowerer::clean_name(reg);
-        let root = self.resolve_root_buf(reg);
+        let root = self.resolve_root_buf(clean);
         self.buffer_sizes.contains_key(clean)
             || self.buffer_sizes.contains_key(&root)
             || self.buffer_aliases.contains_key(clean)
             || self.slice_params.contains(&root)
     }
 
+    /// Lấy kích thước tĩnh (nếu biết trước tại compile-time) của một buffer/slice
+    #[inline]
+    pub fn static_size(&self, reg: &str) -> Option<usize> {
+        let clean = IvlLowerer::clean_name(reg);
+        let root = self.resolve_root_buf(clean);
+        self.buffer_sizes
+            .get(&root)
+            .or_else(|| self.buffer_sizes.get(clean))
+            .copied()
+    }
+
     /// Lấy biểu thức độ dài (theo bytes) của một buffer/slice nếu biết
     pub fn bound_expr(&self, reg: &str) -> Option<IvlExpr> {
         let clean = IvlLowerer::clean_name(reg);
-        let root = self.resolve_root_buf(reg);
-        if let Some(&sz) = self.buffer_sizes.get(&root).or_else(|| self.buffer_sizes.get(clean)) {
+        let root = self.resolve_root_buf(clean);
+        if let Some(sz) = self.static_size(clean) {
             Some(IvlExpr::IntConst(sz as i64))
         } else if self.slice_params.contains(&root) {
             Some(IvlExpr::Len(root))
@@ -144,6 +200,24 @@ impl FunctionBufferContext {
         } else {
             None
         }
+    }
+
+    /// Kiểm tra phép toán 2 ngôi có sử dụng ngữ nghĩa không dấu (unsigned) hay không (dùng chung cho IVL và Codegen)
+    pub fn is_binary_unsigned(
+        &self,
+        op: &BinOp,
+        ty: &Type,
+        src1: &Operand,
+        src2: &Operand,
+    ) -> bool {
+        matches!(ty, Type::U64 | Type::U8)
+            || (matches!(
+                op,
+                BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod
+            ) && (IvlLowerer::operand_is_unsigned(src1, &self.unsigned_vars)
+                || IvlLowerer::operand_is_unsigned(src2, &self.unsigned_vars)))
+            || (matches!(op, BinOp::Shr)
+                && IvlLowerer::operand_is_unsigned(src1, &self.unsigned_vars))
     }
 }
 
@@ -158,7 +232,14 @@ impl IvlLowerer {
 
     pub fn operand_to_expr(op: &Operand) -> IvlExpr {
         match op {
-            Operand::Reg(r) => IvlExpr::Var(Self::clean_name(r).to_string()),
+            Operand::Reg(r) => {
+                if r.starts_with("len(") && r.ends_with(')') {
+                    let inner = r[4..r.len() - 1].trim();
+                    IvlExpr::Len(Self::clean_name(inner).to_string())
+                } else {
+                    IvlExpr::Var(Self::clean_name(r).to_string())
+                }
+            }
             Operand::Const(v) => match v {
                 Value::I64(n) => IvlExpr::IntConst(*n),
                 Value::U64(n) => IvlExpr::IntConst(*n as i64),
@@ -177,19 +258,14 @@ impl IvlLowerer {
     /// Thay thế đồng thời nhiều biến cùng lúc (tránh lỗi Variable Capture khi gọi hàm)
     pub fn subst_expr_map(expr: &IvlExpr, map: &HashMap<String, IvlExpr>) -> IvlExpr {
         match expr {
-            IvlExpr::Var(v) => {
-                let clean = Self::clean_name(v);
-                if let Some(to) = map.get(clean) {
-                    to.clone()
-                } else {
-                    expr.clone()
-                }
-            }
+            IvlExpr::Var(v) => map
+                .get(Self::clean_name(v))
+                .cloned()
+                .unwrap_or_else(|| expr.clone()),
             IvlExpr::IntConst(_) | IvlExpr::BoolConst(_) => expr.clone(),
             IvlExpr::Len(v) => {
                 let clean = Self::clean_name(v);
-                let len_key = format!("{}_len", clean);
-                if let Some(to_len) = map.get(&len_key) {
+                if let Some(to_len) = map.get(&format!("{}_len", clean)) {
                     to_len.clone()
                 } else if let Some(IvlExpr::Var(to_var)) = map.get(clean) {
                     IvlExpr::Len(to_var.clone())
@@ -197,13 +273,22 @@ impl IvlLowerer {
                     expr.clone()
                 }
             }
-            IvlExpr::Binary { op, lhs, rhs, is_unsigned } => IvlExpr::Binary {
+            IvlExpr::Binary {
+                op,
+                lhs,
+                rhs,
+                is_unsigned,
+            } => IvlExpr::Binary {
                 op: op.clone(),
                 lhs: Box::new(Self::subst_expr_map(lhs, map)),
                 rhs: Box::new(Self::subst_expr_map(rhs, map)),
                 is_unsigned: *is_unsigned,
             },
-            IvlExpr::Ite { cond, then_val, else_val } => IvlExpr::Ite {
+            IvlExpr::Ite {
+                cond,
+                then_val,
+                else_val,
+            } => IvlExpr::Ite {
                 cond: Box::new(Self::subst_expr_map(cond, map)),
                 then_val: Box::new(Self::subst_expr_map(then_val, map)),
                 else_val: Box::new(Self::subst_expr_map(else_val, map)),
@@ -212,11 +297,9 @@ impl IvlLowerer {
             IvlExpr::BitNot(e) => IvlExpr::BitNot(Box::new(Self::subst_expr_map(e, map))),
             IvlExpr::Mask8(e) => IvlExpr::Mask8(Box::new(Self::subst_expr_map(e, map))),
             IvlExpr::Select { mem, offset } => {
-                let clean_mem = Self::clean_name(mem);
-                let new_mem = if let Some(IvlExpr::Var(to_var)) = map.get(clean_mem) {
-                    to_var.clone()
-                } else {
-                    mem.clone()
+                let new_mem = match map.get(Self::clean_name(mem)) {
+                    Some(IvlExpr::Var(to_var)) => to_var.clone(),
+                    _ => mem.clone(),
                 };
                 IvlExpr::Select {
                     mem: new_mem,
@@ -224,11 +307,9 @@ impl IvlLowerer {
                 }
             }
             IvlExpr::Store { mem, offset, val } => {
-                let clean_mem = Self::clean_name(mem);
-                let new_mem = if let Some(IvlExpr::Var(to_var)) = map.get(clean_mem) {
-                    to_var.clone()
-                } else {
-                    mem.clone()
+                let new_mem = match map.get(Self::clean_name(mem)) {
+                    Some(IvlExpr::Var(to_var)) => to_var.clone(),
+                    _ => mem.clone(),
                 };
                 IvlExpr::Store {
                     mem: new_mem,
@@ -239,58 +320,60 @@ impl IvlLowerer {
         }
     }
 
-    /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (u64 / u8) kèm thông tin toàn chương trình
-    pub fn collect_unsigned_vars_with_prog(func: &Function, program: Option<&Program>) -> HashSet<String> {
+    /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (`u64` / `u8`) chuẩn tắc (không có '%')
+    pub fn collect_unsigned_vars_with_prog(
+        func: &Function,
+        program: Option<&Program>,
+    ) -> HashSet<String> {
         let mut unsigned = HashSet::new();
-        let insert_both = |set: &mut HashSet<String>, name: &str| {
-            let clean = Self::clean_name(name).to_string();
-            set.insert(clean.clone());
-            set.insert(format!("%{}", clean));
+        let mut mark = |name: &str| {
+            unsigned.insert(Self::clean_name(name).to_string());
         };
 
         let ret_is_unsigned = matches!(func.return_ty, Some(Type::U64 | Type::U8));
         if ret_is_unsigned {
             for r in ["ret", "res", "result"] {
-                insert_both(&mut unsigned, r);
+                mark(r);
             }
         }
         for p in &func.params {
             if matches!(p.ty, Type::U64 | Type::U8) {
-                insert_both(&mut unsigned, &p.name);
+                mark(&p.name);
             }
         }
         for si in &func.instructions {
             match &si.inst {
-                Instruction::AssignConst { dest, ty, val } => {
-                    if matches!(ty, Type::U64 | Type::U8) || matches!(val, Value::U64(_)) {
-                        insert_both(&mut unsigned, dest);
-                    }
+                Instruction::AssignConst { dest, ty, val }
+                    if matches!(ty, Type::U64 | Type::U8) || matches!(val, Value::U64(_)) =>
+                {
+                    mark(dest);
                 }
-                Instruction::Binary { dest, ty, .. } => {
-                    if matches!(ty, Type::U64 | Type::U8) {
-                        insert_both(&mut unsigned, dest);
-                    }
+                Instruction::Binary { dest, ty, .. }
+                | Instruction::Alloc {
+                    dest, elem_ty: ty, ..
+                } if matches!(ty, Type::U64 | Type::U8) => {
+                    mark(dest);
                 }
-                Instruction::Load8 { dest, .. } => {
-                    insert_both(&mut unsigned, dest);
-                }
-                Instruction::Alloc { dest, elem_ty, .. } => {
-                    if matches!(elem_ty, Type::U64 | Type::U8) {
-                        insert_both(&mut unsigned, dest);
-                    }
-                }
-                Instruction::Call { dest: Some(dest), func_name, .. } => {
-                    if let Some(prog) = program {
-                        if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
-                            if matches!(callee.return_ty, Some(Type::U64 | Type::U8)) {
-                                insert_both(&mut unsigned, dest);
-                            }
+                Instruction::Load8 { dest, .. } => mark(dest),
+                Instruction::Call {
+                    dest: Some(dest),
+                    func_name,
+                    ..
+                } => {
+                    if let Some(callee) =
+                        program.and_then(|p| p.functions.iter().find(|f| &f.name == func_name))
+                    {
+                        if matches!(callee.return_ty, Some(Type::U64 | Type::U8)) {
+                            mark(dest);
                         }
                     }
                 }
                 Instruction::Ret(Some(Operand::Reg(r)))
-                | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } if ret_is_unsigned => {
-                    insert_both(&mut unsigned, r);
+                | Instruction::RetIf {
+                    val: Some(Operand::Reg(r)),
+                    ..
+                } if ret_is_unsigned => {
+                    mark(r);
                 }
                 _ => {}
             }
@@ -304,8 +387,7 @@ impl IvlLowerer {
                 if let Instruction::Mov { dest, src } = &si.inst {
                     let s_clean = Self::clean_name(src);
                     let d_clean = Self::clean_name(dest);
-                    if unsigned.contains(s_clean) && !unsigned.contains(d_clean) {
-                        insert_both(&mut unsigned, d_clean);
+                    if unsigned.contains(s_clean) && unsigned.insert(d_clean.to_string()) {
                         changed = true;
                     }
                 }
@@ -320,7 +402,8 @@ impl IvlLowerer {
         match e {
             Expr::Var(v) => unsigned_vars.contains(Self::clean_name(v)),
             Expr::Binary { lhs, rhs, .. } => {
-                Self::expr_has_unsigned(lhs, unsigned_vars) || Self::expr_has_unsigned(rhs, unsigned_vars)
+                Self::expr_has_unsigned(lhs, unsigned_vars)
+                    || Self::expr_has_unsigned(rhs, unsigned_vars)
             }
             Expr::Not(inner) => Self::expr_has_unsigned(inner, unsigned_vars),
             Expr::UIntConst(_) => true,
@@ -337,7 +420,7 @@ impl IvlLowerer {
         }
     }
 
-    /// Hạ cấp biểu thức Expr sang IvlExpr có xét kiểu dấu (signed vs unsigned) cho các phép toán
+    /// Hạ cấp biểu thức `Expr` sang `IvlExpr` có xét kiểu dấu (signed vs unsigned) cho các phép toán
     pub fn expr_to_ivl_typed(e: &Expr, unsigned_vars: &HashSet<String>) -> IvlExpr {
         match e {
             Expr::Var(v) => IvlExpr::Var(Self::clean_name(v).to_string()),
@@ -348,7 +431,8 @@ impl IvlLowerer {
             Expr::Binary { op, lhs, rhs } => {
                 let is_unsigned = match op {
                     BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod => {
-                        Self::expr_has_unsigned(lhs, unsigned_vars) || Self::expr_has_unsigned(rhs, unsigned_vars)
+                        Self::expr_has_unsigned(lhs, unsigned_vars)
+                            || Self::expr_has_unsigned(rhs, unsigned_vars)
                     }
                     BinOp::Shr => Self::expr_has_unsigned(lhs, unsigned_vars),
                     _ => false,
@@ -365,41 +449,36 @@ impl IvlLowerer {
                     is_unsigned,
                 }
             }
-            Expr::Not(inner) => IvlExpr::Not(Box::new(Self::expr_to_ivl_typed(inner, unsigned_vars))),
+            Expr::Not(inner) => {
+                IvlExpr::Not(Box::new(Self::expr_to_ivl_typed(inner, unsigned_vars)))
+            }
         }
     }
 
-    /// Trích xuất tự động mọi biến vô hướng và bộ nhớ bị sửa đổi trực tiếp từ chuỗi 4 lệnh IVL!
-    /// (Chuẩn kiến trúc Boogie: không cần quét thủ công từng Instruction của ngôn ngữ nguồn)
+    /// Trích xuất tự động mọi biến vô hướng và bộ nhớ bị sửa đổi trực tiếp từ chuỗi 4 lệnh IVL
     pub fn extract_modified_targets_from_ivl(stmts: &[IvlStmt]) -> (Vec<String>, Vec<String>) {
         let mut scalar_set = HashSet::new();
         let mut mem_set = HashSet::new();
 
+        let mut record = |name: &str, is_mem: bool| {
+            let clean = Self::clean_name(name);
+            if !clean.starts_with("__") {
+                if is_mem {
+                    mem_set.insert(clean.to_string());
+                } else {
+                    scalar_set.insert(clean.to_string());
+                }
+            }
+        };
+
         for st in stmts {
             match st {
-                IvlStmt::Assign { dest, is_memory, .. } => {
-                    let clean = Self::clean_name(dest);
-                    // Bỏ qua các biến tạm nội bộ của hệ thống đường dẫn/nhánh/vòng lặp
-                    if clean.starts_with("__") {
-                        continue;
-                    }
-                    if *is_memory {
-                        mem_set.insert(clean.to_string());
-                    } else {
-                        scalar_set.insert(clean.to_string());
-                    }
-                }
+                IvlStmt::Assign {
+                    dest, is_memory, ..
+                } => record(dest, *is_memory),
                 IvlStmt::Havoc { vars, is_memory } => {
                     for v in vars {
-                        let clean = Self::clean_name(v);
-                        if clean.starts_with("__") {
-                            continue;
-                        }
-                        if *is_memory {
-                            mem_set.insert(clean.to_string());
-                        } else {
-                            scalar_set.insert(clean.to_string());
-                        }
+                        record(v, *is_memory);
                     }
                 }
                 _ => {}
@@ -413,7 +492,7 @@ impl IvlLowerer {
         (scalars, mems)
     }
 
-    /// Thu thập đồng thời kích thước tĩnh của các buffer và chuỗi bí danh (alias) chỉ trong 1 pass fixed-point duy nhất
+    /// Thu thập đồng thời kích thước tĩnh của các buffer và chuỗi bí danh (alias) chuẩn tắc (không có '%')
     pub fn extract_buffers_and_aliases(
         func: &Function,
         slice_params: &HashSet<String>,
@@ -423,14 +502,12 @@ impl IvlLowerer {
 
         for sp in slice_params {
             aliases.insert(sp.clone(), sp.clone());
-            aliases.insert(format!("%{}", sp), sp.clone());
         }
 
         for s_inst in &func.instructions {
             if let Instruction::Alloc { dest, elem_ty, len } = &s_inst.inst {
                 let clean = Self::clean_name(dest).to_string();
                 let byte_len = len.saturating_mul(elem_ty.byte_size());
-                buffer_sizes.insert(dest.clone(), byte_len);
                 buffer_sizes.insert(clean, byte_len);
             }
         }
@@ -439,34 +516,33 @@ impl IvlLowerer {
         while changed {
             changed = false;
             for s_inst in &func.instructions {
-                if let Instruction::SlicePtr { dest, slice: src } | Instruction::Mov { dest, src } = &s_inst.inst {
-                    let s_clean = Self::clean_name(src).to_string();
-                    let d_clean = Self::clean_name(dest).to_string();
+                if let Instruction::SlicePtr { dest, slice: src } | Instruction::Mov { dest, src } =
+                    &s_inst.inst
+                {
+                    let s_clean = Self::clean_name(src);
+                    let d_clean = Self::clean_name(dest);
 
-                    if let Some(&sz) = buffer_sizes.get(src).or_else(|| buffer_sizes.get(&s_clean)) {
-                        if !buffer_sizes.contains_key(&d_clean) {
-                            buffer_sizes.insert(dest.clone(), sz);
-                            buffer_sizes.insert(d_clean.clone(), sz);
+                    if let Some(&sz) = buffer_sizes.get(s_clean) {
+                        if !buffer_sizes.contains_key(d_clean) {
+                            buffer_sizes.insert(d_clean.to_string(), sz);
                             changed = true;
                         }
                     }
 
-                    let root_opt = if let Some(r) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
+                    let root_opt = if let Some(r) = aliases.get(s_clean).cloned() {
                         Some(r)
                     } else if matches!(s_inst.inst, Instruction::SlicePtr { .. })
-                        || buffer_sizes.contains_key(src)
-                        || buffer_sizes.contains_key(&s_clean)
-                        || slice_params.contains(&s_clean)
+                        || buffer_sizes.contains_key(s_clean)
+                        || slice_params.contains(s_clean)
                     {
-                        Some(s_clean)
+                        Some(s_clean.to_string())
                     } else {
                         None
                     };
 
                     if let Some(root) = root_opt {
-                        if !aliases.contains_key(&d_clean) {
-                            aliases.insert(dest.clone(), root.clone());
-                            aliases.insert(d_clean, root);
+                        if !aliases.contains_key(d_clean) {
+                            aliases.insert(d_clean.to_string(), root);
                             changed = true;
                         }
                     }
@@ -491,7 +567,10 @@ impl IvlLowerer {
             Instruction::Assert(e) => {
                 stmts.push(IvlStmt::Assert {
                     cond: Self::expr_to_ivl_typed(e, &ctx.unsigned_vars),
-                    goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
+                    goal_name: format!(
+                        "Function '{}' - Line {}: Verify ASSERT directive",
+                        func.name, s_inst.loc.line
+                    ),
                     category: PropertyCategory::Functional,
                     loc: s_inst.loc.clone(),
                 });
@@ -508,17 +587,16 @@ impl IvlLowerer {
             Instruction::Mov { dest, src } | Instruction::SlicePtr { dest, slice: src } => {
                 let s_clean = Self::clean_name(src);
                 let d_clean = Self::clean_name(dest);
-                if ctx.is_known_buffer(src) {
+                if ctx.is_known_buffer(s_clean) {
                     stmts.push(IvlStmt::Assign {
                         dest: d_clean.to_string(),
                         expr: IvlExpr::IntConst(0),
                         is_memory: false,
                     });
-                    let root = ctx.resolve_root_buf(src);
-                    let len_expr = if let Some(&sz) = ctx.buffer_sizes.get(&root).or_else(|| ctx.buffer_sizes.get(s_clean)) {
-                        IvlExpr::IntConst(sz as i64)
-                    } else {
-                        IvlExpr::Var(format!("{}_len", root))
+                    let root = ctx.resolve_root_buf(s_clean);
+                    let len_expr = match ctx.static_size(s_clean) {
+                        Some(sz) => IvlExpr::IntConst(sz as i64),
+                        None => IvlExpr::Var(format!("{}_len", root)),
                     };
                     stmts.push(IvlStmt::Assign {
                         dest: format!("{}_len", d_clean),
@@ -534,69 +612,52 @@ impl IvlLowerer {
                 }
             }
 
-            Instruction::Binary { op, ty, dest, src1, src2 } => {
+            Instruction::Binary {
+                op,
+                ty,
+                dest,
+                src1,
+                src2,
+            } => {
                 let e1 = Self::operand_to_expr(src1);
                 let e2 = Self::operand_to_expr(src2);
-                let is_unsigned = matches!(ty, Type::U64 | Type::U8)
-                    || (matches!(
-                        op,
-                        BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod
-                    ) && (Self::operand_is_unsigned(src1, &ctx.unsigned_vars)
-                        || Self::operand_is_unsigned(src2, &ctx.unsigned_vars)))
-                    || (matches!(op, BinOp::Shr)
-                        && Self::operand_is_unsigned(src1, &ctx.unsigned_vars));
+                let is_unsigned = ctx.is_binary_unsigned(op, ty, src1, src2);
 
                 // Safety Check cho phép chia (Div / Mod)
                 if matches!(op, BinOp::Div | BinOp::Mod) {
-                    if is_unsigned {
-                        let div_zero = IvlExpr::Binary {
-                            op: BinOp::Neq,
-                            lhs: Box::new(e2.clone()),
-                            rhs: Box::new(IvlExpr::IntConst(0)),
-                            is_unsigned: true,
-                        };
-                        stmts.push(IvlStmt::Assert {
-                            cond: div_zero,
-                            goal_name: format!("Function '{}' - Line {}: Unsigned Division-by-Zero safety check", func.name, s_inst.loc.line),
-                            category: PropertyCategory::Safety,
-                            loc: s_inst.loc.clone(),
-                        });
+                    let non_zero = IvlExpr::Binary {
+                        op: BinOp::Neq,
+                        lhs: Box::new(e2.clone()),
+                        rhs: Box::new(IvlExpr::IntConst(0)),
+                        is_unsigned,
+                    };
+                    let (cond, goal_name) = if is_unsigned {
+                        (
+                            non_zero,
+                            format!(
+                                "Function '{}' - Line {}: Unsigned Division-by-Zero safety check",
+                                func.name, s_inst.loc.line
+                            ),
+                        )
                     } else {
-                        let div_zero = IvlExpr::Binary {
-                            op: BinOp::Neq,
-                            lhs: Box::new(e2.clone()),
-                            rhs: Box::new(IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        };
-                        let overflow_cond = IvlExpr::Binary {
-                            op: BinOp::And,
-                            lhs: Box::new(IvlExpr::Binary {
-                                op: BinOp::Eq,
-                                lhs: Box::new(e1.clone()),
-                                rhs: Box::new(IvlExpr::IntConst(i64::MIN)),
-                                is_unsigned: false,
-                            }),
-                            rhs: Box::new(IvlExpr::Binary {
-                                op: BinOp::Eq,
-                                lhs: Box::new(e2.clone()),
-                                rhs: Box::new(IvlExpr::IntConst(-1)),
-                                is_unsigned: false,
-                            }),
-                            is_unsigned: false,
-                        };
-                        let safe_div = IvlExpr::Binary {
-                            op: BinOp::And,
-                            lhs: Box::new(div_zero),
-                            rhs: Box::new(IvlExpr::Not(Box::new(overflow_cond))),
-                            is_unsigned: false,
-                        };
-                        stmts.push(IvlStmt::Assert {
-                            cond: safe_div,
-                            goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety and Overflow check", func.name, s_inst.loc.line),
-                            category: PropertyCategory::Safety,
-                            loc: s_inst.loc.clone(),
-                        });
-                    }
+                        let overflow = IvlExpr::and(
+                            IvlExpr::eq(e1.clone(), IvlExpr::IntConst(i64::MIN)),
+                            IvlExpr::eq(e2.clone(), IvlExpr::IntConst(-1)),
+                        );
+                        (
+                            IvlExpr::and(non_zero, IvlExpr::Not(Box::new(overflow))),
+                            format!(
+                                "Function '{}' - Line {}: Division-by-Zero safety and Overflow check",
+                                func.name, s_inst.loc.line
+                            ),
+                        )
+                    };
+                    stmts.push(IvlStmt::Assert {
+                        cond,
+                        goal_name,
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
                 }
 
                 stmts.push(IvlStmt::Assign {
@@ -636,12 +697,10 @@ impl IvlLowerer {
             }
 
             Instruction::SliceLen { dest, slice } => {
-                let root = ctx.resolve_root_buf(slice);
                 let sl_clean = Self::clean_name(slice);
-                let len_expr = if let Some(&size) = ctx.buffer_sizes.get(&root).or_else(|| ctx.buffer_sizes.get(sl_clean)) {
-                    IvlExpr::IntConst(size as i64)
-                } else {
-                    IvlExpr::Var(format!("{}_len", sl_clean))
+                let len_expr = match ctx.static_size(sl_clean) {
+                    Some(size) => IvlExpr::IntConst(size as i64),
+                    None => IvlExpr::Var(format!("{}_len", sl_clean)),
                 };
                 stmts.push(IvlStmt::Assign {
                     dest: Self::clean_name(dest).to_string(),
@@ -650,118 +709,117 @@ impl IvlLowerer {
                 });
             }
 
-            Instruction::Load8 { dest, buf, offset } => {
-                Self::emit_mem8_checks(func, s_inst, buf, offset, ctx, &mut stmts);
+            Instruction::Load8 { dest, buf, offset }
+            | Instruction::Load64 { dest, buf, offset } => {
+                let is_64 = matches!(s_inst.inst, Instruction::Load64 { .. });
+                Self::emit_mem_access_checks(
+                    func,
+                    s_inst,
+                    buf,
+                    offset,
+                    if is_64 { 8 } else { 1 },
+                    ctx,
+                    &mut stmts,
+                );
+
                 let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
                 let clean_d = Self::clean_name(dest).to_string();
+                let select_expr = IvlExpr::Select {
+                    mem: root_buf,
+                    offset: Box::new(off_expr),
+                };
+
                 stmts.push(IvlStmt::Assign {
                     dest: clean_d.clone(),
-                    expr: IvlExpr::Mask8(Box::new(IvlExpr::Select {
-                        mem: root_buf,
-                        offset: Box::new(off_expr),
-                    })),
+                    expr: if is_64 {
+                        select_expr
+                    } else {
+                        IvlExpr::Mask8(Box::new(select_expr))
+                    },
                     is_memory: false,
                 });
-                stmts.push(IvlStmt::Assume {
-                    cond: IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(IvlExpr::Var(clean_d.clone())),
-                            rhs: Box::new(IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Lte,
-                            lhs: Box::new(IvlExpr::Var(clean_d)),
-                            rhs: Box::new(IvlExpr::IntConst(255)),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    },
-                });
+
+                if !is_64 {
+                    stmts.push(IvlStmt::Assume {
+                        cond: IvlExpr::and(
+                            IvlExpr::gte(IvlExpr::Var(clean_d.clone()), IvlExpr::IntConst(0)),
+                            IvlExpr::lte(IvlExpr::Var(clean_d), IvlExpr::IntConst(255)),
+                        ),
+                    });
+                }
             }
 
-            Instruction::Store8 { buf, offset, val } => {
-                Self::emit_mem8_checks(func, s_inst, buf, offset, ctx, &mut stmts);
+            Instruction::Store8 { buf, offset, val }
+            | Instruction::Store64 { buf, offset, val } => {
+                let is_64 = matches!(s_inst.inst, Instruction::Store64 { .. });
+                Self::emit_mem_access_checks(
+                    func,
+                    s_inst,
+                    buf,
+                    offset,
+                    if is_64 { 8 } else { 1 },
+                    ctx,
+                    &mut stmts,
+                );
+
                 let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
                 let val_expr = Self::operand_to_expr(val);
+                let stored_val = if is_64 {
+                    val_expr
+                } else {
+                    IvlExpr::Mask8(Box::new(val_expr))
+                };
+
                 stmts.push(IvlStmt::Assign {
                     dest: root_buf.clone(),
                     expr: IvlExpr::Store {
                         mem: root_buf,
                         offset: Box::new(off_expr),
-                        val: Box::new(IvlExpr::Mask8(Box::new(val_expr))),
+                        val: Box::new(stored_val),
                     },
                     is_memory: true,
                 });
             }
 
-            Instruction::Load64 { dest, buf, offset } => {
-                Self::emit_mem64_checks(func, s_inst, buf, offset, ctx, &mut stmts);
+            Instruction::StoreStr {
+                buf,
+                offset,
+                content,
+            } => {
                 let root_buf = ctx.resolve_root_buf(buf);
-                let off_expr = Self::operand_to_expr(offset);
-                stmts.push(IvlStmt::Assign {
-                    dest: Self::clean_name(dest).to_string(),
-                    expr: IvlExpr::Select {
-                        mem: root_buf,
-                        offset: Box::new(off_expr),
-                    },
-                    is_memory: false,
-                });
-            }
-
-            Instruction::Store64 { buf, offset, val } => {
-                Self::emit_mem64_checks(func, s_inst, buf, offset, ctx, &mut stmts);
-                let root_buf = ctx.resolve_root_buf(buf);
-                let off_expr = Self::operand_to_expr(offset);
-                let val_expr = Self::operand_to_expr(val);
-                stmts.push(IvlStmt::Assign {
-                    dest: root_buf.clone(),
-                    expr: IvlExpr::Store {
-                        mem: root_buf,
-                        offset: Box::new(off_expr),
-                        val: Box::new(val_expr),
-                    },
-                    is_memory: true,
-                });
-            }
-
-            Instruction::StoreStr { buf, offset, content } => {
-                let root_buf = ctx.resolve_root_buf(buf);
-                let buf_size = ctx
-                    .buffer_sizes
-                    .get(&root_buf)
-                    .or_else(|| ctx.buffer_sizes.get(Self::clean_name(buf)))
-                    .copied()
-                    .unwrap_or(0);
+                let buf_size = ctx.static_size(buf).unwrap_or(0);
                 let bytes = content.as_bytes();
                 let req_size = *offset + bytes.len();
                 stmts.push(IvlStmt::Assert {
                     cond: IvlExpr::BoolConst(req_size <= buf_size),
-                    goal_name: format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf),
+                    goal_name: format!(
+                        "Function '{}' - Line {}: String write within buffer '{}'",
+                        func.name, s_inst.loc.line, buf
+                    ),
                     category: PropertyCategory::Safety,
                     loc: s_inst.loc.clone(),
                 });
 
                 for (i, &b) in bytes.iter().enumerate() {
-                    let off_expr = IvlExpr::IntConst((*offset + i) as i64);
-                    let val_expr = IvlExpr::IntConst(b as i64);
                     stmts.push(IvlStmt::Assign {
                         dest: root_buf.clone(),
                         expr: IvlExpr::Store {
                             mem: root_buf.clone(),
-                            offset: Box::new(off_expr),
-                            val: Box::new(val_expr),
+                            offset: Box::new(IvlExpr::IntConst((*offset + i) as i64)),
+                            val: Box::new(IvlExpr::IntConst(b as i64)),
                         },
                         is_memory: true,
                     });
                 }
             }
 
-            Instruction::Call { dest, func_name, args } => {
+            Instruction::Call {
+                dest,
+                func_name,
+                args,
+            } => {
                 if let Some(prog) = program {
                     if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
                         if args.len() != callee.params.len() {
@@ -780,16 +838,39 @@ impl IvlLowerer {
                             });
                         }
 
-                        // Xây dựng bảng ánh xạ tham số đồng thời (Simultaneous Substitution Map)
+                        // Pha 1 (Pre-state): Xây dựng bảng ánh xạ tham số đồng thời.
+                        // Nếu bất kỳ đối số nào trùng tên với biến đích `dest` sắp bị Havoc ở Pha 2,
+                        // chụp giá trị Pre-state của đối số vào biến tạm để ENSURE không bị Variable Capture!
+                        let dest_clean_opt = dest.as_ref().map(|d| Self::clean_name(d).to_string());
                         let mut param_map = HashMap::new();
                         for (i, p) in callee.params.iter().enumerate() {
                             if i < args.len() {
                                 let p_clean = Self::clean_name(&p.name).to_string();
-                                let arg_expr = Self::operand_to_expr(&args[i]);
+                                let mut arg_expr = Self::operand_to_expr(&args[i]);
+
+                                if let (Some(d_clean), Operand::Reg(r)) =
+                                    (&dest_clean_opt, &args[i])
+                                {
+                                    if Self::clean_name(r) == d_clean {
+                                        let pre_var = format!(
+                                            "__call_pre_{}_{}_{}",
+                                            d_clean, s_inst.loc.line, i
+                                        );
+                                        stmts.push(IvlStmt::Assign {
+                                            dest: pre_var.clone(),
+                                            expr: arg_expr,
+                                            is_memory: false,
+                                        });
+                                        arg_expr = IvlExpr::Var(pre_var);
+                                    }
+                                }
+
                                 if let Operand::Reg(r) = &args[i] {
                                     if let Some(b_expr) = ctx.bound_expr(r) {
                                         let len_expr = match b_expr {
-                                            IvlExpr::Len(root_name) => IvlExpr::Var(format!("{}_len", root_name)),
+                                            IvlExpr::Len(root_name) => {
+                                                IvlExpr::Var(format!("{}_len", root_name))
+                                            }
                                             other => other,
                                         };
                                         param_map.insert(format!("{}_len", p_clean), len_expr);
@@ -799,21 +880,25 @@ impl IvlLowerer {
                             }
                         }
 
-                        let callee_unsigned = Self::collect_unsigned_vars_with_prog(callee, program);
+                        let callee_unsigned =
+                            Self::collect_unsigned_vars_with_prog(callee, program);
                         for c_si in &callee.instructions {
                             if let Instruction::Require(req) = &c_si.inst {
                                 let req_ivl = Self::expr_to_ivl_typed(req, &callee_unsigned);
                                 let subst_req = Self::subst_expr_map(&req_ivl, &param_map);
                                 stmts.push(IvlStmt::Assert {
                                     cond: subst_req,
-                                    goal_name: format!("Function '{}' - Line {}: Verify REQUIRE contract of '{}'", func.name, s_inst.loc.line, func_name),
+                                    goal_name: format!(
+                                        "Function '{}' - Line {}: Verify REQUIRE contract of '{}'",
+                                        func.name, s_inst.loc.line, func_name
+                                    ),
                                     category: PropertyCategory::Safety,
                                     loc: s_inst.loc.clone(),
                                 });
                             }
                         }
 
-                        // Havoc all memory buffers passed as slice/pointer arguments to the callee
+                        // Pha 2 (Post-state): Havoc bộ nhớ đối số và biến đích `dest`, sau đó áp dụng ENSURE
                         Self::emit_havoc_for_buffer_args(args.iter(), ctx, &mut stmts);
 
                         if let Some(d) = dest {
@@ -822,8 +907,9 @@ impl IvlLowerer {
                                 vars: vec![clean_d.clone()],
                                 is_memory: false,
                             });
-                            let callee_ret = crate::verifier::Verifier::find_canonical_ret_var(callee)
-                                .unwrap_or_else(|| "ret".to_string());
+                            let callee_ret =
+                                crate::verifier::Verifier::find_canonical_ret_var(callee)
+                                    .unwrap_or_else(|| "ret".to_string());
                             let mut ens_map = param_map;
                             ens_map.insert(
                                 Self::clean_name(&callee_ret).to_string(),
@@ -840,7 +926,10 @@ impl IvlLowerer {
                     } else {
                         stmts.push(IvlStmt::Assert {
                             cond: IvlExpr::BoolConst(false),
-                            goal_name: format!("Function '{}' - Line {}: Call to undefined function '{}'", func.name, s_inst.loc.line, func_name),
+                            goal_name: format!(
+                                "Function '{}' - Line {}: Call to undefined function '{}'",
+                                func.name, s_inst.loc.line, func_name
+                            ),
                             category: PropertyCategory::Safety,
                             loc: s_inst.loc.clone(),
                         });
@@ -848,59 +937,71 @@ impl IvlLowerer {
                 }
             }
 
-            Instruction::Syscall { dest, rax, rdi, rsi, rdx, r10, r8, r9 } => {
-                let target = dest.clone().or_else(|| Some("rax".to_string()));
-                if let Some(d) = target {
-                    let clean_d = Self::clean_name(&d).to_string();
-                    stmts.push(IvlStmt::Havoc {
-                        vars: vec![clean_d.clone()],
-                        is_memory: false,
-                    });
-                    // 1. Mọi syscall trên Linux Kernel x86_64 khi lỗi đều trả về trong khoảng -4095..-1 (luôn >= -4096)
-                    stmts.push(IvlStmt::Assume {
-                        cond: IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(IvlExpr::Var(clean_d.clone())),
-                            rhs: Box::new(IvlExpr::IntConst(-4096)),
-                            is_unsigned: false,
-                        },
-                    });
-                    // 2. sys_read (rax=0) và sys_write (rax=1) không bao giờ đọc/ghi vượt quá count (rdx)
-                    let rax_expr = Self::operand_to_expr(rax);
-                    let rdx_expr = Self::operand_to_expr(rdx);
-                    let is_read_or_write = IvlExpr::Binary {
-                        op: BinOp::Or,
-                        lhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(rax_expr.clone()),
-                            rhs: Box::new(IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(IvlExpr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(rax_expr),
-                            rhs: Box::new(IvlExpr::IntConst(1)),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    };
-                    let lte_count = IvlExpr::Binary {
-                        op: BinOp::Lte,
-                        lhs: Box::new(IvlExpr::Var(clean_d)),
-                        rhs: Box::new(rdx_expr),
-                        is_unsigned: false,
-                    };
-                    stmts.push(IvlStmt::Assume {
-                        cond: IvlExpr::Ite {
-                            cond: Box::new(is_read_or_write),
-                            then_val: Box::new(lte_count),
-                            else_val: Box::new(IvlExpr::BoolConst(true)),
-                        },
-                    });
-                }
+            Instruction::Syscall {
+                dest,
+                rax,
+                rdi,
+                rsi,
+                rdx,
+                r10,
+                r8,
+                r9,
+            } => {
+                let clean_d = dest
+                    .as_deref()
+                    .map(Self::clean_name)
+                    .unwrap_or("rax")
+                    .to_string();
 
-                // Havoc buffer memory for any buffer passed in syscall arguments
-                let sys_args = [Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()];
+                // Pha 1 (Pre-state): Chụp giá trị của rax và rdx nếu chúng trùng với biến đích `clean_d` sắp bị Havoc
+                let snapshot_if_clobbered =
+                    |op: &Operand, tag: &str, stmts: &mut Vec<IvlStmt>| -> IvlExpr {
+                        let expr = Self::operand_to_expr(op);
+                        if matches!(op, Operand::Reg(r) if Self::clean_name(r) == clean_d) {
+                            let tmp = format!("__sys_{}_{}", tag, s_inst.loc.line);
+                            stmts.push(IvlStmt::Assign {
+                                dest: tmp.clone(),
+                                expr,
+                                is_memory: false,
+                            });
+                            IvlExpr::Var(tmp)
+                        } else {
+                            expr
+                        }
+                    };
+                let rax_pre = snapshot_if_clobbered(rax, "rax", &mut stmts);
+                let rdx_pre = snapshot_if_clobbered(rdx, "rdx", &mut stmts);
+
+                // Pha 2 (Post-state): Havoc biến kết quả và bộ nhớ truyền vào syscall
+                stmts.push(IvlStmt::Havoc {
+                    vars: vec![clean_d.clone()],
+                    is_memory: false,
+                });
+                // 1. Mọi syscall trên Linux Kernel x86_64 khi lỗi đều trả về trong khoảng -4095..-1 (luôn >= -4096)
+                stmts.push(IvlStmt::Assume {
+                    cond: IvlExpr::gte(IvlExpr::Var(clean_d.clone()), IvlExpr::IntConst(-4096)),
+                });
+                // 2. sys_read (rax=0) và sys_write (rax=1) không bao giờ đọc/ghi vượt quá count (rdx)
+                let is_rw = IvlExpr::or(
+                    IvlExpr::eq(rax_pre.clone(), IvlExpr::IntConst(0)),
+                    IvlExpr::eq(rax_pre, IvlExpr::IntConst(1)),
+                );
+                stmts.push(IvlStmt::Assume {
+                    cond: IvlExpr::Ite {
+                        cond: Box::new(is_rw),
+                        then_val: Box::new(IvlExpr::lte(IvlExpr::Var(clean_d), rdx_pre)),
+                        else_val: Box::new(IvlExpr::BoolConst(true)),
+                    },
+                });
+
+                let sys_args = [
+                    Some(rdi),
+                    Some(rsi),
+                    Some(rdx),
+                    r10.as_ref(),
+                    r8.as_ref(),
+                    r9.as_ref(),
+                ];
                 Self::emit_havoc_for_buffer_args(sys_args.into_iter().flatten(), ctx, &mut stmts);
             }
 
@@ -936,165 +1037,86 @@ impl IvlLowerer {
         }
     }
 
-    fn emit_mem8_checks(
+    /// Kiểm chứng tổng quát cho mọi truy cập bộ nhớ có độ rộng `width` bytes (1 byte cho 8-bit, 8 bytes cho 64-bit)
+    fn emit_mem_access_checks(
         func: &Function,
         s_inst: &SpannedInstruction,
         buf: &str,
         offset: &Operand,
+        width: usize,
         ctx: &FunctionBufferContext,
         stmts: &mut Vec<IvlStmt>,
     ) {
         let off_expr = Self::operand_to_expr(offset);
-        if let Some(bound_expr) = ctx.bound_expr(buf) {
-            let in_bounds = IvlExpr::Binary {
-                op: BinOp::And,
-                lhs: Box::new(IvlExpr::Binary {
-                    op: BinOp::Gte,
-                    lhs: Box::new(off_expr.clone()),
-                    rhs: Box::new(IvlExpr::IntConst(0)),
-                    is_unsigned: false,
-                }),
-                rhs: Box::new(IvlExpr::Binary {
-                    op: BinOp::Lt,
-                    lhs: Box::new(off_expr),
-                    rhs: Box::new(bound_expr),
-                    is_unsigned: false,
-                }),
-                is_unsigned: false,
-            };
+        let bits = width * 8;
+        let width_i64 = width as i64;
+
+        // 1. Alignment check (chỉ áp dụng khi width > 1, ví dụ 8-byte alignment cho 64-bit access)
+        if width > 1 {
+            let align_check = IvlExpr::eq(
+                IvlExpr::bin(BinOp::Mod, off_expr.clone(), IvlExpr::IntConst(width_i64)),
+                IvlExpr::IntConst(0),
+            );
             stmts.push(IvlStmt::Assert {
-                cond: in_bounds,
-                goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                category: PropertyCategory::Safety,
-                loc: s_inst.loc.clone(),
-            });
-        } else {
-            let non_neg = IvlExpr::Binary {
-                op: BinOp::Gte,
-                lhs: Box::new(off_expr),
-                rhs: Box::new(IvlExpr::IntConst(0)),
-                is_unsigned: false,
-            };
-            stmts.push(IvlStmt::Assert {
-                cond: non_neg,
-                goal_name: format!("Function '{}' - Line {}: Memory 8-bit pointer offset non-negative check on '{}'", func.name, s_inst.loc.line, buf),
+                cond: align_check,
+                goal_name: format!(
+                    "Function '{}' - Line {}: Memory {}-bit {}-byte alignment check on '{}'",
+                    func.name, s_inst.loc.line, bits, width, buf
+                ),
                 category: PropertyCategory::Safety,
                 loc: s_inst.loc.clone(),
             });
         }
-    }
 
-    fn emit_mem64_checks(
-        func: &Function,
-        s_inst: &SpannedInstruction,
-        buf: &str,
-        offset: &Operand,
-        ctx: &FunctionBufferContext,
-        stmts: &mut Vec<IvlStmt>,
-    ) {
-        let off_expr = Self::operand_to_expr(offset);
-
-        // 1. 8-byte alignment check
-        let align_check = IvlExpr::Binary {
-            op: BinOp::Eq,
-            lhs: Box::new(IvlExpr::Binary {
-                op: BinOp::Mod,
-                lhs: Box::new(off_expr.clone()),
-                rhs: Box::new(IvlExpr::IntConst(8)),
-                is_unsigned: false,
-            }),
-            rhs: Box::new(IvlExpr::IntConst(0)),
-            is_unsigned: false,
-        };
-        stmts.push(IvlStmt::Assert {
-            cond: align_check,
-            goal_name: format!("Function '{}' - Line {}: Memory 64-bit 8-byte alignment check on '{}'", func.name, s_inst.loc.line, buf),
-            category: PropertyCategory::Safety,
-            loc: s_inst.loc.clone(),
-        });
-
-        // 2. Bounds check (chống cả tràn dưới len < 8 trên slice!)
-        let root_buf = ctx.resolve_root_buf(buf);
-        if let Some(&sz) = ctx.buffer_sizes.get(&root_buf).or_else(|| ctx.buffer_sizes.get(Self::clean_name(buf))) {
-            let in_bounds = if sz < 8 {
+        // 2. Bounds check (áp dụng thống nhất cho buffer tĩnh, slice động, và con trỏ thô)
+        let non_neg = IvlExpr::gte(off_expr.clone(), IvlExpr::IntConst(0));
+        if let Some(sz) = ctx.static_size(buf) {
+            let in_bounds = if sz < width {
                 IvlExpr::BoolConst(false)
+            } else if width == 1 {
+                IvlExpr::and(non_neg, IvlExpr::lt(off_expr, IvlExpr::IntConst(sz as i64)))
             } else {
-                let max_off = (sz as i64) - 8;
-                IvlExpr::Binary {
-                    op: BinOp::And,
-                    lhs: Box::new(IvlExpr::Binary {
-                        op: BinOp::Gte,
-                        lhs: Box::new(off_expr.clone()),
-                        rhs: Box::new(IvlExpr::IntConst(0)),
-                        is_unsigned: false,
-                    }),
-                    rhs: Box::new(IvlExpr::Binary {
-                        op: BinOp::Lte,
-                        lhs: Box::new(off_expr),
-                        rhs: Box::new(IvlExpr::IntConst(max_off)),
-                        is_unsigned: false,
-                    }),
-                    is_unsigned: false,
-                }
+                let max_off = (sz - width) as i64;
+                IvlExpr::and(non_neg, IvlExpr::lte(off_expr, IvlExpr::IntConst(max_off)))
             };
             stmts.push(IvlStmt::Assert {
                 cond: in_bounds,
-                goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                goal_name: format!(
+                    "Function '{}' - Line {}: Memory {}-bit bounds check on '{}'",
+                    func.name, s_inst.loc.line, bits, buf
+                ),
                 category: PropertyCategory::Safety,
                 loc: s_inst.loc.clone(),
             });
         } else if let Some(bound_expr) = ctx.bound_expr(buf) {
-            // Đảm bảo: offset >= 0 && bound >= 8 && offset <= bound - 8 (tránh underflow khi bound < 8)
-            let max_off = IvlExpr::Binary {
-                op: BinOp::Sub,
-                lhs: Box::new(bound_expr.clone()),
-                rhs: Box::new(IvlExpr::IntConst(8)),
-                is_unsigned: false,
-            };
-            let len_at_least_8 = IvlExpr::Binary {
-                op: BinOp::Gte,
-                lhs: Box::new(bound_expr),
-                rhs: Box::new(IvlExpr::IntConst(8)),
-                is_unsigned: false,
-            };
-            let off_in_range = IvlExpr::Binary {
-                op: BinOp::And,
-                lhs: Box::new(IvlExpr::Binary {
-                    op: BinOp::Gte,
-                    lhs: Box::new(off_expr.clone()),
-                    rhs: Box::new(IvlExpr::IntConst(0)),
-                    is_unsigned: false,
-                }),
-                rhs: Box::new(IvlExpr::Binary {
-                    op: BinOp::Lte,
-                    lhs: Box::new(off_expr),
-                    rhs: Box::new(max_off),
-                    is_unsigned: false,
-                }),
-                is_unsigned: false,
-            };
-            let in_bounds = IvlExpr::Binary {
-                op: BinOp::And,
-                lhs: Box::new(len_at_least_8),
-                rhs: Box::new(off_in_range),
-                is_unsigned: false,
+            let in_bounds = if width == 1 {
+                IvlExpr::and(non_neg, IvlExpr::lt(off_expr, bound_expr))
+            } else {
+                // Chống tràn số âm (underflow) khi bound_expr < width trên BitVec 64-bit
+                let max_off =
+                    IvlExpr::bin(BinOp::Sub, bound_expr.clone(), IvlExpr::IntConst(width_i64));
+                let len_ok = IvlExpr::gte(bound_expr, IvlExpr::IntConst(width_i64));
+                IvlExpr::and(
+                    len_ok,
+                    IvlExpr::and(non_neg, IvlExpr::lte(off_expr, max_off)),
+                )
             };
             stmts.push(IvlStmt::Assert {
                 cond: in_bounds,
-                goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                goal_name: format!(
+                    "Function '{}' - Line {}: Memory {}-bit bounds check on '{}'",
+                    func.name, s_inst.loc.line, bits, buf
+                ),
                 category: PropertyCategory::Safety,
                 loc: s_inst.loc.clone(),
             });
         } else {
-            let non_neg = IvlExpr::Binary {
-                op: BinOp::Gte,
-                lhs: Box::new(off_expr),
-                rhs: Box::new(IvlExpr::IntConst(0)),
-                is_unsigned: false,
-            };
             stmts.push(IvlStmt::Assert {
                 cond: non_neg,
-                goal_name: format!("Function '{}' - Line {}: Memory 64-bit pointer offset non-negative check on '{}'", func.name, s_inst.loc.line, buf),
+                goal_name: format!(
+                    "Function '{}' - Line {}: Memory {}-bit pointer offset non-negative check on '{}'",
+                    func.name, s_inst.loc.line, bits, buf
+                ),
                 category: PropertyCategory::Safety,
                 loc: s_inst.loc.clone(),
             });

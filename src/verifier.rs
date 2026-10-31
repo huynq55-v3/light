@@ -78,6 +78,53 @@ pub struct LoopContext<'a> {
 pub struct Verifier;
 
 impl Verifier {
+    /// Khởi tạo kết quả `VerificationResult::Failed` tại một vị trí nguồn cụ thể
+    fn fail_at(
+        func: &Function,
+        loc: &Loc,
+        goal_name: impl Into<String>,
+        category: PropertyCategory,
+        reason: impl Into<String>,
+        role: impl Into<String>,
+    ) -> VerificationResult {
+        VerificationResult::Failed {
+            goal_name: goal_name.into(),
+            category,
+            reason: reason.into(),
+            counter_example: None,
+            stack_trace: vec![StackFrame {
+                file: func.file.clone(),
+                line: loc.line,
+                function: func.name.clone(),
+                snippet: loc.text.clone(),
+                role: role.into(),
+            }],
+        }
+    }
+
+    /// Khởi tạo kết quả `VerificationResult::Unknown` tại một vị trí nguồn cụ thể
+    fn unknown_at(
+        func: &Function,
+        loc: &Loc,
+        goal_name: impl Into<String>,
+        category: PropertyCategory,
+        reason: impl Into<String>,
+        role: impl Into<String>,
+    ) -> VerificationResult {
+        VerificationResult::Unknown {
+            goal_name: goal_name.into(),
+            category,
+            reason: reason.into(),
+            stack_trace: vec![StackFrame {
+                file: func.file.clone(),
+                line: loc.line,
+                function: func.name.clone(),
+                snippet: loc.text.clone(),
+                role: role.into(),
+            }],
+        }
+    }
+
     #[inline]
     fn is_true(e: &IvlExpr) -> bool {
         matches!(e, IvlExpr::BoolConst(true))
@@ -104,12 +151,7 @@ impl Verifier {
         } else if Self::is_true(&b) {
             a
         } else {
-            IvlExpr::Binary {
-                op: BinOp::And,
-                lhs: Box::new(a),
-                rhs: Box::new(b),
-                is_unsigned: false,
-            }
+            IvlExpr::and(a, b)
         }
     }
 
@@ -121,12 +163,7 @@ impl Verifier {
         } else if Self::is_false(&b) {
             a
         } else {
-            IvlExpr::Binary {
-                op: BinOp::Or,
-                lhs: Box::new(a),
-                rhs: Box::new(b),
-                is_unsigned: false,
-            }
+            IvlExpr::or(a, b)
         }
     }
 
@@ -139,6 +176,40 @@ impl Verifier {
         } else {
             Self::mk_or(Self::mk_not(guard.clone()), prop)
         }
+    }
+
+    /// Tách nhánh điều kiện (Path-Splitting) cho `BR_IF`, `RET`, `RET_IF`, `BREAK_IF`, `CONTINUE_IF`:
+    /// 1. Tính điều kiện nhánh được kích hoạt (`take_cond = active && cond`).
+    /// 2. Ghi nhận vào biến trạng thái nhánh (`__{prefix}_{id}`) để tránh nhân bản biểu thức SMT.
+    /// 3. Cập nhật `active` cho phần luồng chạy thẳng phía sau (`active = active && !branch_var`).
+    fn split_branch(
+        stmts: &mut Vec<IvlStmt>,
+        active: &mut IvlExpr,
+        havoc_counter: &mut usize,
+        prefix: &str,
+        cond_reg: Option<&str>,
+    ) -> (IvlExpr, IvlExpr) {
+        let take_cond = match cond_reg {
+            Some(c) => {
+                let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(c).to_string());
+                Self::mk_and(active.clone(), cond_expr)
+            }
+            None => active.clone(),
+        };
+        *havoc_counter += 1;
+        let branch_var = format!("{}_{}", prefix, *havoc_counter);
+        stmts.push(IvlStmt::Assign {
+            dest: branch_var.clone(),
+            expr: take_cond.clone(),
+            is_memory: false,
+        });
+        let branch_var_expr = IvlExpr::Var(branch_var);
+        *active = if cond_reg.is_some() {
+            Self::mk_and(active.clone(), Self::mk_not(branch_var_expr.clone()))
+        } else {
+            IvlExpr::BoolConst(false)
+        };
+        (take_cond, branch_var_expr)
     }
 
     /// Phát sinh các mệnh đề kiểm chứng quy nạp (Step 2: Invariant) và dừng vòng lặp (Step 4a/4b: Decreases)
@@ -164,29 +235,13 @@ impl Verifier {
         for (d_idx, dec) in decreases.iter().enumerate() {
             let old_r = IvlExpr::Var(format!("__rank_init_{}_{}", loop_id, d_idx));
             stmts.push(IvlStmt::Assert {
-                cond: Self::mk_implies(
-                    guard,
-                    IvlExpr::Binary {
-                        op: BinOp::Gte,
-                        lhs: Box::new(old_r.clone()),
-                        rhs: Box::new(IvlExpr::IntConst(0)),
-                        is_unsigned: false,
-                    },
-                ),
+                cond: Self::mk_implies(guard, IvlExpr::gte(old_r.clone(), IvlExpr::IntConst(0))),
                 goal_name: dec_goal_a.clone(),
                 category: PropertyCategory::Termination,
                 loc: loc.clone(),
             });
             stmts.push(IvlStmt::Assert {
-                cond: Self::mk_implies(
-                    guard,
-                    IvlExpr::Binary {
-                        op: BinOp::Lt,
-                        lhs: Box::new(dec.clone()),
-                        rhs: Box::new(old_r),
-                        is_unsigned: false,
-                    },
-                ),
+                cond: Self::mk_implies(guard, IvlExpr::lt(dec.clone(), old_r)),
                 goal_name: dec_goal_b.clone(),
                 category: PropertyCategory::Termination,
                 loc: loc.clone(),
@@ -213,7 +268,11 @@ impl Verifier {
         let mut out = Vec::new();
         for st in raw_stmts {
             match st {
-                IvlStmt::Assign { dest, expr, is_memory } => {
+                IvlStmt::Assign {
+                    dest,
+                    expr,
+                    is_memory,
+                } => {
                     let clean = IvlLowerer::clean_name(&dest).to_string();
                     let new_expr = if Self::is_true(active) {
                         expr
@@ -230,7 +289,12 @@ impl Verifier {
                         is_memory,
                     });
                 }
-                IvlStmt::Assert { cond, goal_name, category, loc } => {
+                IvlStmt::Assert {
+                    cond,
+                    goal_name,
+                    category,
+                    loc,
+                } => {
                     if include_asserts {
                         out.push(IvlStmt::Assert {
                             cond: Self::mk_implies(active, cond),
@@ -303,7 +367,9 @@ impl Verifier {
         havoc_counter: &mut usize,
     ) -> Vec<IvlStmt> {
         let mut stmts = Vec::new();
-        let has_branch = slice.iter().any(|s| matches!(s.inst, Instruction::BrIf { .. } | Instruction::RetIf { .. }));
+        let has_branch = slice
+            .iter()
+            .any(|s| matches!(s.inst, Instruction::BrIf { .. } | Instruction::RetIf { .. }));
 
         // Trạng thái luồng chạy hiện tại (Path Condition) và bảng các nhánh nhảy tới từng LABEL
         let mut active = IvlExpr::BoolConst(true);
@@ -316,7 +382,10 @@ impl Verifier {
             let s_inst = &slice[idx];
             match &s_inst.inst {
                 Instruction::Require(req) => {
-                    let cond = Self::mk_implies(&active, IvlLowerer::expr_to_ivl_typed(req, &ctx.unsigned_vars));
+                    let cond = Self::mk_implies(
+                        &active,
+                        IvlLowerer::expr_to_ivl_typed(req, &ctx.unsigned_vars),
+                    );
                     stmts.push(IvlStmt::Assume { cond });
                 }
                 Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) => {}
@@ -326,7 +395,8 @@ impl Verifier {
                         active = Self::mk_or(active, inc);
                         // Tạo một biến định danh ngắn gọn cho Path Condition tại điểm hội tụ để tránh công thức SMT phình to theo cấp số nhân
                         *havoc_counter += 1;
-                        let path_var = format!("__path_{}_{}", lbl.trim_start_matches('.'), *havoc_counter);
+                        let path_var =
+                            format!("__path_{}_{}", lbl.trim_start_matches('.'), *havoc_counter);
                         stmts.push(IvlStmt::Assign {
                             dest: path_var.clone(),
                             expr: active,
@@ -336,76 +406,85 @@ impl Verifier {
                     }
                 }
 
-                // Hợp nhất JUMP và BR_IF: JUMP <target> tương đương BR_IF true <target>
+                // Hợp nhất JUMP và BR_IF: JUMP <target> tương đương BR_IF không điều kiện
                 Instruction::Jump(target) | Instruction::BrIf { target, .. } => {
-                    let is_unconditional = matches!(s_inst.inst, Instruction::Jump(_));
-                    let is_forward = slice[idx + 1..].iter().any(|s| matches!(&s.inst, Instruction::Label(l) if l == target));
+                    let cond_opt = match &s_inst.inst {
+                        Instruction::BrIf { cond, .. } => Some(cond.as_str()),
+                        _ => None,
+                    };
+                    let is_forward = slice[idx + 1..]
+                        .iter()
+                        .any(|s| matches!(&s.inst, Instruction::Label(l) if l == target));
                     if !is_forward {
-                        let op_name = if is_unconditional { "JUMP" } else { "BR_IF" };
-                        diagnostics.push(VerificationResult::Unknown {
-                            goal_name: format!("Function '{}' - Line {}: Unsupported backward/external {}", func.name, s_inst.loc.line, op_name),
-                            category: PropertyCategory::Safety,
-                            reason: format!("Backward or external branch to '{}' is not supported (use LOOP for loops)", target),
-                            stack_trace: vec![StackFrame {
-                                file: func.file.clone(),
-                                line: s_inst.loc.line,
-                                function: func.name.clone(),
-                                snippet: s_inst.loc.text.clone(),
-                                role: format!("Unsupported backward/external {}", op_name),
-                            }],
-                        });
+                        let op_name = if cond_opt.is_none() { "JUMP" } else { "BR_IF" };
+                        diagnostics.push(Self::unknown_at(
+                            func,
+                            &s_inst.loc,
+                            format!(
+                                "Function '{}' - Line {}: Unsupported backward/external {}",
+                                func.name, s_inst.loc.line, op_name
+                            ),
+                            PropertyCategory::Safety,
+                            format!(
+                                "Backward or external branch to '{}' is not supported (use LOOP for loops)",
+                                target
+                            ),
+                            format!("Unsupported backward/external {}", op_name),
+                        ));
                         return stmts;
                     }
 
-                    if is_unconditional {
-                        let prev = incoming_jumps.remove(target).unwrap_or(IvlExpr::BoolConst(false));
-                        incoming_jumps.insert(target.clone(), Self::mk_or(prev, active));
-                        active = IvlExpr::BoolConst(false);
-                    } else if let Instruction::BrIf { cond, .. } = &s_inst.inst {
-                        let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
-                        let take_branch = Self::mk_and(active.clone(), cond_expr);
-                        *havoc_counter += 1;
-                        let br_var = format!("__br_{}", *havoc_counter);
-                        stmts.push(IvlStmt::Assign {
-                            dest: br_var.clone(),
-                            expr: take_branch,
-                            is_memory: false,
-                        });
-                        let br_var_expr = IvlExpr::Var(br_var);
-                        let prev = incoming_jumps.remove(target).unwrap_or(IvlExpr::BoolConst(false));
-                        incoming_jumps.insert(target.clone(), Self::mk_or(prev, br_var_expr.clone()));
-                        active = Self::mk_and(active, Self::mk_not(br_var_expr));
-                    }
+                    let taken_expr = if let Some(cond) = cond_opt {
+                        let (_, br_var_expr) = Self::split_branch(
+                            &mut stmts,
+                            &mut active,
+                            havoc_counter,
+                            "__br",
+                            Some(cond),
+                        );
+                        br_var_expr
+                    } else {
+                        std::mem::replace(&mut active, IvlExpr::BoolConst(false))
+                    };
+                    let prev = incoming_jumps
+                        .remove(target)
+                        .unwrap_or(IvlExpr::BoolConst(false));
+                    incoming_jumps.insert(target.clone(), Self::mk_or(prev, taken_expr));
                 }
 
                 // Hợp nhất RET và RET_IF: kiểm chứng ENSURE bằng phép thế trực tiếp (tránh làm bẩn biến tham số/cục bộ)
                 Instruction::Ret(val_opt) | Instruction::RetIf { val: val_opt, .. } => {
-                    let is_early = matches!(s_inst.inst, Instruction::RetIf { .. });
-                    let take_ret = if let Instruction::RetIf { cond, .. } = &s_inst.inst {
-                        let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
-                        Self::mk_and(active.clone(), cond_expr)
-                    } else {
-                        active.clone()
+                    let cond_opt = match &s_inst.inst {
+                        Instruction::RetIf { cond, .. } => Some(cond.as_str()),
+                        _ => None,
                     };
-
-                    *havoc_counter += 1;
-                    let ret_var = format!("__ret_{}", *havoc_counter);
-                    stmts.push(IvlStmt::Assign {
-                        dest: ret_var.clone(),
-                        expr: take_ret.clone(),
-                        is_memory: false,
-                    });
-                    let ret_var_expr = IvlExpr::Var(ret_var);
-                    local_loop_exit = Self::mk_or(local_loop_exit, ret_var_expr.clone());
+                    let is_early = cond_opt.is_some();
+                    let (take_ret, ret_var_expr) = Self::split_branch(
+                        &mut stmts,
+                        &mut active,
+                        havoc_counter,
+                        "__ret",
+                        cond_opt,
+                    );
+                    local_loop_exit = Self::mk_or(local_loop_exit, ret_var_expr);
 
                     let include_asserts = loop_ctx.map_or(true, |c| c.verify_inductive);
                     if !Self::is_false(&take_ret) && include_asserts {
                         let goal_name = if is_early {
-                            format!("Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)", func.name, s_inst.loc.line)
+                            format!(
+                                "Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)",
+                                func.name, s_inst.loc.line
+                            )
                         } else if has_loop {
-                            format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name)
+                            format!(
+                                "Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)",
+                                func.name
+                            )
                         } else if has_branch {
-                            format!("Function '{}' - Line {}: Verify ENSURE on branch return (RET) - Verify ENSURE postcondition", func.name, s_inst.loc.line)
+                            format!(
+                                "Function '{}' - Line {}: Verify ENSURE on branch return (RET) - Verify ENSURE postcondition",
+                                func.name, s_inst.loc.line
+                            )
                         } else {
                             format!("Function '{}' - Verify ENSURE postcondition", func.name)
                         };
@@ -426,42 +505,29 @@ impl Verifier {
                             });
                         }
                     }
-
-                    if is_early {
-                        active = Self::mk_and(active, Self::mk_not(ret_var_expr));
-                    } else {
-                        active = IvlExpr::BoolConst(false);
-                    }
                 }
 
                 Instruction::BreakIf(cond) => {
-                    let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
-                    let take_break = Self::mk_and(active.clone(), cond_expr);
-                    *havoc_counter += 1;
-                    let brk_var = format!("__brk_{}", *havoc_counter);
-                    stmts.push(IvlStmt::Assign {
-                        dest: brk_var.clone(),
-                        expr: take_break,
-                        is_memory: false,
-                    });
-                    let brk_var_expr = IvlExpr::Var(brk_var);
+                    let (_, brk_var_expr) = Self::split_branch(
+                        &mut stmts,
+                        &mut active,
+                        havoc_counter,
+                        "__brk",
+                        Some(cond),
+                    );
                     local_loop_break = Self::mk_or(local_loop_break, brk_var_expr.clone());
-                    local_loop_exit = Self::mk_or(local_loop_exit, brk_var_expr.clone());
-                    active = Self::mk_and(active, Self::mk_not(brk_var_expr));
+                    local_loop_exit = Self::mk_or(local_loop_exit, brk_var_expr);
                 }
 
                 Instruction::ContinueIf(cond) => {
-                    let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
-                    let take_cont = Self::mk_and(active.clone(), cond_expr);
-                    *havoc_counter += 1;
-                    let cont_var = format!("__cont_{}", *havoc_counter);
-                    stmts.push(IvlStmt::Assign {
-                        dest: cont_var.clone(),
-                        expr: take_cont.clone(),
-                        is_memory: false,
-                    });
-                    let cont_var_expr = IvlExpr::Var(cont_var);
-                    local_loop_exit = Self::mk_or(local_loop_exit, cont_var_expr.clone());
+                    let (take_cont, cont_var_expr) = Self::split_branch(
+                        &mut stmts,
+                        &mut active,
+                        havoc_counter,
+                        "__cont",
+                        Some(cond),
+                    );
+                    local_loop_exit = Self::mk_or(local_loop_exit, cont_var_expr);
                     if let Some(lctx) = loop_ctx {
                         if lctx.verify_inductive && !Self::is_false(&take_cont) {
                             Self::emit_loop_backedge_asserts(
@@ -470,70 +536,59 @@ impl Verifier {
                                 lctx.decreases,
                                 lctx.loop_id,
                                 &s_inst.loc,
-                                format!("Function '{}' - Line {}: Loop Step 2: Invariant preservation on CONTINUE_IF", func.name, s_inst.loc.line),
-                                format!("Function '{}' - Line {}: Step 4a: Termination Step on CONTINUE_IF (DECREASES bounded below >= 0)", func.name, s_inst.loc.line),
-                                format!("Function '{}' - Line {}: Step 4b: Termination Step on CONTINUE_IF (DECREASES ranking strictly decreases)", func.name, s_inst.loc.line),
+                                format!(
+                                    "Function '{}' - Line {}: Loop Step 2: Invariant preservation on CONTINUE_IF",
+                                    func.name, s_inst.loc.line
+                                ),
+                                format!(
+                                    "Function '{}' - Line {}: Step 4a: Termination Step on CONTINUE_IF (DECREASES bounded below >= 0)",
+                                    func.name, s_inst.loc.line
+                                ),
+                                format!(
+                                    "Function '{}' - Line {}: Step 4b: Termination Step on CONTINUE_IF (DECREASES ranking strictly decreases)",
+                                    func.name, s_inst.loc.line
+                                ),
                                 &mut stmts,
                             );
                         }
                     }
-                    active = Self::mk_and(active, Self::mk_not(cont_var_expr));
                 }
 
-                Instruction::Loop(l_lbl) => {
+                Instruction::Loop(_) => {
                     *havoc_counter += 1;
                     let loop_id = *havoc_counter;
                     let mut depth = 1;
-                    let mut l_end_opt = None;
+                    let mut l_end = idx + 1;
                     for (p, s) in slice[idx + 1..].iter().enumerate() {
                         match &s.inst {
                             Instruction::Loop(_) => depth += 1,
-                            Instruction::EndLoop(end_lbl) => {
+                            Instruction::EndLoop(_) => {
                                 depth -= 1;
                                 if depth == 0 {
-                                    if end_lbl == l_lbl {
-                                        l_end_opt = Some(idx + 1 + p);
-                                    }
+                                    l_end = idx + 1 + p;
                                     break;
                                 }
                             }
                             _ => {}
                         }
                     }
-
-                    let l_end = if let Some(le) = l_end_opt {
-                        le
-                    } else {
-                        diagnostics.push(VerificationResult::Failed {
-                            goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, slice[idx].loc.line),
-                            category: PropertyCategory::Safety,
-                            reason: format!("Missing or mismatched END_LOOP for LOOP '{}'", l_lbl),
-                            counter_example: None,
-                            stack_trace: vec![StackFrame {
-                                file: func.file.clone(),
-                                line: slice[idx].loc.line,
-                                function: func.name.clone(),
-                                snippet: slice[idx].loc.text.clone(),
-                                role: format!("Missing END_LOOP '{}'", l_lbl),
-                            }],
-                        });
-                        return stmts;
-                    };
                     let body_slice = &slice[idx + 1..l_end];
 
-                    if body_slice.iter().any(|si| matches!(si.inst, Instruction::Syscall { .. })) {
-                        diagnostics.push(VerificationResult::Unknown {
-                            goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
-                            category: PropertyCategory::Inductive,
-                            reason: "Unsupported instruction inside loop body: SYSCALL".into(),
-                            stack_trace: vec![StackFrame {
-                                file: func.file.clone(),
-                                line: slice[idx].loc.line,
-                                function: func.name.clone(),
-                                snippet: slice[idx].loc.text.clone(),
-                                role: "Unsupported instruction inside loop body: SYSCALL".into(),
-                            }],
-                        });
+                    if body_slice
+                        .iter()
+                        .any(|si| matches!(si.inst, Instruction::Syscall { .. }))
+                    {
+                        diagnostics.push(Self::unknown_at(
+                            func,
+                            &slice[idx].loc,
+                            format!(
+                                "Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)",
+                                func.name
+                            ),
+                            PropertyCategory::Inductive,
+                            "Unsupported instruction inside loop body: SYSCALL",
+                            "Unsupported instruction inside loop body: SYSCALL",
+                        ));
                         return stmts;
                     }
 
@@ -562,7 +617,10 @@ impl Verifier {
                         for inv in &loop_invs {
                             stmts.push(IvlStmt::Assert {
                                 cond: Self::mk_implies(&active, inv.clone()),
-                                goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
+                                goal_name: format!(
+                                    "Function '{}' - Step 1: Base Case (Loop initialization)",
+                                    func.name
+                                ),
                                 category: PropertyCategory::Inductive,
                                 loc: slice[idx].loc.clone(),
                             });
@@ -570,7 +628,6 @@ impl Verifier {
                     }
 
                     // Hạ cấp thân vòng lặp 1 lần ở chế độ thăm dò (verify_inductive: false) để tự động trích xuất 100% biến/bộ nhớ bị sửa đổi
-                    // (bao gồm cả biến/bộ nhớ bị sửa bởi CALL, STORE_STR, vòng lặp con...)
                     let mut probe_counter = *havoc_counter;
                     let mut probe_diag = Vec::new();
                     let probe_ctx = LoopContext {
@@ -597,20 +654,15 @@ impl Verifier {
                         IvlLowerer::extract_modified_targets_from_ivl(&probe_stmts);
 
                     // --- BƯỚC 2, 3, 4: Boogie Loop Desugaring về chuỗi 4 vi lệnh IVL ---
-                    // Havoc toàn bộ biến vô hướng và mảng bộ nhớ bị thay đổi trong thân vòng lặp (nếu vòng lặp đang active)
-                    if !modified_scalars.is_empty() {
-                        let havoc_s = IvlStmt::Havoc {
-                            vars: modified_scalars,
-                            is_memory: false,
-                        };
-                        stmts.extend(Self::guard_stmts(vec![havoc_s], &active, havoc_counter, verify_this_loop));
-                    }
-                    if !modified_mems.is_empty() {
-                        let havoc_m = IvlStmt::Havoc {
-                            vars: modified_mems,
-                            is_memory: true,
-                        };
-                        stmts.extend(Self::guard_stmts(vec![havoc_m], &active, havoc_counter, verify_this_loop));
+                    for (vars, is_memory) in [(modified_scalars, false), (modified_mems, true)] {
+                        if !vars.is_empty() {
+                            stmts.extend(Self::guard_stmts(
+                                vec![IvlStmt::Havoc { vars, is_memory }],
+                                &active,
+                                havoc_counter,
+                                verify_this_loop,
+                            ));
+                        }
                     }
 
                     // Giả định (Assume) các Invariant đúng ở đầu bước lặp tổng quát
@@ -627,7 +679,12 @@ impl Verifier {
                             expr: dec.clone(),
                             is_memory: false,
                         };
-                        stmts.extend(Self::guard_stmts(vec![rank_assign], &active, havoc_counter, verify_this_loop));
+                        stmts.extend(Self::guard_stmts(
+                            vec![rank_assign],
+                            &active,
+                            havoc_counter,
+                            verify_this_loop,
+                        ));
                     }
 
                     // Hạ cấp thân vòng lặp (với kiểm chứng quy nạp nếu đang ở ngoài hoặc đang trong pha quy nạp của vòng lặp cha)
@@ -654,21 +711,36 @@ impl Verifier {
                         havoc_counter,
                     );
 
-                    stmts.extend(Self::guard_stmts(body_stmts, &active, havoc_counter, verify_this_loop));
+                    stmts.extend(Self::guard_stmts(
+                        body_stmts,
+                        &active,
+                        havoc_counter,
+                        verify_this_loop,
+                    ));
 
                     // Cuối thân vòng lặp (Latch): những nhánh vẫn active và KHÔNG thoát (không BREAK, không CONTINUE, không RET)
                     // sẽ quay lại đầu vòng lặp -> Phải thỏa mãn Invariant (Step 2) và Decreases (Step 4a, 4b)!
                     if verify_this_loop {
-                        let latch_active = Self::mk_and(active.clone(), Self::mk_not(body_any_exit));
+                        let latch_active =
+                            Self::mk_and(active.clone(), Self::mk_not(body_any_exit));
                         Self::emit_loop_backedge_asserts(
                             &latch_active,
                             &loop_invs,
                             &loop_decs,
                             loop_id,
                             &slice[idx].loc,
-                            format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
-                            format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
-                            format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
+                            format!(
+                                "Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)",
+                                func.name
+                            ),
+                            format!(
+                                "Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)",
+                                func.name
+                            ),
+                            format!(
+                                "Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)",
+                                func.name
+                            ),
                             &mut stmts,
                         );
                     }
@@ -688,7 +760,12 @@ impl Verifier {
                 _other => {
                     let include_asserts = loop_ctx.map_or(true, |c| c.verify_inductive);
                     let raw = IvlLowerer::lower_atomic_instruction(func, s_inst, ctx, program);
-                    stmts.extend(Self::guard_stmts(raw, &active, havoc_counter, include_asserts));
+                    stmts.extend(Self::guard_stmts(
+                        raw,
+                        &active,
+                        havoc_counter,
+                        include_asserts,
+                    ));
                 }
             }
             idx += 1;
@@ -703,209 +780,159 @@ impl Verifier {
         stmts
     }
 
-    /// Kiểm tra tính đúng đắn toán học bằng kiến trúc Boogie IVL Engine (Universal VCGen)
-    pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
-        let mut results = Vec::new();
+    /// Kiểm tra tính đúng đắn tĩnh (Static Well-Formedness) trước khi hạ cấp sang IVL:
+    /// 1. Tính duy nhất của tên LABEL / LOOP trong hàm.
+    /// 2. Cấu trúc đóng mở `LOOP ... END_LOOP`, vị trí `BREAK_IF`/`CONTINUE_IF`, và cấm nhảy xuyên ranh giới vòng lặp.
+    /// 3. Mọi đích nhảy `JUMP`/`BR_IF` phải tồn tại.
+    /// 4. SSA Definite Assignment trên đồ thị dòng điều khiển (CFG).
+    /// 5. Tính nhất quán kiểu bộ nhớ (không trộn lẫn truy cập 8-bit và 64-bit trên cùng một vùng nhớ).
+    fn check_static_well_formedness(
+        func: &Function,
+        ctx: &FunctionBufferContext,
+    ) -> Option<VerificationResult> {
+        // Pass 1: Thu thập bảng nhãn, kiểm tra trùng tên LABEL/LOOP, và ghi nhận độ sâu vòng lặp tại từng LABEL
+        let mut seen_symbols: HashMap<&str, usize> = HashMap::new();
+        let mut label_loop_nesting: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut cur_nesting: Vec<&str> = Vec::new();
 
-        // 0. Static Well-Formedness: Function-scoped Label & Loop Name Uniqueness Check
-        let mut seen_labels: HashMap<&str, usize> = HashMap::new();
-        for s_inst in &func.instructions {
-            let label_name = match &s_inst.inst {
-                Instruction::Loop(l) | Instruction::Label(l) => Some(l.as_str()),
-                _ => None,
-            };
-            if let Some(lbl) = label_name {
-                if let Some(&prev_line) = seen_labels.get(lbl) {
-                    results.push(VerificationResult::Failed {
-                        goal_name: format!("Function '{}' - Line {}: Duplicate Label/Loop '{}'", func.name, s_inst.loc.line, lbl),
-                        category: PropertyCategory::Safety,
-                        reason: format!("Duplicate label or loop name '{}' (already defined at line {})", lbl, prev_line),
-                        counter_example: None,
-                        stack_trace: vec![StackFrame {
-                            file: func.file.clone(),
-                            line: s_inst.loc.line,
-                            function: func.name.clone(),
-                            snippet: s_inst.loc.text.clone(),
-                            role: format!("Duplicate symbol '{}'", lbl),
-                        }],
-                    });
-                    return results;
-                }
-                seen_labels.insert(lbl, s_inst.loc.line);
-            }
-        }
-
-        // 0a. Static Well-Formedness: Loop Structure Check (Matching LOOP <lbl> ... END_LOOP <lbl>)
-        // and Cross-Loop Jump Validation
-        let mut label_loop_nesting: HashMap<String, Vec<String>> = HashMap::new();
-        let mut cur_nesting: Vec<String> = Vec::new();
         for s_inst in &func.instructions {
             match &s_inst.inst {
-                Instruction::Loop(lbl) => cur_nesting.push(lbl.clone()),
+                Instruction::Loop(lbl) | Instruction::Label(lbl) => {
+                    if let Some(&prev_line) = seen_symbols.get(lbl.as_str()) {
+                        return Some(Self::fail_at(
+                            func,
+                            &s_inst.loc,
+                            format!(
+                                "Function '{}' - Line {}: Duplicate Label/Loop '{}'",
+                                func.name, s_inst.loc.line, lbl
+                            ),
+                            PropertyCategory::Safety,
+                            format!(
+                                "Duplicate label or loop name '{}' (already defined at line {})",
+                                lbl, prev_line
+                            ),
+                            format!("Duplicate symbol '{}'", lbl),
+                        ));
+                    }
+                    seen_symbols.insert(lbl.as_str(), s_inst.loc.line);
+                    if matches!(&s_inst.inst, Instruction::Loop(_)) {
+                        cur_nesting.push(lbl.as_str());
+                    } else {
+                        label_loop_nesting.insert(lbl.as_str(), cur_nesting.clone());
+                    }
+                }
                 Instruction::EndLoop(_) => {
                     cur_nesting.pop();
-                }
-                Instruction::Label(lbl) => {
-                    label_loop_nesting.insert(lbl.clone(), cur_nesting.clone());
                 }
                 _ => {}
             }
         }
 
+        // Pass 2: Kiểm tra cấu trúc LOOP/END_LOOP, BREAK_IF/CONTINUE_IF, nhảy xuyên vòng lặp & đích nhảy không tồn tại
         let mut loop_stack: Vec<(&str, &Loc)> = Vec::new();
         cur_nesting.clear();
+        let mut has_mem8 = HashSet::new();
+        let mut has_mem64 = HashSet::new();
+
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Loop(lbl) => {
-                    cur_nesting.push(lbl.clone());
+                    cur_nesting.push(lbl.as_str());
                     loop_stack.push((lbl.as_str(), &s_inst.loc));
-                }
-                Instruction::Jump(target) | Instruction::BrIf { target, .. } => {
-                    if let Some(target_nesting) = label_loop_nesting.get(target) {
-                        if target_nesting != &cur_nesting {
-                            results.push(VerificationResult::Failed {
-                                goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, s_inst.loc.line),
-                                category: PropertyCategory::Safety,
-                                reason: format!("Jump or branch to '{}' crosses loop boundaries (jumping across loop blocks is not allowed; use structured BREAK_IF/CONTINUE_IF instead)", target),
-                                counter_example: None,
-                                stack_trace: vec![StackFrame {
-                                    file: func.file.clone(),
-                                    line: s_inst.loc.line,
-                                    function: func.name.clone(),
-                                    snippet: s_inst.loc.text.clone(),
-                                    role: format!("Cross-loop jump to '{}'", target),
-                                }],
-                            });
-                            return results;
-                        }
-                    }
-                }
-                Instruction::BreakIf(_) | Instruction::ContinueIf(_) => {
-                    if loop_stack.is_empty() {
-                        let op_name = match &s_inst.inst {
-                            Instruction::BreakIf(_) => "BREAK_IF",
-                            _ => "CONTINUE_IF",
-                        };
-                        results.push(VerificationResult::Failed {
-                            goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, s_inst.loc.line),
-                            category: PropertyCategory::Safety,
-                            reason: format!("{} must be placed inside a LOOP ... END_LOOP block", op_name),
-                            counter_example: None,
-                            stack_trace: vec![StackFrame {
-                                file: func.file.clone(),
-                                line: s_inst.loc.line,
-                                function: func.name.clone(),
-                                snippet: s_inst.loc.text.clone(),
-                                role: format!("{} outside of LOOP", op_name),
-                            }],
-                        });
-                        return results;
-                    }
                 }
                 Instruction::EndLoop(lbl) => {
                     cur_nesting.pop();
                     match loop_stack.pop() {
                         Some((open_lbl, _)) if open_lbl == lbl => {}
                         Some((open_lbl, open_loc)) => {
-                            results.push(VerificationResult::Failed {
-                                goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, s_inst.loc.line),
-                                category: PropertyCategory::Safety,
-                                reason: format!("Mismatched END_LOOP '{}' (expected '{}' opened at line {})", lbl, open_lbl, open_loc.line),
-                                counter_example: None,
-                                stack_trace: vec![StackFrame {
-                                    file: func.file.clone(),
-                                    line: s_inst.loc.line,
-                                    function: func.name.clone(),
-                                    snippet: s_inst.loc.text.clone(),
-                                    role: format!("Mismatched END_LOOP '{}'", lbl),
-                                }],
-                            });
-                            return results;
+                            return Some(Self::fail_at(
+                                func,
+                                &s_inst.loc,
+                                format!(
+                                    "Function '{}' - Line {}: Loop Structure Error",
+                                    func.name, s_inst.loc.line
+                                ),
+                                PropertyCategory::Safety,
+                                format!(
+                                    "Mismatched END_LOOP '{}' (expected '{}' opened at line {})",
+                                    lbl, open_lbl, open_loc.line
+                                ),
+                                format!("Mismatched END_LOOP '{}'", lbl),
+                            ));
                         }
                         None => {
-                            results.push(VerificationResult::Failed {
-                                goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, s_inst.loc.line),
-                                category: PropertyCategory::Safety,
-                                reason: format!("Unexpected END_LOOP '{}' without matching LOOP", lbl),
-                                counter_example: None,
-                                stack_trace: vec![StackFrame {
-                                    file: func.file.clone(),
-                                    line: s_inst.loc.line,
-                                    function: func.name.clone(),
-                                    snippet: s_inst.loc.text.clone(),
-                                    role: format!("Unmatched END_LOOP '{}'", lbl),
-                                }],
-                            });
-                            return results;
+                            return Some(Self::fail_at(
+                                func,
+                                &s_inst.loc,
+                                format!(
+                                    "Function '{}' - Line {}: Loop Structure Error",
+                                    func.name, s_inst.loc.line
+                                ),
+                                PropertyCategory::Safety,
+                                format!("Unexpected END_LOOP '{}' without matching LOOP", lbl),
+                                format!("Unmatched END_LOOP '{}'", lbl),
+                            ));
                         }
                     }
                 }
-                _ => {}
-            }
-        }
-        if let Some((unclosed_lbl, unclosed_loc)) = loop_stack.last() {
-            results.push(VerificationResult::Failed {
-                goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, unclosed_loc.line),
-                category: PropertyCategory::Safety,
-                reason: format!("Unclosed LOOP '{}' (missing END_LOOP '{}')", unclosed_lbl, unclosed_lbl),
-                counter_example: None,
-                stack_trace: vec![StackFrame {
-                    file: func.file.clone(),
-                    line: unclosed_loc.line,
-                    function: func.name.clone(),
-                    snippet: unclosed_loc.text.clone(),
-                    role: format!("Unclosed LOOP '{}'", unclosed_lbl),
-                }],
-            });
-            return results;
-        }
-
-        // 0b. Static Well-Formedness: Jump Label Validation (No undefined JUMP/BR_IF targets)
-        let defined_labels: HashSet<&str> = func
-            .instructions
-            .iter()
-            .filter_map(|s| match &s.inst {
-                Instruction::Label(l) => Some(l.as_str()),
-                _ => None,
-            })
-            .collect();
-        for s_inst in &func.instructions {
-            match &s_inst.inst {
-                Instruction::Jump(target) | Instruction::BrIf { target, .. } => {
-                    if !defined_labels.contains(target.as_str()) {
-                        results.push(VerificationResult::Failed {
-                            goal_name: format!("Function '{}' - Line {}: Undefined label '{}'", func.name, s_inst.loc.line, target),
-                            category: PropertyCategory::Safety,
-                            reason: format!("Jump target '{}' is not defined anywhere in function '{}'", target, func.name),
-                            counter_example: None,
-                            stack_trace: vec![StackFrame {
-                                file: func.file.clone(),
-                                line: s_inst.loc.line,
-                                function: func.name.clone(),
-                                snippet: s_inst.loc.text.clone(),
-                                role: format!("Undefined jump label '{}'", target),
-                            }],
-                        });
-                        return results;
+                Instruction::BreakIf(_) | Instruction::ContinueIf(_) => {
+                    if loop_stack.is_empty() {
+                        let op_name = if matches!(&s_inst.inst, Instruction::BreakIf(_)) {
+                            "BREAK_IF"
+                        } else {
+                            "CONTINUE_IF"
+                        };
+                        return Some(Self::fail_at(
+                            func,
+                            &s_inst.loc,
+                            format!(
+                                "Function '{}' - Line {}: Loop Structure Error",
+                                func.name, s_inst.loc.line
+                            ),
+                            PropertyCategory::Safety,
+                            format!(
+                                "{} must be placed inside a LOOP ... END_LOOP block",
+                                op_name
+                            ),
+                            format!("{} outside of LOOP", op_name),
+                        ));
                     }
                 }
-                _ => {}
-            }
-        }
-
-        let ctx = FunctionBufferContext::analyze(func, program);
-
-        // 0c. Static Well-Formedness: SSA Definite Assignment Check via CFG Forward Dataflow Analysis
-        if let Some(err) = Self::check_definite_assignment_cfg(func, &ctx) {
-            results.push(err);
-            return results;
-        }
-
-        // 0d. Memory Sort Consistency Check: Prevent mixing 8-bit (LOAD8/STORE8/STORE_STR) and 64-bit (LOAD64/STORE64) accesses on same buffer
-        let mut has_mem8 = HashSet::new();
-        let mut has_mem64 = HashSet::new();
-        for s in &func.instructions {
-            match &s.inst {
+                Instruction::Jump(target) | Instruction::BrIf { target, .. } => {
+                    if let Some(target_nesting) = label_loop_nesting.get(target.as_str()) {
+                        if target_nesting != &cur_nesting {
+                            return Some(Self::fail_at(
+                                func,
+                                &s_inst.loc,
+                                format!(
+                                    "Function '{}' - Line {}: Loop Structure Error",
+                                    func.name, s_inst.loc.line
+                                ),
+                                PropertyCategory::Safety,
+                                format!(
+                                    "Jump or branch to '{}' crosses loop boundaries (jumping across loop blocks is not allowed; use structured BREAK_IF/CONTINUE_IF instead)",
+                                    target
+                                ),
+                                format!("Cross-loop jump to '{}'", target),
+                            ));
+                        }
+                    } else {
+                        return Some(Self::fail_at(
+                            func,
+                            &s_inst.loc,
+                            format!(
+                                "Function '{}' - Line {}: Undefined label '{}'",
+                                func.name, s_inst.loc.line, target
+                            ),
+                            PropertyCategory::Safety,
+                            format!(
+                                "Jump target '{}' is not defined anywhere in function '{}'",
+                                target, func.name
+                            ),
+                            format!("Undefined jump label '{}'", target),
+                        ));
+                    }
+                }
                 Instruction::Load8 { buf, .. }
                 | Instruction::Store8 { buf, .. }
                 | Instruction::StoreStr { buf, .. } => {
@@ -917,23 +944,66 @@ impl Verifier {
                 _ => {}
             }
         }
+
+        if let Some((unclosed_lbl, unclosed_loc)) = loop_stack.last() {
+            return Some(Self::fail_at(
+                func,
+                unclosed_loc,
+                format!(
+                    "Function '{}' - Line {}: Loop Structure Error",
+                    func.name, unclosed_loc.line
+                ),
+                PropertyCategory::Safety,
+                format!(
+                    "Unclosed LOOP '{}' (missing END_LOOP '{}')",
+                    unclosed_lbl, unclosed_lbl
+                ),
+                format!("Unclosed LOOP '{}'", unclosed_lbl),
+            ));
+        }
+
+        // Pass 3: SSA Definite Assignment Check via CFG Forward Dataflow Analysis
+        if let Some(err) = Self::check_definite_assignment_cfg(func, ctx) {
+            return Some(err);
+        }
+
+        // Pass 4: Memory Sort Consistency Check (Prevent mixing 8-bit and 64-bit accesses on same buffer)
         for buf in &has_mem8 {
             if has_mem64.contains(buf) {
-                results.push(VerificationResult::Failed {
-                    goal_name: format!("Function '{}': Memory Sort Consistency", func.name),
-                    category: PropertyCategory::Safety,
-                    reason: format!("Mixed 8-bit (LOAD8/STORE8/STORE_STR) and 64-bit (LOAD64/STORE64) accesses on buffer '%{}'. In SMT QF_ABV memory theory, mixing byte-level and 64-bit word-level operations without byte concatenation causes memory model unsoundness.", buf),
-                    counter_example: None,
-                    stack_trace: vec![StackFrame {
-                        file: func.file.clone(),
-                        line: 1,
-                        function: func.name.clone(),
-                        snippet: format!("Buffer '%{}' used with both 8-bit and 64-bit memory instructions", buf),
-                        role: "Memory Sort Mismatch".to_string(),
-                    }],
-                });
-                return results;
+                let loc = Loc {
+                    file: func.file.clone(),
+                    line: 1,
+                    text: format!(
+                        "Buffer '%{}' used with both 8-bit and 64-bit memory instructions",
+                        buf
+                    ),
+                };
+                return Some(Self::fail_at(
+                    func,
+                    &loc,
+                    format!("Function '{}': Memory Sort Consistency", func.name),
+                    PropertyCategory::Safety,
+                    format!(
+                        "Mixed 8-bit (LOAD8/STORE8/STORE_STR) and 64-bit (LOAD64/STORE64) accesses on buffer '%{}'. In SMT QF_ABV memory theory, mixing byte-level and 64-bit word-level operations without byte concatenation causes memory model unsoundness.",
+                        buf
+                    ),
+                    "Memory Sort Mismatch",
+                ));
             }
+        }
+
+        None
+    }
+
+    /// Kiểm tra tính đúng đắn toán học bằng kiến trúc Boogie IVL Engine (Universal VCGen)
+    pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
+        let mut results = Vec::new();
+        let ctx = FunctionBufferContext::analyze(func, program);
+
+        // 0. Kiểm tra tính hợp lệ tĩnh (Well-Formedness, CFG Definite Assignment, Memory Sort)
+        if let Some(err) = Self::check_static_well_formedness(func, &ctx) {
+            results.push(err);
+            return results;
         }
 
         // 1. Khởi tạo Universal VcGen và khai báo các tham số đầu vào của hàm
@@ -950,30 +1020,45 @@ impl Verifier {
         let ensures: Vec<Expr> = func
             .instructions
             .iter()
-            .filter_map(|si| if let Instruction::Ensure(e) = &si.inst { Some(e.clone()) } else { None })
+            .filter_map(|si| {
+                if let Instruction::Ensure(e) = &si.inst {
+                    Some(e.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         let canon_ret = Self::find_canonical_ret_var(func).unwrap_or_else(|| "ret".to_string());
 
-        let has_ret = func.instructions.iter().any(|si| matches!(si.inst, Instruction::Ret(_) | Instruction::RetIf { .. }));
+        let has_ret = func
+            .instructions
+            .iter()
+            .any(|si| matches!(si.inst, Instruction::Ret(_) | Instruction::RetIf { .. }));
         if !ensures.is_empty() && !has_ret {
-            results.push(VerificationResult::Failed {
-                goal_name: format!("Function '{}' - Verify ENSURE postcondition", func.name),
-                category: PropertyCategory::Functional,
-                reason: format!("Function '{}' declares ENSURE contract but has no RET or RET_IF instruction!", func.name),
-                counter_example: None,
-                stack_trace: vec![StackFrame {
-                    file: func.file.clone(),
-                    line: func.instructions.last().map(|s| s.loc.line).unwrap_or(1),
-                    function: func.name.clone(),
-                    snippet: "Missing RET statement".to_string(),
-                    role: "Missing RET for ENSURE postcondition".to_string(),
-                }],
-            });
+            let loc = Loc {
+                file: func.file.clone(),
+                line: func.instructions.last().map(|s| s.loc.line).unwrap_or(1),
+                text: "Missing RET statement".to_string(),
+            };
+            results.push(Self::fail_at(
+                func,
+                &loc,
+                format!("Function '{}' - Verify ENSURE postcondition", func.name),
+                PropertyCategory::Functional,
+                format!(
+                    "Function '{}' declares ENSURE contract but has no RET or RET_IF instruction!",
+                    func.name
+                ),
+                "Missing RET for ENSURE postcondition",
+            ));
             return results;
         }
 
         // 2. Hạ cấp toàn bộ hàm sang duy nhất 1 dải 4 vi lệnh IVL (Assign, Assume, Havoc, Assert)
-        let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
+        let has_loop = func
+            .instructions
+            .iter()
+            .any(|s| matches!(s.inst, Instruction::Loop(_)));
         let mut havoc_counter = 0usize;
         let ivl_stmts = Self::lower_slice(
             func,
@@ -996,14 +1081,12 @@ impl Verifier {
         results
     }
 
-    /// Alias cho `verify_function` nhằm tương thích ngược với các test case
-    #[inline]
-    pub fn verify_function_ivl(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
-        Self::verify_function(func, program)
-    }
-
     /// Thu thập các biến được định nghĩa bởi một instruction
-    fn collect_defined_vars(inst: &Instruction, ctx: &FunctionBufferContext, out: &mut HashSet<String>) {
+    fn collect_defined_vars(
+        inst: &Instruction,
+        ctx: &FunctionBufferContext,
+        out: &mut HashSet<String>,
+    ) {
         match inst {
             Instruction::AssignConst { dest, .. }
             | Instruction::Binary { dest, .. }
@@ -1020,13 +1103,31 @@ impl Verifier {
                     out.insert(format!("{}_len", clean));
                 }
             }
-            Instruction::Call { dest: Some(d), .. } | Instruction::Syscall { dest: Some(d), .. } => {
+            Instruction::Call { dest: Some(d), .. }
+            | Instruction::Syscall { dest: Some(d), .. } => {
                 out.insert(IvlLowerer::clean_name(d).to_string());
             }
             Instruction::Syscall { dest: None, .. } => {
                 out.insert("rax".to_string());
             }
             _ => {}
+        }
+    }
+
+    #[inline]
+    fn push_used_reg(r: &str, used_regs: &mut Vec<String>) {
+        let inner = if r.starts_with("len(") && r.ends_with(')') {
+            r[4..r.len() - 1].trim()
+        } else {
+            r
+        };
+        used_regs.push(IvlLowerer::clean_name(inner).to_string());
+    }
+
+    #[inline]
+    fn push_used_op(op: &Operand, used_regs: &mut Vec<String>) {
+        if let Operand::Reg(r) = op {
+            Self::push_used_reg(r, used_regs);
         }
     }
 
@@ -1043,80 +1144,71 @@ impl Verifier {
             | Instruction::Assert(e) => {
                 let mut expr_vars = HashSet::new();
                 Self::collect_vars(e, &mut expr_vars);
-                for v in expr_vars {
-                    used_regs.push(v);
-                }
+                used_regs.extend(expr_vars);
             }
             Instruction::Ensure(e) => {
                 let mut expr_vars = HashSet::new();
                 Self::collect_vars(e, &mut expr_vars);
-                for v in expr_vars {
-                    if !all_ret_vars.contains(&v) {
-                        used_regs.push(v);
-                    }
-                }
+                used_regs.extend(expr_vars.into_iter().filter(|v| !all_ret_vars.contains(v)));
             }
-            Instruction::Mov { src, .. } => used_regs.push(IvlLowerer::clean_name(src).to_string()),
-            Instruction::Not { src, .. } => {
-                if let Operand::Reg(r) = src {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
-                }
+            Instruction::Mov { src, .. }
+            | Instruction::StoreStr { buf: src, .. }
+            | Instruction::SlicePtr { slice: src, .. }
+            | Instruction::SliceLen { slice: src, .. }
+            | Instruction::BrIf { cond: src, .. }
+            | Instruction::BreakIf(src)
+            | Instruction::ContinueIf(src) => Self::push_used_reg(src, used_regs),
+            Instruction::Not { src, .. } | Instruction::Ret(Some(src)) => {
+                Self::push_used_op(src, used_regs);
             }
             Instruction::Binary { src1, src2, .. } => {
-                if let Operand::Reg(r) = src1 {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
-                }
-                if let Operand::Reg(r) = src2 {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
-                }
+                Self::push_used_op(src1, used_regs);
+                Self::push_used_op(src2, used_regs);
             }
-            Instruction::Store8 { buf, offset, val } | Instruction::Store64 { buf, offset, val } => {
-                used_regs.push(IvlLowerer::clean_name(buf).to_string());
-                if let Operand::Reg(r) = offset {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
-                }
-                if let Operand::Reg(r) = val {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
-                }
+            Instruction::Store8 { buf, offset, val }
+            | Instruction::Store64 { buf, offset, val } => {
+                Self::push_used_reg(buf, used_regs);
+                Self::push_used_op(offset, used_regs);
+                Self::push_used_op(val, used_regs);
             }
             Instruction::Load8 { buf, offset, .. } | Instruction::Load64 { buf, offset, .. } => {
-                used_regs.push(IvlLowerer::clean_name(buf).to_string());
-                if let Operand::Reg(r) = offset {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
-                }
-            }
-            Instruction::StoreStr { buf, .. } => {
-                used_regs.push(IvlLowerer::clean_name(buf).to_string());
-            }
-            Instruction::SlicePtr { slice, .. } | Instruction::SliceLen { slice, .. } => {
-                used_regs.push(IvlLowerer::clean_name(slice).to_string());
-            }
-            Instruction::BrIf { cond, .. }
-            | Instruction::BreakIf(cond)
-            | Instruction::ContinueIf(cond) => {
-                used_regs.push(IvlLowerer::clean_name(cond).to_string());
-            }
-            Instruction::Ret(Some(Operand::Reg(r))) => {
-                used_regs.push(IvlLowerer::clean_name(r).to_string())
+                Self::push_used_reg(buf, used_regs);
+                Self::push_used_op(offset, used_regs);
             }
             Instruction::RetIf { cond, val } => {
-                used_regs.push(IvlLowerer::clean_name(cond).to_string());
-                if let Some(Operand::Reg(r)) = val {
-                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                Self::push_used_reg(cond, used_regs);
+                if let Some(op) = val {
+                    Self::push_used_op(op, used_regs);
                 }
             }
             Instruction::Call { args, .. } => {
                 for a in args {
-                    if let Operand::Reg(r) = a {
-                        used_regs.push(IvlLowerer::clean_name(r).to_string());
-                    }
+                    Self::push_used_op(a, used_regs);
                 }
             }
-            Instruction::Syscall { rax, rdi, rsi, rdx, r10, r8, r9, .. } => {
-                for op in [Some(rax), Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()].into_iter().flatten() {
-                    if let Operand::Reg(r) = op {
-                        used_regs.push(IvlLowerer::clean_name(r).to_string());
-                    }
+            Instruction::Syscall {
+                rax,
+                rdi,
+                rsi,
+                rdx,
+                r10,
+                r8,
+                r9,
+                ..
+            } => {
+                for op in [
+                    Some(rax),
+                    Some(rdi),
+                    Some(rsi),
+                    Some(rdx),
+                    r10.as_ref(),
+                    r8.as_ref(),
+                    r9.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    Self::push_used_op(op, used_regs);
                 }
             }
             _ => {}
@@ -1124,7 +1216,10 @@ impl Verifier {
     }
 
     /// Phân tích Definite Assignment chuẩn xác qua duyệt luồng tiến (Forward Jump & Structured Loop)
-    fn check_definite_assignment_cfg(func: &Function, ctx: &FunctionBufferContext) -> Option<VerificationResult> {
+    fn check_definite_assignment_cfg(
+        func: &Function,
+        ctx: &FunctionBufferContext,
+    ) -> Option<VerificationResult> {
         let mut defined: HashSet<String> = func
             .params
             .iter()
@@ -1138,14 +1233,19 @@ impl Verifier {
             })
             .collect();
 
-        let mut all_ret_vars: HashSet<String> =
-            ["ret", "result", "res"].into_iter().map(String::from).collect();
+        let mut all_ret_vars: HashSet<String> = ["ret", "result", "res"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         if let Some(cr) = Self::find_canonical_ret_var(func) {
             all_ret_vars.insert(IvlLowerer::clean_name(&cr).to_string());
         }
         for s in &func.instructions {
             if let Instruction::Ret(Some(Operand::Reg(r)))
-            | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } = &s.inst
+            | Instruction::RetIf {
+                val: Some(Operand::Reg(r)),
+                ..
+            } = &s.inst
             {
                 all_ret_vars.insert(IvlLowerer::clean_name(r).to_string());
             }
@@ -1192,19 +1292,20 @@ impl Verifier {
             Self::collect_used_vars(&s_inst.inst, &all_ret_vars, &mut used_regs);
             for clean in used_regs {
                 if !defined.contains(&clean) {
-                    return Some(VerificationResult::Failed {
-                        goal_name: format!("Function '{}' - Line {}: SSA Definite Assignment", func.name, s_inst.loc.line),
-                        category: PropertyCategory::Safety,
-                        reason: format!("Variable '%{}' used before definition (not assigned on all execution paths)!", clean),
-                        counter_example: None,
-                        stack_trace: vec![StackFrame {
-                            file: func.file.clone(),
-                            line: s_inst.loc.line,
-                            function: func.name.clone(),
-                            snippet: s_inst.loc.text.clone(),
-                            role: format!("Use of undefined variable '%{}'", clean),
-                        }],
-                    });
+                    return Some(Self::fail_at(
+                        func,
+                        &s_inst.loc,
+                        format!(
+                            "Function '{}' - Line {}: SSA Definite Assignment",
+                            func.name, s_inst.loc.line
+                        ),
+                        PropertyCategory::Safety,
+                        format!(
+                            "Variable '%{}' used before definition (not assigned on all execution paths)!",
+                            clean
+                        ),
+                        format!("Use of undefined variable '%{}'", clean),
+                    ));
                 }
             }
 
@@ -1264,7 +1365,10 @@ impl Verifier {
         for s_inst in func.instructions.iter().rev() {
             match &s_inst.inst {
                 Instruction::Ret(Some(Operand::Reg(r)))
-                | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } => {
+                | Instruction::RetIf {
+                    val: Some(Operand::Reg(r)),
+                    ..
+                } => {
                     let clean = IvlLowerer::clean_name(r).to_string();
                     all_ret_regs.push(clean.clone());
                     if !param_names.contains(&clean) {
@@ -1329,7 +1433,9 @@ impl Verifier {
         query: &str,
         stack_trace: Vec<StackFrame>,
     ) -> VerificationResult {
-        let _spawn_guard = crate::codegen::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _spawn_guard = crate::codegen::SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Tìm binary z3: ưu tiên ~/.local/bin/z3 hoặc z3 trong PATH
         let home = std::env::var("HOME").unwrap_or_default();
         let local_z3 = format!("{}/.local/bin/z3", home);
@@ -1394,7 +1500,8 @@ impl Verifier {
                 counter_example: Some(stdout.to_string()),
                 stack_trace,
             }
-        } else if first_token == "unknown" || first_token == "timeout" || stdout.contains("timeout") {
+        } else if first_token == "unknown" || first_token == "timeout" || stdout.contains("timeout")
+        {
             VerificationResult::Unknown {
                 goal_name: goal_name.to_string(),
                 category,

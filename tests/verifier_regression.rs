@@ -1,10 +1,173 @@
+use light::ast::Program;
+use light::codegen::MachineCodeEmitter;
+use light::ivl::{IvlExpr, IvlLowerer};
 use light::parser::Parser;
+use light::vcgen::VcGen;
 use light::verifier::{PropertyCategory, VerificationResult, Verifier};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// ============================================================================
+// TEST HARNESS (ANTI-VACUOUS-PASS & ELF64 EXECUTION HELPERS)
+// ============================================================================
+
+fn parse_and_verify(code: &str, func_name: Option<&str>) -> (Program, Vec<VerificationResult>) {
+    let program =
+        Parser::parse(code).unwrap_or_else(|e| panic!("Parse error: {:?}\nCode:\n{}", e, code));
+    let func = match func_name {
+        Some(name) => program
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("Function '{}' not found", name)),
+        None => &program.functions[0],
+    };
+    let results = Verifier::verify_function(func, Some(&program));
+    (program, results)
+}
+
+/// Kiểm tra chặt chẽ (chống Pass Ảo):
+/// 1. Danh sách kết quả KHÔNG ĐƯỢC RỖNG (`!results.is_empty()`).
+/// 2. 100% goals phải là `VerificationResult::Verified` (không được có Failed, Unknown, hay SolverNotFound).
+/// 3. Nếu truyền `expected_goal_substr`, bắt buộc phải có ít nhất 1 goal khớp tên đó.
+fn assert_verified(
+    code: &str,
+    func_name: Option<&str>,
+    expected_goal_substr: Option<&str>,
+) -> Vec<VerificationResult> {
+    let (_, results) = parse_and_verify(code, func_name);
+    assert!(
+        !results.is_empty(),
+        "Vacuous pass detected! Verifier returned 0 verification goals for function {:?}!\nCode:\n{}",
+        func_name,
+        code
+    );
+    for r in &results {
+        assert!(
+            matches!(r, VerificationResult::Verified { .. }),
+            "Expected all goals to be Verified, but got failure/unknown: {:?}\nAll results: {:?}",
+            r,
+            results
+        );
+    }
+    if let Some(sub) = expected_goal_substr {
+        let has_goal = results.iter().any(
+            |r| matches!(r, VerificationResult::Verified { goal_name, .. } if goal_name.contains(sub)),
+        );
+        assert!(
+            has_goal,
+            "Expected Verified goal containing '{}', but got: {:?}",
+            sub, results
+        );
+    }
+    results
+}
+
+/// Kiểm tra chặt chẽ rằng hàm PHẢI BỊ BẮT LỖI (`VerificationResult::Failed`)
+/// đúng loại `expected_cat` và khớp chuỗi `expected_substr` (trong `goal_name` hoặc `reason`),
+/// đồng thời KHÔNG phải do lỗi cú pháp/sort của Z3 Solver!
+fn assert_failed(
+    code: &str,
+    func_name: Option<&str>,
+    expected_cat: Option<PropertyCategory>,
+    expected_substr: &str,
+) -> Vec<VerificationResult> {
+    let (_, results) = parse_and_verify(code, func_name);
+    for r in &results {
+        if let VerificationResult::Failed { reason, .. } = r {
+            assert!(
+                !reason.contains("Z3 solver error") && !reason.contains("Failed to spawn Z3"),
+                "Unexpected internal Z3 solver/syntax error: {}",
+                reason
+            );
+        }
+    }
+    let matched = results.iter().any(|r| match r {
+        VerificationResult::Failed {
+            category,
+            goal_name,
+            reason,
+            ..
+        } => {
+            expected_cat.map_or(true, |c| *category == c)
+                && (goal_name.contains(expected_substr) || reason.contains(expected_substr))
+        }
+        _ => false,
+    });
+    assert!(
+        matched,
+        "Expected VerificationResult::Failed (category: {:?}, matching '{}'), but got: {:?}",
+        expected_cat, expected_substr, results
+    );
+    results
+}
+
+/// Kiểm tra trường hợp Verifier trả về `VerificationResult::Unknown`
+fn assert_unknown(
+    code: &str,
+    func_name: Option<&str>,
+    expected_substr: &str,
+) -> Vec<VerificationResult> {
+    let (_, results) = parse_and_verify(code, func_name);
+    let matched = results.iter().any(|r| match r {
+        VerificationResult::Unknown {
+            goal_name, reason, ..
+        } => goal_name.contains(expected_substr) || reason.contains(expected_substr),
+        _ => false,
+    });
+    assert!(
+        matched,
+        "Expected VerificationResult::Unknown matching '{}', but got: {:?}",
+        expected_substr, results
+    );
+    results
+}
+
+/// Kiểm chứng toàn bộ các hàm trong chương trình (đảm bảo tổng số goals > 0 và 100% Verified),
+/// sau đó biên dịch AOT sang nhị phân Linux ELF64, thực thi và trả về exit code.
+fn verify_and_run_elf(code: &str, verify_first: bool) -> i32 {
+    static BIN_SEQ: AtomicUsize = AtomicUsize::new(0);
+    let program = Parser::parse(code).expect("Parse program for ELF execution");
+    if verify_first {
+        let mut total_goals = 0usize;
+        for func in &program.functions {
+            let results = Verifier::verify_function(func, Some(&program));
+            total_goals += results.len();
+            for r in &results {
+                assert!(
+                    matches!(r, VerificationResult::Verified { .. }),
+                    "Verification failed in function '{}': {:?}",
+                    func.name,
+                    r
+                );
+            }
+        }
+        assert!(
+            total_goals > 0,
+            "Vacuous verification before ELF execution: 0 goals generated across program!"
+        );
+    }
+
+    let mut emitter = MachineCodeEmitter::new();
+    emitter
+        .compile_for_elf(&program)
+        .expect("Compile AOT ELF64");
+    let seq = BIN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_bin = format!("/tmp/light_test_bin_{}_{}", std::process::id(), seq);
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 binary");
+    let status = std::process::Command::new(&tmp_bin)
+        .status()
+        .expect("Execute compiled ELF64 binary");
+    let _ = std::fs::remove_file(&tmp_bin);
+    status.code().expect("Process terminated by signal")
+}
+
+// ============================================================================
+// REGRESSION TESTS (V1 .. V112)
+// ============================================================================
 
 #[test]
 fn test_v1_inductive_step_mutation_step2_fails() {
-    // V1: Loop steps by 2 instead of 1 (%next_i = ADD %i 2)
-    // Invariant %i <= n must fail induction because when %i = n - 1, %next_i = n + 1 > n.
     let code = r#"
 FUNC sum_to_n(n: i64) -> i64
   REQUIRE n >= 0 && n <= 1000
@@ -23,28 +186,16 @@ FUNC sum_to_n(n: i64) -> i64
   RET %acc
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V1");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_inductive = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Inductive && goal_name.contains("Step 2: Inductive Step")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_inductive,
-        "V1 Mutation test failed: Verifier should have failed Step 2 Inductive Step for %i + 2 step! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Inductive),
+        "Step 2: Inductive Step",
     );
 }
 
 #[test]
 fn test_v2_accumulator_subtraction_invariant_fails() {
-    // V2: Loop subtracts 100 from %acc (%acc = SUB %acc 100)
-    // Invariant %acc >= 0 must fail inductive step because %next_acc can become negative.
     let code = r#"
 FUNC sum_to_n(n: i64) -> i64
   REQUIRE n >= 0 && n <= 1000
@@ -64,28 +215,16 @@ FUNC sum_to_n(n: i64) -> i64
   RET %acc
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V2");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_inductive = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Inductive && goal_name.contains("Step 2: Inductive Step")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_inductive,
-        "V2 Mutation test failed: Verifier should have failed Step 2 Inductive Step for subtracting 100 from %acc! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Inductive),
+        "Step 2: Inductive Step",
     );
 }
 
 #[test]
 fn test_v3_omitted_counter_update_termination_fails() {
-    // V3: Counter is never advanced (%i = MOV %next_i is omitted).
-    // DECREASES n - %i must fail Step 4b (strictly decreasing ranking function).
     let code = r#"
 FUNC sum_to_n(n: i64) -> i64
   REQUIRE n >= 0 && n <= 1000
@@ -98,34 +237,16 @@ FUNC sum_to_n(n: i64) -> i64
     BREAK_IF %done
     %next_i = ADD i64 %i 1
     %acc = ADD i64 %acc %next_i
-    # Omitted: %i = MOV %next_i
   END_LOOP sum_loop
   ENSURE %acc >= 0
   RET %acc
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V3");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_termination = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Termination && goal_name.contains("Step 4b")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_termination,
-        "V3 Mutation test failed: Verifier should have failed Step 4b (ranking strictly decreases) when %i is not updated! Got: {:?}",
-        results
-    );
+    assert_failed(code, None, Some(PropertyCategory::Termination), "Step 4b");
 }
 
 #[test]
 fn test_v4_inverted_ranking_function_fails() {
-    // V4: DECREASES %i in an increasing loop (%i grows from 0 to n).
-    // Ranking function strictly increases instead of decreasing, so Step 4b must fail.
     let code = r#"
 FUNC sum_to_n(n: i64) -> i64
   REQUIRE n >= 0 && n <= 1000
@@ -144,27 +265,11 @@ FUNC sum_to_n(n: i64) -> i64
   RET %acc
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V4");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_termination = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Termination && goal_name.contains("Step 4b")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_termination,
-        "V4 Mutation test failed: Verifier should have caught DECREASES %i strictly decreasing violation! Got: {:?}",
-        results
-    );
+    assert_failed(code, None, Some(PropertyCategory::Termination), "Step 4b");
 }
 
 #[test]
 fn test_v5_callsite_precondition_violation_fails() {
-    // V5: Caller passes argument violating callee REQUIRE precondition (passes 1005 when callee requires <= 1000)
     let code = r#"
 FUNC callee(x: i64) -> i64
   REQUIRE x >= 0 && x <= 1000
@@ -177,29 +282,16 @@ FUNC caller() -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V5");
-    let caller_fn = program.functions.iter().find(|f| f.name == "caller").unwrap();
-    let results = Verifier::verify_function(caller_fn, Some(&program));
-
-    let failed_safety = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Verify REQUIRE contract of 'callee'")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_safety,
-        "V5 Mutation test failed: Verifier should have rejected caller passing 1005 to callee(REQUIRE x <= 1000)! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        Some("caller"),
+        Some(PropertyCategory::Safety),
+        "Verify REQUIRE contract of 'callee'",
     );
 }
 
 #[test]
 fn test_v6_unsupported_instruction_in_loop_yields_unknown() {
-    // V6: An instruction unsupported by loop symbolic VCGen (e.g. SYSCALL) inside loop body
-    // Soundness guarantee: Verifier must return Unknown instead of reporting false Verified!
     let code = r#"
 FUNC loop_with_unsupported(n: i64) -> i64
   REQUIRE n >= 0
@@ -209,34 +301,17 @@ FUNC loop_with_unsupported(n: i64) -> i64
     %done = GTE i64 %i n
     BREAK_IF %done
     %next_i = ADD i64 %i 1
-    # Raw Syscall inside loop is not supported by symbolic transition extractor
     %res = SYSCALL 60 %next_i 0 0
     %i = MOV %next_i
   END_LOOP bad_loop
   RET %i
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V6");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let got_unknown = results.iter().any(|r| match r {
-        VerificationResult::Unknown { category, goal_name, .. } => {
-            *category == PropertyCategory::Inductive && goal_name.contains("Symbolic Loop Execution")
-        }
-        _ => false,
-    });
-
-    assert!(
-        got_unknown,
-        "V6 Soundness test failed: Unsupported loop instruction should yield VerificationResult::Unknown! Got: {:?}",
-        results
-    );
+    assert_unknown(code, None, "Symbolic Loop Execution");
 }
 
 #[test]
 fn test_v7_assert_false_fails() {
-    // V7: Explicit ASSERT false directive must fail verification
     let code = r#"
 FUNC check_assert() -> i64
   %a = CONST i64 5
@@ -244,27 +319,16 @@ FUNC check_assert() -> i64
   RET %a
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V7");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_assert = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_assert,
-        "V7 test failed: Verifier should have failed on violated ASSERT directive! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ASSERT directive",
     );
 }
 
 #[test]
 fn test_v8_memory_bounds_load8_out_of_bounds_fails() {
-    // V8: Accessing byte outside allocated buffer capacity must fail safety check
     let code = r#"
 FUNC check_oob() -> i64
   %buf = ALLOC slice<u8> 16
@@ -272,27 +336,16 @@ FUNC check_oob() -> i64
   RET %val
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V8");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_bounds = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_bounds,
-        "V8 test failed: Verifier should have caught out-of-bounds LOAD8 access! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 8-bit bounds check",
     );
 }
 
 #[test]
 fn test_v9_div_zero_dynamic_context_fails() {
-    // V9: Context-sensitive division by zero: divisor computed dynamically as 5 - 5 = 0
     let code = r#"
 FUNC check_div() -> i64
   %a = CONST i64 5
@@ -302,27 +355,16 @@ FUNC check_div() -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V9");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_div_zero = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Division-by-Zero safety")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_div_zero,
-        "V9 test failed: Context-sensitive division by zero should have been caught! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Division-by-Zero safety",
     );
 }
 
 #[test]
 fn test_v10_negative_constants_work_without_syntax_error() {
-    // V10: Negative integer constants formatted with bvneg in SMT without Z3 syntax errors
     let code = r#"
 FUNC check_negative(x: i64) -> i64
   REQUIRE x <= -50 && x >= -1000
@@ -331,25 +373,11 @@ FUNC check_negative(x: i64) -> i64
   RET %sub
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V10");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    // Ensure it verifies without syntax errors
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-
-    assert!(
-        all_passed,
-        "V10 test failed: Negative constants in SMT query caused failure: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v11_ssa_reassignment_vacuous_truth_prevention() {
-    // V11: Re-assigning variable %x in straightline code must NOT trigger vacuous truth (UNSAT)
-    // %x = 1, then %x = %x + 1 -> %x is now 2. ENSURE %x == 999 MUST FAIL.
-    // If vacuous truth bug was present, 1 = 2 would be UNSAT and ENSURE 999 would falsely PASS.
     let code = r#"
 FUNC check_vacuous() -> i64
   %x = CONST i64 1
@@ -358,29 +386,16 @@ FUNC check_vacuous() -> i64
   RET %x
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V11");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_ensure = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE postcondition")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_ensure,
-        "V11 Vacuous Truth test failed: Verifier should have rejected ENSURE %x == 999 under SSA renaming! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ENSURE postcondition",
     );
 }
 
 #[test]
 fn test_v12_in_loop_out_of_bounds_fails() {
-    // V12: In-loop safety checks must havoc loop-modified variables at loop entry.
-    // Buffer has size 8, but loop counter progresses up to 10.
-    // Verifier must detect potential out-of-bounds access across loop iterations!
     let code = r#"
 FUNC test_loop_oob() -> i64
   ALLOC %buf 8
@@ -397,29 +412,16 @@ FUNC test_loop_oob() -> i64
   RET 0
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V12");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_bounds = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check on '%buf'")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_bounds,
-        "V12 test failed: Verifier should have caught in-loop buffer overflow on %buf (capacity 8, offset up to 9)! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 8-bit bounds check on '%buf'",
     );
 }
 
 #[test]
 fn test_v13_forward_jump_label_branching() {
-    // V13: Forward JUMP skipping in emit_symbolic_prefix.
-    // When BR_IF is not taken (false), fallthrough path jumps over the taken block.
-    // %res must remain 100, not overwritten by 200 in the skipped branch.
     let code = r#"
 FUNC test_branch() -> i64
   %cond = CONST bool false
@@ -433,28 +435,11 @@ FUNC test_branch() -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V13");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let passed_assert = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
-        }
-        _ => false,
-    });
-
-    assert!(
-        passed_assert,
-        "V13 test failed: Forward jump skipping failed; ASSERT %res == 100 should verify! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v14_multibreak_loop_ite_merge() {
-    // V14: Multi-break loop state merging using nested ite.
-    // If loop has multiple BREAK_IF points, exit step merges states with ite.
     let code = r#"
 FUNC test_multibreak(mode: i64) -> i64
   REQUIRE mode >= 0 && mode <= 1
@@ -471,28 +456,11 @@ FUNC test_multibreak(mode: i64) -> i64
   RET %val
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V14");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let passed_exit = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
-        }
-        _ => false,
-    });
-
-    assert!(
-        passed_exit,
-        "V14 test failed: Multi-break merging should verify ENSURE %val >= 10 && %val <= 20! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v15_loop_invariant_constant_preservation() {
-    // V15: Pre-loop constants and slice lengths are preserved into Step 3 (Exit Step).
-    // Constant %limit is defined before loop, used in loop invariant and ENSURE postcondition.
     let code = r#"
 FUNC test_const_preservation(n: i64) -> i64
   REQUIRE n >= 0 && n <= 100
@@ -510,29 +478,11 @@ FUNC test_const_preservation(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V15");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let passed_exit = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
-        }
-        _ => false,
-    });
-
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-
-    assert!(
-        passed_exit && all_passed,
-        "V15 test failed: Pre-loop constant %limit should be preserved in Step 3 Exit Step! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v16_early_return_violating_ensure_fails() {
-    // V16: RET_IF path returning a negative value must fail ENSURE %res > 0
     let code = r#"
 FUNC abs_bad(x: i64) -> i64
   ENSURE %res > 0
@@ -543,28 +493,16 @@ FUNC abs_bad(x: i64) -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V16");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_early_ret = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("early return (RET_IF)")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_early_ret,
-        "V16 test failed: Early return with negative value should have failed ENSURE! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "early return (RET_IF)",
     );
 }
 
 #[test]
 fn test_v17_branching_join_phi_node_soundness() {
-    // V17: If then branch sets %x = -999 and else branch sets %x = 10,
-    // post-join ASSERT %x > 0 must FAIL because the condition can be true!
     let code = r#"
 FUNC test_join(cond: bool) -> i64
   BR_IF cond .then_branch
@@ -577,28 +515,16 @@ FUNC test_join(cond: bool) -> i64
   RET %x
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V17");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_assert = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_assert,
-        "V17 test failed: Phi-node join should expose then-branch %x = -999 and fail ASSERT %x > 0! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ASSERT directive",
     );
 }
 
 #[test]
 fn test_v18_loop_without_invariant_fails_exit_step() {
-    // V18: Loop without INVARIANT cannot prove postcondition ENSURE %i == 10
-    // Because without an invariant, %i at exit cannot be proven to equal 10.
     let code = r#"
 FUNC loop_no_inv() -> i64
   %i = CONST i64 0
@@ -612,27 +538,16 @@ FUNC loop_no_inv() -> i64
   RET %i
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V18");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_exit = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_exit,
-        "V18 test failed: Loop without INVARIANT should not be able to prove ENSURE %i == 10! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Step 3: Exit Step",
     );
 }
 
 #[test]
 fn test_v19_bool_sort_in_contracts() {
-    // V19: Bare boolean/flag variables in ASSERT, REQUIRE, and !%var should work without Z3 sort errors
     let code = r#"
 FUNC test_bool_contract(flag: bool) -> i64
   REQUIRE flag
@@ -642,42 +557,30 @@ FUNC test_bool_contract(flag: bool) -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V19");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-
-    assert!(
-        all_passed,
-        "V19 test failed: Boolean sort in contracts caused solver failure! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v20_parser_operator_precedence_and_unary_minus() {
-    // V20: Expressions like %x - -5 and a - b + c and %x * %y
+    let vc = VcGen::new();
     let expr1 = Parser::parse_expr("%x - -5", 1).expect("parse expr1");
-    let vc = light::vcgen::VcGen::new();
-    let smt1 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr1));
-    assert_eq!(smt1, "(bvsub x (bvneg (_ bv5 64)))");
+    assert_eq!(
+        vc.expr_to_bv(&IvlExpr::from(&expr1)),
+        "(bvsub x (bvneg (_ bv5 64)))"
+    );
 
     let expr2 = Parser::parse_expr("10 - 5 + 2", 1).expect("parse expr2");
-    let smt2 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr2));
-    // Left-associative: (10 - 5) + 2
-    assert_eq!(smt2, "(bvadd (bvsub (_ bv10 64) (_ bv5 64)) (_ bv2 64))");
+    assert_eq!(
+        vc.expr_to_bv(&IvlExpr::from(&expr2)),
+        "(bvadd (bvsub (_ bv10 64) (_ bv5 64)) (_ bv2 64))"
+    );
 
     let expr3 = Parser::parse_expr("%x * %y", 1).expect("parse expr3");
-    let smt3 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr3));
-    assert_eq!(smt3, "(bvmul x y)");
+    assert_eq!(vc.expr_to_bv(&IvlExpr::from(&expr3)), "(bvmul x y)");
 }
 
 #[test]
 fn test_v21_post_loop_safety_out_of_bounds_fails() {
-    // V21: Post-loop safety checks (find_loops_before).
-    // Buffer has capacity 10, loop progresses %i to 15.
-    // Memory access on %buf with %i AFTER END_LOOP must fail!
     let code = r#"
 FUNC test_post_loop_oob() -> i64
   ALLOC %buf 10
@@ -694,28 +597,16 @@ FUNC test_post_loop_oob() -> i64
   RET %x
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V21");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_bounds = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check on '%buf'")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_bounds,
-        "V21 test failed: Post-loop out-of-bounds on %buf (capacity 10, %i == 15) must be caught! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 8-bit bounds check on '%buf'",
     );
 }
 
 #[test]
 fn test_v22_mid_ret_violating_ensure_fails() {
-    // V22: Mid-function RET must be verified against ENSURE postcondition.
-    // If %cond is true, returning -1 violates ENSURE %res >= 0.
     let code = r#"
 FUNC test_mid_ret(x: i64) -> i64
   %cond = LT i64 x 0
@@ -728,27 +619,16 @@ FUNC test_mid_ret(x: i64) -> i64
   ENSURE %res >= 0
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V22");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_ret = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE on branch return (RET)")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_ret,
-        "V22 test failed: Mid-function RET with bad postcondition (-1 >= 0) must fail! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ENSURE on branch return (RET)",
     );
 }
 
 #[test]
 fn test_v23_branch_before_ret_does_not_pollute_later_labels() {
-    // V23: Path terminated by RET must not merge dead state into following LABEL
     let code = r#"
 FUNC test_dead_path(c: bool) -> i64
   BR_IF c .branch_true
@@ -760,29 +640,11 @@ FUNC test_dead_path(c: bool) -> i64
   RET %res2
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V23");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let passed_assert = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
-        }
-        _ => false,
-    });
-
-    assert!(
-        passed_assert,
-        "V23 test failed: Label .branch_true after RET should verify independently! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v24_in_loop_branching_phi_node() {
-    // V24: Loop transition with inner branching (BR_IF + JUMP + LABEL).
-    // In each iteration, if %even is true, %acc is incremented by 2, else by 1.
-    // Invariant %acc >= %i preserved inductively.
     let code = r#"
 FUNC test_loop_branching(n: i64) -> i64
   REQUIRE n >= 0 && n <= 1000
@@ -806,27 +668,11 @@ FUNC test_loop_branching(n: i64) -> i64
   RET %acc
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V24");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let inductive_passed = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Inductive && goal_name.contains("Step 2: Inductive Step")
-        }
-        _ => false,
-    });
-
-    assert!(
-        inductive_passed,
-        "V24 test failed: In-loop branch Phi-node inductive step must PASS! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Step 2: Inductive Step"));
 }
 
 #[test]
 fn test_v25_call_with_constant_args_propagates_ensure() {
-    // V25: CALL with constant arguments (Operand::Const) substitutes callee params correctly in ENSURE
     let code = r#"
 FUNC square(x: i64) -> i64
   REQUIRE x >= 0
@@ -841,40 +687,27 @@ FUNC caller() -> i64
   RET %val
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V25");
-    let results = Verifier::verify_function(&program.functions[1], Some(&program));
-
-    let assert_passed = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
-        }
-        _ => false,
-    });
-
-    assert!(
-        assert_passed,
-        "V25 test failed: CALL with constant argument 5 must propagate ENSURE %sq >= 0 to ASSERT %val >= 0! Got: {:?}",
-        results
-    );
+    assert_verified(code, Some("caller"), Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v26_parenthesized_expressions_in_contracts() {
-    // V26: Complex parenthesized expressions parsed with proper precedence
+    let vc = VcGen::new();
     let expr1 = Parser::parse_expr("(%a + %b) * 2 == %res", 1).expect("parse expr1");
-    let vc = light::vcgen::VcGen::new();
-    let smt1 = vc.expr_to_bool(&light::ivl::IvlExpr::from(&expr1));
-    assert_eq!(smt1, "(= (bvmul (bvadd a b) (_ bv2 64)) res)");
+    assert_eq!(
+        vc.expr_to_bool(&IvlExpr::from(&expr1)),
+        "(= (bvmul (bvadd a b) (_ bv2 64)) res)"
+    );
 
     let expr2 = Parser::parse_expr("(%x > 0 && %y > 0) || %z == 0", 1).expect("parse expr2");
-    let smt2_bool = vc.expr_to_bool(&light::ivl::IvlExpr::from(&expr2));
-    assert_eq!(smt2_bool, "(or (and (bvsgt x (_ bv0 64)) (bvsgt y (_ bv0 64))) (= z (_ bv0 64)))");
+    assert_eq!(
+        vc.expr_to_bool(&IvlExpr::from(&expr2)),
+        "(or (and (bvsgt x (_ bv0 64)) (bvsgt y (_ bv0 64))) (= z (_ bv0 64)))"
+    );
 }
 
 #[test]
 fn test_v27_post_loop_break_state_restored_accurately() {
-    // V27: Post-loop state must match the state at BREAK_IF, not the over-stepped state
     let code = r#"
 FUNC test_post_loop_exact() -> i64
   %i = CONST i64 0
@@ -890,27 +723,11 @@ FUNC test_post_loop_exact() -> i64
   RET %i
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V27");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let assert_passed = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ASSERT directive")
-        }
-        _ => false,
-    });
-
-    assert!(
-        assert_passed,
-        "V27 test failed: ASSERT %i == 10 after loop must PASS! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v28_loop_with_early_ret_if_verified_against_ensure() {
-    // V28: A function with both LOOP and RET_IF must verify RET_IF against ENSURE
     let code = r#"
 FUNC search_or_default(n: i64) -> i64
   %bad = LT i64 n 0
@@ -929,27 +746,16 @@ FUNC search_or_default(n: i64) -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V28");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let failed_early_ret = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE on early return (RET_IF)")
-        }
-        _ => false,
-    });
-
-    assert!(
-        failed_early_ret,
-        "V28 test failed: Early return RET_IF with -1 in a loop function must fail ENSURE %res >= 0! Got: {:?}",
-        results
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ENSURE on early return (RET_IF)",
     );
 }
 
 #[test]
 fn test_v29_early_ret_value_aliased_to_canonical_ret_var() {
-    // V29: RET_IF returning %zero is aliased to canonical %ret in ENSURE %ret >= 0
     let code = r#"
 FUNC check_nonneg(x: i64) -> i64
   %is_neg = LT i64 x 0
@@ -960,22 +766,11 @@ FUNC check_nonneg(x: i64) -> i64
   RET %ret
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V29");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-
-    assert!(
-        all_passed,
-        "V29 test failed: RET_IF returning %zero must satisfy ENSURE %ret >= 0! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("early return (RET_IF)"));
 }
 
 #[test]
 fn test_v30_pre_loop_binary_expression_preserved_in_contracts() {
-    // V30: Pre-loop binary expressions (ADD, SUB) preserved into loop exit and inductive step
     let code = r#"
 FUNC test_pre_loop_binop(n: i64) -> i64
   REQUIRE n >= 0 && n <= 100
@@ -993,40 +788,27 @@ FUNC test_pre_loop_binop(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V30");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let passed_exit = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Step 3: Exit Step")
-        }
-        _ => false,
-    });
-
-    assert!(
-        passed_exit,
-        "V30 test failed: Pre-loop %limit = ADD n 10 must be preserved into Exit Step! Got: {:?}",
-        results
-    );
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v31_unary_minus_expressions_parsed_as_subtraction() {
-    // V31: Unary minus (-%a, -(%a + %b)) parsed as (0 - expr)
+    let vc = VcGen::new();
     let expr1 = Parser::parse_expr("-%a", 1).expect("parse -%a");
-    let vc = light::vcgen::VcGen::new();
-    let smt1 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr1));
-    assert_eq!(smt1, "(bvsub (_ bv0 64) a)");
+    assert_eq!(
+        vc.expr_to_bv(&IvlExpr::from(&expr1)),
+        "(bvsub (_ bv0 64) a)"
+    );
 
     let expr2 = Parser::parse_expr("-(%a + %b)", 1).expect("parse -(%a + %b)");
-    let smt2 = vc.expr_to_bv(&light::ivl::IvlExpr::from(&expr2));
-    assert_eq!(smt2, "(bvsub (_ bv0 64) (bvadd a b))");
+    assert_eq!(
+        vc.expr_to_bv(&IvlExpr::from(&expr2)),
+        "(bvsub (_ bv0 64) (bvadd a b))"
+    );
 }
 
 #[test]
 fn test_v32_both_branches_end_in_ret() {
-    // V32: Function where both if and else branches end in RET
     let code = r#"
 FUNC max_val(a: i64, b: i64) -> i64
   %cmp = GT i64 a b
@@ -1039,33 +821,12 @@ FUNC max_val(a: i64, b: i64) -> i64
   RET %res
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V32");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-
-    let mid_ret_passed = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE on branch return (RET)")
-        }
-        _ => false,
-    });
-    let final_ret_passed = results.iter().any(|r| match r {
-        VerificationResult::Verified { goal_name, category } => {
-            *category == PropertyCategory::Functional && goal_name.contains("Verify ENSURE postcondition")
-        }
-        _ => false,
-    });
-
-    assert!(
-        mid_ret_passed && final_ret_passed,
-        "V32 test failed: Both branch RETs must verify against ENSURE! Got: {:?}",
-        results
-    );
+    let results = assert_verified(code, None, Some("Verify ENSURE on branch return (RET)"));
+    assert_eq!(results.len(), 2);
 }
 
 #[test]
 fn test_v33_pre_loop_intermediate_binary_chain() {
-    // V33: Chained binary operations before loop with intermediate variables
     let code = r#"
 FUNC loop_with_pre_chain(n: i64) -> i64
   REQUIRE n >= 0 && n <= 10
@@ -1085,15 +846,11 @@ FUNC loop_with_pre_chain(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V33");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V33 test failed: Intermediate pre-loop binary chain must verify all loop steps! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v34_loop_with_continue_if_verifies() {
-    // V34: Loop containing CONTINUE_IF verified inductively without unsupported error
     let code = r#"
 FUNC loop_with_continue(n: i64) -> i64
   REQUIRE n >= 0 && n <= 10
@@ -1111,31 +868,28 @@ FUNC loop_with_continue(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V34");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V34 test failed: CONTINUE_IF in loop must be supported and verify! Got: {:?}", results);
+    assert_verified(code, None, Some("CONTINUE_IF"));
 }
 
 #[test]
 fn test_v35_subst_expr_vars_len_preserves_length() {
-    // V35: subst_expr_map directly maps IvlExpr::Len to {arr}_len without fabricating invalid names
-    let mut map = std::collections::HashMap::new();
-    map.insert("buf_len".to_string(), light::ivl::IvlExpr::Var("buf_length_val".to_string()));
-    map.insert("buf".to_string(), light::ivl::IvlExpr::Var("buf_ptr_v0".to_string()));
+    let mut map = HashMap::new();
+    map.insert(
+        "buf_len".to_string(),
+        IvlExpr::Var("buf_length_val".to_string()),
+    );
+    map.insert("buf".to_string(), IvlExpr::Var("buf_ptr_v0".to_string()));
 
-    let expr = light::ivl::IvlExpr::Len("buf".to_string());
-    let substituted = light::ivl::IvlLowerer::subst_expr_map(&expr, &map);
-    assert_eq!(substituted, light::ivl::IvlExpr::Var("buf_length_val".to_string()));
+    let expr = IvlExpr::Len("buf".to_string());
+    let substituted = IvlLowerer::subst_expr_map(&expr, &map);
+    assert_eq!(substituted, IvlExpr::Var("buf_length_val".to_string()));
 
-    let vc = light::vcgen::VcGen::new();
-    let smt = vc.expr_to_bv(&substituted);
-    assert_eq!(smt, "buf_length_val");
+    let vc = VcGen::new();
+    assert_eq!(vc.expr_to_bv(&substituted), "buf_length_val");
 }
 
 #[test]
 fn test_v36_both_branches_different_ret_registers_straightline() {
-    // V36: Both branches return different registers and ENSURE references canonical %ret
     let code = r#"
 FUNC max_simple(a: i64, b: i64) -> i64
   ENSURE %ret >= a && %ret >= b
@@ -1148,15 +902,12 @@ FUNC max_simple(a: i64, b: i64) -> i64
   RET %ret
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V36");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V36 test failed: Branches with different RET registers must verify against ENSURE %ret! Got: {:?}", results);
+    let results = assert_verified(code, None, Some("Verify ENSURE postcondition"));
+    assert_eq!(results.len(), 2);
 }
 
 #[test]
 fn test_v37_post_loop_slicelen_and_load8() {
-    // V37: SLICE_LEN and LOAD8 executed post-loop correctly tracked in Exit Step
     let code = r#"
 FUNC post_loop_memory() -> i64
   %buf = ALLOC slice<u8> 10
@@ -1176,15 +927,11 @@ FUNC post_loop_memory() -> i64
   RET %len
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V37");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V37 test failed: Post-loop SLICE_LEN and LOAD8 must be tracked in Exit Step! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v38_straightline_with_const_ret() {
-    // V38: Straightline function returning immediate constant 0 satisfies ENSURE %ret == 0
     let code = r#"
 FUNC returns_zero(x: i64) -> i64
   REQUIRE x >= 0
@@ -1192,15 +939,11 @@ FUNC returns_zero(x: i64) -> i64
   RET 0
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V38");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V38 test failed: Function returning constant 0 must satisfy ENSURE %ret == 0! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_ivl_verify_function_end_to_end() {
-    // Kiểm chứng end-to-end sử dụng kiến trúc mới: IvlLowerer + Universal VcGen (Boogie architecture)
     let code = r#"
 FUNC abs_val(x: i64) -> i64
   REQUIRE x >= 0
@@ -1210,100 +953,8 @@ FUNC abs_val(x: i64) -> i64
   RET %half
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse IVL test");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
+    let results = assert_verified(code, None, Some("Verify ENSURE postcondition"));
     assert_eq!(results.len(), 2);
-    // Goal 1: Division-by-zero on %two (2 != 0) -> Verified!
-    assert!(matches!(results[0], VerificationResult::Verified { .. }));
-    // Goal 2: ENSURE %ret >= 0 -> Verified!
-    assert!(matches!(results[1], VerificationResult::Verified { .. }));
-}
-
-#[test]
-fn test_ivl_on_real_memory_bounds_v8() {
-    // Chạy trực tiếp V8 trên động cơ mới verify_function_ivl
-    let code = r#"
-FUNC check_oob() -> i64
-  %buf = ALLOC slice<u8> 16
-  %val = LOAD8 %buf 20
-  RET %val
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V8");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let failed = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check")
-        }
-        _ => false,
-    });
-    assert!(failed, "IVL Engine phải bắt được lỗi tràn bộ đệm LOAD8 ở offset 20! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_real_division_by_zero_v9() {
-    // Chạy trực tiếp V9 (5 - 5 = 0) trên động cơ mới verify_function_ivl
-    let code = r#"
-FUNC check_div() -> i64
-  %a = CONST i64 5
-  %b = CONST i64 5
-  %denom = SUB i64 %a %b
-  %res = DIV i64 100 %denom
-  RET %res
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V9");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let failed = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Division-by-Zero safety")
-        }
-        _ => false,
-    });
-    assert!(failed, "IVL Engine phải bắt được lỗi chia cho 0 ngữ cảnh động! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_real_early_return_violation_v16() {
-    // Chạy trực tiếp V16 (RET_IF trả về số âm vi phạm ENSURE) trên động cơ mới verify_function_ivl
-    let code = r#"
-FUNC abs_bad(x: i64) -> i64
-  ENSURE %res > 0
-  %is_neg = LT i64 x 0
-  %res = MOV x
-  RET_IF %is_neg %res
-  %res = ADD i64 x 1
-  RET %res
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V16");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let failed = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Functional && goal_name.contains("early return (RET_IF)")
-        }
-        _ => false,
-    });
-    assert!(failed, "IVL Engine phải bắt được lỗi RET_IF trả về giá trị âm! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_real_early_return_success_v29() {
-    // Chạy trực tiếp V29 (RET_IF trả về %zero thỏa mãn ENSURE %ret >= 0) trên động cơ mới verify_function_ivl
-    let code = r#"
-FUNC check_nonneg(x: i64) -> i64
-  %is_neg = LT i64 x 0
-  %zero = CONST i64 0
-  RET_IF %is_neg %zero
-  %ret = MOV x
-  ENSURE %ret >= 0
-  RET %ret
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V29");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "IVL Engine phải VERIFY thành công hàm check_nonneg với RET_IF! Got: {:?}", results);
 }
 
 #[test]
@@ -1326,196 +977,12 @@ FUNC sum_to_n(n: i64) -> i64
     RET %s
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse loop test");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    assert_eq!(results.len(), 7, "Cần có đủ 7 goals: 2 x Step 1, 2 x Step 2, Step 4a, Step 4b, Step 3. Got: {:?}", results);
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "IVL Engine phải kiểm chứng thành công cả 5 bước Hoare Logic của LOOP! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_real_in_loop_oob_v12() {
-    // V12 chạy trên verify_function_ivl: bắt lỗi ghi ngoài biên bên trong vòng lặp!
-    let code = r#"
-FUNC test_loop_oob() -> i64
-  ALLOC %buf 8
-  %i = CONST i64 0
-  LOOP l1
-    INVARIANT %i >= 0 && %i <= 10
-    DECREASES 10 - %i
-    %done = GTE i64 %i 10
-    BREAK_IF %done
-    STORE8 %buf %i 42
-    %next_i = ADD i64 %i 1
-    %i = MOV %next_i
-  END_LOOP l1
-  RET 0
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V12");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let failed_bounds = results.iter().any(|r| match r {
-        VerificationResult::Failed { category, goal_name, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check")
-        }
-        _ => false,
-    });
-    assert!(failed_bounds, "IVL Engine phải bắt được lỗi tràn bộ nhớ STORE8 trong thân vòng lặp! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_real_unsupported_in_loop_v6() {
-    // V6 chạy trên verify_function_ivl: lệnh không hỗ trợ trong vòng lặp phải trả về Unknown!
-    let code = r#"
-FUNC loop_with_unsupported(n: i64) -> i64
-  REQUIRE n >= 0
-  %i = CONST i64 0
-  LOOP bad_loop
-    INVARIANT %i >= 0
-    %done = GTE i64 %i n
-    BREAK_IF %done
-    %r = SYSCALL 1 1 0 0
-    %i = ADD i64 %i 1
-  END_LOOP bad_loop
-  RET %i
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V6");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let has_unknown = results.iter().any(|r| matches!(r, VerificationResult::Unknown { .. }));
-    assert!(has_unknown, "IVL Engine phải trả về Unknown khi có SYSCALL trong thân vòng lặp! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_v13_branching() {
-    let code = r#"
-FUNC test_branch() -> i64
-  %cond = CONST bool false
-  BR_IF %cond .then_branch
-  %res = CONST i64 100
-  JUMP .end_branch
-  LABEL .then_branch
-  %res = CONST i64 200
-  LABEL .end_branch
-  ASSERT %res == 100
-  RET %res
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V13");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V13 trên IVL phải PASS! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_v17_join_phi() {
-    let code = r#"
-FUNC test_join(cond: bool) -> i64
-  BR_IF cond .then_branch
-  %x = CONST i64 10
-  JUMP .join
-  LABEL .then_branch
-  %x = CONST i64 -999
-  LABEL .join
-  ASSERT %x > 0
-  RET %x
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V17");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
-    assert!(failed, "V17 trên IVL phải bắt được lỗi x=-999! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_v22_mid_ret() {
-    let code = r#"
-FUNC test_mid_ret(x: i64) -> i64
-  %cond = LT i64 x 0
-  BR_IF %cond .neg_branch
-  %res = CONST i64 100
-  RET %res
-  LABEL .neg_branch
-  %bad_res = CONST i64 -1
-  RET %bad_res
-  ENSURE %res >= 0
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V22");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
-    assert!(failed, "V22 trên IVL phải bắt được lỗi RET -1! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_v32_both_branches_end_in_ret() {
-    let code = r#"
-FUNC max_val(a: i64, b: i64) -> i64
-  %cmp = GT i64 a b
-  BR_IF %cmp .is_a
-  %res1 = MOV b
-  ENSURE %res >= a && %res >= b
-  RET %res1
-  LABEL .is_a
-  %res = MOV a
-  RET %res
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V32");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V32 trên IVL phải PASS! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_v36_both_branches_diff_ret() {
-    let code = r#"
-FUNC max_simple(a: i64, b: i64) -> i64
-  ENSURE %ret >= a && %ret >= b
-  %gt = GT i64 a b
-  BR_IF %gt .is_a
-  %b_val = MOV b
-  RET %b_val
-  LABEL .is_a
-  %ret = MOV a
-  RET %ret
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V36");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V36 trên IVL phải PASS! Got: {:?}", results);
-}
-
-#[test]
-fn test_ivl_on_v24_in_loop_branching() {
-    let code = r#"
-FUNC test_loop_branching(n: i64) -> i64
-  REQUIRE n >= 0 && n <= 1000
-  %i = CONST i64 0
-  %acc = CONST i64 0
-  LOOP branch_loop
-    INVARIANT %i >= 0 && %i <= n && %acc >= %i && %acc <= %i * 2
-    DECREASES n - %i
-    %done = GTE i64 %i n
-    BREAK_IF %done
-    %rem = MOD i64 %i 2
-    %even = EQ i64 %rem 0
-    BR_IF %even .is_even
-    %acc = ADD i64 %acc 1
-    JUMP .join
-    LABEL .is_even
-    %acc = ADD i64 %acc 2
-    LABEL .join
-    %i = ADD i64 %i 1
-  END_LOOP branch_loop
-  RET %acc
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V24");
-    let results = Verifier::verify_function_ivl(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V24 trên IVL phải PASS! Got: {:?}", results);
+    let results = assert_verified(code, None, Some("Step 3: Exit Step"));
+    assert_eq!(
+        results.len(),
+        7,
+        "Cần có đủ 7 goals: 2 x Step 1, 2 x Step 2, Step 4a, Step 4b, Step 3"
+    );
 }
 
 #[test]
@@ -1527,10 +994,12 @@ FUNC div_overflow(x: i64, y: i64) -> i64
   RET %ans
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V39");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_div_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, category, .. } if *category == PropertyCategory::Safety && goal_name.contains("Division-by-Zero safety")));
-    assert!(has_div_fail, "Phải phát hiện lỗi tràn số i64::MIN / -1! Got: {:?}", results);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Division-by-Zero safety",
+    );
 }
 
 #[test]
@@ -1542,10 +1011,7 @@ FUNC check_unsat_name(x: i64) -> i64
   RET %is_unsat
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V40");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_assert_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
-    assert!(has_assert_fail, "ASSERT sai với biến tên '%is_unsat' phải BÁO LỖI (Failed), không được nhầm thành Verified! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Functional), "ASSERT");
 }
 
 #[test]
@@ -1560,10 +1026,12 @@ FUNC caller() -> i64
   RET %res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V41");
-    let results = Verifier::verify_function(&program.functions[1], Some(&program));
-    let has_def_assign_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("SSA Definite Assignment")));
-    assert!(has_def_assign_fail, "Tham số chưa khởi tạo truyền vào CALL phải bị bắt lỗi Definite Assignment! Got: {:?}", results);
+    assert_failed(
+        code,
+        Some("caller"),
+        Some(PropertyCategory::Safety),
+        "SSA Definite Assignment",
+    );
 }
 
 #[test]
@@ -1587,10 +1055,7 @@ FUNC loop_memory_mutation(n: i64) -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V42");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
-    assert!(has_fail, "Sau loop làm biến đổi %buf, ASSERT %val == 42 phải FAIL vì bộ nhớ đã bị havoc! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Functional), "ASSERT");
 }
 
 #[test]
@@ -1608,10 +1073,7 @@ FUNC min_val(a: i64) -> i64
   RET %x
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V43");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
-    assert!(has_fail, "ASSERT sai sau điểm join không được pass do vacuous truth! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Functional), "ASSERT");
 }
 
 #[test]
@@ -1625,10 +1087,7 @@ FUNC test_load8_vacuous() -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V44");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
-    assert!(has_fail, "STORE8 -1 sau đó LOAD8 không được gây Vacuous Truth làm ASSERT %val == 0 bị pass! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Functional), "ASSERT");
 }
 
 #[test]
@@ -1648,10 +1107,7 @@ FUNC test_branch_mem(cond: i64) -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V45");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("ASSERT")));
-    assert!(has_fail, "ASSERT %val == 20 phải FAIL vì khi cond <= 0, %buf[0] == 10! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Functional), "ASSERT");
 }
 
 #[test]
@@ -1680,10 +1136,7 @@ FUNC two_loops(n: i64) -> i64
   RET %j
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V46");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_fail = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Step 1")));
-    assert!(has_fail, "Vòng lặp thứ 2 có invariant sai (%j >= 100 khi %j == 0) phải bị phát hiện ở Step 1! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Inductive), "Step 1");
 }
 
 #[test]
@@ -1700,10 +1153,12 @@ FUNC test_bad_calls() -> i64
   RET %r1
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V47");
-    let results = Verifier::verify_function(&program.functions[1], Some(&program));
-    let has_mismatch = results.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Call argument count mismatch")));
-    assert!(has_mismatch, "Gọi hàm thừa tham số phải bị bắt lỗi Safety! Got: {:?}", results);
+    assert_failed(
+        code,
+        Some("test_bad_calls"),
+        Some(PropertyCategory::Safety),
+        "Call argument count mismatch",
+    );
 }
 
 #[test]
@@ -1714,10 +1169,7 @@ FUNC no_ret_func(x: i64) -> i64
   %y = ADD i64 x 1
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V48");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_no_ret = results.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("has no RET")));
-    assert!(has_no_ret, "Hàm có ENSURE nhưng không có RET phải bị đánh dấu FAILED! Got: {:?}", results);
+    assert_failed(code, None, Some(PropertyCategory::Functional), "has no RET");
 }
 
 #[test]
@@ -1735,10 +1187,7 @@ FUNC one_branch_mem(cond: i64) -> i64
   RET cond
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V49");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let no_z3_error = results.iter().all(|r| !matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Z3 solver error") || reason.contains("sort")));
-    assert!(no_z3_error, "Z3 không được báo sort error khi chỉ 1 nhánh sửa đổi bộ nhớ! Got: {:?}", results);
+    assert_verified(code, None, Some("Memory 8-bit bounds check on '%buf'"));
 }
 
 #[test]
@@ -1765,10 +1214,7 @@ FUNC nested_loops_test(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V50");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Vòng lặp lồng nhau phải verify thành công và không bị hút lẫn invariant! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 2: Inductive Step"));
 }
 
 #[test]
@@ -1794,10 +1240,11 @@ FUNC branch_call(c: i64) -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V51");
-    let results = Verifier::verify_function(&program.functions[1], Some(&program));
-    let no_error = results.iter().all(|r| !matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Z3 solver error")));
-    assert!(no_error, "Nhánh Diamond có CALL và STORE_STR phải verify trơn tru không lỗi solver! Got: {:?}", results);
+    assert_verified(
+        code,
+        Some("branch_call"),
+        Some("Memory 8-bit bounds check on '%buf'"),
+    );
 }
 
 #[test]
@@ -1811,10 +1258,7 @@ FUNC test_str() -> i64
   RET %ch
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V52");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "STORE_STR 'Hello' tại offset 0 phải đọc ra byte 72 ('H')! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
@@ -1829,10 +1273,7 @@ FUNC test_alias() -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V53");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Đọc từ %ptr phải thấy giá trị 42 ghi vào %buf do cơ chế buffer aliasing! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
@@ -1856,10 +1297,7 @@ FUNC multibreak_loop(mode: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V54");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Vòng lặp có 2 điểm BREAK_IF phân nhánh theo mode phải verify chính xác ENSURE postcondition! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
@@ -1877,15 +1315,12 @@ FUNC loop_no_inv_with_bug(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V55");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_oob_failure = results.iter().any(|r| match r {
-        VerificationResult::Failed { goal_name, category, .. } => {
-            *category == PropertyCategory::Safety && goal_name.contains("Memory 8-bit bounds check on '%buf'")
-        }
-        _ => false,
-    });
-    assert!(has_oob_failure, "Vòng lặp không có INVARIANT nhưng có LOAD8 tràn bộ nhớ sau BREAK_IF phải bị phát hiện lỗi! Got: {:?}", results);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 8-bit bounds check on '%buf'",
+    );
 }
 
 #[test]
@@ -1900,10 +1335,7 @@ FUNC test_mov_alias() -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V56");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "MOV buffer alias sau khi STORE8 không được gây Sort Conflict và phải verify đúng 42! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
@@ -1911,38 +1343,22 @@ fn test_v57_bitwise_operations_verification() {
     let code = r#"
 FUNC test_bitwise(a: i64, b: i64) -> i64
   REQUIRE a == 60 && b == 13
-  # 60 = 0011 1100
-  # 13 = 0000 1101
-
-  # AND = 0000 1100 = 12
   %and_res = AND i64 a b
   ASSERT %and_res == 12
-
-  # OR = 0011 1101 = 61
   %or_res = OR i64 a b
   ASSERT %or_res == 61
-
-  # XOR = 0011 0001 = 49
   %xor_res = XOR a b
   ASSERT %xor_res == 49
-
-  # SHL a 2 = 60 << 2 = 240
   %two = CONST i64 2
   %shl_res = SHL a %two
   ASSERT %shl_res == 240
-
-  # SHR a 2 = 60 >> 2 = 15
   %shr_res = SHR a %two
   ASSERT %shr_res == 15
-
   ENSURE %xor_res == 49
   RET %xor_res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V57");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Bitwise AND, OR, XOR, SHL, SHR phải được Z3 verify thành công! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
@@ -1952,18 +1368,12 @@ FUNC test_not(flag: bool, x: i64) -> i64
   REQUIRE flag == true && x == 0
   %not_flag = NOT flag
   ASSERT %not_flag == false
-
-  # Bitwise NOT trên 0 là -1 (0xFFFFFFFFFFFFFFFF)
   %not_x = NOT i64 x
   ASSERT %not_x == -1
-
   RET %not_x
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V58");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Toán tử NOT cho cả bool và i64 phải verify thành công! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
@@ -1976,41 +1386,29 @@ FUNC test_contract_ops(a: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V59");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Biểu thức hợp đồng chứa ^ và << phải verify thành công! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v60_bitwise_and_vs_logical_and_soundness() {
     let code = r#"
 FUNC test_soundness() -> i64
-  # 2 & 1 = 0 trong bitwise (BitAnd)
   %two = CONST i64 2
   %one = CONST i64 1
   %bit = AND i64 %two %one
   ASSERT %bit == 0
-
-  # Logic AND trên bool
   %t1 = CONST bool true
   %t2 = CONST bool true
   %log = AND %t1 %t2
   ASSERT %log == true
-
-  # Cú pháp BAND / BOR tường minh
   %band_res = BAND %two %one
   ASSERT %band_res == 0
   %bor_res = BOR %two %one
   ASSERT %bor_res == 3
-
   RET %bit
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V60");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Phân biệt tuyệt đối giữa BitAnd (2 & 1 = 0) và Logical AND phải verify PASS! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
@@ -2019,16 +1417,12 @@ fn test_v61_shift_masked_at_64_bits_soundness() {
 FUNC test_shift_64() -> i64
   %one = CONST i64 1
   %c_64 = CONST i64 64
-  # x86_64 CPU masks shift count với 63: 1 << (64 & 63) == 1 << 0 == 1
   %res = SHL %one %c_64
   ASSERT %res == 1
   RET %res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V61");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "Phép SHL với 64 bit phải được SMT mask 63 khớp với x86_64! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
@@ -2043,30 +1437,13 @@ FUNC main() -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V62");
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT");
-
-    let tmp_bin = format!("/tmp/light_test_v62_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64");
-
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(77), "AOT Alloc và Load8 phải trả về đúng exit code 77!");
+    assert_eq!(verify_and_run_elf(code, true), 77);
 }
 
 #[test]
 fn test_v63_mmap_syscall_execution() {
     let code = r#"
 FUNC main() -> i64
-  # sys_mmap (syscall 9):
-  # rax = 9
-  # rdi = 0 (NULL addr)
-  # rsi = 4096 (len: 1 page)
-  # rdx = 3 (PROT_READ | PROT_WRITE)
-  # r10 = 34 (MAP_PRIVATE | MAP_ANONYMOUS: 0x02 | 0x20)
-  # r8  = -1 (fd)
-  # r9  = 0 (offset)
   %c_9 = CONST i64 9
   %c_0 = CONST i64 0
   %c_len = CONST i64 4096
@@ -2074,38 +1451,20 @@ FUNC main() -> i64
   %c_flags = CONST i64 34
   %c_neg1 = CONST i64 -1
   %ptr = SYSCALL %c_9 %c_0 %c_len %c_prot %c_flags %c_neg1 %c_0
-
-  # Lưu byte 88 vào trang nhớ vừa mmap
   %c_88 = CONST i64 88
   STORE8 %ptr %c_0 %c_88
-
-  # Đọc lại byte từ trang nhớ mmap
   %val = LOAD8 %ptr %c_0
-
-  # sys_munmap (syscall 11):
-  # rax = 11, rdi = %ptr, rsi = 4096
   %c_11 = CONST i64 11
   %unmap = SYSCALL %c_11 %ptr %c_len %c_0 %c_0 %c_0 %c_0
-
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V63");
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT V63");
-
-    let tmp_bin = format!("/tmp/light_test_v63_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V63");
-
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(88), "mmap -> write 88 -> read 88 -> munmap phải thành công và trả về đúng exit code 88!");
+    assert_eq!(verify_and_run_elf(code, true), 88);
 }
 
 #[test]
 fn test_v64_arena_allocator_verification_and_native_execution() {
     let code = r#"
-# Căn chỉnh 8-byte (được Z3 chứng minh)
 FUNC align8(size: i64) -> i64
   REQUIRE size >= 0 && size <= 1073741824
   %tmp = ADD i64 size 7
@@ -2115,7 +1474,6 @@ FUNC align8(size: i64) -> i64
   RET %aligned
 END_FUNC
 
-# Kiểm tra còn đủ bộ nhớ (được Z3 chứng minh)
 FUNC arena_can_alloc(used: i64, capacity: i64, req_size: i64) -> bool
   REQUIRE used >= 0 && capacity >= used && req_size >= 0 && req_size <= 1073741824
   %rem = SUB i64 capacity used
@@ -2123,7 +1481,6 @@ FUNC arena_can_alloc(used: i64, capacity: i64, req_size: i64) -> bool
   RET %ok
 END_FUNC
 
-# Khởi tạo Arena (sys_mmap)
 FUNC arena_create(capacity: i64) -> i64
   REQUIRE capacity > 0 && capacity <= 1073741824
   %total = ADD i64 capacity 24
@@ -2133,10 +1490,8 @@ FUNC arena_create(capacity: i64) -> i64
   %c_34 = CONST i64 34
   %c_neg1 = CONST i64 -1
   %mmap_ptr = SYSCALL %c_9 %c_0 %total %c_3 %c_34 %c_neg1 %c_0
-
   %failed = LT i64 %mmap_ptr 0
   BR_IF %failed .create_fail
-
   %base_ptr = ADD i64 %mmap_ptr 24
   %off_0 = CONST i64 0
   %off_8 = CONST i64 8
@@ -2145,30 +1500,24 @@ FUNC arena_create(capacity: i64) -> i64
   STORE64 %mmap_ptr %off_8 capacity
   STORE64 %mmap_ptr %off_16 %c_0
   RET %mmap_ptr
-
 LABEL .create_fail
   RET %c_0
 END_FUNC
 
-# Cấp phát từ Arena
 FUNC arena_alloc(arena: i64, req_size: i64) -> i64
   REQUIRE arena > 0 && req_size > 0 && req_size <= 1073741824
   %off_0 = CONST i64 0
   %off_8 = CONST i64 8
   %off_16 = CONST i64 16
-
   %base_ptr = LOAD64 arena %off_0
   %capacity = LOAD64 arena %off_8
   %used = LOAD64 arena %off_16
-
   %aligned = CALL align8 req_size
   %rem = SUB i64 %capacity %used
   %can_alloc = GTE i64 %rem %aligned
   BR_IF %can_alloc .do_alloc
-
   %zero = CONST i64 0
   RET %zero
-
 LABEL .do_alloc
   %res_ptr = ADD i64 %base_ptr %used
   %new_used = ADD i64 %used %aligned
@@ -2176,7 +1525,6 @@ LABEL .do_alloc
   RET %res_ptr
 END_FUNC
 
-# Hủy Arena (sys_munmap)
 FUNC arena_destroy(arena: i64) -> i64
   REQUIRE arena > 0
   %off_8 = CONST i64 8
@@ -2189,67 +1537,30 @@ FUNC arena_destroy(arena: i64) -> i64
 END_FUNC
 
 FUNC main() -> i64
-  # Tạo arena 64KB
   %cap = CONST i64 65536
   %arena = CALL arena_create %cap
   %is_err = LTE i64 %arena 0
   BR_IF %is_err .exit_err
-
-  # Cấp phát chunk 1: 10 bytes (align lên 16)
   %sz1 = CONST i64 10
   %chunk1 = CALL arena_alloc %arena %sz1
   %val42 = CONST i64 42
   %c_0 = CONST i64 0
   STORE8 %chunk1 %c_0 %val42
-
-  # Cấp phát chunk 2: 20 bytes (align lên 24)
   %sz2 = CONST i64 20
   %chunk2 = CALL arena_alloc %arena %sz2
   %val55 = CONST i64 55
   STORE8 %chunk2 %c_0 %val55
-
-  # Đọc lại giá trị từ 2 chunk
   %r1 = LOAD8 %chunk1 %c_0
   %r2 = LOAD8 %chunk2 %c_0
   %sum = ADD i64 %r1 %r2
-
-  # Hủy arena
   %d = CALL arena_destroy %arena
-
   RET %sum
-
 LABEL .exit_err
   %err = CONST i64 1
   RET %err
 END_FUNC
 "#;
-
-    let program = Parser::parse(code).expect("Parse V64");
-
-    // 1. Kiểm tra Formal Verification với Z3 cho TẤT CẢ các hàm của Arena
-    for func in &program.functions {
-        let results = Verifier::verify_function(func, Some(&program));
-        let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-        assert!(
-            all_ok,
-            "Hàm {} phải được Z3 verify 100%! Got: {:?}",
-            func.name,
-            results
-        );
-    }
-
-    // 2. Biên dịch AOT ra ELF64 và chạy thực tế trên Linux
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT V64");
-
-    let tmp_bin = format!("/tmp/light_test_v64_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V64");
-
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-
-    // 42 + 55 = 97
-    assert_eq!(status.code(), Some(97), "Arena Allocator: cấp phát động 2 chunk, ghi, đọc và giải phóng phải trả về exit code 97!");
+    assert_eq!(verify_and_run_elf(code, true), 97);
 }
 
 #[test]
@@ -2265,34 +1576,33 @@ END_FUNC
 FUNC caller() -> i64
   %b = CONST i64 10
   %a = CONST i64 20
-  # foo %b %a truyền %b (10) vào a, %a (20) vào b => a < b là 10 < 20 (Đúng!)
-  # Nếu thế tuần tự: a -> b biến thành b < b, rồi b -> a biến thành a < a (Sai!)
   %r = CALL foo %b %a
   RET %r
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V65");
-    let caller_func = program.functions.iter().find(|f| f.name == "caller").unwrap();
-    let results = Verifier::verify_function(caller_func, Some(&program));
-    let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_ok, "Caller phải PASS REQUIRE của foo nhờ simultaneous substitution! Got: {:?}", results);
+    assert_verified(
+        code,
+        Some("caller"),
+        Some("Verify REQUIRE contract of 'foo'"),
+    );
 }
 
 #[test]
 fn test_v66_slice_param_out_of_bounds_detection() {
     let code = r#"
 FUNC bad_read(s: slice<u8>) -> i64
-  # Thiếu REQUIRE ràng buộc len(s) > 10
   %ptr = SLICE_PTR s
   %idx = CONST i64 10
   %val = LOAD8 %ptr %idx
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V66");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
-    assert!(has_failed, "LOAD8 trên tham số slice<u8> khi chưa kiểm tra len(s) phải báo FAILED bounds check! Got: {:?}", results);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 8-bit bounds check",
+    );
 }
 
 #[test]
@@ -2307,127 +1617,18 @@ END_FUNC
 
 FUNC main() -> i64
   %buf = ALLOC slice<u8> 64
-  # Nếu bị đụng độ key buffer, main sẽ ghi đè hoặc dùng nhầm buffer 16 byte của func_a
   STORE_STR %buf "A very long string that would overflow a 16 byte buffer easily!\0"
   %len_a = CALL func_a
   %len_main = SLICE_LEN %buf
-  # len_a (5) + len_main (64 chars)
   %sum = ADD i64 %len_a %len_main
   RET %sum
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V67");
-    for func in &program.functions {
-        let results = Verifier::verify_function(func, Some(&program));
-        let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-        assert!(all_ok, "Hàm {} phải verified! Got: {:?}", func.name, results);
-    }
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT V67");
-
-    let tmp_bin = format!("/tmp/light_test_v67_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V67");
-
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-
-    // func_a slice len is 16, main slice len is 64 => 16 + 64 = 80
-    assert_eq!(status.code(), Some(80), "Không được có đụng độ buffer giữa func_a và main, kết quả phải là 80!");
+    assert_eq!(verify_and_run_elf(code, true), 80);
 }
-
-#[test]
-fn test_v72_slice_fat_pointer_call_abi_runtime() {
-    // V72: Verify passing slice<u8> across functions receives both ptr and len via System V ABI
-    let code = r#"
-FUNC get_slice_len(s: slice<u8>) -> i64
-  REQUIRE len(s) >= 0
-  %l = SLICE_LEN s
-  ENSURE %l == len(s)
-  RET %l
-END_FUNC
-
-FUNC main() -> i64
-  %buf = ALLOC slice<u8> 42
-  STORE_STR %buf "Hello World"
-  # slice capacity is 42. Calling get_slice_len must receive len = 42 in 2nd ABI register (RSI)
-  %res = CALL get_slice_len %buf
-  RET %res
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V72");
-    for func in &program.functions {
-        let results = Verifier::verify_function(func, Some(&program));
-        let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-        assert!(all_ok, "Hàm {} phải verified! Got: {:?}", func.name, results);
-    }
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT V72");
-
-    let tmp_bin = format!("/tmp/light_test_v72_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V72");
-
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(42), "get_slice_len phải đọc đúng độ dài slice là 42 từ slot _len!");
-}
-
-#[test]
-fn test_v73_parser_modulo_without_space_and_escaped_comment() {
-    // V73: Modulo without space e.g. %a%2 or (a+b)%2, and escaped quotes in comments
-    let code = r#"
-FUNC parse_modulo_test(a: i64) -> i64
-  REQUIRE a > 0 && a%2 == 0
-  # Comment with escaped quote \" and then a comment char # inside string:
-  %dummy = CONST i64 0
-  %rem = MOD i64 a 2
-  ENSURE %rem == 0
-  RET %rem
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V73");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_ok = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_ok, "V73: Expressions with a%2 and comments with escaped quotes must parse and verify! Got: {:?}", results);
-}
-
-#[test]
-fn test_v74_call_havocs_memory_slice_argument() {
-    // V74: Soundness test for interprocedural memory modification.
-    // If func caller writes 42 to %buf[0], then calls a helper that takes %buf and writes 99,
-    // the verifier must NOT assume %buf[0] is still 42 after the CALL!
-    let code = r#"
-FUNC helper_write(b: slice<u8>) -> i64
-  REQUIRE len(b) > 0
-  STORE8 b 0 99
-  RET 0
-END_FUNC
-
-FUNC main_unsound_check() -> i64
-  %buf = ALLOC slice<u8> 16
-  STORE8 %buf 0 42
-  %dummy = CALL helper_write %buf
-  # Caller asserts that %buf[0] is still 42. Since helper_write mutated it,
-  # the SMT solver must FAIL this assert (cannot prove %val == 42 because %buf was havoc'd).
-  %val = LOAD8 %buf 0
-  ASSERT %val == 42
-  RET %val
-END_FUNC
-"#;
-    let program = Parser::parse(code).expect("Parse V74");
-    let results = Verifier::verify_function(&program.functions[1], Some(&program));
-    let has_failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { category: PropertyCategory::Functional, .. }));
-    assert!(has_failed, "V74: Caller must NOT assume memory is unchanged after passing slice to helper! Got: {:?}", results);
-}
-
-
 
 #[test]
 fn test_v68_continue_if_omitted_counter_update_termination_fails() {
-    // V68: Soundness check for CONTINUE_IF in loop.
-    // When %skip is true (%i == 2), skipping the counter increment %i = ADD %i 1
-    // causes an infinite loop at runtime. Verifier must FAIL on termination step!
     let code = r#"
 FUNC loop_with_bad_continue(n: i64) -> i64
   REQUIRE n >= 5 && n <= 10
@@ -2445,15 +1646,16 @@ FUNC loop_with_bad_continue(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V68");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_failed = results.iter().any(|r| matches!(r, VerificationResult::Failed { category: PropertyCategory::Termination, .. }));
-    assert!(has_failed, "V68: CONTINUE_IF without counter update must FAIL termination check! Got: {:?}", results);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Termination),
+        "CONTINUE_IF",
+    );
 }
 
 #[test]
 fn test_v69_undefined_var_in_contract_fails_static_assignment() {
-    // V69: Typo in ENSURE or ASSERT variable must fail SSA Definite Assignment check
     let code_ensure_typo = r#"
 FUNC typo_in_ensure(x: i64) -> i64
   REQUIRE x >= 0
@@ -2462,10 +1664,12 @@ FUNC typo_in_ensure(x: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let prog1 = Parser::parse(code_ensure_typo).expect("Parse V69 ENSURE typo");
-    let res1 = Verifier::verify_function(&prog1.functions[0], Some(&prog1));
-    let failed1 = res1.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("resutl")));
-    assert!(failed1, "Typo in ENSURE variable '%resutl' must fail SSA check! Got: {:?}", res1);
+    assert_failed(
+        code_ensure_typo,
+        None,
+        Some(PropertyCategory::Safety),
+        "resutl",
+    );
 
     let code_assert_typo = r#"
 FUNC typo_in_assert(x: i64) -> i64
@@ -2475,15 +1679,16 @@ FUNC typo_in_assert(x: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let prog2 = Parser::parse(code_assert_typo).expect("Parse V69 ASSERT typo");
-    let res2 = Verifier::verify_function(&prog2.functions[0], Some(&prog2));
-    let failed2 = res2.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("undefined_var")));
-    assert!(failed2, "Typo in ASSERT variable '%undefined_var' must fail SSA check! Got: {:?}", res2);
+    assert_failed(
+        code_assert_typo,
+        None,
+        Some(PropertyCategory::Safety),
+        "undefined_var",
+    );
 }
 
 #[test]
 fn test_v70_arbitrary_unstructured_jump_yields_unknown() {
-    // V70: Arbitrary backward JUMP (unstructured loop outside LOOP block) must return Unknown
     let code = r#"
 FUNC test_free_jump() -> i64
   LABEL .loop_head
@@ -2492,23 +1697,14 @@ FUNC test_free_jump() -> i64
   RET %res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V70");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let has_unknown = results.iter().any(|r| matches!(r, VerificationResult::Unknown { .. }));
-    assert!(has_unknown, "Arbitrary backward JUMP must return Unknown! Got: {:?}", results);
+    assert_unknown(code, None, "Unsupported backward/external JUMP");
 }
 
 #[test]
 fn test_v71_codegen_epilogue_not_skipped_when_instruction_ends_with_c3_byte() {
-    // V71: Regression test for codegen epilogue omission bug.
-    // An immediate with MSB = 0xC3 has 0xC3 as its last byte in little-endian.
-    // 0xC300_0000_0000_0000 as i64 is -4395504899778281472.
-    // If the function does not have an explicit RET at the end, codegen must NOT skip
-    // the epilogue just because code.last() == Some(&0xC3)!
     let code = r#"
 FUNC func_ending_in_c3() -> i64
   %c = CONST i64 -4395504899778281472
-  # Function does not end with RET statement; codegen default epilogue must be emitted!
 END_FUNC
 
 FUNC main() -> i64
@@ -2517,21 +1713,72 @@ FUNC main() -> i64
   RET %ret
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V71");
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT V71");
+    assert_eq!(verify_and_run_elf(code, false), 42);
+}
 
-    let tmp_bin = format!("/tmp/light_test_v71_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V71");
+#[test]
+fn test_v72_slice_fat_pointer_call_abi_runtime() {
+    let code = r#"
+FUNC get_slice_len(s: slice<u8>) -> i64
+  REQUIRE len(s) >= 0
+  %l = SLICE_LEN s
+  ENSURE %l == len(s)
+  RET %l
+END_FUNC
 
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(42), "Hàm func_ending_in_c3 phải return an toàn về main và main thoát với code 42!");
+FUNC main() -> i64
+  %buf = ALLOC slice<u8> 42
+  STORE_STR %buf "Hello World"
+  %res = CALL get_slice_len %buf
+  RET %res
+END_FUNC
+"#;
+    assert_eq!(verify_and_run_elf(code, true), 42);
+}
+
+#[test]
+fn test_v73_parser_modulo_without_space_and_escaped_comment() {
+    let code = r#"
+FUNC parse_modulo_test(a: i64) -> i64
+  REQUIRE a > 0 && a%2 == 0
+  # Comment with escaped quote \" and then a comment char # inside string:
+  %dummy = CONST i64 0
+  %rem = MOD i64 a 2
+  ENSURE %rem == 0
+  RET %rem
+END_FUNC
+"#;
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
+}
+
+#[test]
+fn test_v74_call_havocs_memory_slice_argument() {
+    let code = r#"
+FUNC helper_write(b: slice<u8>) -> i64
+  REQUIRE len(b) > 0
+  STORE8 b 0 99
+  RET 0
+END_FUNC
+
+FUNC main_unsound_check() -> i64
+  %buf = ALLOC slice<u8> 16
+  STORE8 %buf 0 42
+  %dummy = CALL helper_write %buf
+  %val = LOAD8 %buf 0
+  ASSERT %val == 42
+  RET %val
+END_FUNC
+"#;
+    assert_failed(
+        code,
+        Some("main_unsound_check"),
+        Some(PropertyCategory::Functional),
+        "Verify ASSERT directive",
+    );
 }
 
 #[test]
 fn test_v75_break_cond_reassigned_after_break() {
-    // V75: Condition variable reassigned after BREAK_IF must not cause unsound vacuous truth or false failure
     let code = r#"
 FUNC test_reassigned_break(n: i64) -> i64
   REQUIRE n >= 0 && n <= 10
@@ -2541,7 +1788,6 @@ FUNC test_reassigned_break(n: i64) -> i64
     DECREASES n - %i
     %done = GTE i64 %i n
     BREAK_IF %done
-    # Reassign %done to true after break point
     %done = CONST bool true
     %i = ADD i64 %i 1
   END_LOOP l1
@@ -2549,15 +1795,11 @@ FUNC test_reassigned_break(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V75");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V75 test failed: BREAK_IF condition reassigned must verify correctly without vacuous truth! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v76_continue_if_with_counter_reassignment() {
-    // V76: Loop with CONTINUE_IF where condition variable is reassigned
     let code = r#"
 FUNC test_continue_reassign(n: i64) -> i64
   REQUIRE n >= 0 && n <= 10
@@ -2576,15 +1818,11 @@ FUNC test_continue_reassign(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V76");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V76 test failed: CONTINUE_IF with reassigned condition must verify! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v77_nested_loops_decreases_isolation() {
-    // V77: Nested loops with multi-decreases and CONTINUE_IF in both inner and outer loops
     let code = r#"
 FUNC test_nested_decreases(n: i64) -> i64
   REQUIRE n >= 0 && n <= 5
@@ -2608,15 +1846,11 @@ FUNC test_nested_decreases(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V77");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V77 test failed: Nested loops decreases isolation failed! Got: {:?}", results);
+    assert_verified(code, None, Some("Step 3: Exit Step"));
 }
 
 #[test]
 fn test_v78_slice_ptr_and_mov_length_propagation() {
-    // V78: Verification and Codegen for SLICE_PTR and MOV slice length propagation
     let code = r#"
 FUNC test_slice_alias(s: slice<u8>) -> i64
   REQUIRE len(s) == 10
@@ -2637,25 +1871,16 @@ FUNC main() -> i64
   RET %res
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V78");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V78 verifier failed: Slice length propagation failed in IVL/Verifier! Got: {:?}", results);
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&program).expect("Compile AOT V78");
-
-    let tmp_bin = format!("/tmp/light_test_v78_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF64 V78");
-
-    let status = std::process::Command::new(&tmp_bin).status().expect("Execute AOT binary");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(10), "V78 runtime test failed: SLICE_LEN on aliased MOV/SLICE_PTR should return 10!");
+    assert_verified(
+        code,
+        Some("test_slice_alias"),
+        Some("Verify ENSURE postcondition"),
+    );
+    assert_eq!(verify_and_run_elf(code, true), 10);
 }
 
 #[test]
 fn test_v79_multi_hop_buffer_size_propagation() {
-    // V79: Multi-hop alias chain (%a -> %b -> %c -> %d) verifies memory bounds with fixed-point
     let code = r#"
 FUNC test_multihop_buf() -> i64
   ALLOC %a 16
@@ -2668,15 +1893,11 @@ FUNC test_multihop_buf() -> i64
   RET %val
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V79");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V79 failed: Multi-hop fixed-point buffer size and alias propagation failed! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v80_slice_modified_in_loop_havocs_length() {
-    // V80: Invariant len(s) == 10 verified when s is rebound via MOV in loop body
     let code = r#"
 FUNC test_loop_rebind(s: slice<u8>, s2: slice<u8>) -> i64
   REQUIRE len(s) == 10 && len(s2) == 10
@@ -2696,15 +1917,11 @@ FUNC test_loop_rebind(s: slice<u8>, s2: slice<u8>) -> i64
   RET %final_len
 END_FUNC
 "#;
-    let program = Parser::parse(code).expect("Parse V80");
-    let results = Verifier::verify_function(&program.functions[0], Some(&program));
-    let all_passed = results.iter().all(|r| matches!(r, VerificationResult::Verified { .. }));
-    assert!(all_passed, "V80 failed: Slice rebind in loop must havoc length and verify with invariant! Got: {:?}", results);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v81_loop_structure_validation_mismatched_and_unclosed() {
-    // V81a: Mismatched END_LOOP must fail verifier
     let code_mismatched = r#"
 FUNC test_mismatch() -> i64
   %done = CONST bool true
@@ -2714,12 +1931,13 @@ FUNC test_mismatch() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog_mismatch = Parser::parse(code_mismatched).expect("Parse V81a");
-    let res_mismatch = Verifier::verify_function(&prog_mismatch.functions[0], Some(&prog_mismatch));
-    let failed_mismatch = res_mismatch.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Mismatched END_LOOP")));
-    assert!(failed_mismatch, "Mismatched END_LOOP must fail verification! Got: {:?}", res_mismatch);
+    assert_failed(
+        code_mismatched,
+        None,
+        Some(PropertyCategory::Safety),
+        "Mismatched END_LOOP",
+    );
 
-    // V81b: Unclosed LOOP must fail verifier and codegen
     let code_unclosed = r#"
 FUNC main() -> i64
   %done = CONST bool true
@@ -2728,27 +1946,31 @@ FUNC main() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog_unclosed = Parser::parse(code_unclosed).expect("Parse V81b");
-    let res_unclosed = Verifier::verify_function(&prog_unclosed.functions[0], Some(&prog_unclosed));
-    let failed_unclosed = res_unclosed.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Unclosed LOOP")));
-    assert!(failed_unclosed, "Unclosed LOOP must fail verification! Got: {:?}", res_unclosed);
+    let (prog_unclosed, _) = parse_and_verify(code_unclosed, None);
+    assert_failed(
+        code_unclosed,
+        None,
+        Some(PropertyCategory::Safety),
+        "Unclosed LOOP",
+    );
 
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    let mut emitter = MachineCodeEmitter::new();
     let codegen_err = emitter.compile_for_elf(&prog_unclosed);
-    assert!(codegen_err.is_err(), "Codegen must return Err for unclosed LOOP!");
+    assert!(codegen_err.is_err());
     assert!(codegen_err.unwrap_err().contains("Unclosed LOOP"));
 
-    // V81c: Undefined JUMP target must fail verifier
     let code_undefined_jump = r#"
 FUNC test_undefined_jump() -> i64
   JUMP .non_existent_label
   RET 0
 END_FUNC
 "#;
-    let prog_jump = Parser::parse(code_undefined_jump).expect("Parse V81c");
-    let res_jump = Verifier::verify_function(&prog_jump.functions[0], Some(&prog_jump));
-    let failed_jump = res_jump.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("Undefined label") || reason.contains("not defined")));
-    assert!(failed_jump, "Undefined JUMP target must fail verification! Got: {:?}", res_jump);
+    assert_failed(
+        code_undefined_jump,
+        None,
+        Some(PropertyCategory::Safety),
+        "Undefined label",
+    );
 }
 
 #[test]
@@ -2760,15 +1982,20 @@ FUNC main() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog_b = Parser::parse(code_break).expect("Parse V82 Break");
-    let res_b = Verifier::verify_function(&prog_b.functions[0], Some(&prog_b));
-    let failed_b = res_b.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("BREAK_IF must be placed inside a LOOP")));
-    assert!(failed_b, "BREAK_IF outside loop must fail verifier! Got: {:?}", res_b);
-
-    let mut emitter_b = light::codegen::MachineCodeEmitter::new();
-    let err_b = emitter_b.compile_for_elf(&prog_b);
-    assert!(err_b.is_err(), "BREAK_IF outside loop must fail codegen!");
-    assert!(err_b.unwrap_err().contains("BREAK_IF outside of LOOP"));
+    let (prog_b, _) = parse_and_verify(code_break, None);
+    assert_failed(
+        code_break,
+        None,
+        Some(PropertyCategory::Safety),
+        "BREAK_IF must be placed inside a LOOP",
+    );
+    let mut emitter_b = MachineCodeEmitter::new();
+    assert!(
+        emitter_b
+            .compile_for_elf(&prog_b)
+            .unwrap_err()
+            .contains("BREAK_IF outside of LOOP")
+    );
 
     let code_cont = r#"
 FUNC main() -> i64
@@ -2777,20 +2004,24 @@ FUNC main() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog_c = Parser::parse(code_cont).expect("Parse V82 Continue");
-    let res_c = Verifier::verify_function(&prog_c.functions[0], Some(&prog_c));
-    let failed_c = res_c.iter().any(|r| matches!(r, VerificationResult::Failed { reason, .. } if reason.contains("CONTINUE_IF must be placed inside a LOOP")));
-    assert!(failed_c, "CONTINUE_IF outside loop must fail verifier! Got: {:?}", res_c);
-
-    let mut emitter_c = light::codegen::MachineCodeEmitter::new();
-    let err_c = emitter_c.compile_for_elf(&prog_c);
-    assert!(err_c.is_err(), "CONTINUE_IF outside loop must fail codegen!");
-    assert!(err_c.unwrap_err().contains("CONTINUE_IF outside of LOOP"));
+    let (prog_c, _) = parse_and_verify(code_cont, None);
+    assert_failed(
+        code_cont,
+        None,
+        Some(PropertyCategory::Safety),
+        "CONTINUE_IF must be placed inside a LOOP",
+    );
+    let mut emitter_c = MachineCodeEmitter::new();
+    assert!(
+        emitter_c
+            .compile_for_elf(&prog_c)
+            .unwrap_err()
+            .contains("CONTINUE_IF outside of LOOP")
+    );
 }
 
 #[test]
 fn test_v83_slice_rebind_different_length_requires_invariant() {
-    // V83: When a slice alias is rebound in loop, its length is havoced and unsound ASSERT fails without invariant
     let code_unsound = r#"
 FUNC test_unsound_rebind(s: slice<u8>, s2: slice<u8>) -> i64
   REQUIRE len(s) == 10 && len(s2) == 5
@@ -2809,15 +2040,16 @@ FUNC test_unsound_rebind(s: slice<u8>, s2: slice<u8>) -> i64
   RET %final_len
 END_FUNC
 "#;
-    let prog = Parser::parse(code_unsound).expect("Parse V83 Unsound");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    let has_failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
-    assert!(has_failed, "Rebinding slice in loop with different length without invariant MUST fail post-loop ASSERT! Got: {:?}", res);
+    assert_failed(
+        code_unsound,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ASSERT directive",
+    );
 }
 
 #[test]
 fn test_v84_runtime_store_str_codegen_and_execution() {
-    // V84: STORE_STR must execute at runtime via rep movsb machine code
     let code = r#"
 FUNC main() -> i64
   %buf = ALLOC slice<u8> 16
@@ -2826,7 +2058,6 @@ FUNC main() -> i64
   STORE_STR %buf 0 "OK"
   %c0 = LOAD8 %buf 0
   %c1 = LOAD8 %buf 1
-  # 'O' = 79, 'K' = 75
   %eq0 = EQ i64 %c0 79
   %eq1 = EQ i64 %c1 75
   %and = AND %eq0 %eq1
@@ -2836,28 +2067,11 @@ LABEL .good
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V84");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    for r in &res {
-        if let VerificationResult::Failed { reason, .. } = r {
-            panic!("V84 verification failed: {}", reason);
-        }
-    }
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&prog).expect("Compile V84");
-    let elf_path = format!("/tmp/light_test_v84_{}", std::process::id());
-    emitter.emit_elf64(&elf_path).expect("Emit ELF V84");
-    std::process::Command::new("chmod").args(["+x", &elf_path]).output().expect("chmod");
-
-    let out = std::process::Command::new(&elf_path).output().expect("Exec V84");
-    let _ = std::fs::remove_file(&elf_path);
-    assert_eq!(out.status.code(), Some(0), "V84 runtime STORE_STR must produce exit code 0");
+    assert_eq!(verify_and_run_elf(code, true), 0);
 }
 
 #[test]
 fn test_v85_unsigned_arithmetic_div_and_comparisons() {
-    // V85: U64 division and comparisons use unsigned semantics (bvudiv, bvult, setb, div)
     let code = r#"
 FUNC unsigned_math() -> i64
   %a = CONST u64 18446744073709551615
@@ -2869,15 +2083,11 @@ FUNC unsigned_math() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V85");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    let has_failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { .. }));
-    assert!(!has_failed, "V85: Unsigned arithmetic and comparison contracts must verify! Got: {:?}", res);
+    assert_verified(code, None, Some("Verify ASSERT directive"));
 }
 
 #[test]
 fn test_v86_load64_unaligned_fails_alignment_check() {
-    // V86: LOAD64 on non-8-byte aligned offset (e.g. offset 1) must fail 8-byte alignment assert
     let code = r#"
 FUNC unaligned_load(p: i64) -> i64
   %off = CONST i64 1
@@ -2885,15 +2095,16 @@ FUNC unaligned_load(p: i64) -> i64
   RET %val
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V86");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    let failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("8-byte alignment check")));
-    assert!(failed, "V86: LOAD64 with offset 1 must fail 8-byte alignment check! Got: {:?}", res);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "8-byte alignment check",
+    );
 }
 
 #[test]
 fn test_v87_cfg_branch_unassigned_variable_fails() {
-    // V87: CFG definite assignment must detect variable assigned only in one branch
     let code = r#"
 FUNC bad_branch(cond: bool) -> i64
   BR_IF cond .then
@@ -2905,15 +2116,16 @@ LABEL .merge
   RET %res
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V87");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    let failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("SSA Definite Assignment")));
-    assert!(failed, "V87: %x defined only in one branch must fail CFG Definite Assignment! Got: {:?}", res);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "SSA Definite Assignment",
+    );
 }
 
 #[test]
 fn test_v88_mixed_memory_sort_load8_and_load64_fails() {
-    // V88: Mixing LOAD8 and LOAD64 on same buffer must fail static memory sort consistency
     let code = r#"
 FUNC mixed_sort() -> i64
   %buf = ALLOC slice<u8> 16
@@ -2922,15 +2134,16 @@ FUNC mixed_sort() -> i64
   RET %w
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V88");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    let failed = res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Memory Sort Consistency")));
-    assert!(failed, "V88: Mixing LOAD8 and LOAD64 on same buffer must fail Memory Sort Consistency! Got: {:?}", res);
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory Sort Consistency",
+    );
 }
 
 #[test]
 fn test_v89_main_with_argc_argv_runtime() {
-    // V89: main(argc, argv) receiving command line arguments from Linux kernel stack without segfault
     let code = r#"
 FUNC main(argc: i64, argv: i64) -> i64
   %ok = GTE i64 argc 1
@@ -2940,48 +2153,34 @@ LABEL .success
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V89");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    for r in &res {
-        if let VerificationResult::Failed { reason, .. } = r {
-            panic!("V89 verification failed: {}", reason);
-        }
-    }
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&prog).expect("Compile V89");
-    let elf_path = format!("/tmp/light_test_v89_{}", std::process::id());
-    emitter.emit_elf64(&elf_path).expect("Emit ELF V89");
-    std::process::Command::new("chmod").args(["+x", &elf_path]).output().expect("chmod");
-
-    let out = std::process::Command::new(&elf_path).output().expect("Exec V89");
-    let _ = std::fs::remove_file(&elf_path);
-    assert_eq!(out.status.code(), Some(0), "V89 main(argc, argv) must run cleanly and return 0");
+    assert_eq!(verify_and_run_elf(code, false), 0);
 }
 
 #[test]
 fn test_v90_f64_rejection_type_check() {
-    // V90: Parser or verifier must reject f64 with clear error
     let code_parser = r#"
 FUNC float_fn(x: f64) -> i64
   RET 0
 END_FUNC
 "#;
     let parse_res = Parser::parse(code_parser);
-    assert!(parse_res.is_err(), "Parser must reject f64 type! Got: {:?}", parse_res);
-    assert!(parse_res.unwrap_err().message.contains("Floating-point type 'f64' is not yet supported"));
+    assert!(parse_res.is_err());
+    assert!(
+        parse_res
+            .unwrap_err()
+            .message
+            .contains("Floating-point type 'f64' is not yet supported")
+    );
 }
 
 #[test]
 fn test_v91_store_str_exact_length_no_overflow() {
-    // V91: STORE_STR must copy exact bytes without extra null-byte overflow
     let code = r#"
 FUNC main() -> i64
   %buf = ALLOC slice<u8> 5
   STORE_STR %buf 0 "Hello"
   %c0 = LOAD8 %buf 0
   %c4 = LOAD8 %buf 4
-  # 'H' = 72, 'o' = 111
   %eq0 = EQ i64 %c0 72
   %eq4 = EQ i64 %c4 111
   %and = AND %eq0 %eq4
@@ -2991,25 +2190,8 @@ LABEL .ok
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V91");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    for r in &res {
-        if let VerificationResult::Failed { reason, .. } = r {
-            panic!("V91 verification failed: {}", reason);
-        }
-    }
+    assert_eq!(verify_and_run_elf(code, true), 0);
 
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&prog).expect("Compile V91");
-    let elf_path = format!("/tmp/light_test_v91_{}", std::process::id());
-    emitter.emit_elf64(&elf_path).expect("Emit ELF V91");
-    std::process::Command::new("chmod").args(["+x", &elf_path]).output().expect("chmod");
-
-    let out = std::process::Command::new(&elf_path).output().expect("Exec V91");
-    let _ = std::fs::remove_file(&elf_path);
-    assert_eq!(out.status.code(), Some(0), "V91 STORE_STR exact length 5 in 5-byte buffer must execute cleanly");
-
-    // Verify that storing 6 bytes into 5 bytes FAILS verification
     let code_overflow = r#"
 FUNC overflow() -> i64
   %buf = ALLOC slice<u8> 5
@@ -3017,14 +2199,16 @@ FUNC overflow() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog_ovf = Parser::parse(code_overflow).expect("Parse V91 Overflow");
-    let res_ovf = Verifier::verify_function(&prog_ovf.functions[0], Some(&prog_ovf));
-    assert!(res_ovf.iter().any(|r| matches!(r, VerificationResult::Failed { .. })), "Writing 6 bytes into 5-byte buffer MUST fail verification");
+    assert_failed(
+        code_overflow,
+        None,
+        Some(PropertyCategory::Safety),
+        "String write within buffer",
+    );
 }
 
 #[test]
 fn test_v92_u64_contract_unsigned_comparison() {
-    // V92: REQUIRE and ENSURE with u64 must use unsigned comparison (bvult / bvugt)
     let code = r#"
 FUNC test_u64(a: u64, b: u64) -> u64
   REQUIRE a < b
@@ -3033,54 +2217,44 @@ FUNC test_u64(a: u64, b: u64) -> u64
   RET %res
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V92");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    for r in &res {
-        if let VerificationResult::Failed { reason, .. } = r {
-            panic!("V92 verification failed: {}", reason);
-        }
-    }
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v93_syscall_havocs_memory_buffer() {
-    // V93: Calling SYSCALL with buffer register argument must havoc buffer contents
     let code = r#"
 FUNC test_sys_havoc() -> i64
   %buf = ALLOC slice<u8> 16
   STORE8 %buf 0 65
   %c_0 = CONST i64 0
   %c_16 = CONST i64 16
-  # sys_read(fd=0, buf=%buf, count=16)
   %read_ret = SYSCALL %c_0 %c_0 %buf %c_16
   %c0 = LOAD8 %buf 0
-  # After SYSCALL, buf content may have been overwritten by kernel!
   ASSERT %c0 == 65
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V93");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
-        "After SYSCALL with buffer, ASSERT %c0 == 65 MUST FAIL because SYSCALL havocs memory!"
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Functional),
+        "Verify ASSERT directive",
     );
 }
 
 #[test]
 fn test_v94_float_contract_correct_line_number() {
-    // V94: Float rejection error in contracts must report actual line number, not line 0
     let code = "FUNC foo(x: i64) -> i64\n  REQUIRE x > 3.14159\n  RET x\nEND_FUNC\n";
-    let parse_res = Parser::parse(code);
-    assert!(parse_res.is_err(), "Parser must reject float in REQUIRE");
-    let err = parse_res.unwrap_err();
-    assert_eq!(err.line_no, 2, "Error must be reported on line 2 (got line {})", err.line_no);
-    assert!(err.message.contains("Floating-point numbers are not supported in Light contracts"));
+    let err = Parser::parse(code).expect_err("Parser must reject float in REQUIRE");
+    assert_eq!(err.line_no, 2);
+    assert!(
+        err.message
+            .contains("Floating-point numbers are not supported in Light contracts")
+    );
 }
 
 #[test]
 fn test_v95_cross_loop_jump_validation() {
-    // V95: JUMP or BR_IF crossing loop boundaries must fail verification
     let code = r#"
 FUNC bad_jump() -> i64
   %c = CONST bool true
@@ -3095,19 +2269,16 @@ FUNC bad_jump() -> i64
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V95");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
-        "Jumping into loop from outside MUST fail verification!"
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "crosses loop boundaries",
     );
 }
 
 #[test]
 fn test_v96_negative_constants_in_contracts_not_treated_as_unsigned() {
-    // V96: Regression test for Expr::IntConst(n) vs Expr::UIntConst(u).
-    // Negative constants like -4096 or -1 in ENSURE/REQUIRE must use signed comparison (bvsge),
-    // NOT unsigned comparison (bvuge), which previously caused 0 >= -4096 to fail!
     let code = r#"
 FUNC sys_wrapper(fd: i64) -> i64
   REQUIRE fd >= 0
@@ -3118,19 +2289,11 @@ FUNC sys_wrapper(fd: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V96");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V96 failed: Negative constant -4096 in ENSURE must be verified with signed bvsge! Got: {:?}",
-        res
-    );
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v97_canonical_ret_var_ignores_input_parameters_in_ret_if() {
-    // V97: When a function has `RET_IF %cond param_name` and `RET %res` with `ENSURE %ret >= low`,
-    // `find_canonical_ret_var` must select `%ret` (or `%res`), NOT the input parameter `param_name`.
     let code = r#"
 FUNC clamp_test(val: i64, low: i64, high: i64) -> i64
   REQUIRE low <= high
@@ -3147,23 +2310,23 @@ LABEL .lbl_merge
   RET %res
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V97");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V97 failed: clamp_test with RET_IF returning parameter `low` must verify ENSURE %ret! Got: {:?}",
-        res
-    );
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v98_entire_standard_library_verifies_cleanly() {
-    // V98: All 4 standard library modules (std/alloc.lit, std/fs.lit, std/io.lit, std/string.lit)
-    // must pass 100% of Z3 formal verification checks without any failure!
-    for std_file in ["std/alloc.lit", "std/fs.lit", "std/io.lit", "std/string.lit"] {
-        let prog = Parser::parse_file(std_file).unwrap_or_else(|e| panic!("Parse {}: {}", std_file, e));
+    for std_file in [
+        "std/alloc.lit",
+        "std/fs.lit",
+        "std/io.lit",
+        "std/string.lit",
+    ] {
+        let prog =
+            Parser::parse_file(std_file).unwrap_or_else(|e| panic!("Parse {}: {}", std_file, e));
+        let mut file_goals = 0usize;
         for func in &prog.functions {
             let results = Verifier::verify_function(func, Some(&prog));
+            file_goals += results.len();
             for r in &results {
                 assert!(
                     matches!(r, VerificationResult::Verified { .. }),
@@ -3174,16 +2337,16 @@ fn test_v98_entire_standard_library_verifies_cleanly() {
                 );
             }
         }
+        assert!(
+            file_goals > 0,
+            "Stdlib file {} emitted 0 verification goals!",
+            std_file
+        );
     }
 }
 
 #[test]
 fn test_v99_loop_call_havocs_memory_soundness() {
-    // V99: Previously, `collect_modified_mems` manually scanned AST instructions inside a loop
-    // and forgot `Instruction::Call`. As a result, a loop calling a helper that mutates a buffer
-    // did NOT havoc the buffer in the loop's inductive/exit step!
-    // With `extract_modified_targets_from_ivl`, any `Havoc(mem)` emitted by `CALL` inside a loop
-    // automatically triggers loop-level memory havoc unless preserved by `INVARIANT`.
     let code = r#"
 FUNC clobber(buf: slice<u8>) -> i64
   REQUIRE len(buf) >= 4
@@ -3210,21 +2373,16 @@ FUNC caller_loop_unsound() -> i64
   RET %v
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V99");
-    let res = Verifier::verify_function(&prog.functions[1], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
-        "V99 soundness failure: CALL inside LOOP must havoc buffer memory in post-loop state! Got: {:?}",
-        res
+    assert_failed(
+        code,
+        Some("caller_loop_unsound"),
+        Some(PropertyCategory::Functional),
+        "Step 3: Exit Step",
     );
 }
 
 #[test]
 fn test_v100_slice_load64_underflow_bounds_check() {
-    // V100: Previously, 64-bit bounds check on a dynamic slice only checked `offset >= 0 && offset <= len(s) - 8`.
-    // In 64-bit two's complement bitvectors, if `len(s)` is negative (or < 8 and underflows signed),
-    // `len(s) - 8` can wrap around to `i64::MAX`, allowing out-of-bounds 64-bit loads!
-    // Now `emit_mem64_checks` strictly requires `bound >= 8` as well.
     let code = r#"
 FUNC bad_slice_load64(s: slice<u8>) -> i64
   ENSURE %v == %v
@@ -3232,19 +2390,16 @@ FUNC bad_slice_load64(s: slice<u8>) -> i64
   RET %v
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V100");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
-        "V100 soundness failure: LOAD64 on slice without REQUIRE len(s) >= 8 must fail bounds check! Got: {:?}",
-        res
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 64-bit bounds check",
     );
 }
 
 #[test]
 fn test_v101_mixed_store_str_and_load64_fails_sort_check() {
-    // V101: `STORE_STR` writes bytes into `Array(BV64, BV8)` memory just like `STORE8`.
-    // Mixing `STORE_STR` and `LOAD64` on the same buffer must be rejected by the Memory Sort Consistency check.
     let code = r#"
 FUNC mixed_str_and_64() -> i64
   ENSURE %v == %v
@@ -3254,20 +2409,16 @@ FUNC mixed_str_and_64() -> i64
   RET %v
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V101");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Memory Sort Consistency"))),
-        "V101 soundness failure: mixing STORE_STR and LOAD64 on same buffer must fail sort check! Got: {:?}",
-        res
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory Sort Consistency",
     );
 }
 
 #[test]
 fn test_v102_ret_overwriting_param_name_isolation() {
-    // V102: When a function returns in multiple branches and the `ENSURE` clause references both
-    // a parameter and the canonical return variable, early `RET` / `RET_IF` checks must substitute
-    // the return expression directly into `ENSURE` without mutating any variable in the active path.
     let code = r#"
 FUNC multi_branch_ret(x: i64) -> i64
   REQUIRE x >= 10 && x <= 1000
@@ -3278,19 +2429,11 @@ FUNC multi_branch_ret(x: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V102");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V102 failed: multi_branch_ret must verify cleanly! Got: {:?}",
-        res
-    );
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v103_stdlib_parse_i64_ensures_non_negative() {
-    // V103: `std/string.lit` functions `str_parse_i64` and `parse_i64` now prove `ENSURE %res >= 0`,
-    // allowing callers to assert `%val >= 0` directly after calling `str_parse_i64`.
     let code = r#"
 FUNC caller_uses_parse_i64(s: slice<u8>) -> i64
   REQUIRE len(s) > 0 && len(s) <= 18
@@ -3304,18 +2447,15 @@ END_FUNC
     let caller_fn = caller_prog.functions[0].clone();
     prog.functions.push(caller_fn.clone());
     let res = Verifier::verify_function(&caller_fn, Some(&prog));
+    assert!(!res.is_empty());
     assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V103: caller_uses_parse_i64 must verify ENSURE %val >= 0 via str_parse_i64 postcondition! Got: {:?}",
-        res
+        res.iter()
+            .all(|r| matches!(r, VerificationResult::Verified { .. }))
     );
 }
 
 #[test]
 fn test_v104_signed_right_shift_in_contracts_uses_arithmetic_shift() {
-    // V104: Signed right shift `>>` in contracts (REQUIRE/ENSURE/ASSERT) on `i64` must lower to
-    // arithmetic shift right (`BinOp::Sar` -> `bvashr`), preserving negative sign bits!
-    // Meanwhile `u64` right shift `>>` continues to use logical shift right (`BinOp::Shr` -> `bvlshr`).
     let code = r#"
 FUNC test_signed_sar(x: i64) -> i64
   REQUIRE x == -8
@@ -3324,19 +2464,11 @@ FUNC test_signed_sar(x: i64) -> i64
   RET %res
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V104");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V104: signed `>>` in contract must match `SAR i64` (-8 >> 1 == -4)! Got: {:?}",
-        res
-    );
+    assert_verified(code, None, Some("Verify ENSURE postcondition"));
 }
 
 #[test]
 fn test_v105_alloc_slice_i64_multiplies_by_element_byte_size() {
-    // V105: ALLOC slice<i64> 4 must allocate 4 * 8 = 32 bytes (not 4 bytes!),
-    // allowing STORE64 and LOAD64 at byte offsets 0, 8, 16, 24 in both Verifier and Codegen.
     let code = r#"
 FUNC main() -> i64
   %arr = ALLOC slice<i64> 4
@@ -3347,33 +2479,15 @@ FUNC main() -> i64
   RET %val
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V105");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V105: ALLOC slice<i64> 4 must verify STORE64/LOAD64 at byte offset 24! Got: {:?}",
-        res
-    );
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&prog).expect("Compile V105");
-    let tmp_bin = format!("/tmp/light_test_v105_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF V105");
-    let status = std::process::Command::new(&tmp_bin).status().expect("Exec V105");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(77));
+    assert_eq!(verify_and_run_elf(code, true), 77);
 }
 
 #[test]
 fn test_v106_u64_large_immediate_and_implicit_type_comparison() {
-    // V106: Large u64 immediate (> i64::MAX) in binary operand and implicit type comparison `LT %a %b`
-    // where `%a` is `u64` must use unsigned semantics in both Verifier and Codegen.
     let code = r#"
 FUNC main() -> i64
   %a = CONST u64 10
   %sum = ADD u64 %a 18446744073709551600
-  # %sum = 18446744073709551610 (> i64::MAX, negative if treated as signed i64)
-  # Without explicit `u64` on LT, `LT %a %sum` must still infer unsigned comparison!
   %is_lt = LT %a %sum
   ASSERT %is_lt == true
   BR_IF %is_lt .ok
@@ -3382,44 +2496,27 @@ LABEL .ok
   RET 0
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V106");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
-        "V106: Large u64 operand and implicit `LT %a %sum` must verify as unsigned! Got: {:?}",
-        res
-    );
-
-    let mut emitter = light::codegen::MachineCodeEmitter::new();
-    emitter.compile_for_elf(&prog).expect("Compile V106");
-    let tmp_bin = format!("/tmp/light_test_v106_{}", std::process::id());
-    emitter.emit_elf64(&tmp_bin).expect("Emit ELF V106");
-    let status = std::process::Command::new(&tmp_bin).status().expect("Exec V106");
-    let _ = std::fs::remove_file(&tmp_bin);
-    assert_eq!(status.code(), Some(0));
+    assert_eq!(verify_and_run_elf(code, true), 0);
 }
 
 #[test]
 fn test_v107_load8_raw_pointer_negative_offset_rejected() {
-    // V107: LOAD8/STORE8 on a raw pointer (without known buffer bound) must still enforce offset >= 0!
     let code = r#"
 FUNC bad_ptr_load8(p: ptr) -> i64
   %v = LOAD8 p -5
   RET %v
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V107");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Memory 8-bit pointer offset non-negative check"))),
-        "V107: LOAD8 on raw pointer with negative offset -5 must fail safety check! Got: {:?}",
-        res
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Memory 8-bit pointer offset non-negative check",
     );
 }
 
 #[test]
 fn test_v108_duplicate_label_in_function_rejected_by_verifier() {
-    // V108: Duplicate LABEL or LOOP name inside a function must be caught directly by Verifier::verify_function
     let code = r#"
 FUNC dup_lbl(x: i64) -> i64
   LABEL .same
@@ -3428,18 +2525,16 @@ FUNC dup_lbl(x: i64) -> i64
   RET %a
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V108");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    assert!(
-        res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Duplicate Label/Loop"))),
-        "V108: Duplicate label must fail verification! Got: {:?}",
-        res
+    assert_failed(
+        code,
+        None,
+        Some(PropertyCategory::Safety),
+        "Duplicate Label/Loop",
     );
 }
 
 #[test]
 fn test_v109_nested_loop_no_duplicate_verification_goals() {
-    // V109: Inner loop inside outer loop must not emit duplicate assertions during outer loop's probe pass.
     let code = r#"
 FUNC nested_count(n: i64) -> i64
   REQUIRE n >= 0 && n <= 5
@@ -3462,14 +2557,85 @@ FUNC nested_count(n: i64) -> i64
   RET %i
 END_FUNC
 "#;
-    let prog = Parser::parse(code).expect("Parse V109");
-    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
-    // Outer loop: 1 Base + 1 Inductive + 2 Termination = 4 goals
-    // Inner loop: 1 Base + 1 Inductive + 2 Termination = 4 goals
-    // Total = 8 goals (previously emitted 12 goals due to probe duplication)
-    assert_eq!(res.len(), 8, "V109: Nested loops should emit exactly 8 verification goals without duplicates! Got: {:?}", res);
-    assert!(res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })));
+    let results = assert_verified(code, None, Some("Step 2: Inductive Step"));
+    assert_eq!(results.len(), 8);
 }
 
+#[test]
+fn test_v110_call_dest_same_as_arg_prevents_vacuous_truth() {
+    // Khi biến nhận kết quả `%x` của `CALL` trùng tên với đối số truyền vào (`%x = CALL inc %x`),
+    // `IvlLowerer` phải chụp giá trị Pre-state của `%x` trước khi `Havoc(%x)`,
+    // tránh biến `ENSURE %ret == a + 1` thành `%x == %x + 1` (UNSAT -> Vacuous Truth!).
+    let code_good = r#"
+FUNC inc(a: i64) -> i64
+  REQUIRE a >= 0 && a <= 100
+  %r = ADD i64 a 1
+  ENSURE %r == a + 1
+  RET %r
+END_FUNC
 
+FUNC caller_good() -> i64
+  %x = CONST i64 10
+  %x = CALL inc %x
+  ASSERT %x == 11
+  RET %x
+END_FUNC
+"#;
+    assert_verified(
+        code_good,
+        Some("caller_good"),
+        Some("Verify ASSERT directive"),
+    );
 
+    let code_bad = r#"
+FUNC inc(a: i64) -> i64
+  REQUIRE a >= 0 && a <= 100
+  %r = ADD i64 a 1
+  ENSURE %r == a + 1
+  RET %r
+END_FUNC
+
+FUNC caller_bad() -> i64
+  %x = CONST i64 10
+  %x = CALL inc %x
+  ASSERT %x == 999
+  RET %x
+END_FUNC
+"#;
+    assert_failed(
+        code_bad,
+        Some("caller_bad"),
+        Some(PropertyCategory::Functional),
+        "Verify ASSERT directive",
+    );
+}
+
+#[test]
+fn test_v111_syscall_without_dest_writes_to_rax_slot() {
+    // SYSCALL không có `%dest =` mặc định ghi kết quả vào biến `%rax` (trong cả Verifier lẫn Codegen).
+    let code = r#"
+FUNC main() -> i64
+  %sys_getpid = CONST i64 39
+  %z = CONST i64 0
+  SYSCALL %sys_getpid %z %z %z
+  ASSERT %rax >= -4096
+  %ok = GT i64 %rax 0
+  BR_IF %ok .good
+  RET 1
+LABEL .good
+  RET 0
+END_FUNC
+"#;
+    assert_eq!(verify_and_run_elf(code, true), 0);
+}
+
+#[test]
+fn test_v112_parser_rejects_empty_or_unclosed_len() {
+    let err_empty = Parser::parse_expr("len() > 0", 5).expect_err("Empty len() must fail");
+    assert_eq!(err_empty.line_no, 5);
+    assert!(err_empty.message.contains("Empty 'len()'"));
+
+    let err_unclosed = Parser::parse_expr("len(%arr > 0", 7).expect_err("Unclosed len( must fail");
+    assert_eq!(err_unclosed.line_no, 7);
+    assert!(err_unclosed.message.contains("Unclosed 'len(...)'"));
+}

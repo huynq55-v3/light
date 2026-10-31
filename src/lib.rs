@@ -1,6 +1,6 @@
 pub mod ast;
-pub mod parser;
+pub mod codegen;
 pub mod ivl;
+pub mod parser;
 pub mod vcgen;
 pub mod verifier;
-pub mod codegen;

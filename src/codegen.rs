@@ -4,6 +4,7 @@
 //! - Supports all arithmetic, bitwise operations, memory loads/stores, system calls, functions, loops, and branching!
 
 use crate::ast::*;
+use crate::ivl::{FunctionBufferContext, IvlLowerer};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
@@ -72,8 +73,12 @@ impl MachineCodeEmitter {
         let dst_code = dst as u8;
         let src_code = src as u8;
         let mut rex = 0x48;
-        if src_code >= 8 { rex |= 0x04; }
-        if dst_code >= 8 { rex |= 0x01; }
+        if src_code >= 8 {
+            rex |= 0x04;
+        }
+        if dst_code >= 8 {
+            rex |= 0x01;
+        }
         self.code.push(rex);
         self.code.push(0x89);
         let modrm = 0xc0 | ((src_code & 7) << 3) | (dst_code & 7);
@@ -84,61 +89,58 @@ impl MachineCodeEmitter {
     pub fn emit_store_stack(&mut self, src: X86Reg, slot: i32) {
         let src_code = src as u8;
         let mut rex = 0x48;
-        if src_code >= 8 { rex |= 0x04; }
+        if src_code >= 8 {
+            rex |= 0x04;
+        }
         self.code.push(rex);
         self.code.push(0x89);
         let modrm = 0x80 | ((src_code & 7) << 3) | 5; // [rbp + disp32]
         self.code.push(modrm);
-        let disp = -slot;
-        self.code.extend_from_slice(&disp.to_le_bytes());
+        self.code.extend_from_slice(&(-slot).to_le_bytes());
     }
 
     /// Emit: mov reg, [rbp - slot] (64-bit load from stack slot)
     pub fn emit_load_stack(&mut self, dst: X86Reg, slot: i32) {
         let dst_code = dst as u8;
         let mut rex = 0x48;
-        if dst_code >= 8 { rex |= 0x04; }
+        if dst_code >= 8 {
+            rex |= 0x04;
+        }
         self.code.push(rex);
         self.code.push(0x8b);
         let modrm = 0x80 | ((dst_code & 7) << 3) | 5;
         self.code.push(modrm);
-        let disp = -slot;
-        self.code.extend_from_slice(&disp.to_le_bytes());
+        self.code.extend_from_slice(&(-slot).to_le_bytes());
     }
 
     /// Emit: movzx rax, byte ptr [rax + rcx]
     pub fn emit_load8_indexed(&mut self) {
-        // 48 0f b6 04 08
         self.code.extend_from_slice(&[0x48, 0x0f, 0xb6, 0x04, 0x08]);
     }
 
     /// Emit: mov byte ptr [rax + rcx], dl
     pub fn emit_store8_indexed(&mut self) {
-        // 88 14 08
         self.code.extend_from_slice(&[0x88, 0x14, 0x08]);
     }
 
     /// Emit: mov rax, qword ptr [rax + rcx]
     pub fn emit_load64_indexed(&mut self) {
-        // 48 8b 04 08
         self.code.extend_from_slice(&[0x48, 0x8b, 0x04, 0x08]);
     }
 
     /// Emit: mov qword ptr [rax + rcx], rdx
     pub fn emit_store64_indexed(&mut self) {
-        // 48 89 14 08
         self.code.extend_from_slice(&[0x48, 0x89, 0x14, 0x08]);
     }
 
     /// Emit: syscall (0F 05)
     pub fn emit_syscall(&mut self) {
-        self.code.push(0x0f);
-        self.code.push(0x05);
+        self.code.extend_from_slice(&[0x0f, 0x05]);
     }
 
     #[inline]
     fn buf_key(func_name: &str, buf: &str) -> String {
-        format!("{}::{}", func_name, buf.trim_start_matches('%'))
+        format!("{}::{}", func_name, IvlLowerer::clean_name(buf))
     }
 
     /// Emit: ret (C3)
@@ -153,17 +155,28 @@ impl MachineCodeEmitter {
             self.emit_mov_reg_imm64(X86Reg::Rax, 60);
             self.emit_syscall();
         } else {
-            self.code.extend_from_slice(&[0x48, 0x89, 0xec]); // mov rsp, rbp
-            self.code.push(0x5d); // pop rbp
+            self.code.extend_from_slice(&[0x48, 0x89, 0xec, 0x5d]); // mov rsp, rbp; pop rbp
             self.emit_ret();
         }
     }
 
+    /// Emit unconditional `jmp rel32` and record jump fixup
+    fn emit_uncond_jump(&mut self, target: String, jump_fixups: &mut Vec<(usize, String)>) {
+        self.code.push(0xe9);
+        let fix = self.code.len();
+        self.code.extend_from_slice(&[0, 0, 0, 0]);
+        jump_fixups.push((fix, target));
+    }
+
     /// Emit `test rax, rax; jnz rel32` from stack slot and record jump fixup
-    fn emit_cond_jump(&mut self, slot: i32, target: String, jump_fixups: &mut Vec<(usize, String)>) {
+    fn emit_cond_jump(
+        &mut self,
+        slot: i32,
+        target: String,
+        jump_fixups: &mut Vec<(usize, String)>,
+    ) {
         self.emit_load_stack(X86Reg::Rax, slot);
-        self.code.extend_from_slice(&[0x48, 0x85, 0xc0]); // test rax, rax
-        self.code.extend_from_slice(&[0x0f, 0x85]); // jnz rel32
+        self.code.extend_from_slice(&[0x48, 0x85, 0xc0, 0x0f, 0x85]); // test rax, rax; jnz rel32
         let fix = self.code.len();
         self.code.extend_from_slice(&[0, 0, 0, 0]);
         jump_fixups.push((fix, target));
@@ -182,13 +195,23 @@ impl MachineCodeEmitter {
     }
 
     /// Nạp độ dài (theo bytes) của một slice/buffer vào thanh ghi đích `target`
-    fn emit_load_slice_len(&mut self, func_name: &str, slice_reg: &str, slots: &HashMap<String, i32>, target: X86Reg) {
-        let clean = slice_reg.trim_start_matches('%');
+    fn emit_load_slice_len(
+        &mut self,
+        func_name: &str,
+        slice_reg: &str,
+        slots: &HashMap<String, i32>,
+        target: X86Reg,
+    ) {
+        let clean = IvlLowerer::clean_name(slice_reg);
         let len_name = format!("{}_len", clean);
         let key = Self::buf_key(func_name, slice_reg);
         if let Some(&slot) = slots.get(&len_name) {
             self.emit_load_stack(target, slot);
-        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice_reg)) {
+        } else if let Some(&cap) = self
+            .slice_capacities
+            .get(&key)
+            .or_else(|| self.slice_capacities.get(slice_reg))
+        {
             self.emit_mov_reg_imm64(target, cap as i64);
         } else {
             self.emit_mov_reg_imm64(target, 0);
@@ -219,7 +242,11 @@ impl MachineCodeEmitter {
     }
 
     /// Biên dịch toàn bộ chương trình (tất cả các hàm và link các lệnh CALL)
-    pub fn compile_program(&mut self, program: &Program, base_data_vaddr: u64) -> Result<usize, String> {
+    pub fn compile_program(
+        &mut self,
+        program: &Program,
+        base_data_vaddr: u64,
+    ) -> Result<usize, String> {
         let main_func = program
             .functions
             .iter()
@@ -248,8 +275,7 @@ impl MachineCodeEmitter {
                 .ok_or_else(|| format!("Link error: Unresolved symbol '{}'", func_name))?;
 
             let rel32 = (*target_offset as i64) - ((*call_site + 4) as i64);
-            let rel32_bytes = (rel32 as i32).to_le_bytes();
-            self.code[*call_site..*call_site + 4].copy_from_slice(&rel32_bytes);
+            self.code[*call_site..*call_site + 4].copy_from_slice(&(rel32 as i32).to_le_bytes());
         }
 
         Ok(main_offset)
@@ -265,19 +291,26 @@ impl MachineCodeEmitter {
         let mut slots: HashMap<String, i32> = HashMap::new();
         let mut next_slot: i32 = 8;
 
+        let mut alloc_slot = |name: &str| {
+            let clean = IvlLowerer::clean_name(name).to_string();
+            slots.entry(clean).or_insert_with(|| {
+                let s = next_slot;
+                next_slot += 8;
+                s
+            });
+        };
+
         // 1. Collect all parameters
         for p in &func.params {
-            let clean = p.name.trim_start_matches('%').to_string();
-            slots.insert(clean.clone(), next_slot);
-            next_slot += 8;
+            let clean = IvlLowerer::clean_name(&p.name);
+            alloc_slot(clean);
             if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
-                slots.insert(format!("{}_len", clean), next_slot);
-                next_slot += 8;
+                alloc_slot(&format!("{}_len", clean));
             }
         }
 
         // 2. Collect all local registers & variables defined in instructions using shared FunctionBufferContext
-        let buf_ctx = crate::ivl::FunctionBufferContext::analyze(func, Some(program));
+        let buf_ctx = FunctionBufferContext::analyze(func, Some(program));
         for si in &func.instructions {
             match &si.inst {
                 Instruction::AssignConst { dest, .. }
@@ -288,35 +321,24 @@ impl MachineCodeEmitter {
                 | Instruction::Not { dest, .. }
                 | Instruction::Mov { dest, .. }
                 | Instruction::SlicePtr { dest, .. } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    if !slots.contains_key(&clean) {
-                        slots.insert(clean.clone(), next_slot);
-                        next_slot += 8;
-                    }
+                    let clean = IvlLowerer::clean_name(dest);
+                    alloc_slot(clean);
                     if buf_ctx.is_known_buffer(dest) {
-                        let len_name = format!("{}_len", clean);
-                        if !slots.contains_key(&len_name) {
-                            slots.insert(len_name, next_slot);
-                            next_slot += 8;
-                        }
+                        alloc_slot(&format!("{}_len", clean));
                     }
                 }
                 Instruction::Alloc { dest, elem_ty, len } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    if !slots.contains_key(&clean) {
-                        slots.insert(clean.clone(), next_slot);
-                        next_slot += 8;
-                        slots.insert(format!("{}_len", clean), next_slot);
-                        next_slot += 8;
-                    }
+                    let clean = IvlLowerer::clean_name(dest);
+                    alloc_slot(clean);
+                    alloc_slot(&format!("{}_len", clean));
                     self.ensure_buffer_allocated(&func.name, dest, elem_ty, *len);
                 }
-                Instruction::Call { dest: Some(d), .. } | Instruction::Syscall { dest: Some(d), .. } => {
-                    let clean = d.trim_start_matches('%').to_string();
-                    if !slots.contains_key(&clean) {
-                        slots.insert(clean, next_slot);
-                        next_slot += 8;
-                    }
+                Instruction::Call { dest: Some(d), .. }
+                | Instruction::Syscall { dest: Some(d), .. } => {
+                    alloc_slot(d);
+                }
+                Instruction::Syscall { dest: None, .. } => {
+                    alloc_slot("rax");
                 }
                 _ => {}
             }
@@ -326,87 +348,68 @@ impl MachineCodeEmitter {
         let frame_size = ((next_slot + 15) / 16) * 16;
 
         // --- PROLOGUE ---
-        // push rbp (0x55)
-        self.code.push(0x55);
-        // mov rbp, rsp (48 89 e5)
-        self.code.extend_from_slice(&[0x48, 0x89, 0xe5]);
-        // sub rsp, frame_size (48 81 ec disp32)
-        self.code.extend_from_slice(&[0x48, 0x81, 0xec]);
-        self.code.extend_from_slice(&(frame_size as i32).to_le_bytes());
+        // push rbp (0x55); mov rbp, rsp (48 89 e5); sub rsp, frame_size (48 81 ec disp32)
+        self.code
+            .extend_from_slice(&[0x55, 0x48, 0x89, 0xe5, 0x48, 0x81, 0xec]);
+        self.code.extend_from_slice(&frame_size.to_le_bytes());
 
         // System V AMD64 ABI registers: Rdi, Rsi, Rdx, Rcx, R8, R9
-        let abi_regs = [X86Reg::Rdi, X86Reg::Rsi, X86Reg::Rdx, X86Reg::Rcx, X86Reg::R8, X86Reg::R9];
+        let abi_regs = [
+            X86Reg::Rdi,
+            X86Reg::Rsi,
+            X86Reg::Rdx,
+            X86Reg::Rcx,
+            X86Reg::R8,
+            X86Reg::R9,
+        ];
 
         // Save incoming parameters
         if func.name == "main" {
             // Linux raw ELF entry point stack layout:
-            // [rbp + 8]: argc
-            // [rbp + 16]: argv[0] (binary name)
-            // [rbp + 24]: argv[1]
-            // [rbp + 32]: argv[2]
+            // [rbp + 8]: argc, [rbp + 16]: argv[0], [rbp + 24]: argv[1], [rbp + 32]: argv[2]
             for (idx, p) in func.params.iter().enumerate() {
-                let clean = p.name.trim_start_matches('%');
+                let clean = IvlLowerer::clean_name(&p.name);
                 if let Some(&slot) = slots.get(clean) {
-                    if idx == 0 {
-                        // mov rax, [rbp + 8] (48 8b 45 08)
-                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x08]);
-                        self.emit_store_stack(X86Reg::Rax, slot);
-                    } else if idx == 1 {
-                        if clean.contains("argv0") || clean == "argv_0" {
-                            // Direct binary path pointer argv[0]: mov rax, [rbp + 16] (48 8b 45 10)
-                            self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x10]);
-                        } else {
-                            // Standard Linux C ABI: argv pointer array (char**): lea rax, [rbp + 16] (48 8d 45 10)
-                            self.code.extend_from_slice(&[0x48, 0x8d, 0x45, 0x10]);
+                    match idx {
+                        0 => self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x08]),
+                        1 if clean.contains("argv0") || clean == "argv_0" => {
+                            self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x10])
                         }
-                        self.emit_store_stack(X86Reg::Rax, slot);
-                    } else if idx == 2 {
-                        // argv[1]: mov rax, [rbp + 24] (48 8b 45 18)
-                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
-                        self.emit_store_stack(X86Reg::Rax, slot);
-                    } else if idx == 3 {
-                        // argv[2]: mov rax, [rbp + 32] (48 8b 45 20)
-                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x20]);
-                        self.emit_store_stack(X86Reg::Rax, slot);
+                        1 => self.code.extend_from_slice(&[0x48, 0x8d, 0x45, 0x10]),
+                        2 => self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]),
+                        3 => self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x20]),
+                        _ => continue,
                     }
+                    self.emit_store_stack(X86Reg::Rax, slot);
                 }
             }
         } else {
             let mut reg_idx = 0;
             for p in &func.params {
-                let clean = p.name.trim_start_matches('%');
-                if let Some(&slot) = slots.get(clean) {
+                let clean = IvlLowerer::clean_name(&p.name);
+                let mut param_slots = vec![slots.get(clean).copied()];
+                if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
+                    param_slots.push(slots.get(&format!("{}_len", clean)).copied());
+                }
+                for slot_opt in param_slots.into_iter().flatten() {
                     if reg_idx >= abi_regs.len() {
                         return Err(format!(
                             "Function '{}' exceeds maximum 6 ABI register slots for incoming parameters (note: slice<T> consumes 2 slots)",
                             func.name
                         ));
                     }
-                    self.emit_store_stack(abi_regs[reg_idx], slot);
+                    self.emit_store_stack(abi_regs[reg_idx], slot_opt);
                     reg_idx += 1;
-                }
-                if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
-                    let len_name = format!("{}_len", clean);
-                    if let Some(&len_slot) = slots.get(&len_name) {
-                        if reg_idx >= abi_regs.len() {
-                            return Err(format!(
-                                "Function '{}' exceeds maximum 6 ABI register slots for incoming parameters (note: slice<T> consumes 2 slots)",
-                                func.name
-                            ));
-                        }
-                        self.emit_store_stack(abi_regs[reg_idx], len_slot);
-                        reg_idx += 1;
-                    }
                 }
             }
         }
 
         // --- HELPER CLOSURES FOR OPERAND ACCESS ---
-        let load_op_into_reg = |emitter: &mut MachineCodeEmitter, op: &Operand, target: X86Reg| {
-            match op {
+        let load_op_into_reg =
+            |emitter: &mut MachineCodeEmitter, op: &Operand, target: X86Reg| match op {
                 Operand::Const(Value::I64(n)) => emitter.emit_mov_reg_imm64(target, *n),
                 Operand::Const(Value::U64(n)) => emitter.emit_mov_reg_imm64(target, *n as i64),
-                Operand::Const(Value::Bool(b)) => emitter.emit_mov_reg_imm64(target, if *b { 1 } else { 0 }),
+                Operand::Const(Value::Bool(b)) => emitter.emit_mov_reg_imm64(target, i64::from(*b)),
                 Operand::Const(Value::Ptr(p)) => emitter.emit_mov_reg_imm64(target, *p as i64),
                 Operand::Reg(r) => {
                     if r.starts_with("len(") && r.ends_with(')') {
@@ -414,11 +417,15 @@ impl MachineCodeEmitter {
                         emitter.emit_load_slice_len(&func.name, inner, &slots, target);
                     } else {
                         let key = Self::buf_key(&func.name, r);
-                        if let Some(&buf_off) = emitter.buffer_offsets.get(&key).or_else(|| emitter.buffer_offsets.get(r)) {
+                        if let Some(&buf_off) = emitter
+                            .buffer_offsets
+                            .get(&key)
+                            .or_else(|| emitter.buffer_offsets.get(r))
+                        {
                             let vaddr = base_data_vaddr + (buf_off as u64);
                             emitter.emit_mov_reg_imm64(target, vaddr as i64);
                         } else {
-                            let clean = r.trim_start_matches('%');
+                            let clean = IvlLowerer::clean_name(r);
                             if let Some(&slot) = slots.get(clean) {
                                 emitter.emit_load_stack(target, slot);
                             } else {
@@ -446,8 +453,7 @@ impl MachineCodeEmitter {
                         }
                     }
                 }
-            }
-        };
+            };
 
         // --- EMIT INSTRUCTIONS ---
         let mut label_offsets: HashMap<String, usize> = HashMap::new();
@@ -456,23 +462,30 @@ impl MachineCodeEmitter {
 
         for si in &func.instructions {
             match &si.inst {
-                Instruction::Require(_) | Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) | Instruction::Assert(_) => {}
+                Instruction::Require(_)
+                | Instruction::Ensure(_)
+                | Instruction::Invariant(_)
+                | Instruction::Decreases(_)
+                | Instruction::Assert(_) => {}
 
                 Instruction::AssignConst { dest, val, .. } => {
-                    let clean = dest.trim_start_matches('%');
-                    let slot = slots[clean];
+                    let clean = IvlLowerer::clean_name(dest);
                     load_op_into_reg(self, &Operand::Const(val.clone()), X86Reg::Rax);
-                    self.emit_store_stack(X86Reg::Rax, slot);
+                    self.emit_store_stack(X86Reg::Rax, slots[clean]);
                 }
 
                 Instruction::Alloc { dest, elem_ty, len } => {
                     let key = Self::buf_key(&func.name, dest);
-                    let offset = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(dest)).copied().unwrap_or(0);
-                    let clean = dest.trim_start_matches('%');
-                    let slot = slots[clean];
+                    let offset = self
+                        .buffer_offsets
+                        .get(&key)
+                        .or_else(|| self.buffer_offsets.get(dest))
+                        .copied()
+                        .unwrap_or(0);
+                    let clean = IvlLowerer::clean_name(dest);
                     let vaddr = base_data_vaddr + (offset as u64);
                     self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
-                    self.emit_store_stack(X86Reg::Rax, slot);
+                    self.emit_store_stack(X86Reg::Rax, slots[clean]);
 
                     let len_name = format!("{}_len", clean);
                     if let Some(&slot_len) = slots.get(&len_name) {
@@ -483,10 +496,9 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::SlicePtr { dest, slice: src } | Instruction::Mov { dest, src } => {
-                    let d_clean = dest.trim_start_matches('%');
-                    let d_slot = slots[d_clean];
+                    let d_clean = IvlLowerer::clean_name(dest);
                     load_op_into_reg(self, &Operand::Reg(src.clone()), X86Reg::Rax);
-                    self.emit_store_stack(X86Reg::Rax, d_slot);
+                    self.emit_store_stack(X86Reg::Rax, slots[d_clean]);
 
                     // Copy độ dài slice {src}_len -> {dest}_len nếu có
                     let d_len_name = format!("{}_len", d_clean);
@@ -497,28 +509,32 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::SliceLen { dest, slice } => {
-                    let clean = dest.trim_start_matches('%');
-                    let slot = slots[clean];
+                    let clean = IvlLowerer::clean_name(dest);
                     self.emit_load_slice_len(&func.name, slice, &slots, X86Reg::Rax);
-                    self.emit_store_stack(X86Reg::Rax, slot);
+                    self.emit_store_stack(X86Reg::Rax, slots[clean]);
                 }
 
-                Instruction::StoreStr { buf, offset, content } => {
+                Instruction::StoreStr {
+                    buf,
+                    offset,
+                    content,
+                } => {
                     let key = Self::buf_key(&func.name, buf);
-                    let buf_off = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(buf)).cloned().unwrap_or(0);
-                    let target_off = buf_off + offset;
+                    let buf_off = self
+                        .buffer_offsets
+                        .get(&key)
+                        .or_else(|| self.buffer_offsets.get(buf))
+                        .copied()
+                        .unwrap_or(0);
                     let bytes = content.as_bytes();
-                    if target_off + bytes.len() > self.data_section.len() {
-                        self.data_section.resize(target_off + bytes.len(), 0);
-                    }
 
-                    // Runtime machine code emission: dynamic string copy from literal pool
+                    // Nạp chuỗi hằng vào literal pool trong data_section để copy lúc runtime
                     let lit_off = self.data_section.len();
                     self.data_section.extend_from_slice(bytes);
                     let lit_vaddr = base_data_vaddr + (lit_off as u64);
 
                     // Destination pointer in Rdi:
-                    let clean = buf.trim_start_matches('%');
+                    let clean = IvlLowerer::clean_name(buf);
                     if let Some(&slot) = slots.get(clean) {
                         self.emit_load_stack(X86Reg::Rdi, slot);
                     } else {
@@ -531,142 +547,116 @@ impl MachineCodeEmitter {
                         self.code.extend_from_slice(&(*offset as i32).to_le_bytes());
                     }
 
-                    // Source pointer in Rsi:
+                    // Source pointer in Rsi, byte count in Rcx, then `cld; rep movsb`
                     self.emit_mov_reg_imm64(X86Reg::Rsi, lit_vaddr as i64);
-
-                    // Count in Rcx:
                     self.emit_mov_reg_imm64(X86Reg::Rcx, bytes.len() as i64);
-
-                    // cld; rep movsb
-                    self.code.push(0xfc);
-                    self.code.extend_from_slice(&[0xf3, 0xa4]);
+                    self.code.extend_from_slice(&[0xfc, 0xf3, 0xa4]);
                 }
 
-                Instruction::Load8 { dest, buf, offset } => {
+                Instruction::Load8 { dest, buf, offset }
+                | Instruction::Load64 { dest, buf, offset } => {
+                    let is_64 = matches!(si.inst, Instruction::Load64 { .. });
                     load_op_into_reg(self, &Operand::Reg(buf.clone()), X86Reg::Rax);
                     load_op_into_reg(self, offset, X86Reg::Rcx);
-                    self.emit_load8_indexed();
-                    let clean = dest.trim_start_matches('%');
+                    if is_64 {
+                        self.emit_load64_indexed();
+                    } else {
+                        self.emit_load8_indexed();
+                    }
+                    let clean = IvlLowerer::clean_name(dest);
                     self.emit_store_stack(X86Reg::Rax, slots[clean]);
                 }
 
-                Instruction::Store8 { buf, offset, val } => {
+                Instruction::Store8 { buf, offset, val }
+                | Instruction::Store64 { buf, offset, val } => {
+                    let is_64 = matches!(si.inst, Instruction::Store64 { .. });
                     load_op_into_reg(self, &Operand::Reg(buf.clone()), X86Reg::Rax);
                     load_op_into_reg(self, offset, X86Reg::Rcx);
                     load_op_into_reg(self, val, X86Reg::Rdx);
-                    self.emit_store8_indexed();
+                    if is_64 {
+                        self.emit_store64_indexed();
+                    } else {
+                        self.emit_store8_indexed();
+                    }
                 }
 
-                Instruction::Load64 { dest, buf, offset } => {
-                    load_op_into_reg(self, &Operand::Reg(buf.clone()), X86Reg::Rax);
-                    load_op_into_reg(self, offset, X86Reg::Rcx);
-                    self.emit_load64_indexed();
-                    let clean = dest.trim_start_matches('%');
-                    self.emit_store_stack(X86Reg::Rax, slots[clean]);
-                }
-
-                Instruction::Store64 { buf, offset, val } => {
-                    load_op_into_reg(self, &Operand::Reg(buf.clone()), X86Reg::Rax);
-                    load_op_into_reg(self, offset, X86Reg::Rcx);
-                    load_op_into_reg(self, val, X86Reg::Rdx);
-                    self.emit_store64_indexed();
-                }
-
-                Instruction::Binary { op, ty, dest, src1, src2 } => {
+                Instruction::Binary {
+                    op,
+                    ty,
+                    dest,
+                    src1,
+                    src2,
+                } => {
                     load_op_into_reg(self, src1, X86Reg::Rax);
                     load_op_into_reg(self, src2, X86Reg::Rcx);
-                    let is_unsigned = matches!(ty, Type::U64 | Type::U8)
-                        || (matches!(
-                            op,
-                            BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod
-                        ) && (crate::ivl::IvlLowerer::operand_is_unsigned(src1, &buf_ctx.unsigned_vars)
-                            || crate::ivl::IvlLowerer::operand_is_unsigned(src2, &buf_ctx.unsigned_vars)))
-                        || (matches!(op, BinOp::Shr)
-                            && crate::ivl::IvlLowerer::operand_is_unsigned(src1, &buf_ctx.unsigned_vars));
+                    let is_unsigned = buf_ctx.is_binary_unsigned(op, ty, src1, src2);
 
                     match op {
                         BinOp::Add => self.code.extend_from_slice(&[0x48, 0x01, 0xc8]),
                         BinOp::Sub => self.code.extend_from_slice(&[0x48, 0x29, 0xc8]),
                         BinOp::Mul => self.code.extend_from_slice(&[0x48, 0x0f, 0xaf, 0xc1]),
-                        BinOp::Div => {
+                        BinOp::Div | BinOp::Mod => {
                             if is_unsigned {
                                 // xor rdx, rdx; div rcx
-                                self.code.extend_from_slice(&[0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1]);
+                                self.code
+                                    .extend_from_slice(&[0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1]);
                             } else {
                                 // cqo; idiv rcx
                                 self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9]);
                             }
-                        }
-                        BinOp::Mod => {
-                            if is_unsigned {
-                                // xor rdx, rdx; div rcx; mov rax, rdx
-                                self.code.extend_from_slice(&[0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1, 0x48, 0x89, 0xd0]);
-                            } else {
-                                // cqo; idiv rcx; mov rax, rdx
-                                self.code.extend_from_slice(&[0x48, 0x99, 0x48, 0xf7, 0xf9, 0x48, 0x89, 0xd0]);
+                            if matches!(op, BinOp::Mod) {
+                                // mov rax, rdx
+                                self.code.extend_from_slice(&[0x48, 0x89, 0xd0]);
                             }
                         }
-                        BinOp::And | BinOp::BitAnd => self.code.extend_from_slice(&[0x48, 0x21, 0xc8]),
-                        BinOp::Or | BinOp::BitOr => self.code.extend_from_slice(&[0x48, 0x09, 0xc8]),
+                        BinOp::And | BinOp::BitAnd => {
+                            self.code.extend_from_slice(&[0x48, 0x21, 0xc8])
+                        }
+                        BinOp::Or | BinOp::BitOr => {
+                            self.code.extend_from_slice(&[0x48, 0x09, 0xc8])
+                        }
                         BinOp::Xor => self.code.extend_from_slice(&[0x48, 0x31, 0xc8]),
                         BinOp::Shl => self.code.extend_from_slice(&[0x48, 0xd3, 0xe0]),
                         BinOp::Shr => self.code.extend_from_slice(&[0x48, 0xd3, 0xe8]),
                         BinOp::Sar => self.code.extend_from_slice(&[0x48, 0xd3, 0xf8]),
-                        BinOp::Eq => {
-                            // cmp rax, rcx; sete al; movzx rax, al
-                            self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x94, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                        }
-                        BinOp::Neq => {
-                            self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x95, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                        }
-                        BinOp::Lt => {
-                            if is_unsigned {
-                                // cmp rax, rcx; setb al; movzx rax, al
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x92, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            } else {
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9c, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            }
-                        }
-                        BinOp::Lte => {
-                            if is_unsigned {
-                                // cmp rax, rcx; setbe al; movzx rax, al
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x96, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            } else {
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9e, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            }
-                        }
-                        BinOp::Gt => {
-                            if is_unsigned {
-                                // cmp rax, rcx; seta al; movzx rax, al
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x97, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            } else {
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9f, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            }
-                        }
-                        BinOp::Gte => {
-                            if is_unsigned {
-                                // cmp rax, rcx; setae al; movzx rax, al
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x93, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            } else {
-                                self.code.extend_from_slice(&[0x48, 0x39, 0xc8, 0x0f, 0x9d, 0xc0, 0x48, 0x0f, 0xb6, 0xc0]);
-                            }
+                        BinOp::Eq
+                        | BinOp::Neq
+                        | BinOp::Lt
+                        | BinOp::Lte
+                        | BinOp::Gt
+                        | BinOp::Gte => {
+                            let setcc = match (op, is_unsigned) {
+                                (BinOp::Eq, _) => 0x94,
+                                (BinOp::Neq, _) => 0x95,
+                                (BinOp::Lt, true) => 0x92,   // setb
+                                (BinOp::Lt, false) => 0x9c,  // setl
+                                (BinOp::Lte, true) => 0x96,  // setbe
+                                (BinOp::Lte, false) => 0x9e, // setle
+                                (BinOp::Gt, true) => 0x97,   // seta
+                                (BinOp::Gt, false) => 0x9f,  // setg
+                                (BinOp::Gte, true) => 0x93,  // setae
+                                (BinOp::Gte, false) => 0x9d, // setge
+                                _ => unreachable!(),
+                            };
+                            // cmp rax, rcx; setCC al; movzx rax, al
+                            self.code.extend_from_slice(&[
+                                0x48, 0x39, 0xc8, 0x0f, setcc, 0xc0, 0x48, 0x0f, 0xb6, 0xc0,
+                            ]);
                         }
                     }
 
-                    let clean = dest.trim_start_matches('%');
+                    let clean = IvlLowerer::clean_name(dest);
                     self.emit_store_stack(X86Reg::Rax, slots[clean]);
                 }
 
                 Instruction::Not { dest, ty, src } => {
                     load_op_into_reg(self, src, X86Reg::Rax);
                     if matches!(ty, Type::Bool) {
-                        // xor rax, 1
-                        self.code.extend_from_slice(&[0x48, 0x83, 0xf0, 0x01]);
+                        self.code.extend_from_slice(&[0x48, 0x83, 0xf0, 0x01]); // xor rax, 1
                     } else {
-                        // not rax
-                        self.code.extend_from_slice(&[0x48, 0xf7, 0xd0]);
+                        self.code.extend_from_slice(&[0x48, 0xf7, 0xd0]); // not rax
                     }
-                    let clean = dest.trim_start_matches('%');
+                    let clean = IvlLowerer::clean_name(dest);
                     self.emit_store_stack(X86Reg::Rax, slots[clean]);
                 }
 
@@ -675,15 +665,11 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::Jump(target) => {
-                    // jmp rel32 (E9 disp32)
-                    self.code.push(0xe9);
-                    let fix = self.code.len();
-                    self.code.extend_from_slice(&[0, 0, 0, 0]);
-                    jump_fixups.push((fix, target.clone()));
+                    self.emit_uncond_jump(target.clone(), &mut jump_fixups);
                 }
 
                 Instruction::BrIf { cond, target } => {
-                    let clean = cond.trim_start_matches('%');
+                    let clean = IvlLowerer::clean_name(cond);
                     self.emit_cond_jump(slots[clean], target.clone(), &mut jump_fixups);
                 }
 
@@ -694,27 +680,24 @@ impl MachineCodeEmitter {
                     loop_stack.push((start_lbl, end_lbl));
                 }
 
-                Instruction::BreakIf(cond) => {
-                    if let Some((_, end_lbl)) = loop_stack.last() {
-                        let clean = cond.trim_start_matches('%');
+                Instruction::BreakIf(cond) | Instruction::ContinueIf(cond) => {
+                    let is_break = matches!(si.inst, Instruction::BreakIf(_));
+                    let op_name = if is_break { "BREAK_IF" } else { "CONTINUE_IF" };
+                    if let Some((start_lbl, end_lbl)) = loop_stack.last() {
+                        let target_lbl = if is_break { end_lbl } else { start_lbl }.clone();
+                        let clean = IvlLowerer::clean_name(cond);
                         let &slot = slots.get(clean).ok_or_else(|| {
-                            format!("Undefined variable '%{}' in BREAK_IF in function '{}'", clean, func.name)
+                            format!(
+                                "Undefined variable '%{}' in {} in function '{}'",
+                                clean, op_name, func.name
+                            )
                         })?;
-                        self.emit_cond_jump(slot, end_lbl.clone(), &mut jump_fixups);
+                        self.emit_cond_jump(slot, target_lbl, &mut jump_fixups);
                     } else {
-                        return Err(format!("BREAK_IF outside of LOOP in function '{}'", func.name));
-                    }
-                }
-
-                Instruction::ContinueIf(cond) => {
-                    if let Some((start_lbl, _)) = loop_stack.last() {
-                        let clean = cond.trim_start_matches('%');
-                        let &slot = slots.get(clean).ok_or_else(|| {
-                            format!("Undefined variable '%{}' in CONTINUE_IF in function '{}'", clean, func.name)
-                        })?;
-                        self.emit_cond_jump(slot, start_lbl.clone(), &mut jump_fixups);
-                    } else {
-                        return Err(format!("CONTINUE_IF outside of LOOP in function '{}'", func.name));
+                        return Err(format!(
+                            "{} outside of LOOP in function '{}'",
+                            op_name, func.name
+                        ));
                     }
                 }
 
@@ -729,17 +712,21 @@ impl MachineCodeEmitter {
                                 end_lbl.trim_start_matches("__loop_end_")
                             ));
                         }
-                        self.code.push(0xe9);
-                        let fix = self.code.len();
-                        self.code.extend_from_slice(&[0, 0, 0, 0]);
-                        jump_fixups.push((fix, start_lbl));
+                        self.emit_uncond_jump(start_lbl, &mut jump_fixups);
                         label_offsets.insert(end_lbl, self.code.len());
                     } else {
-                        return Err(format!("Unexpected END_LOOP '{}' without matching LOOP in function '{}'", name, func.name));
+                        return Err(format!(
+                            "Unexpected END_LOOP '{}' without matching LOOP in function '{}'",
+                            name, func.name
+                        ));
                     }
                 }
 
-                Instruction::Call { dest, func_name, args } => {
+                Instruction::Call {
+                    dest,
+                    func_name,
+                    args,
+                } => {
                     // System V AMD64 ABI: Rdi, Rsi, Rdx, Rcx, R8, R9
                     let target_func = program.functions.iter().find(|f| f.name == *func_name);
                     let mut reg_idx = 0;
@@ -751,31 +738,28 @@ impl MachineCodeEmitter {
                                 func_name, func.name
                             ));
                         }
-                        let target_reg = abi_regs[reg_idx];
-                        load_op_into_reg(self, arg, target_reg);
+                        load_op_into_reg(self, arg, abi_regs[reg_idx]);
                         reg_idx += 1;
 
                         // Nếu callee parameter tại vị trí này là Type::Slice hoặc Type::Array, truyền tiếp len vào thanh ghi tiếp theo
-                        if let Some(callee) = target_func {
-                            if let Some(param) = callee.params.get(arg_idx) {
-                                if matches!(param.ty, Type::Slice(_) | Type::Array(_, _)) {
-                                    if reg_idx >= abi_regs.len() {
-                                        return Err(format!(
-                                            "Call to '{}' in function '{}' exceeds maximum 6 ABI register slots (note: slice<T> consumes 2 slots)",
-                                            func_name, func.name
-                                        ));
-                                    }
-                                    let len_reg = abi_regs[reg_idx];
-                                    match arg {
-                                        Operand::Reg(r) => {
-                                            self.emit_load_slice_len(&func.name, r, &slots, len_reg);
-                                        }
-                                        _ => {
-                                            self.emit_mov_reg_imm64(len_reg, 0);
-                                        }
-                                    }
-                                    reg_idx += 1;
+                        if let Some(param) = target_func.and_then(|c| c.params.get(arg_idx)) {
+                            if matches!(param.ty, Type::Slice(_) | Type::Array(_, _)) {
+                                if reg_idx >= abi_regs.len() {
+                                    return Err(format!(
+                                        "Call to '{}' in function '{}' exceeds maximum 6 ABI register slots (note: slice<T> consumes 2 slots)",
+                                        func_name, func.name
+                                    ));
                                 }
+                                let len_reg = abi_regs[reg_idx];
+                                match arg {
+                                    Operand::Reg(r) => {
+                                        self.emit_load_slice_len(&func.name, r, &slots, len_reg);
+                                    }
+                                    _ => {
+                                        self.emit_mov_reg_imm64(len_reg, 0);
+                                    }
+                                }
+                                reg_idx += 1;
                             }
                         }
                     }
@@ -787,36 +771,47 @@ impl MachineCodeEmitter {
                     self.call_fixups.push((call_site, func_name.clone()));
 
                     if let Some(d) = dest {
-                        let clean = d.trim_start_matches('%');
+                        let clean = IvlLowerer::clean_name(d);
                         self.emit_store_stack(X86Reg::Rax, slots[clean]);
                     }
                 }
 
-                Instruction::Syscall { dest, rax, rdi, rsi, rdx, r10, r8, r9 } => {
-                    if let Some(op) = r9 { load_op_into_reg(self, op, X86Reg::R9); }
-                    if let Some(op) = r8 { load_op_into_reg(self, op, X86Reg::R8); }
-                    if let Some(op) = r10 { load_op_into_reg(self, op, X86Reg::R10); }
+                Instruction::Syscall {
+                    dest,
+                    rax,
+                    rdi,
+                    rsi,
+                    rdx,
+                    r10,
+                    r8,
+                    r9,
+                } => {
+                    if let Some(op) = r9 {
+                        load_op_into_reg(self, op, X86Reg::R9);
+                    }
+                    if let Some(op) = r8 {
+                        load_op_into_reg(self, op, X86Reg::R8);
+                    }
+                    if let Some(op) = r10 {
+                        load_op_into_reg(self, op, X86Reg::R10);
+                    }
                     load_op_into_reg(self, rdx, X86Reg::Rdx);
                     load_op_into_reg(self, rsi, X86Reg::Rsi);
                     load_op_into_reg(self, rdi, X86Reg::Rdi);
                     load_op_into_reg(self, rax, X86Reg::Rax);
                     self.emit_syscall();
 
-                    if let Some(d) = dest {
-                        let clean = d.trim_start_matches('%');
-                        if let Some(&slot) = slots.get(clean) {
-                            self.emit_store_stack(X86Reg::Rax, slot);
-                        }
-                    } else if let Some(&slot) = slots.get("rax") {
+                    let out_reg = dest.as_deref().unwrap_or("rax");
+                    let clean = IvlLowerer::clean_name(out_reg);
+                    if let Some(&slot) = slots.get(clean) {
                         self.emit_store_stack(X86Reg::Rax, slot);
                     }
                 }
 
                 Instruction::RetIf { cond, val } => {
-                    let clean = cond.trim_start_matches('%');
+                    let clean = IvlLowerer::clean_name(cond);
                     self.emit_load_stack(X86Reg::Rax, slots[clean]);
-                    self.code.extend_from_slice(&[0x48, 0x85, 0xc0]); // test rax, rax
-                    self.code.extend_from_slice(&[0x0f, 0x84]); // jz rel32
+                    self.code.extend_from_slice(&[0x48, 0x85, 0xc0, 0x0f, 0x84]); // test rax, rax; jz rel32
                     let jz_fix = self.code.len();
                     self.code.extend_from_slice(&[0, 0, 0, 0]);
 
@@ -842,11 +837,17 @@ impl MachineCodeEmitter {
         // Validate all LOOP blocks were closed
         if let Some((start_lbl, _)) = loop_stack.last() {
             let loop_name = start_lbl.trim_start_matches("__loop_start_");
-            return Err(format!("Unclosed LOOP '{}' in function '{}' (missing END_LOOP)", loop_name, func.name));
+            return Err(format!(
+                "Unclosed LOOP '{}' in function '{}' (missing END_LOOP)",
+                loop_name, func.name
+            ));
         }
 
         // Epilogue default if not already returned via Instruction::Ret
-        let ends_with_ret = func.instructions.last().is_some_and(|s| matches!(s.inst, Instruction::Ret(_)));
+        let ends_with_ret = func
+            .instructions
+            .last()
+            .is_some_and(|s| matches!(s.inst, Instruction::Ret(_)));
         if !ends_with_ret {
             if func.name == "main" {
                 self.emit_mov_reg_imm64(X86Reg::Rax, 0);
@@ -858,10 +859,13 @@ impl MachineCodeEmitter {
         for (patch_pos, target) in &jump_fixups {
             if let Some(&tgt_offset) = label_offsets.get(target) {
                 let rel32 = (tgt_offset as i64) - ((*patch_pos + 4) as i64);
-                let rel32_bytes = (rel32 as i32).to_le_bytes();
-                self.code[*patch_pos..*patch_pos + 4].copy_from_slice(&rel32_bytes);
+                self.code[*patch_pos..*patch_pos + 4]
+                    .copy_from_slice(&(rel32 as i32).to_le_bytes());
             } else {
-                return Err(format!("Undefined label '{}' in function '{}'", target, func.name));
+                return Err(format!(
+                    "Undefined label '{}' in function '{}'",
+                    target, func.name
+                ));
             }
         }
 
@@ -908,20 +912,14 @@ impl MachineCodeEmitter {
         elf_header[20..24].copy_from_slice(&1u32.to_le_bytes()); // Version
         elf_header[24..32].copy_from_slice(&entry_point.to_le_bytes()); // Entry point
         elf_header[32..40].copy_from_slice(&(elf_header_size as u64).to_le_bytes()); // e_phoff = 64
-        elf_header[40..48].copy_from_slice(&0u64.to_le_bytes()); // e_shoff = 0
-        elf_header[48..52].copy_from_slice(&0u32.to_le_bytes()); // e_flags = 0
         elf_header[52..54].copy_from_slice(&(elf_header_size as u16).to_le_bytes()); // e_ehsize = 64
         elf_header[54..56].copy_from_slice(&(prog_header_size as u16).to_le_bytes()); // e_phentsize = 56
         elf_header[56..58].copy_from_slice(&(num_phdrs as u16).to_le_bytes()); // e_phnum = 1
-        elf_header[58..60].copy_from_slice(&0u16.to_le_bytes()); // e_shentsize = 0
-        elf_header[60..62].copy_from_slice(&0u16.to_le_bytes()); // e_shnum = 0
-        elf_header[62..64].copy_from_slice(&0u16.to_le_bytes()); // e_shstrndx = 0
 
         // 2. Program Header: PT_LOAD RWX (56 bytes)
         let mut phdr = vec![0u8; 56];
         phdr[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
         phdr[4..8].copy_from_slice(&7u32.to_le_bytes()); // PF_R | PF_W | PF_X
-        phdr[8..16].copy_from_slice(&0u64.to_le_bytes()); // Offset 0
         phdr[16..24].copy_from_slice(&base_vaddr.to_le_bytes()); // Vaddr 0x400000
         phdr[24..32].copy_from_slice(&base_vaddr.to_le_bytes()); // Paddr 0x400000
         phdr[32..40].copy_from_slice(&total_filesz.to_le_bytes()); // File size
