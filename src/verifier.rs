@@ -194,16 +194,19 @@ impl Verifier {
         }
     }
 
-    /// Bọc điều kiện luồng chạy `active` vào mọi vi lệnh IVL cơ bản (Assign, Assert, Assume, Havoc)
+    /// Bọc điều kiện luồng chạy `active` vào mọi vi lệnh IVL cơ bản (Assign, Assert, Assume, Havoc).
+    /// Khi `include_asserts == false` (ví dụ trong pha thăm dò `probe_stmts` của vòng lặp ngoài),
+    /// các lệnh `Assert` được lược bỏ để không sinh trùng lặp mệnh đề kiểm chứng cho vòng lặp con.
     fn guard_stmts(
         raw_stmts: Vec<IvlStmt>,
         active: &IvlExpr,
         havoc_counter: &mut usize,
+        include_asserts: bool,
     ) -> Vec<IvlStmt> {
         if Self::is_false(active) {
             return Vec::new();
         }
-        if Self::is_true(active) {
+        if Self::is_true(active) && include_asserts {
             return raw_stmts;
         }
 
@@ -212,23 +215,30 @@ impl Verifier {
             match st {
                 IvlStmt::Assign { dest, expr, is_memory } => {
                     let clean = IvlLowerer::clean_name(&dest).to_string();
-                    out.push(IvlStmt::Assign {
-                        dest: clean.clone(),
-                        expr: IvlExpr::Ite {
+                    let new_expr = if Self::is_true(active) {
+                        expr
+                    } else {
+                        IvlExpr::Ite {
                             cond: Box::new(active.clone()),
                             then_val: Box::new(expr),
-                            else_val: Box::new(IvlExpr::Var(clean)),
-                        },
+                            else_val: Box::new(IvlExpr::Var(clean.clone())),
+                        }
+                    };
+                    out.push(IvlStmt::Assign {
+                        dest: clean,
+                        expr: new_expr,
                         is_memory,
                     });
                 }
                 IvlStmt::Assert { cond, goal_name, category, loc } => {
-                    out.push(IvlStmt::Assert {
-                        cond: Self::mk_implies(active, cond),
-                        goal_name,
-                        category,
-                        loc,
-                    });
+                    if include_asserts {
+                        out.push(IvlStmt::Assert {
+                            cond: Self::mk_implies(active, cond),
+                            goal_name,
+                            category,
+                            loc,
+                        });
+                    }
                 }
                 IvlStmt::Assume { cond } => {
                     out.push(IvlStmt::Assume {
@@ -236,23 +246,27 @@ impl Verifier {
                     });
                 }
                 IvlStmt::Havoc { vars, is_memory } => {
-                    for v in vars {
-                        *havoc_counter += 1;
-                        let clean = IvlLowerer::clean_name(&v).to_string();
-                        let tmp = format!("__guarded_havoc_{}_{}", clean, *havoc_counter);
-                        out.push(IvlStmt::Havoc {
-                            vars: vec![tmp.clone()],
-                            is_memory,
-                        });
-                        out.push(IvlStmt::Assign {
-                            dest: clean.clone(),
-                            expr: IvlExpr::Ite {
-                                cond: Box::new(active.clone()),
-                                then_val: Box::new(IvlExpr::Var(tmp)),
-                                else_val: Box::new(IvlExpr::Var(clean)),
-                            },
-                            is_memory,
-                        });
+                    if Self::is_true(active) {
+                        out.push(IvlStmt::Havoc { vars, is_memory });
+                    } else {
+                        for v in vars {
+                            *havoc_counter += 1;
+                            let clean = IvlLowerer::clean_name(&v).to_string();
+                            let tmp = format!("__guarded_havoc_{}_{}", clean, *havoc_counter);
+                            out.push(IvlStmt::Havoc {
+                                vars: vec![tmp.clone()],
+                                is_memory,
+                            });
+                            out.push(IvlStmt::Assign {
+                                dest: clean.clone(),
+                                expr: IvlExpr::Ite {
+                                    cond: Box::new(active.clone()),
+                                    then_val: Box::new(IvlExpr::Var(tmp)),
+                                    else_val: Box::new(IvlExpr::Var(clean)),
+                                },
+                                is_memory,
+                            });
+                        }
                     }
                 }
             }
@@ -384,7 +398,8 @@ impl Verifier {
                     let ret_var_expr = IvlExpr::Var(ret_var);
                     local_loop_exit = Self::mk_or(local_loop_exit, ret_var_expr.clone());
 
-                    if !Self::is_false(&take_ret) {
+                    let include_asserts = loop_ctx.map_or(true, |c| c.verify_inductive);
+                    if !Self::is_false(&take_ret) && include_asserts {
                         let goal_name = if is_early {
                             format!("Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)", func.name, s_inst.loc.line)
                         } else if has_loop {
@@ -540,20 +555,30 @@ impl Verifier {
                         }
                     }
 
+                    let verify_this_loop = loop_ctx.map_or(true, |c| c.verify_inductive);
+
                     // --- BƯỚC 1: Base Case (Kiểm chứng Invariant đúng ngay khi vừa tiến vào vòng lặp) ---
-                    for inv in &loop_invs {
-                        stmts.push(IvlStmt::Assert {
-                            cond: Self::mk_implies(&active, inv.clone()),
-                            goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
-                            category: PropertyCategory::Inductive,
-                            loc: slice[idx].loc.clone(),
-                        });
+                    if verify_this_loop {
+                        for inv in &loop_invs {
+                            stmts.push(IvlStmt::Assert {
+                                cond: Self::mk_implies(&active, inv.clone()),
+                                goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
+                                category: PropertyCategory::Inductive,
+                                loc: slice[idx].loc.clone(),
+                            });
+                        }
                     }
 
-                    // Hạ cấp thân vòng lặp 1 lần ở chế độ thăm dò để tự động trích xuất 100% biến/bộ nhớ bị sửa đổi
+                    // Hạ cấp thân vòng lặp 1 lần ở chế độ thăm dò (verify_inductive: false) để tự động trích xuất 100% biến/bộ nhớ bị sửa đổi
                     // (bao gồm cả biến/bộ nhớ bị sửa bởi CALL, STORE_STR, vòng lặp con...)
                     let mut probe_counter = *havoc_counter;
                     let mut probe_diag = Vec::new();
+                    let probe_ctx = LoopContext {
+                        invariants: &[],
+                        decreases: &[],
+                        verify_inductive: false,
+                        loop_id,
+                    };
                     let probe_stmts = Self::lower_slice(
                         func,
                         body_slice,
@@ -563,7 +588,7 @@ impl Verifier {
                         ensures,
                         canon_ret,
                         true,
-                        None,
+                        Some(&probe_ctx),
                         None,
                         None,
                         &mut probe_counter,
@@ -578,14 +603,14 @@ impl Verifier {
                             vars: modified_scalars,
                             is_memory: false,
                         };
-                        stmts.extend(Self::guard_stmts(vec![havoc_s], &active, havoc_counter));
+                        stmts.extend(Self::guard_stmts(vec![havoc_s], &active, havoc_counter, verify_this_loop));
                     }
                     if !modified_mems.is_empty() {
                         let havoc_m = IvlStmt::Havoc {
                             vars: modified_mems,
                             is_memory: true,
                         };
-                        stmts.extend(Self::guard_stmts(vec![havoc_m], &active, havoc_counter));
+                        stmts.extend(Self::guard_stmts(vec![havoc_m], &active, havoc_counter, verify_this_loop));
                     }
 
                     // Giả định (Assume) các Invariant đúng ở đầu bước lặp tổng quát
@@ -602,11 +627,10 @@ impl Verifier {
                             expr: dec.clone(),
                             is_memory: false,
                         };
-                        stmts.extend(Self::guard_stmts(vec![rank_assign], &active, havoc_counter));
+                        stmts.extend(Self::guard_stmts(vec![rank_assign], &active, havoc_counter, verify_this_loop));
                     }
 
                     // Hạ cấp thân vòng lặp (với kiểm chứng quy nạp nếu đang ở ngoài hoặc đang trong pha quy nạp của vòng lặp cha)
-                    let verify_this_loop = loop_ctx.map_or(true, |c| c.verify_inductive);
                     let ind_ctx = LoopContext {
                         invariants: &loop_invs,
                         decreases: &loop_decs,
@@ -630,7 +654,7 @@ impl Verifier {
                         havoc_counter,
                     );
 
-                    stmts.extend(Self::guard_stmts(body_stmts, &active, havoc_counter));
+                    stmts.extend(Self::guard_stmts(body_stmts, &active, havoc_counter, verify_this_loop));
 
                     // Cuối thân vòng lặp (Latch): những nhánh vẫn active và KHÔNG thoát (không BREAK, không CONTINUE, không RET)
                     // sẽ quay lại đầu vòng lặp -> Phải thỏa mãn Invariant (Step 2) và Decreases (Step 4a, 4b)!
@@ -662,8 +686,9 @@ impl Verifier {
                 Instruction::EndLoop(_) => {}
 
                 _other => {
+                    let include_asserts = loop_ctx.map_or(true, |c| c.verify_inductive);
                     let raw = IvlLowerer::lower_atomic_instruction(func, s_inst, ctx, program);
-                    stmts.extend(Self::guard_stmts(raw, &active, havoc_counter));
+                    stmts.extend(Self::guard_stmts(raw, &active, havoc_counter, include_asserts));
                 }
             }
             idx += 1;
@@ -681,6 +706,34 @@ impl Verifier {
     /// Kiểm tra tính đúng đắn toán học bằng kiến trúc Boogie IVL Engine (Universal VCGen)
     pub fn verify_function(func: &Function, program: Option<&Program>) -> Vec<VerificationResult> {
         let mut results = Vec::new();
+
+        // 0. Static Well-Formedness: Function-scoped Label & Loop Name Uniqueness Check
+        let mut seen_labels: HashMap<&str, usize> = HashMap::new();
+        for s_inst in &func.instructions {
+            let label_name = match &s_inst.inst {
+                Instruction::Loop(l) | Instruction::Label(l) => Some(l.as_str()),
+                _ => None,
+            };
+            if let Some(lbl) = label_name {
+                if let Some(&prev_line) = seen_labels.get(lbl) {
+                    results.push(VerificationResult::Failed {
+                        goal_name: format!("Function '{}' - Line {}: Duplicate Label/Loop '{}'", func.name, s_inst.loc.line, lbl),
+                        category: PropertyCategory::Safety,
+                        reason: format!("Duplicate label or loop name '{}' (already defined at line {})", lbl, prev_line),
+                        counter_example: None,
+                        stack_trace: vec![StackFrame {
+                            file: func.file.clone(),
+                            line: s_inst.loc.line,
+                            function: func.name.clone(),
+                            snippet: s_inst.loc.text.clone(),
+                            role: format!("Duplicate symbol '{}'", lbl),
+                        }],
+                    });
+                    return results;
+                }
+                seen_labels.insert(lbl, s_inst.loc.line);
+            }
+        }
 
         // 0a. Static Well-Formedness: Loop Structure Check (Matching LOOP <lbl> ... END_LOOP <lbl>)
         // and Cross-Loop Jump Validation
@@ -877,26 +930,6 @@ impl Verifier {
                         function: func.name.clone(),
                         snippet: format!("Buffer '%{}' used with both 8-bit and 64-bit memory instructions", buf),
                         role: "Memory Sort Mismatch".to_string(),
-                    }],
-                });
-                return results;
-            }
-        }
-
-        // 0e. Floating-Point Rejection Check
-        for p in &func.params {
-            if matches!(p.ty, Type::F64) {
-                results.push(VerificationResult::Failed {
-                    goal_name: format!("Function '{}': Type Check", func.name),
-                    category: PropertyCategory::Safety,
-                    reason: "Floating-point type 'f64' is not yet supported in Light SMT verifier (planned for future QF_FP support)".to_string(),
-                    counter_example: None,
-                    stack_trace: vec![StackFrame {
-                        file: func.file.clone(),
-                        line: 1,
-                        function: func.name.clone(),
-                        snippet: format!("param {}: f64", p.name),
-                        role: "Unsupported Float Type".to_string(),
                     }],
                 });
                 return results;

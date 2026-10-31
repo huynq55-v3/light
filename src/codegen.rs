@@ -169,18 +169,38 @@ impl MachineCodeEmitter {
         jump_fixups.push((fix, target));
     }
 
+    /// Cấp phát một buffer tĩnh vào data_section nếu chưa có
+    fn ensure_buffer_allocated(&mut self, func_name: &str, dest: &str, elem_ty: &Type, len: usize) {
+        let key = Self::buf_key(func_name, dest);
+        if !self.buffer_offsets.contains_key(&key) {
+            let byte_len = len.saturating_mul(elem_ty.byte_size());
+            let offset = self.data_section.len();
+            self.data_section.resize(offset + byte_len + 16, 0);
+            self.buffer_offsets.insert(key.clone(), offset);
+            self.slice_capacities.insert(key, byte_len);
+        }
+    }
+
+    /// Nạp độ dài (theo bytes) của một slice/buffer vào thanh ghi đích `target`
+    fn emit_load_slice_len(&mut self, func_name: &str, slice_reg: &str, slots: &HashMap<String, i32>, target: X86Reg) {
+        let clean = slice_reg.trim_start_matches('%');
+        let len_name = format!("{}_len", clean);
+        let key = Self::buf_key(func_name, slice_reg);
+        if let Some(&slot) = slots.get(&len_name) {
+            self.emit_load_stack(target, slot);
+        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice_reg)) {
+            self.emit_mov_reg_imm64(target, cap as i64);
+        } else {
+            self.emit_mov_reg_imm64(target, 0);
+        }
+    }
+
     /// Cấp phát trước tất cả các buffer tĩnh để địa chỉ data_section cố định (tránh realloc khi chạy JIT)
     pub fn preallocate_buffers(&mut self, program: &Program) {
         for func in &program.functions {
             for si in &func.instructions {
-                if let Instruction::Alloc { dest, len, .. } = &si.inst {
-                    let key = Self::buf_key(&func.name, dest);
-                    if !self.buffer_offsets.contains_key(&key) {
-                        let offset = self.data_section.len();
-                        self.data_section.resize(offset + len + 16, 0);
-                        self.buffer_offsets.insert(key.clone(), offset);
-                        self.slice_capacities.insert(key, *len);
-                    }
+                if let Instruction::Alloc { dest, elem_ty, len } = &si.inst {
+                    self.ensure_buffer_allocated(&func.name, dest, elem_ty, *len);
                 }
             }
         }
@@ -281,7 +301,7 @@ impl MachineCodeEmitter {
                         }
                     }
                 }
-                Instruction::Alloc { dest, len, .. } => {
+                Instruction::Alloc { dest, elem_ty, len } => {
                     let clean = dest.trim_start_matches('%').to_string();
                     if !slots.contains_key(&clean) {
                         slots.insert(clean.clone(), next_slot);
@@ -289,13 +309,7 @@ impl MachineCodeEmitter {
                         slots.insert(format!("{}_len", clean), next_slot);
                         next_slot += 8;
                     }
-                    let key = Self::buf_key(&func.name, dest);
-                    if !self.buffer_offsets.contains_key(&key) {
-                        let offset = self.data_section.len();
-                        self.data_section.resize(offset + len + 16, 0);
-                        self.buffer_offsets.insert(key.clone(), offset);
-                        self.slice_capacities.insert(key, *len);
-                    }
+                    self.ensure_buffer_allocated(&func.name, dest, elem_ty, *len);
                 }
                 Instruction::Call { dest: Some(d), .. } | Instruction::Syscall { dest: Some(d), .. } => {
                     let clean = d.trim_start_matches('%').to_string();
@@ -347,12 +361,12 @@ impl MachineCodeEmitter {
                         }
                         self.emit_store_stack(X86Reg::Rax, slot);
                     } else if idx == 2 {
-                        // mov rax, [rbp + 32] (48 8b 45 20)
-                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x20]);
+                        // argv[1]: mov rax, [rbp + 24] (48 8b 45 18)
+                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x18]);
                         self.emit_store_stack(X86Reg::Rax, slot);
                     } else if idx == 3 {
-                        // mov rax, [rbp + 40] (48 8b 45 28)
-                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x28]);
+                        // argv[2]: mov rax, [rbp + 32] (48 8b 45 20)
+                        self.code.extend_from_slice(&[0x48, 0x8b, 0x45, 0x20]);
                         self.emit_store_stack(X86Reg::Rax, slot);
                     }
                 }
@@ -396,17 +410,8 @@ impl MachineCodeEmitter {
                 Operand::Const(Value::Ptr(p)) => emitter.emit_mov_reg_imm64(target, *p as i64),
                 Operand::Reg(r) => {
                     if r.starts_with("len(") && r.ends_with(')') {
-                        let inner = &r[4..r.len() - 1].trim();
-                        let clean = inner.trim_start_matches('%');
-                        let len_name = format!("{}_len", clean);
-                        let key = Self::buf_key(&func.name, inner);
-                        if let Some(&slot) = slots.get(&len_name) {
-                            emitter.emit_load_stack(target, slot);
-                        } else if let Some(&cap) = emitter.slice_capacities.get(&key).or_else(|| emitter.slice_capacities.get(*inner)) {
-                            emitter.emit_mov_reg_imm64(target, cap as i64);
-                        } else {
-                            emitter.emit_mov_reg_imm64(target, 0);
-                        }
+                        let inner = r[4..r.len() - 1].trim();
+                        emitter.emit_load_slice_len(&func.name, inner, &slots, target);
                     } else {
                         let key = Self::buf_key(&func.name, r);
                         if let Some(&buf_off) = emitter.buffer_offsets.get(&key).or_else(|| emitter.buffer_offsets.get(r)) {
@@ -417,12 +422,30 @@ impl MachineCodeEmitter {
                             if let Some(&slot) = slots.get(clean) {
                                 emitter.emit_load_stack(target, slot);
                             } else {
-                                emitter.emit_mov_reg_imm64(target, 0);
+                                let hw_reg = match clean {
+                                    "rax" => Some(X86Reg::Rax),
+                                    "rcx" => Some(X86Reg::Rcx),
+                                    "rdx" => Some(X86Reg::Rdx),
+                                    "rbx" => Some(X86Reg::Rbx),
+                                    "rsi" => Some(X86Reg::Rsi),
+                                    "rdi" => Some(X86Reg::Rdi),
+                                    "r8" => Some(X86Reg::R8),
+                                    "r9" => Some(X86Reg::R9),
+                                    "r10" => Some(X86Reg::R10),
+                                    "r11" => Some(X86Reg::R11),
+                                    _ => None,
+                                };
+                                if let Some(hw) = hw_reg {
+                                    if hw != target {
+                                        emitter.emit_mov_reg_reg(target, hw);
+                                    }
+                                } else {
+                                    emitter.emit_mov_reg_imm64(target, 0);
+                                }
                             }
                         }
                     }
                 }
-                _ => emitter.emit_mov_reg_imm64(target, 0),
             }
         };
 
@@ -438,17 +461,11 @@ impl MachineCodeEmitter {
                 Instruction::AssignConst { dest, val, .. } => {
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
-                    match val {
-                        Value::I64(n) => self.emit_mov_reg_imm64(X86Reg::Rax, *n),
-                        Value::U64(n) => self.emit_mov_reg_imm64(X86Reg::Rax, *n as i64),
-                        Value::Bool(b) => self.emit_mov_reg_imm64(X86Reg::Rax, if *b { 1 } else { 0 }),
-                        Value::Ptr(p) => self.emit_mov_reg_imm64(X86Reg::Rax, *p as i64),
-                        _ => self.emit_mov_reg_imm64(X86Reg::Rax, 0),
-                    }
+                    load_op_into_reg(self, &Operand::Const(val.clone()), X86Reg::Rax);
                     self.emit_store_stack(X86Reg::Rax, slot);
                 }
 
-                Instruction::Alloc { dest, len, .. } => {
+                Instruction::Alloc { dest, elem_ty, len } => {
                     let key = Self::buf_key(&func.name, dest);
                     let offset = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(dest)).copied().unwrap_or(0);
                     let clean = dest.trim_start_matches('%');
@@ -459,7 +476,8 @@ impl MachineCodeEmitter {
 
                     let len_name = format!("{}_len", clean);
                     if let Some(&slot_len) = slots.get(&len_name) {
-                        self.emit_mov_reg_imm64(X86Reg::Rax, *len as i64);
+                        let byte_len = len.saturating_mul(elem_ty.byte_size());
+                        self.emit_mov_reg_imm64(X86Reg::Rax, byte_len as i64);
                         self.emit_store_stack(X86Reg::Rax, slot_len);
                     }
                 }
@@ -467,49 +485,21 @@ impl MachineCodeEmitter {
                 Instruction::SlicePtr { dest, slice: src } | Instruction::Mov { dest, src } => {
                     let d_clean = dest.trim_start_matches('%');
                     let d_slot = slots[d_clean];
-                    let key = Self::buf_key(&func.name, src);
-                    if let Some(&buf_off) = self.buffer_offsets.get(&key).or_else(|| self.buffer_offsets.get(src)) {
-                        let vaddr = base_data_vaddr + (buf_off as u64);
-                        self.emit_mov_reg_imm64(X86Reg::Rax, vaddr as i64);
-                    } else {
-                        let s_clean = src.trim_start_matches('%');
-                        if let Some(&s_slot) = slots.get(s_clean) {
-                            self.emit_load_stack(X86Reg::Rax, s_slot);
-                        } else {
-                            self.emit_mov_reg_imm64(X86Reg::Rax, 0);
-                        }
-                    }
+                    load_op_into_reg(self, &Operand::Reg(src.clone()), X86Reg::Rax);
                     self.emit_store_stack(X86Reg::Rax, d_slot);
 
                     // Copy độ dài slice {src}_len -> {dest}_len nếu có
-                    let s_clean = src.trim_start_matches('%');
-                    let s_len_name = format!("{}_len", s_clean);
                     let d_len_name = format!("{}_len", d_clean);
                     if let Some(&d_len_slot) = slots.get(&d_len_name) {
-                        if let Some(&s_len_slot) = slots.get(&s_len_name) {
-                            self.emit_load_stack(X86Reg::Rax, s_len_slot);
-                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
-                        } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(src)) {
-                            self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
-                            self.emit_store_stack(X86Reg::Rax, d_len_slot);
-                        }
+                        self.emit_load_slice_len(&func.name, src, &slots, X86Reg::Rax);
+                        self.emit_store_stack(X86Reg::Rax, d_len_slot);
                     }
                 }
 
                 Instruction::SliceLen { dest, slice } => {
                     let clean = dest.trim_start_matches('%');
                     let slot = slots[clean];
-                    let sl_clean = slice.trim_start_matches('%');
-                    let len_name = format!("{}_len", sl_clean);
-                    let key = Self::buf_key(&func.name, slice);
-
-                    if let Some(&l_slot) = slots.get(&len_name) {
-                        self.emit_load_stack(X86Reg::Rax, l_slot);
-                    } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(slice)) {
-                        self.emit_mov_reg_imm64(X86Reg::Rax, cap as i64);
-                    } else {
-                        self.emit_mov_reg_imm64(X86Reg::Rax, 0);
-                    }
+                    self.emit_load_slice_len(&func.name, slice, &slots, X86Reg::Rax);
                     self.emit_store_stack(X86Reg::Rax, slot);
                 }
 
@@ -583,12 +573,16 @@ impl MachineCodeEmitter {
                 }
 
                 Instruction::Binary { op, ty, dest, src1, src2 } => {
-                    if matches!(ty, Type::F64) {
-                        return Err(format!("Floating-point type 'f64' is not supported in Light x86_64 codegen"));
-                    }
                     load_op_into_reg(self, src1, X86Reg::Rax);
                     load_op_into_reg(self, src2, X86Reg::Rcx);
-                    let is_unsigned = matches!(ty, Type::U64 | Type::U8);
+                    let is_unsigned = matches!(ty, Type::U64 | Type::U8)
+                        || (matches!(
+                            op,
+                            BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod
+                        ) && (crate::ivl::IvlLowerer::operand_is_unsigned(src1, &buf_ctx.unsigned_vars)
+                            || crate::ivl::IvlLowerer::operand_is_unsigned(src2, &buf_ctx.unsigned_vars)))
+                        || (matches!(op, BinOp::Shr)
+                            && crate::ivl::IvlLowerer::operand_is_unsigned(src1, &buf_ctx.unsigned_vars));
 
                     match op {
                         BinOp::Add => self.code.extend_from_slice(&[0x48, 0x01, 0xc8]),
@@ -774,16 +768,7 @@ impl MachineCodeEmitter {
                                     let len_reg = abi_regs[reg_idx];
                                     match arg {
                                         Operand::Reg(r) => {
-                                            let clean = r.trim_start_matches('%');
-                                            let len_name = format!("{}_len", clean);
-                                            let key = Self::buf_key(&func.name, r);
-                                            if let Some(&l_slot) = slots.get(&len_name) {
-                                                self.emit_load_stack(len_reg, l_slot);
-                                            } else if let Some(&cap) = self.slice_capacities.get(&key).or_else(|| self.slice_capacities.get(r)) {
-                                                self.emit_mov_reg_imm64(len_reg, cap as i64);
-                                            } else {
-                                                self.emit_mov_reg_imm64(len_reg, 0);
-                                            }
+                                            self.emit_load_slice_len(&func.name, r, &slots, len_reg);
                                         }
                                         _ => {
                                             self.emit_mov_reg_imm64(len_reg, 0);

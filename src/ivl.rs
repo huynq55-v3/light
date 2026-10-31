@@ -162,7 +162,6 @@ impl IvlLowerer {
             Operand::Const(v) => match v {
                 Value::I64(n) => IvlExpr::IntConst(*n),
                 Value::U64(n) => IvlExpr::IntConst(*n as i64),
-                Value::F64(f) => IvlExpr::IntConst(*f as i64),
                 Value::Bool(b) => IvlExpr::BoolConst(*b),
                 Value::Ptr(p) => IvlExpr::IntConst(*p as i64),
             },
@@ -325,7 +324,16 @@ impl IvlLowerer {
             }
             Expr::Not(inner) => Self::expr_has_unsigned(inner, unsigned_vars),
             Expr::UIntConst(_) => true,
-            Expr::IntConst(_) | Expr::Len(_) | Expr::FloatConst(_) | Expr::BoolConst(_) => false,
+            Expr::IntConst(_) | Expr::Len(_) | Expr::BoolConst(_) => false,
+        }
+    }
+
+    #[inline]
+    pub fn operand_is_unsigned(op: &Operand, unsigned_vars: &HashSet<String>) -> bool {
+        match op {
+            Operand::Reg(r) => unsigned_vars.contains(Self::clean_name(r)),
+            Operand::Const(Value::U64(_)) => true,
+            _ => false,
         }
     }
 
@@ -335,7 +343,6 @@ impl IvlLowerer {
             Expr::Var(v) => IvlExpr::Var(Self::clean_name(v).to_string()),
             Expr::IntConst(n) => IvlExpr::IntConst(*n),
             Expr::UIntConst(u) => IvlExpr::IntConst(*u as i64),
-            Expr::FloatConst(f) => IvlExpr::IntConst(*f as i64),
             Expr::BoolConst(b) => IvlExpr::BoolConst(*b),
             Expr::Len(v) => IvlExpr::Len(Self::clean_name(v).to_string()),
             Expr::Binary { op, lhs, rhs } => {
@@ -420,10 +427,11 @@ impl IvlLowerer {
         }
 
         for s_inst in &func.instructions {
-            if let Instruction::Alloc { dest, len, .. } = &s_inst.inst {
+            if let Instruction::Alloc { dest, elem_ty, len } = &s_inst.inst {
                 let clean = Self::clean_name(dest).to_string();
-                buffer_sizes.insert(dest.clone(), *len);
-                buffer_sizes.insert(clean, *len);
+                let byte_len = len.saturating_mul(elem_ty.byte_size());
+                buffer_sizes.insert(dest.clone(), byte_len);
+                buffer_sizes.insert(clean, byte_len);
             }
         }
 
@@ -529,7 +537,14 @@ impl IvlLowerer {
             Instruction::Binary { op, ty, dest, src1, src2 } => {
                 let e1 = Self::operand_to_expr(src1);
                 let e2 = Self::operand_to_expr(src2);
-                let is_unsigned = matches!(ty, Type::U64 | Type::U8);
+                let is_unsigned = matches!(ty, Type::U64 | Type::U8)
+                    || (matches!(
+                        op,
+                        BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod
+                    ) && (Self::operand_is_unsigned(src1, &ctx.unsigned_vars)
+                        || Self::operand_is_unsigned(src2, &ctx.unsigned_vars)))
+                    || (matches!(op, BinOp::Shr)
+                        && Self::operand_is_unsigned(src1, &ctx.unsigned_vars));
 
                 // Safety Check cho phép chia (Div / Mod)
                 if matches!(op, BinOp::Div | BinOp::Mod) {
@@ -610,11 +625,12 @@ impl IvlLowerer {
                 });
             }
 
-            Instruction::Alloc { dest, len, .. } => {
+            Instruction::Alloc { dest, elem_ty, len } => {
                 let clean = Self::clean_name(dest);
+                let byte_len = len.saturating_mul(elem_ty.byte_size());
                 stmts.push(IvlStmt::Assign {
                     dest: format!("{}_len", clean),
-                    expr: IvlExpr::IntConst(*len as i64),
+                    expr: IvlExpr::IntConst(byte_len as i64),
                     is_memory: false,
                 });
             }
@@ -928,8 +944,8 @@ impl IvlLowerer {
         ctx: &FunctionBufferContext,
         stmts: &mut Vec<IvlStmt>,
     ) {
+        let off_expr = Self::operand_to_expr(offset);
         if let Some(bound_expr) = ctx.bound_expr(buf) {
-            let off_expr = Self::operand_to_expr(offset);
             let in_bounds = IvlExpr::Binary {
                 op: BinOp::And,
                 lhs: Box::new(IvlExpr::Binary {
@@ -949,6 +965,19 @@ impl IvlLowerer {
             stmts.push(IvlStmt::Assert {
                 cond: in_bounds,
                 goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                category: PropertyCategory::Safety,
+                loc: s_inst.loc.clone(),
+            });
+        } else {
+            let non_neg = IvlExpr::Binary {
+                op: BinOp::Gte,
+                lhs: Box::new(off_expr),
+                rhs: Box::new(IvlExpr::IntConst(0)),
+                is_unsigned: false,
+            };
+            stmts.push(IvlStmt::Assert {
+                cond: non_neg,
+                goal_name: format!("Function '{}' - Line {}: Memory 8-bit pointer offset non-negative check on '{}'", func.name, s_inst.loc.line, buf),
                 category: PropertyCategory::Safety,
                 loc: s_inst.loc.clone(),
             });

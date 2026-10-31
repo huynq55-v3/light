@@ -1,12 +1,11 @@
 //! Định nghĩa Abstract Syntax Tree (AST) & ISA cho ngôn ngữ Light (.lit)
-//! Hỗ trợ đầy đủ 6 kiểu dữ liệu: i64, u64, f64, bool, ptr, mảng cố định arr<T, N> & slice<T>.
+//! Hỗ trợ các kiểu dữ liệu: i64, u64, u8, bool, ptr, mảng cố định arr<T, N> & slice<T>.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     I64,
     U64,
     U8,
-    F64,
     Bool,
     Ptr,
     /// Mảng cố định phần tử với kích thước biết trước: arr<i64, 10>
@@ -15,16 +14,28 @@ pub enum Type {
     Slice(Box<Type>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl Type {
+    /// Kích thước tính bằng byte của một phần tử kiểu này
+    #[inline]
+    pub fn byte_size(&self) -> usize {
+        match self {
+            Type::U8 | Type::Bool => 1,
+            Type::I64 | Type::U64 | Type::Ptr => 8,
+            Type::Array(inner, count) => inner.byte_size() * count,
+            Type::Slice(_) => 16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     I64(i64),
     U64(u64),
-    F64(f64),
     Bool(bool),
     Ptr(usize),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operand {
     Reg(String),
     Const(Value),
@@ -55,12 +66,11 @@ pub enum BinOp {
 
 /// Các biểu thức logic dùng trong kiểm chứng (Verification Expressions)
 /// Cho phép AI viết biểu thức toán học tự nhiên trong REQUIRE, ENSURE, INVARIANT, ASSERT
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Var(String),
     IntConst(i64),
     UIntConst(u64),
-    FloatConst(f64),
     BoolConst(bool),
     Binary {
         op: BinOp,

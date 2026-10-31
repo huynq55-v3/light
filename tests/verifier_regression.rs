@@ -3333,4 +3333,143 @@ END_FUNC
     );
 }
 
+#[test]
+fn test_v105_alloc_slice_i64_multiplies_by_element_byte_size() {
+    // V105: ALLOC slice<i64> 4 must allocate 4 * 8 = 32 bytes (not 4 bytes!),
+    // allowing STORE64 and LOAD64 at byte offsets 0, 8, 16, 24 in both Verifier and Codegen.
+    let code = r#"
+FUNC main() -> i64
+  %arr = ALLOC slice<i64> 4
+  STORE64 %arr 24 77
+  %val = LOAD64 %arr 24
+  ASSERT %val == 77
+  ENSURE %val == 77
+  RET %val
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V105");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V105: ALLOC slice<i64> 4 must verify STORE64/LOAD64 at byte offset 24! Got: {:?}",
+        res
+    );
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&prog).expect("Compile V105");
+    let tmp_bin = format!("/tmp/light_test_v105_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF V105");
+    let status = std::process::Command::new(&tmp_bin).status().expect("Exec V105");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(77));
+}
+
+#[test]
+fn test_v106_u64_large_immediate_and_implicit_type_comparison() {
+    // V106: Large u64 immediate (> i64::MAX) in binary operand and implicit type comparison `LT %a %b`
+    // where `%a` is `u64` must use unsigned semantics in both Verifier and Codegen.
+    let code = r#"
+FUNC main() -> i64
+  %a = CONST u64 10
+  %sum = ADD u64 %a 18446744073709551600
+  # %sum = 18446744073709551610 (> i64::MAX, negative if treated as signed i64)
+  # Without explicit `u64` on LT, `LT %a %sum` must still infer unsigned comparison!
+  %is_lt = LT %a %sum
+  ASSERT %is_lt == true
+  BR_IF %is_lt .ok
+  RET 1
+LABEL .ok
+  RET 0
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V106");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V106: Large u64 operand and implicit `LT %a %sum` must verify as unsigned! Got: {:?}",
+        res
+    );
+
+    let mut emitter = light::codegen::MachineCodeEmitter::new();
+    emitter.compile_for_elf(&prog).expect("Compile V106");
+    let tmp_bin = format!("/tmp/light_test_v106_{}", std::process::id());
+    emitter.emit_elf64(&tmp_bin).expect("Emit ELF V106");
+    let status = std::process::Command::new(&tmp_bin).status().expect("Exec V106");
+    let _ = std::fs::remove_file(&tmp_bin);
+    assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn test_v107_load8_raw_pointer_negative_offset_rejected() {
+    // V107: LOAD8/STORE8 on a raw pointer (without known buffer bound) must still enforce offset >= 0!
+    let code = r#"
+FUNC bad_ptr_load8(p: ptr) -> i64
+  %v = LOAD8 p -5
+  RET %v
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V107");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Memory 8-bit pointer offset non-negative check"))),
+        "V107: LOAD8 on raw pointer with negative offset -5 must fail safety check! Got: {:?}",
+        res
+    );
+}
+
+#[test]
+fn test_v108_duplicate_label_in_function_rejected_by_verifier() {
+    // V108: Duplicate LABEL or LOOP name inside a function must be caught directly by Verifier::verify_function
+    let code = r#"
+FUNC dup_lbl(x: i64) -> i64
+  LABEL .same
+  %a = ADD i64 x 1
+  LABEL .same
+  RET %a
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V108");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Duplicate Label/Loop"))),
+        "V108: Duplicate label must fail verification! Got: {:?}",
+        res
+    );
+}
+
+#[test]
+fn test_v109_nested_loop_no_duplicate_verification_goals() {
+    // V109: Inner loop inside outer loop must not emit duplicate assertions during outer loop's probe pass.
+    let code = r#"
+FUNC nested_count(n: i64) -> i64
+  REQUIRE n >= 0 && n <= 5
+  %i = CONST i64 0
+  LOOP outer
+    INVARIANT %i >= 0 && %i <= n
+    DECREASES n - %i
+    %d1 = GTE i64 %i n
+    BREAK_IF %d1
+    %j = CONST i64 0
+    LOOP inner
+      INVARIANT %j >= 0 && %j <= 3
+      DECREASES 3 - %j
+      %d2 = GTE i64 %j 3
+      BREAK_IF %d2
+      %j = ADD i64 %j 1
+    END_LOOP inner
+    %i = ADD i64 %i 1
+  END_LOOP outer
+  RET %i
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V109");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    // Outer loop: 1 Base + 1 Inductive + 2 Termination = 4 goals
+    // Inner loop: 1 Base + 1 Inductive + 2 Termination = 4 goals
+    // Total = 8 goals (previously emitted 12 goals due to probe duplication)
+    assert_eq!(res.len(), 8, "V109: Nested loops should emit exactly 8 verification goals without duplicates! Got: {:?}", res);
+    assert!(res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })));
+}
+
+
 

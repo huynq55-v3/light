@@ -317,11 +317,17 @@ impl Parser {
             Operand::Const(Value::Bool(false))
         } else if let Ok(val) = s.parse::<i64>() {
             Operand::Const(Value::I64(val))
-        } else if let Ok(val) = s.parse::<f64>() {
-            Operand::Const(Value::F64(val))
+        } else if let Ok(val) = s.parse::<u64>() {
+            Operand::Const(Value::U64(val))
         } else {
             Operand::Reg(s.to_string())
         }
+    }
+
+    #[inline]
+    fn is_operator_boundary(left_part: &str) -> bool {
+        !left_part.is_empty()
+            && !left_part.ends_with(['+', '-', '*', '/', '%', '&', '|', '^', '=', '!', '<', '>'])
     }
 
     fn parse_instruction(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
@@ -668,10 +674,6 @@ impl Parser {
                             line_no,
                             message: format!("Cannot parse u8: {}", parts[4]),
                         })? as u64),
-                        Type::F64 => Value::F64(parts[4].parse::<f64>().map_err(|_| ParseError {
-                            line_no,
-                            message: format!("Cannot parse f64: {}", parts[4]),
-                        })?),
                         Type::Bool => Value::Bool(match parts[4] {
                             "true" => true,
                             "false" => false,
@@ -1008,19 +1010,7 @@ impl Parser {
             if ch == '+' || ch == '-' {
                 let left_part = s[..i].trim();
                 // Nếu bên trái kết thúc bằng một toán tử khác (vd: "%y - -5"), thì dấu '-' tại i là dấu âm unary
-                if !left_part.is_empty()
-                    && !left_part.ends_with('+')
-                    && !left_part.ends_with('-')
-                    && !left_part.ends_with('*')
-                    && !left_part.ends_with('/')
-                    && !left_part.ends_with('%')
-                    && !left_part.ends_with('&')
-                    && !left_part.ends_with('|')
-                    && !left_part.ends_with('=')
-                    && !left_part.ends_with('!')
-                    && !left_part.ends_with('<')
-                    && !left_part.ends_with('>')
-                {
+                if Self::is_operator_boundary(left_part) {
                     let op = if ch == '+' { BinOp::Add } else { BinOp::Sub };
                     let lhs = Self::parse_expr(left_part, line_no)?;
                     let rhs = Self::parse_expr(&s[i + 1..], line_no)?;
@@ -1059,20 +1049,7 @@ impl Parser {
                         continue;
                     }
                 }
-                if !left_part.is_empty()
-                    && !right_part.is_empty()
-                    && !left_part.ends_with('+')
-                    && !left_part.ends_with('-')
-                    && !left_part.ends_with('*')
-                    && !left_part.ends_with('/')
-                    && !left_part.ends_with('%')
-                    && !left_part.ends_with('&')
-                    && !left_part.ends_with('|')
-                    && !left_part.ends_with('=')
-                    && !left_part.ends_with('!')
-                    && !left_part.ends_with('<')
-                    && !left_part.ends_with('>')
-                {
+                if !right_part.is_empty() && Self::is_operator_boundary(left_part) {
                     let op = match ch {
                         '*' => BinOp::Mul,
                         '/' => BinOp::Div,
