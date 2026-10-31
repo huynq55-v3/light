@@ -39,7 +39,7 @@ FUNC is_prime(n: i64) -> i64
     # Check if n % d == 0
     %rem = MOD i64 n %d
     %is_div = EQ i64 %rem %zero
-    BR_IF %is_div ret_not_prime
+    RET_IF %is_div %zero
 
     # Increment divisor
     %next_d = ADD i64 %d 1
@@ -48,12 +48,11 @@ FUNC is_prime(n: i64) -> i64
 
   LABEL ret_prime
   %res_prime = CONST i64 1
-  ENSURE %res_prime == 1 || %res_prime == 0
   RET %res_prime
 
   LABEL ret_not_prime
   %res_composite = CONST i64 0
-  ENSURE %res_composite == 1 || %res_composite == 0
+  ENSURE %ret == 1 || %ret == 0
   RET %res_composite
 END_FUNC
 

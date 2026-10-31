@@ -230,7 +230,7 @@ FUNC str_skip_ws(s: slice<u8>, start_idx: i64) -> i64
 END_FUNC
 
 # Parse positive integer from slice between `start` and `end`
-# Chặn tràn số nguyên có dấu 64-bit (max_safe = 922337203685477580, tức (i64::MAX - 9) / 10)
+# Chặn tràn số nguyên có dấu 64-bit (max_safe = 922337203685477579, tức (i64::MAX - 9) / 10)
 FUNC str_parse_i64_range(s: slice<u8>, start: i64, end: i64) -> i64
   REQUIRE start >= 0 && start <= end && end <= len(s)
 
@@ -283,6 +283,7 @@ FUNC str_parse_i64(s: slice<u8>) -> i64
   %end = SLICE_LEN s
   %res = CALL str_parse_i64_range s %start %end
 
+  ENSURE %res >= 0
   RET %res
 END_FUNC
 
@@ -318,12 +319,14 @@ END_FUNC
 FUNC parse_i64(s: slice<u8>) -> i64
   REQUIRE len(s) > 0
   %r = CALL str_parse_i64 s
+  ENSURE %r >= 0
   RET %r
 END_FUNC
 
 FUNC parse_int_from(s: slice<u8>, start: i64, end: i64) -> i64
   REQUIRE start >= 0 && start <= end && end <= len(s)
   %r = CALL str_parse_i64_range s start end
+  ENSURE %r >= 0
   RET %r
 END_FUNC
 

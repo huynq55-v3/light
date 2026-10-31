@@ -1,10 +1,14 @@
 //! Module Kiểm chứng Toán học (Formal Verification Engine - VCGen) cho Light
-//! Chuyển đổi mã nguồn chứa REQUIRE, ENSURE, INVARIANT thành công thức logic SMT-LIB2
-//! cho Z3 SMT Solver để tự động chứng minh tính đúng đắn và phát hiện phản ví dụ (Counter-examples).
+//! Kiến trúc Boogie Pure 4-Instruction IVL Pipeline:
+//! 1. Static Well-Formedness Checks (Loops, Jumps, CFG Definite Assignment, Memory Sort, Types)
+//! 2. Pure IVL Lowering + Guarded Symbolic Execution (`Instruction` -> `Vec<IvlStmt>`)
+//! 3. Universal VcGen (`Vec<IvlStmt>` -> SMT-LIB2 `QF_ABV` -> Z3 Solver)
 
 use crate::ast::*;
-use std::process::{Command, Stdio};
+use crate::ivl::{FunctionBufferContext, IvlExpr, IvlLowerer, IvlStmt};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
 pub struct StackFrame {
@@ -33,7 +37,6 @@ impl PropertyCategory {
         }
     }
 }
-
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -67,8 +70,8 @@ pub enum VerificationResult {
 
 #[derive(Clone)]
 pub struct LoopContext<'a> {
-    pub invariants: &'a [crate::ivl::IvlExpr],
-    pub decreases: &'a [crate::ivl::IvlExpr],
+    pub invariants: &'a [IvlExpr],
+    pub decreases: &'a [IvlExpr],
     pub verify_inductive: bool,
     pub loop_id: usize,
 }
@@ -77,32 +80,32 @@ pub struct Verifier;
 
 impl Verifier {
     #[inline]
-    fn is_true(e: &crate::ivl::IvlExpr) -> bool {
-        matches!(e, crate::ivl::IvlExpr::BoolConst(true))
+    fn is_true(e: &IvlExpr) -> bool {
+        matches!(e, IvlExpr::BoolConst(true))
     }
 
     #[inline]
-    fn is_false(e: &crate::ivl::IvlExpr) -> bool {
-        matches!(e, crate::ivl::IvlExpr::BoolConst(false))
+    fn is_false(e: &IvlExpr) -> bool {
+        matches!(e, IvlExpr::BoolConst(false))
     }
 
-    fn mk_not(e: crate::ivl::IvlExpr) -> crate::ivl::IvlExpr {
+    fn mk_not(e: IvlExpr) -> IvlExpr {
         match e {
-            crate::ivl::IvlExpr::BoolConst(b) => crate::ivl::IvlExpr::BoolConst(!b),
-            crate::ivl::IvlExpr::Not(inner) => *inner,
-            other => crate::ivl::IvlExpr::Not(Box::new(other)),
+            IvlExpr::BoolConst(b) => IvlExpr::BoolConst(!b),
+            IvlExpr::Not(inner) => *inner,
+            other => IvlExpr::Not(Box::new(other)),
         }
     }
 
-    fn mk_and(a: crate::ivl::IvlExpr, b: crate::ivl::IvlExpr) -> crate::ivl::IvlExpr {
+    fn mk_and(a: IvlExpr, b: IvlExpr) -> IvlExpr {
         if Self::is_false(&a) || Self::is_false(&b) {
-            crate::ivl::IvlExpr::BoolConst(false)
+            IvlExpr::BoolConst(false)
         } else if Self::is_true(&a) {
             b
         } else if Self::is_true(&b) {
             a
         } else {
-            crate::ivl::IvlExpr::Binary {
+            IvlExpr::Binary {
                 op: BinOp::And,
                 lhs: Box::new(a),
                 rhs: Box::new(b),
@@ -111,15 +114,15 @@ impl Verifier {
         }
     }
 
-    fn mk_or(a: crate::ivl::IvlExpr, b: crate::ivl::IvlExpr) -> crate::ivl::IvlExpr {
+    fn mk_or(a: IvlExpr, b: IvlExpr) -> IvlExpr {
         if Self::is_true(&a) || Self::is_true(&b) {
-            crate::ivl::IvlExpr::BoolConst(true)
+            IvlExpr::BoolConst(true)
         } else if Self::is_false(&a) {
             b
         } else if Self::is_false(&b) {
             a
         } else {
-            crate::ivl::IvlExpr::Binary {
+            IvlExpr::Binary {
                 op: BinOp::Or,
                 lhs: Box::new(a),
                 rhs: Box::new(b),
@@ -129,11 +132,11 @@ impl Verifier {
     }
 
     /// Biểu thức kéo theo: `guard => prop` (tương đương `!guard || prop`)
-    fn mk_implies(guard: &crate::ivl::IvlExpr, prop: crate::ivl::IvlExpr) -> crate::ivl::IvlExpr {
+    fn mk_implies(guard: &IvlExpr, prop: IvlExpr) -> IvlExpr {
         if Self::is_true(guard) {
             prop
         } else if Self::is_false(guard) {
-            crate::ivl::IvlExpr::BoolConst(true)
+            IvlExpr::BoolConst(true)
         } else {
             Self::mk_or(Self::mk_not(guard.clone()), prop)
         }
@@ -141,10 +144,10 @@ impl Verifier {
 
     /// Bọc điều kiện luồng chạy `active` vào mọi vi lệnh IVL cơ bản (Assign, Assert, Assume, Havoc)
     fn guard_stmts(
-        raw_stmts: Vec<crate::ivl::IvlStmt>,
-        active: &crate::ivl::IvlExpr,
+        raw_stmts: Vec<IvlStmt>,
+        active: &IvlExpr,
         havoc_counter: &mut usize,
-    ) -> Vec<crate::ivl::IvlStmt> {
+    ) -> Vec<IvlStmt> {
         if Self::is_false(active) {
             return Vec::new();
         }
@@ -155,46 +158,46 @@ impl Verifier {
         let mut out = Vec::new();
         for st in raw_stmts {
             match st {
-                crate::ivl::IvlStmt::Assign { dest, expr, is_memory } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    out.push(crate::ivl::IvlStmt::Assign {
+                IvlStmt::Assign { dest, expr, is_memory } => {
+                    let clean = IvlLowerer::clean_name(&dest).to_string();
+                    out.push(IvlStmt::Assign {
                         dest: clean.clone(),
-                        expr: crate::ivl::IvlExpr::Ite {
+                        expr: IvlExpr::Ite {
                             cond: Box::new(active.clone()),
                             then_val: Box::new(expr),
-                            else_val: Box::new(crate::ivl::IvlExpr::Var(clean)),
+                            else_val: Box::new(IvlExpr::Var(clean)),
                         },
                         is_memory,
                     });
                 }
-                crate::ivl::IvlStmt::Assert { cond, goal_name, category, loc } => {
-                    out.push(crate::ivl::IvlStmt::Assert {
+                IvlStmt::Assert { cond, goal_name, category, loc } => {
+                    out.push(IvlStmt::Assert {
                         cond: Self::mk_implies(active, cond),
                         goal_name,
                         category,
                         loc,
                     });
                 }
-                crate::ivl::IvlStmt::Assume { cond } => {
-                    out.push(crate::ivl::IvlStmt::Assume {
+                IvlStmt::Assume { cond } => {
+                    out.push(IvlStmt::Assume {
                         cond: Self::mk_implies(active, cond),
                     });
                 }
-                crate::ivl::IvlStmt::Havoc { vars, is_memory } => {
+                IvlStmt::Havoc { vars, is_memory } => {
                     for v in vars {
                         *havoc_counter += 1;
-                        let clean = v.trim_start_matches('%').to_string();
+                        let clean = IvlLowerer::clean_name(&v).to_string();
                         let tmp = format!("__guarded_havoc_{}_{}", clean, *havoc_counter);
-                        out.push(crate::ivl::IvlStmt::Havoc {
+                        out.push(IvlStmt::Havoc {
                             vars: vec![tmp.clone()],
                             is_memory,
                         });
-                        out.push(crate::ivl::IvlStmt::Assign {
+                        out.push(IvlStmt::Assign {
                             dest: clean.clone(),
-                            expr: crate::ivl::IvlExpr::Ite {
+                            expr: IvlExpr::Ite {
                                 cond: Box::new(active.clone()),
-                                then_val: Box::new(crate::ivl::IvlExpr::Var(tmp)),
-                                else_val: Box::new(crate::ivl::IvlExpr::Var(clean)),
+                                then_val: Box::new(IvlExpr::Var(tmp)),
+                                else_val: Box::new(IvlExpr::Var(clean)),
                             },
                             is_memory,
                         });
@@ -205,6 +208,7 @@ impl Verifier {
         }
         out
     }
+
     /// Helper an toàn để chuyển số nguyên i64 sang SMT-LIB2 64-bit BitVec (xử lý đúng số âm và i64::MIN)
     #[inline]
     pub fn smt_bv64(n: i64) -> String {
@@ -217,366 +221,38 @@ impl Verifier {
         }
     }
 
-    /// Hạ cấp một lệnh sang chuỗi IVL kèm đầy đủ các kiểm chứng an toàn (Safety & Functional Asserts)
-    fn lower_inst_with_checks(
-        func: &Function,
-        s_inst: &SpannedInstruction,
-        buffer_sizes: &std::collections::HashMap<String, usize>,
-        buffer_aliases: &std::collections::HashMap<String, String>,
-        program: Option<&Program>,
-        unsigned_vars: &std::collections::HashSet<String>,
-    ) -> Vec<crate::ivl::IvlStmt> {
-        let mut stmts = Vec::new();
-        match &s_inst.inst {
-            Instruction::Assert(e) => {
-                stmts.push(crate::ivl::IvlStmt::Assert {
-                    cond: crate::ivl::IvlLowerer::expr_to_ivl_typed(e, unsigned_vars),
-                    goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
-                    category: PropertyCategory::Functional,
-                    loc: s_inst.loc.clone(),
-                });
-            }
-            Instruction::StoreStr { buf, offset, content } => {
-                let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
-                let buf_size = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)).cloned().unwrap_or(0);
-                let req_size = *offset + content.as_bytes().len();
-                stmts.push(crate::ivl::IvlStmt::Assert {
-                    cond: crate::ivl::IvlExpr::BoolConst(req_size <= buf_size),
-                    goal_name: format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf),
-                    category: PropertyCategory::Safety,
-                    loc: s_inst.loc.clone(),
-                });
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
-            }
-            Instruction::Binary { op: BinOp::Div | BinOp::Mod, ty, src1, src2, .. } => {
-                let s1_expr = crate::ivl::IvlLowerer::operand_to_expr(src1);
-                let s2_expr = crate::ivl::IvlLowerer::operand_to_expr(src2);
-                let is_unsigned = matches!(ty, Type::U64 | Type::U8);
-                if is_unsigned {
-                    let div_zero = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::Neq,
-                        lhs: Box::new(s2_expr),
-                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                        is_unsigned: true,
-                    };
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: div_zero,
-                        goal_name: format!("Function '{}' - Line {}: Unsigned Division-by-Zero safety check", func.name, s_inst.loc.line),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                } else {
-                    let div_zero = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::Neq,
-                        lhs: Box::new(s2_expr.clone()),
-                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                        is_unsigned: false,
-                    };
-                    let overflow_cond = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(s1_expr),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(i64::MIN)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(s2_expr),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(-1)),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    };
-                    let safe_div = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(div_zero),
-                        rhs: Box::new(crate::ivl::IvlExpr::Not(Box::new(overflow_cond))),
-                        is_unsigned: false,
-                    };
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: safe_div,
-                        goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety and Overflow check", func.name, s_inst.loc.line),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
-            }
-            Instruction::Load8 { buf, offset, .. } | Instruction::Store8 { buf, offset, .. } => {
-                let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
-                let clean_buf = actual_buf.trim_start_matches('%');
-                let is_slice_param = func.params.iter().any(|p| {
-                    p.name.trim_start_matches('%') == clean_buf
-                        && matches!(p.ty, Type::Slice(_) | Type::Array(_, _))
-                });
-
-                let bound_expr_opt = if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
-                    Some(crate::ivl::IvlExpr::IntConst(sz as i64))
-                } else if is_slice_param {
-                    Some(crate::ivl::IvlExpr::Len(clean_buf.to_string()))
-                } else {
-                    None
-                };
-
-                if let Some(bound_expr) = bound_expr_opt {
-                    let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
-                    let in_bounds = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(off_expr.clone()),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Lt,
-                            lhs: Box::new(off_expr),
-                            rhs: Box::new(bound_expr),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    };
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: in_bounds,
-                        goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
-            }
-            Instruction::Load64 { buf, offset, .. } | Instruction::Store64 { buf, offset, .. } => {
-                let actual_buf = buffer_aliases.get(buf).unwrap_or(buf);
-                let clean_buf = actual_buf.trim_start_matches('%');
-                let is_slice_param = func.params.iter().any(|p| {
-                    p.name.trim_start_matches('%') == clean_buf
-                        && matches!(p.ty, Type::Slice(_) | Type::Array(_, _))
-                });
-
-                let off_expr = crate::ivl::IvlLowerer::operand_to_expr(offset);
-                // 8-byte alignment check
-                let align_check = crate::ivl::IvlExpr::Binary {
-                    op: BinOp::Eq,
-                    lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                        op: BinOp::Mod,
-                        lhs: Box::new(off_expr.clone()),
-                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(8)),
-                        is_unsigned: false,
-                    }),
-                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                    is_unsigned: false,
-                };
-                stmts.push(crate::ivl::IvlStmt::Assert {
-                    cond: align_check,
-                    goal_name: format!("Function '{}' - Line {}: Memory 64-bit 8-byte alignment check on '{}'", func.name, s_inst.loc.line, buf),
-                    category: PropertyCategory::Safety,
-                    loc: s_inst.loc.clone(),
-                });
-
-                if let Some(&sz) = buffer_sizes.get(actual_buf).or_else(|| buffer_sizes.get(buf)) {
-                    let max_off = (sz as i64) - 8;
-                    let in_bounds = if sz < 8 {
-                        crate::ivl::IvlExpr::BoolConst(false)
-                    } else {
-                        crate::ivl::IvlExpr::Binary {
-                            op: BinOp::And,
-                            lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                                op: BinOp::Gte,
-                                lhs: Box::new(off_expr.clone()),
-                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                                is_unsigned: false,
-                            }),
-                            rhs: Box::new(crate::ivl::IvlExpr::Binary {
-                                op: BinOp::Lte,
-                                lhs: Box::new(off_expr),
-                                rhs: Box::new(crate::ivl::IvlExpr::IntConst(max_off)),
-                                is_unsigned: false,
-                            }),
-                            is_unsigned: false,
-                        }
-                    };
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: in_bounds,
-                        goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                } else if is_slice_param {
-                    let max_off = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::Sub,
-                        lhs: Box::new(crate::ivl::IvlExpr::Len(clean_buf.to_string())),
-                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(8)),
-                        is_unsigned: false,
-                    };
-                    let in_bounds = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Gte,
-                            lhs: Box::new(off_expr.clone()),
-                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                            is_unsigned: false,
-                        }),
-                        rhs: Box::new(crate::ivl::IvlExpr::Binary {
-                            op: BinOp::Lte,
-                            lhs: Box::new(off_expr),
-                            rhs: Box::new(max_off),
-                            is_unsigned: false,
-                        }),
-                        is_unsigned: false,
-                    };
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: in_bounds,
-                        goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                } else {
-                    let non_neg = crate::ivl::IvlExpr::Binary {
-                        op: BinOp::Gte,
-                        lhs: Box::new(off_expr),
-                        rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                        is_unsigned: false,
-                    };
-                    stmts.push(crate::ivl::IvlStmt::Assert {
-                        cond: non_neg,
-                        goal_name: format!("Function '{}' - Line {}: Memory 64-bit pointer offset non-negative check on '{}'", func.name, s_inst.loc.line, buf),
-                        category: PropertyCategory::Safety,
-                        loc: s_inst.loc.clone(),
-                    });
-                }
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
-            }
-            Instruction::Call { dest, func_name, args } => {
-                if let Some(prog) = program {
-                    if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
-                        if args.len() != callee.params.len() {
-                            stmts.push(crate::ivl::IvlStmt::Assert {
-                                cond: crate::ivl::IvlExpr::BoolConst(false),
-                                goal_name: format!("Function '{}' - Line {}: Call argument count mismatch for '{}' (expected {}, got {})", func.name, s_inst.loc.line, func_name, callee.params.len(), args.len()),
-                                category: PropertyCategory::Safety,
-                                loc: s_inst.loc.clone(),
-                            });
-                        }
-
-                        // Xây dựng bảng ánh xạ tham số đồng thời (Simultaneous Substitution Map)
-                        let mut param_map = std::collections::HashMap::new();
-                        for (i, p) in callee.params.iter().enumerate() {
-                            if i < args.len() {
-                                let p_clean = p.name.trim_start_matches('%').to_string();
-                                let arg_expr = crate::ivl::IvlLowerer::operand_to_expr(&args[i]);
-                                if let Operand::Reg(r) = &args[i] {
-                                    let r_clean = r.trim_start_matches('%');
-                                    if let Some(&sz) = buffer_sizes.get(r).or_else(|| buffer_sizes.get(r_clean)) {
-                                        param_map.insert(format!("{}_len", p_clean), crate::ivl::IvlExpr::IntConst(sz as i64));
-                                    }
-                                }
-                                param_map.insert(p_clean, arg_expr);
-                            }
-                        }
-
-                        let callee_unsigned = crate::ivl::IvlLowerer::collect_unsigned_vars(callee);
-                        for c_si in &callee.instructions {
-                            if let Instruction::Require(req) = &c_si.inst {
-                                let req_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(req, &callee_unsigned);
-                                let subst_req = crate::ivl::IvlLowerer::subst_expr_map(&req_ivl, &param_map);
-                                stmts.push(crate::ivl::IvlStmt::Assert {
-                                    cond: subst_req,
-                                    goal_name: format!("Function '{}' - Line {}: Verify REQUIRE contract of '{}'", func.name, s_inst.loc.line, func_name),
-                                    category: PropertyCategory::Safety,
-                                    loc: s_inst.loc.clone(),
-                                });
-                            }
-                        }
-                        // Havoc all memory buffers passed as slice/pointer arguments to the callee
-                        let mut havoc_mems = Vec::new();
-                        for a in args {
-                            if let Operand::Reg(r) = a {
-                                let actual = buffer_aliases.get(r).unwrap_or(r);
-                                let clean = actual.trim_start_matches('%').to_string();
-                                if buffer_sizes.contains_key(actual) || buffer_sizes.contains_key(r)
-                                    || func.params.iter().any(|p| p.name.trim_start_matches('%') == clean && matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
-                                {
-                                    havoc_mems.push(clean);
-                                }
-                            }
-                        }
-                        if !havoc_mems.is_empty() {
-                            stmts.push(crate::ivl::IvlStmt::Havoc {
-                                vars: havoc_mems,
-                                is_memory: true,
-                            });
-                        }
-
-                        if let Some(d) = dest {
-                            stmts.push(crate::ivl::IvlStmt::Havoc {
-                                vars: vec![d.clone()],
-                                is_memory: false,
-                            });
-                            let callee_ret = Self::find_canonical_ret_var(callee).unwrap_or_else(|| "ret".to_string());
-                            let mut ens_map = param_map;
-                            ens_map.insert(
-                                callee_ret.trim_start_matches('%').to_string(),
-                                crate::ivl::IvlExpr::Var(d.trim_start_matches('%').to_string()),
-                            );
-                            for c_si in &callee.instructions {
-                                if let Instruction::Ensure(ens) = &c_si.inst {
-                                    let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, &callee_unsigned);
-                                    let subst_ens = crate::ivl::IvlLowerer::subst_expr_map(&ens_ivl, &ens_map);
-                                    stmts.push(crate::ivl::IvlStmt::Assume { cond: subst_ens });
-                                }
-                            }
-                        }
-                    } else {
-                        stmts.push(crate::ivl::IvlStmt::Assert {
-                            cond: crate::ivl::IvlExpr::BoolConst(false),
-                            goal_name: format!("Function '{}' - Line {}: Call to undefined function '{}'", func.name, s_inst.loc.line, func_name),
-                            category: PropertyCategory::Safety,
-                            loc: s_inst.loc.clone(),
-                        });
-                    }
-                }
-            }
-            _ => {
-                stmts.extend(crate::ivl::IvlLowerer::lower_inst(s_inst, buffer_sizes, Some(buffer_aliases)));
-            }
-        }
-        stmts
-    }
-
-    /// Hạ cấp một lát cắt lệnh sang chuỗi IVL bằng thuật toán Guarded Symbolic Execution tổng quát
+    /// Hạ cấp một lát cắt lệnh sang chuỗi 4 vi lệnh IVL bằng Guarded Symbolic Execution & Boogie Loop Desugaring.
+    /// Toàn bộ hàm và mọi vòng lặp lồng nhau đều kết tinh thành một `Vec<IvlStmt>` tuyến tính duy nhất!
     fn lower_slice(
         func: &Function,
         slice: &[SpannedInstruction],
-        buffer_sizes: &std::collections::HashMap<String, usize>,
-        buffer_aliases: &std::collections::HashMap<String, String>,
+        ctx: &FunctionBufferContext,
         program: Option<&Program>,
-        vc: &mut crate::vcgen::VcGen,
-        results: &mut Vec<VerificationResult>,
+        diagnostics: &mut Vec<VerificationResult>,
         ensures: &[Expr],
         canon_ret: &str,
         has_loop: bool,
         loop_ctx: Option<&LoopContext>,
-        loop_exit_out: Option<&mut crate::ivl::IvlExpr>,
+        loop_exit_out: Option<&mut IvlExpr>,
+        loop_break_out: Option<&mut IvlExpr>,
         havoc_counter: &mut usize,
-        unsigned_vars: &std::collections::HashSet<String>,
-    ) -> Vec<crate::ivl::IvlStmt> {
+    ) -> Vec<IvlStmt> {
         let mut stmts = Vec::new();
         let has_branch = slice.iter().any(|s| matches!(s.inst, Instruction::BrIf { .. } | Instruction::RetIf { .. }));
 
         // Trạng thái luồng chạy hiện tại (Path Condition) và bảng các nhánh nhảy tới từng LABEL
-        let mut active = crate::ivl::IvlExpr::BoolConst(true);
-        let mut incoming_jumps: std::collections::HashMap<String, crate::ivl::IvlExpr> = std::collections::HashMap::new();
-        let mut local_loop_exit = crate::ivl::IvlExpr::BoolConst(false);
-        let mut local_loop_break = crate::ivl::IvlExpr::BoolConst(false);
+        let mut active = IvlExpr::BoolConst(true);
+        let mut incoming_jumps: HashMap<String, IvlExpr> = HashMap::new();
+        let mut local_loop_exit = IvlExpr::BoolConst(false);
+        let mut local_loop_break = IvlExpr::BoolConst(false);
 
         let mut idx = 0;
         while idx < slice.len() {
             let s_inst = &slice[idx];
             match &s_inst.inst {
                 Instruction::Require(req) => {
-                    let cond = Self::mk_implies(&active, crate::ivl::IvlLowerer::expr_to_ivl_typed(req, unsigned_vars));
-                    stmts.push(crate::ivl::IvlStmt::Assume { cond });
+                    let cond = Self::mk_implies(&active, IvlLowerer::expr_to_ivl_typed(req, &ctx.unsigned_vars));
+                    stmts.push(IvlStmt::Assume { cond });
                 }
                 Instruction::Ensure(_) | Instruction::Invariant(_) | Instruction::Decreases(_) => {}
 
@@ -586,43 +262,23 @@ impl Verifier {
                         // Tạo một biến định danh ngắn gọn cho Path Condition tại điểm hội tụ để tránh công thức SMT phình to theo cấp số nhân
                         *havoc_counter += 1;
                         let path_var = format!("__path_{}_{}", lbl.trim_start_matches('.'), *havoc_counter);
-                        stmts.push(crate::ivl::IvlStmt::Assign {
+                        stmts.push(IvlStmt::Assign {
                             dest: path_var.clone(),
                             expr: active,
                             is_memory: false,
                         });
-                        active = crate::ivl::IvlExpr::Var(path_var);
+                        active = IvlExpr::Var(path_var);
                     }
                 }
 
-                Instruction::Jump(target) => {
-                    // Kiểm tra xem target có phải là nhãn nằm phía dưới (Forward Jump) trong slice hiện tại không
+                // Hợp nhất JUMP và BR_IF: JUMP <target> tương đương BR_IF true <target>
+                Instruction::Jump(target) | Instruction::BrIf { target, .. } => {
+                    let is_unconditional = matches!(s_inst.inst, Instruction::Jump(_));
                     let is_forward = slice[idx + 1..].iter().any(|s| matches!(&s.inst, Instruction::Label(l) if l == target));
                     if !is_forward {
-                        results.push(VerificationResult::Unknown {
-                            goal_name: format!("Function '{}' - Line {}: Unsupported backward/external JUMP", func.name, s_inst.loc.line),
-                            category: PropertyCategory::Safety,
-                            reason: format!("Backward or external JUMP to '{}' is not supported (use LOOP for loops)", target),
-                            stack_trace: vec![StackFrame {
-                                file: func.file.clone(),
-                                line: s_inst.loc.line,
-                                function: func.name.clone(),
-                                snippet: s_inst.loc.text.clone(),
-                                role: "Unsupported backward/external JUMP".into(),
-                            }],
-                        });
-                        return stmts;
-                    }
-                    let prev = incoming_jumps.remove(target).unwrap_or(crate::ivl::IvlExpr::BoolConst(false));
-                    incoming_jumps.insert(target.clone(), Self::mk_or(prev, active));
-                    active = crate::ivl::IvlExpr::BoolConst(false);
-                }
-
-                Instruction::BrIf { cond, target } => {
-                    let is_forward = slice[idx + 1..].iter().any(|s| matches!(&s.inst, Instruction::Label(l) if l == target));
-                    if !is_forward {
-                        results.push(VerificationResult::Unknown {
-                            goal_name: format!("Function '{}' - Line {}: Unsupported backward/external BR_IF", func.name, s_inst.loc.line),
+                        let op_name = if is_unconditional { "JUMP" } else { "BR_IF" };
+                        diagnostics.push(VerificationResult::Unknown {
+                            goal_name: format!("Function '{}' - Line {}: Unsupported backward/external {}", func.name, s_inst.loc.line, op_name),
                             category: PropertyCategory::Safety,
                             reason: format!("Backward or external branch to '{}' is not supported (use LOOP for loops)", target),
                             stack_trace: vec![StackFrame {
@@ -630,138 +286,120 @@ impl Verifier {
                                 line: s_inst.loc.line,
                                 function: func.name.clone(),
                                 snippet: s_inst.loc.text.clone(),
-                                role: "Unsupported backward/external BR_IF".into(),
+                                role: format!("Unsupported backward/external {}", op_name),
                             }],
                         });
                         return stmts;
                     }
-                    let cond_expr = crate::ivl::IvlExpr::Var(cond.trim_start_matches('%').to_string());
-                    let take_branch = Self::mk_and(active.clone(), cond_expr);
-                    *havoc_counter += 1;
-                    let br_var = format!("__br_{}", *havoc_counter);
-                    stmts.push(crate::ivl::IvlStmt::Assign {
-                        dest: br_var.clone(),
-                        expr: take_branch,
-                        is_memory: false,
-                    });
-                    let br_var_expr = crate::ivl::IvlExpr::Var(br_var);
-                    let prev = incoming_jumps.remove(target).unwrap_or(crate::ivl::IvlExpr::BoolConst(false));
-                    incoming_jumps.insert(target.clone(), Self::mk_or(prev, br_var_expr.clone()));
-                    active = Self::mk_and(active, Self::mk_not(br_var_expr));
+
+                    if is_unconditional {
+                        let prev = incoming_jumps.remove(target).unwrap_or(IvlExpr::BoolConst(false));
+                        incoming_jumps.insert(target.clone(), Self::mk_or(prev, active));
+                        active = IvlExpr::BoolConst(false);
+                    } else if let Instruction::BrIf { cond, .. } = &s_inst.inst {
+                        let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
+                        let take_branch = Self::mk_and(active.clone(), cond_expr);
+                        *havoc_counter += 1;
+                        let br_var = format!("__br_{}", *havoc_counter);
+                        stmts.push(IvlStmt::Assign {
+                            dest: br_var.clone(),
+                            expr: take_branch,
+                            is_memory: false,
+                        });
+                        let br_var_expr = IvlExpr::Var(br_var);
+                        let prev = incoming_jumps.remove(target).unwrap_or(IvlExpr::BoolConst(false));
+                        incoming_jumps.insert(target.clone(), Self::mk_or(prev, br_var_expr.clone()));
+                        active = Self::mk_and(active, Self::mk_not(br_var_expr));
+                    }
                 }
 
-                Instruction::RetIf { cond, val } => {
-                    let cond_expr = crate::ivl::IvlExpr::Var(cond.trim_start_matches('%').to_string());
-                    let take_ret = Self::mk_and(active.clone(), cond_expr);
+                // Hợp nhất RET và RET_IF: kiểm chứng ENSURE bằng phép thế trực tiếp (tránh làm bẩn biến tham số/cục bộ)
+                Instruction::Ret(val_opt) | Instruction::RetIf { val: val_opt, .. } => {
+                    let is_early = matches!(s_inst.inst, Instruction::RetIf { .. });
+                    let take_ret = if let Instruction::RetIf { cond, .. } = &s_inst.inst {
+                        let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
+                        Self::mk_and(active.clone(), cond_expr)
+                    } else {
+                        active.clone()
+                    };
+
                     *havoc_counter += 1;
-                    let ret_var = format!("__retif_{}", *havoc_counter);
-                    stmts.push(crate::ivl::IvlStmt::Assign {
+                    let ret_var = format!("__ret_{}", *havoc_counter);
+                    stmts.push(IvlStmt::Assign {
                         dest: ret_var.clone(),
                         expr: take_ret.clone(),
                         is_memory: false,
                     });
-                    let ret_var_expr = crate::ivl::IvlExpr::Var(ret_var);
+                    let ret_var_expr = IvlExpr::Var(ret_var);
                     local_loop_exit = Self::mk_or(local_loop_exit, ret_var_expr.clone());
-                    if !Self::is_false(&take_ret) {
-                        if let Some(op) = val {
-                            let op_expr = crate::ivl::IvlLowerer::operand_to_expr(op);
-                            for ens in ensures {
-                                let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, unsigned_vars);
-                                let mapped_ens = crate::ivl::IvlLowerer::subst_expr(&ens_ivl, canon_ret, &op_expr);
-                                stmts.push(crate::ivl::IvlStmt::Assert {
-                                    cond: Self::mk_implies(&take_ret, mapped_ens),
-                                    goal_name: format!("Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)", func.name, s_inst.loc.line),
-                                    category: PropertyCategory::Functional,
-                                    loc: s_inst.loc.clone(),
-                                });
-                            }
-                        } else {
-                            for ens in ensures {
-                                let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, unsigned_vars);
-                                stmts.push(crate::ivl::IvlStmt::Assert {
-                                    cond: Self::mk_implies(&take_ret, ens_ivl),
-                                    goal_name: format!("Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)", func.name, s_inst.loc.line),
-                                    category: PropertyCategory::Functional,
-                                    loc: s_inst.loc.clone(),
-                                });
-                            }
-                        }
-                    }
-                    active = Self::mk_and(active, Self::mk_not(ret_var_expr));
-                }
 
-                Instruction::Ret(val_opt) => {
-                    *havoc_counter += 1;
-                    let ret_var = format!("__ret_{}", *havoc_counter);
-                    stmts.push(crate::ivl::IvlStmt::Assign {
-                        dest: ret_var.clone(),
-                        expr: active.clone(),
-                        is_memory: false,
-                    });
-                    let ret_var_expr = crate::ivl::IvlExpr::Var(ret_var);
-                    local_loop_exit = Self::mk_or(local_loop_exit, ret_var_expr);
-                    if !Self::is_false(&active) {
-                        if let Some(op) = val_opt {
-                            let op_expr = crate::ivl::IvlLowerer::operand_to_expr(op);
-                            let assign_ret = crate::ivl::IvlStmt::Assign {
-                                dest: canon_ret.to_string(),
-                                expr: op_expr,
-                                is_memory: false,
-                            };
-                            stmts.extend(Self::guard_stmts(vec![assign_ret], &active, havoc_counter));
-                        }
+                    if !Self::is_false(&take_ret) {
+                        let goal_name = if is_early {
+                            format!("Function '{}' - Line {}: Verify ENSURE on early return (RET_IF)", func.name, s_inst.loc.line)
+                        } else if has_loop {
+                            format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name)
+                        } else if has_branch {
+                            format!("Function '{}' - Line {}: Verify ENSURE on branch return (RET) - Verify ENSURE postcondition", func.name, s_inst.loc.line)
+                        } else {
+                            format!("Function '{}' - Verify ENSURE postcondition", func.name)
+                        };
+
                         for ens in ensures {
-                            let ens_ivl = crate::ivl::IvlLowerer::expr_to_ivl_typed(ens, unsigned_vars);
-                            let goal_name = if has_loop {
-                                format!("Function '{}' - Step 3: Exit Step (ENSURE postcondition satisfaction)", func.name)
-                            } else if has_branch {
-                                format!("Function '{}' - Line {}: Verify ENSURE on branch return (RET) - Verify ENSURE postcondition", func.name, s_inst.loc.line)
+                            let ens_ivl = IvlLowerer::expr_to_ivl_typed(ens, &ctx.unsigned_vars);
+                            let checked_ens = if let Some(op) = val_opt {
+                                let op_expr = IvlLowerer::operand_to_expr(op);
+                                IvlLowerer::subst_expr(&ens_ivl, canon_ret, &op_expr)
                             } else {
-                                format!("Function '{}' - Verify ENSURE postcondition", func.name)
+                                ens_ivl
                             };
-                            stmts.push(crate::ivl::IvlStmt::Assert {
-                                cond: Self::mk_implies(&active, ens_ivl),
-                                goal_name,
+                            stmts.push(IvlStmt::Assert {
+                                cond: Self::mk_implies(&take_ret, checked_ens),
+                                goal_name: goal_name.clone(),
                                 category: PropertyCategory::Functional,
                                 loc: s_inst.loc.clone(),
                             });
                         }
                     }
-                    active = crate::ivl::IvlExpr::BoolConst(false);
+
+                    if is_early {
+                        active = Self::mk_and(active, Self::mk_not(ret_var_expr));
+                    } else {
+                        active = IvlExpr::BoolConst(false);
+                    }
                 }
 
                 Instruction::BreakIf(cond) => {
-                    let cond_expr = crate::ivl::IvlExpr::Var(cond.trim_start_matches('%').to_string());
+                    let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
                     let take_break = Self::mk_and(active.clone(), cond_expr);
                     *havoc_counter += 1;
                     let brk_var = format!("__brk_{}", *havoc_counter);
-                    stmts.push(crate::ivl::IvlStmt::Assign {
+                    stmts.push(IvlStmt::Assign {
                         dest: brk_var.clone(),
                         expr: take_break,
                         is_memory: false,
                     });
-                    let brk_var_expr = crate::ivl::IvlExpr::Var(brk_var);
+                    let brk_var_expr = IvlExpr::Var(brk_var);
                     local_loop_break = Self::mk_or(local_loop_break, brk_var_expr.clone());
                     local_loop_exit = Self::mk_or(local_loop_exit, brk_var_expr.clone());
                     active = Self::mk_and(active, Self::mk_not(brk_var_expr));
                 }
 
                 Instruction::ContinueIf(cond) => {
-                    let cond_expr = crate::ivl::IvlExpr::Var(cond.trim_start_matches('%').to_string());
+                    let cond_expr = IvlExpr::Var(IvlLowerer::clean_name(cond).to_string());
                     let take_cont = Self::mk_and(active.clone(), cond_expr);
                     *havoc_counter += 1;
                     let cont_var = format!("__cont_{}", *havoc_counter);
-                    stmts.push(crate::ivl::IvlStmt::Assign {
+                    stmts.push(IvlStmt::Assign {
                         dest: cont_var.clone(),
                         expr: take_cont.clone(),
                         is_memory: false,
                     });
-                    let cont_var_expr = crate::ivl::IvlExpr::Var(cont_var);
+                    let cont_var_expr = IvlExpr::Var(cont_var);
                     local_loop_exit = Self::mk_or(local_loop_exit, cont_var_expr.clone());
-                    if let Some(ctx) = loop_ctx {
-                        if ctx.verify_inductive && !Self::is_false(&take_cont) {
-                            for inv in ctx.invariants {
-                                stmts.push(crate::ivl::IvlStmt::Assert {
+                    if let Some(lctx) = loop_ctx {
+                        if lctx.verify_inductive && !Self::is_false(&take_cont) {
+                            for inv in lctx.invariants {
+                                stmts.push(IvlStmt::Assert {
                                     cond: Self::mk_implies(&take_cont, inv.clone()),
                                     goal_name: format!(
                                         "Function '{}' - Line {}: Loop Step 2: Invariant preservation on CONTINUE_IF",
@@ -771,15 +409,15 @@ impl Verifier {
                                     loc: s_inst.loc.clone(),
                                 });
                             }
-                            for (d_idx, dec) in ctx.decreases.iter().enumerate() {
-                                let old_r = crate::ivl::IvlExpr::Var(format!("__rank_init_{}_{}", ctx.loop_id, d_idx));
-                                stmts.push(crate::ivl::IvlStmt::Assert {
+                            for (d_idx, dec) in lctx.decreases.iter().enumerate() {
+                                let old_r = IvlExpr::Var(format!("__rank_init_{}_{}", lctx.loop_id, d_idx));
+                                stmts.push(IvlStmt::Assert {
                                     cond: Self::mk_implies(
                                         &take_cont,
-                                        crate::ivl::IvlExpr::Binary {
+                                        IvlExpr::Binary {
                                             op: BinOp::Gte,
                                             lhs: Box::new(old_r.clone()),
-                                            rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
+                                            rhs: Box::new(IvlExpr::IntConst(0)),
                                             is_unsigned: false,
                                         },
                                     ),
@@ -790,10 +428,10 @@ impl Verifier {
                                     category: PropertyCategory::Termination,
                                     loc: s_inst.loc.clone(),
                                 });
-                                stmts.push(crate::ivl::IvlStmt::Assert {
+                                stmts.push(IvlStmt::Assert {
                                     cond: Self::mk_implies(
                                         &take_cont,
-                                        crate::ivl::IvlExpr::Binary {
+                                        IvlExpr::Binary {
                                             op: BinOp::Lt,
                                             lhs: Box::new(dec.clone()),
                                             rhs: Box::new(old_r),
@@ -837,7 +475,7 @@ impl Verifier {
                     let l_end = if let Some(le) = l_end_opt {
                         le
                     } else {
-                        results.push(VerificationResult::Failed {
+                        diagnostics.push(VerificationResult::Failed {
                             goal_name: format!("Function '{}' - Line {}: Loop Structure Error", func.name, slice[idx].loc.line),
                             category: PropertyCategory::Safety,
                             reason: format!("Missing or mismatched END_LOOP for LOOP '{}'", l_lbl),
@@ -855,7 +493,7 @@ impl Verifier {
                     let body_slice = &slice[idx + 1..l_end];
 
                     if body_slice.iter().any(|si| matches!(si.inst, Instruction::Syscall { .. })) {
-                        results.push(VerificationResult::Unknown {
+                        diagnostics.push(VerificationResult::Unknown {
                             goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
                             category: PropertyCategory::Inductive,
                             reason: "Unsupported instruction inside loop body: SYSCALL".into(),
@@ -878,182 +516,157 @@ impl Verifier {
                         match &b_si.inst {
                             Instruction::Loop(_) => inner_depth += 1,
                             Instruction::EndLoop(_) => inner_depth = inner_depth.saturating_sub(1),
-                            Instruction::Invariant(e) if inner_depth == 0 => loop_invs.push(crate::ivl::IvlLowerer::expr_to_ivl_typed(e, unsigned_vars)),
-                            Instruction::Decreases(e) if inner_depth == 0 => loop_decs.push(crate::ivl::IvlLowerer::expr_to_ivl_typed(e, unsigned_vars)),
+                            Instruction::Invariant(e) if inner_depth == 0 => {
+                                loop_invs.push(IvlLowerer::expr_to_ivl_typed(e, &ctx.unsigned_vars))
+                            }
+                            Instruction::Decreases(e) if inner_depth == 0 => {
+                                loop_decs.push(IvlLowerer::expr_to_ivl_typed(e, &ctx.unsigned_vars))
+                            }
                             _ => {}
                         }
                     }
 
-                    let vc_loop = if loop_ctx.is_none() {
-                        results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
-                        stmts.clear();
-                        vc.clone()
-                    } else {
-                        let mut vcl = vc.clone();
-                        let _ = vcl.verify_sequence(&stmts, &func.name, &func.file);
-                        vcl
-                    };
-
-                    // Step 1: Base Case (chỉ kiểm tra nếu luồng tới được vòng lặp đang active)
-                    let mut vc_step1 = vc_loop.clone();
-                    let mut step1_asserts = Vec::new();
+                    // --- BƯỚC 1: Base Case (Kiểm chứng Invariant đúng ngay khi vừa tiến vào vòng lặp) ---
                     for inv in &loop_invs {
-                        step1_asserts.push(crate::ivl::IvlStmt::Assert {
+                        stmts.push(IvlStmt::Assert {
                             cond: Self::mk_implies(&active, inv.clone()),
                             goal_name: format!("Function '{}' - Step 1: Base Case (Loop initialization)", func.name),
                             category: PropertyCategory::Inductive,
                             loc: slice[idx].loc.clone(),
                         });
                     }
-                    results.extend(vc_step1.verify_sequence(&step1_asserts, &func.name, &func.file));
 
-                    let modified: Vec<String> = crate::ivl::IvlLowerer::collect_modified_vars(body_slice, Some(buffer_aliases)).into_iter().collect();
-                    let modified_mems: Vec<String> = crate::ivl::IvlLowerer::collect_modified_mems(body_slice, Some(buffer_aliases)).into_iter().collect();
+                    // Hạ cấp thân vòng lặp 1 lần ở chế độ thăm dò để tự động trích xuất 100% biến/bộ nhớ bị sửa đổi
+                    // (bao gồm cả biến/bộ nhớ bị sửa bởi CALL, STORE_STR, vòng lặp con...)
+                    let mut probe_counter = *havoc_counter;
+                    let mut probe_diag = Vec::new();
+                    let probe_stmts = Self::lower_slice(
+                        func,
+                        body_slice,
+                        ctx,
+                        program,
+                        &mut probe_diag,
+                        ensures,
+                        canon_ret,
+                        true,
+                        None,
+                        None,
+                        None,
+                        &mut probe_counter,
+                    );
+                    let (modified_scalars, modified_mems) =
+                        IvlLowerer::extract_modified_targets_from_ivl(&probe_stmts);
 
-                    // Step 2 & Step 4: Symbolic Loop Execution & Safety Verification (Inductive Step)
-                    {
-                        let mut ind_stmts = Vec::new();
-                        ind_stmts.push(crate::ivl::IvlStmt::Assume { cond: active.clone() });
-                        ind_stmts.push(crate::ivl::IvlStmt::Havoc {
-                            vars: modified.clone(),
+                    // --- BƯỚC 2, 3, 4: Boogie Loop Desugaring về chuỗi 4 vi lệnh IVL ---
+                    // Havoc toàn bộ biến vô hướng và mảng bộ nhớ bị thay đổi trong thân vòng lặp (nếu vòng lặp đang active)
+                    if !modified_scalars.is_empty() {
+                        let havoc_s = IvlStmt::Havoc {
+                            vars: modified_scalars,
                             is_memory: false,
-                        });
-                        if !modified_mems.is_empty() {
-                            ind_stmts.push(crate::ivl::IvlStmt::Havoc {
-                                vars: modified_mems.clone(),
-                                is_memory: true,
-                            });
-                        }
-                        for inv in &loop_invs {
-                            ind_stmts.push(crate::ivl::IvlStmt::Assume { cond: inv.clone() });
-                        }
-                        for (d_idx, dec) in loop_decs.iter().enumerate() {
-                            ind_stmts.push(crate::ivl::IvlStmt::Assign {
-                                dest: format!("__rank_init_{}_{}", loop_id, d_idx),
-                                expr: dec.clone(),
-                                is_memory: false,
-                            });
-                        }
-
-                        let mut vc_ind = vc_loop.clone();
-                        let ind_ctx = LoopContext {
-                            invariants: &loop_invs,
-                            decreases: &loop_decs,
-                            verify_inductive: true,
-                            loop_id,
                         };
-                        let mut dummy_exit = crate::ivl::IvlExpr::BoolConst(false);
-                        ind_stmts.extend(Self::lower_slice(
-                            func,
-                            body_slice,
-                            buffer_sizes,
-                            buffer_aliases,
-                            program,
-                            &mut vc_ind,
-                            results,
-                            ensures,
-                            canon_ret,
-                            true,
-                            Some(&ind_ctx),
-                            Some(&mut dummy_exit),
-                            havoc_counter,
-                            unsigned_vars,
-                        ));
+                        stmts.extend(Self::guard_stmts(vec![havoc_s], &active, havoc_counter));
+                    }
+                    if !modified_mems.is_empty() {
+                        let havoc_m = IvlStmt::Havoc {
+                            vars: modified_mems,
+                            is_memory: true,
+                        };
+                        stmts.extend(Self::guard_stmts(vec![havoc_m], &active, havoc_counter));
+                    }
 
-                        // Cuối thân vòng lặp: chỉ những nhánh không BREAK, không CONTINUE, không RET mới quay lại đầu vòng lặp.
-                        ind_stmts.push(crate::ivl::IvlStmt::Assume {
-                            cond: Self::mk_not(dummy_exit),
+                    // Giả định (Assume) các Invariant đúng ở đầu bước lặp tổng quát
+                    for inv in &loop_invs {
+                        stmts.push(IvlStmt::Assume {
+                            cond: Self::mk_implies(&active, inv.clone()),
                         });
+                    }
 
+                    // Ghi nhận giá trị khởi đầu của biểu thức Ranking (DECREASES) ở đầu vòng lặp
+                    for (d_idx, dec) in loop_decs.iter().enumerate() {
+                        let rank_assign = IvlStmt::Assign {
+                            dest: format!("__rank_init_{}_{}", loop_id, d_idx),
+                            expr: dec.clone(),
+                            is_memory: false,
+                        };
+                        stmts.extend(Self::guard_stmts(vec![rank_assign], &active, havoc_counter));
+                    }
+
+                    // Hạ cấp thân vòng lặp (với kiểm chứng quy nạp nếu đang ở ngoài hoặc đang trong pha quy nạp của vòng lặp cha)
+                    let verify_this_loop = loop_ctx.map_or(true, |c| c.verify_inductive);
+                    let ind_ctx = LoopContext {
+                        invariants: &loop_invs,
+                        decreases: &loop_decs,
+                        verify_inductive: verify_this_loop,
+                        loop_id,
+                    };
+                    let mut body_any_exit = IvlExpr::BoolConst(false);
+                    let mut body_break_cond = IvlExpr::BoolConst(false);
+                    let body_stmts = Self::lower_slice(
+                        func,
+                        body_slice,
+                        ctx,
+                        program,
+                        diagnostics,
+                        ensures,
+                        canon_ret,
+                        true,
+                        Some(&ind_ctx),
+                        Some(&mut body_any_exit),
+                        Some(&mut body_break_cond),
+                        havoc_counter,
+                    );
+
+                    stmts.extend(Self::guard_stmts(body_stmts, &active, havoc_counter));
+
+                    // Cuối thân vòng lặp (Latch): những nhánh vẫn active và KHÔNG thoát (không BREAK, không CONTINUE, không RET)
+                    // sẽ quay lại đầu vòng lặp -> Phải thỏa mãn Invariant (Step 2) và Decreases (Step 4a, 4b)!
+                    if verify_this_loop {
+                        let latch_active = Self::mk_and(active.clone(), Self::mk_not(body_any_exit));
                         for inv in &loop_invs {
-                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
-                                cond: inv.clone(),
+                            stmts.push(IvlStmt::Assert {
+                                cond: Self::mk_implies(&latch_active, inv.clone()),
                                 goal_name: format!("Function '{}' - Symbolic Loop Execution - Step 2: Inductive Step (Invariant preservation)", func.name),
                                 category: PropertyCategory::Inductive,
                                 loc: slice[idx].loc.clone(),
                             });
                         }
                         for (d_idx, dec) in loop_decs.iter().enumerate() {
-                            let old_r = crate::ivl::IvlExpr::Var(format!("__rank_init_{}_{}", loop_id, d_idx));
-                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
-                                cond: crate::ivl::IvlExpr::Binary {
-                                    op: BinOp::Gte,
-                                    lhs: Box::new(old_r.clone()),
-                                    rhs: Box::new(crate::ivl::IvlExpr::IntConst(0)),
-                                    is_unsigned: false,
-                                },
+                            let old_r = IvlExpr::Var(format!("__rank_init_{}_{}", loop_id, d_idx));
+                            stmts.push(IvlStmt::Assert {
+                                cond: Self::mk_implies(
+                                    &latch_active,
+                                    IvlExpr::Binary {
+                                        op: BinOp::Gte,
+                                        lhs: Box::new(old_r.clone()),
+                                        rhs: Box::new(IvlExpr::IntConst(0)),
+                                        is_unsigned: false,
+                                    },
+                                ),
                                 goal_name: format!("Function '{}' - Step 4a: Termination Step (DECREASES bounded below >= 0)", func.name),
                                 category: PropertyCategory::Termination,
                                 loc: slice[idx].loc.clone(),
                             });
-                            ind_stmts.push(crate::ivl::IvlStmt::Assert {
-                                cond: crate::ivl::IvlExpr::Binary {
-                                    op: BinOp::Lt,
-                                    lhs: Box::new(dec.clone()),
-                                    rhs: Box::new(old_r),
-                                    is_unsigned: false,
-                                },
+                            stmts.push(IvlStmt::Assert {
+                                cond: Self::mk_implies(
+                                    &latch_active,
+                                    IvlExpr::Binary {
+                                        op: BinOp::Lt,
+                                        lhs: Box::new(dec.clone()),
+                                        rhs: Box::new(old_r),
+                                        is_unsigned: false,
+                                    },
+                                ),
                                 goal_name: format!("Function '{}' - Step 4b: Termination Step (DECREASES ranking function strictly decreases)", func.name),
                                 category: PropertyCategory::Termination,
                                 loc: slice[idx].loc.clone(),
                             });
                         }
-                        results.extend(vc_ind.verify_sequence(&ind_stmts, &func.name, &func.file));
                     }
 
-                    // Step 3: Exit Step (Hạ cấp thân vòng lặp với Guarded Execution để tự động gom mọi điểm BREAK_IF!)
-                    let havoc_scalars = crate::ivl::IvlStmt::Havoc {
-                        vars: modified,
-                        is_memory: false,
-                    };
-                    stmts.extend(Self::guard_stmts(vec![havoc_scalars], &active, havoc_counter));
-                    if !modified_mems.is_empty() {
-                        let havoc_mems = crate::ivl::IvlStmt::Havoc {
-                            vars: modified_mems,
-                            is_memory: true,
-                        };
-                        stmts.extend(Self::guard_stmts(vec![havoc_mems], &active, havoc_counter));
-                    }
-                    for inv in &loop_invs {
-                        stmts.push(crate::ivl::IvlStmt::Assume {
-                            cond: Self::mk_implies(&active, inv.clone()),
-                        });
-                    }
-
-                    let exit_ctx = LoopContext {
-                        invariants: &loop_invs,
-                        decreases: &loop_decs,
-                        verify_inductive: false,
-                        loop_id,
-                    };
-                    let mut exit_cond = crate::ivl::IvlExpr::BoolConst(false);
-                    let mut vc_exit = vc_loop.clone();
-                    let body_exit_stmts = Self::lower_slice(
-                        func,
-                        body_slice,
-                        buffer_sizes,
-                        buffer_aliases,
-                        program,
-                        &mut vc_exit,
-                        results,
-                        ensures,
-                        canon_ret,
-                        true,
-                        Some(&exit_ctx),
-                        Some(&mut exit_cond),
-                        havoc_counter,
-                        unsigned_vars,
-                    );
-                    // Tránh sinh lại Assert trong body ở Step 3 (vì đã được chứng minh ở Step 2)
-                    let body_exit_no_asserts: Vec<crate::ivl::IvlStmt> = body_exit_stmts
-                        .into_iter()
-                        .filter(|st| !matches!(st, crate::ivl::IvlStmt::Assert { .. }))
-                        .collect();
-                    stmts.extend(Self::guard_stmts(body_exit_no_asserts, &active, havoc_counter));
-
-                    // Để thoát khỏi vòng lặp sang câu lệnh sau END_LOOP, ít nhất một nhánh BREAK_IF phải được kích hoạt
-                    stmts.push(crate::ivl::IvlStmt::Assume {
-                        cond: Self::mk_implies(&active, exit_cond),
+                    // Sau END_LOOP (Step 3 - Exit Step): để đi tiếp xuống các lệnh sau vòng lặp,
+                    // nhánh bắt buộc phải thoát ra qua ít nhất một lệnh BREAK_IF của chính vòng lặp này!
+                    stmts.push(IvlStmt::Assume {
+                        cond: Self::mk_implies(&active, body_break_cond),
                     });
 
                     idx = l_end + 1;
@@ -1063,7 +676,7 @@ impl Verifier {
                 Instruction::EndLoop(_) => {}
 
                 _other => {
-                    let raw = Self::lower_inst_with_checks(func, s_inst, buffer_sizes, buffer_aliases, program, unsigned_vars);
+                    let raw = IvlLowerer::lower_atomic_instruction(func, s_inst, ctx, program);
                     stmts.extend(Self::guard_stmts(raw, &active, havoc_counter));
                 }
             }
@@ -1071,15 +684,10 @@ impl Verifier {
         }
 
         if let Some(out_exit) = loop_exit_out {
-            if let Some(ctx) = loop_ctx {
-                if ctx.verify_inductive {
-                    *out_exit = local_loop_exit;
-                } else {
-                    *out_exit = local_loop_break;
-                }
-            } else {
-                *out_exit = local_loop_break;
-            }
+            *out_exit = local_loop_exit;
+        }
+        if let Some(out_break) = loop_break_out {
+            *out_break = local_loop_break;
         }
         stmts
     }
@@ -1090,18 +698,22 @@ impl Verifier {
 
         // 0a. Static Well-Formedness: Loop Structure Check (Matching LOOP <lbl> ... END_LOOP <lbl>)
         // and Cross-Loop Jump Validation
-        let mut label_loop_nesting: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut label_loop_nesting: HashMap<String, Vec<String>> = HashMap::new();
         let mut cur_nesting: Vec<String> = Vec::new();
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Loop(lbl) => cur_nesting.push(lbl.clone()),
-                Instruction::EndLoop(_) => { cur_nesting.pop(); }
-                Instruction::Label(lbl) => { label_loop_nesting.insert(lbl.clone(), cur_nesting.clone()); }
+                Instruction::EndLoop(_) => {
+                    cur_nesting.pop();
+                }
+                Instruction::Label(lbl) => {
+                    label_loop_nesting.insert(lbl.clone(), cur_nesting.clone());
+                }
                 _ => {}
             }
         }
 
-        let mut loop_stack: Vec<(&str, &crate::ast::Loc)> = Vec::new();
+        let mut loop_stack: Vec<(&str, &Loc)> = Vec::new();
         cur_nesting.clear();
         for s_inst in &func.instructions {
             match &s_inst.inst {
@@ -1210,7 +822,7 @@ impl Verifier {
         }
 
         // 0b. Static Well-Formedness: Jump Label Validation (No undefined JUMP/BR_IF targets)
-        let defined_labels: std::collections::HashSet<&str> = func
+        let defined_labels: HashSet<&str> = func
             .instructions
             .iter()
             .filter_map(|s| match &s.inst {
@@ -1248,20 +860,19 @@ impl Verifier {
             return results;
         }
 
-        // 0d. Memory Sort Consistency Check: Prevent mixing 8-bit and 64-bit accesses on same buffer
-        let buffer_sizes = crate::ivl::IvlLowerer::extract_buffer_sizes(func);
-        let buffer_aliases = crate::ivl::IvlLowerer::extract_buffer_aliases(func);
-        let mut has_mem8 = std::collections::HashSet::new();
-        let mut has_mem64 = std::collections::HashSet::new();
+        // 0d. Memory Sort Consistency Check: Prevent mixing 8-bit (LOAD8/STORE8/STORE_STR) and 64-bit (LOAD64/STORE64) accesses on same buffer
+        let ctx = FunctionBufferContext::analyze(func, program);
+        let mut has_mem8 = HashSet::new();
+        let mut has_mem64 = HashSet::new();
         for s in &func.instructions {
             match &s.inst {
-                Instruction::Load8 { buf, .. } | Instruction::Store8 { buf, .. } => {
-                    let actual = buffer_aliases.get(buf).unwrap_or(buf);
-                    has_mem8.insert(actual.trim_start_matches('%').to_string());
+                Instruction::Load8 { buf, .. }
+                | Instruction::Store8 { buf, .. }
+                | Instruction::StoreStr { buf, .. } => {
+                    has_mem8.insert(ctx.resolve_root_buf(buf));
                 }
                 Instruction::Load64 { buf, .. } | Instruction::Store64 { buf, .. } => {
-                    let actual = buffer_aliases.get(buf).unwrap_or(buf);
-                    has_mem64.insert(actual.trim_start_matches('%').to_string());
+                    has_mem64.insert(ctx.resolve_root_buf(buf));
                 }
                 _ => {}
             }
@@ -1271,7 +882,7 @@ impl Verifier {
                 results.push(VerificationResult::Failed {
                     goal_name: format!("Function '{}': Memory Sort Consistency", func.name),
                     category: PropertyCategory::Safety,
-                    reason: format!("Mixed 8-bit (LOAD8/STORE8) and 64-bit (LOAD64/STORE64) accesses on buffer '%{}'. In SMT QF_ABV memory theory, mixing byte-level and 64-bit word-level operations without byte concatenation causes memory model unsoundness.", buf),
+                    reason: format!("Mixed 8-bit (LOAD8/STORE8/STORE_STR) and 64-bit (LOAD64/STORE64) accesses on buffer '%{}'. In SMT QF_ABV memory theory, mixing byte-level and 64-bit word-level operations without byte concatenation causes memory model unsoundness.", buf),
                     counter_example: None,
                     stack_trace: vec![StackFrame {
                         file: func.file.clone(),
@@ -1305,20 +916,13 @@ impl Verifier {
             }
         }
 
-        let mut stmts = Vec::new();
-
-        // 1. Khởi tạo và khai báo các tham số đầu vào của hàm
+        // 1. Khởi tạo Universal VcGen và khai báo các tham số đầu vào của hàm
         let mut vc = crate::vcgen::VcGen::new();
-        let param_names: std::collections::HashSet<String> = func
-            .params
-            .iter()
-            .map(|p| p.name.trim_start_matches('%').to_string())
-            .collect();
-
-        for p in &param_names {
-            vc.declared_vars.insert(p.clone());
-            vc.current_val.insert(p.clone(), p.clone());
-            let plen = format!("{}_len", p);
+        for p in &func.params {
+            let clean = IvlLowerer::clean_name(&p.name).to_string();
+            vc.declared_vars.insert(clean.clone());
+            vc.current_val.insert(clean.clone(), clean.clone());
+            let plen = format!("{}_len", clean);
             vc.declared_vars.insert(plen.clone());
             vc.current_val.insert(plen.clone(), plen);
         }
@@ -1348,12 +952,26 @@ impl Verifier {
             return results;
         }
 
-        let unsigned_vars = crate::ivl::IvlLowerer::collect_unsigned_vars(func);
+        // 2. Hạ cấp toàn bộ hàm sang duy nhất 1 dải 4 vi lệnh IVL (Assign, Assume, Havoc, Assert)
         let has_loop = func.instructions.iter().any(|s| matches!(s.inst, Instruction::Loop(_)));
         let mut havoc_counter = 0usize;
-        let all_stmts = Self::lower_slice(func, &func.instructions, &buffer_sizes, &buffer_aliases, program, &mut vc, &mut results, &ensures, &canon_ret, has_loop, None, None, &mut havoc_counter, &unsigned_vars);
-        stmts.extend(all_stmts);
-        results.extend(vc.verify_sequence(&stmts, &func.name, &func.file));
+        let ivl_stmts = Self::lower_slice(
+            func,
+            &func.instructions,
+            &ctx,
+            program,
+            &mut results,
+            &ensures,
+            &canon_ret,
+            has_loop,
+            None,
+            None,
+            None,
+            &mut havoc_counter,
+        );
+
+        // 3. Chạy Universal VcGen 1 lần duy nhất trên dải vi lệnh IVL
+        results.extend(vc.verify_sequence(&ivl_stmts, &func.name, &func.file));
 
         results
     }
@@ -1366,7 +984,7 @@ impl Verifier {
     }
 
     /// Thu thập các biến được định nghĩa bởi một instruction
-    fn collect_defined_vars(inst: &Instruction, out: &mut std::collections::HashSet<String>) {
+    fn collect_defined_vars(inst: &Instruction, out: &mut HashSet<String>) {
         match inst {
             Instruction::AssignConst { dest, .. }
             | Instruction::Binary { dest, .. }
@@ -1374,33 +992,23 @@ impl Verifier {
             | Instruction::SliceLen { dest, .. }
             | Instruction::Load8 { dest, .. }
             | Instruction::Load64 { dest, .. } => {
-                out.insert(dest.trim_start_matches('%').to_string());
+                out.insert(IvlLowerer::clean_name(dest).to_string());
             }
-            Instruction::Mov { dest, src } => {
-                let clean_dest = dest.trim_start_matches('%').to_string();
-                let clean_src = src.trim_start_matches('%');
+            Instruction::Mov { dest, src } | Instruction::SlicePtr { dest, slice: src } => {
+                let clean_dest = IvlLowerer::clean_name(dest).to_string();
+                let clean_src = IvlLowerer::clean_name(src);
                 out.insert(clean_dest.clone());
                 if out.contains(&format!("{}_len", clean_src)) {
                     out.insert(format!("{}_len", clean_dest));
                 }
             }
-            Instruction::SlicePtr { dest, slice } => {
-                let clean_dest = dest.trim_start_matches('%').to_string();
-                let clean_slice = slice.trim_start_matches('%');
-                out.insert(clean_dest.clone());
-                if out.contains(&format!("{}_len", clean_slice)) {
-                    out.insert(format!("{}_len", clean_dest));
-                }
-            }
-            Instruction::AllocSlice { dest, .. }
-            | Instruction::Alloc { dest, .. } => {
-                let clean = dest.trim_start_matches('%').to_string();
+            Instruction::AllocSlice { dest, .. } | Instruction::Alloc { dest, .. } => {
+                let clean = IvlLowerer::clean_name(dest).to_string();
                 out.insert(clean.clone());
                 out.insert(format!("{}_len", clean));
             }
-            Instruction::Call { dest: Some(d), .. }
-            | Instruction::Syscall { dest: Some(d), .. } => {
-                out.insert(d.trim_start_matches('%').to_string());
+            Instruction::Call { dest: Some(d), .. } | Instruction::Syscall { dest: Some(d), .. } => {
+                out.insert(IvlLowerer::clean_name(d).to_string());
             }
             Instruction::Syscall { dest: None, .. } => {
                 out.insert("rax".to_string());
@@ -1412,7 +1020,7 @@ impl Verifier {
     /// Thu thập các biến được sử dụng bởi một instruction
     fn collect_used_vars(
         inst: &Instruction,
-        all_ret_vars: &std::collections::HashSet<String>,
+        all_ret_vars: &HashSet<String>,
         used_regs: &mut Vec<String>,
     ) {
         match inst {
@@ -1420,14 +1028,14 @@ impl Verifier {
             | Instruction::Invariant(e)
             | Instruction::Decreases(e)
             | Instruction::Assert(e) => {
-                let mut expr_vars = std::collections::HashSet::new();
+                let mut expr_vars = HashSet::new();
                 Self::collect_vars(e, &mut expr_vars);
                 for v in expr_vars {
                     used_regs.push(v);
                 }
             }
             Instruction::Ensure(e) => {
-                let mut expr_vars = std::collections::HashSet::new();
+                let mut expr_vars = HashSet::new();
                 Self::collect_vars(e, &mut expr_vars);
                 for v in expr_vars {
                     if !all_ret_vars.contains(&v) {
@@ -1435,64 +1043,68 @@ impl Verifier {
                     }
                 }
             }
-            Instruction::Mov { src, .. } => used_regs.push(src.trim_start_matches('%').to_string()),
+            Instruction::Mov { src, .. } => used_regs.push(IvlLowerer::clean_name(src).to_string()),
             Instruction::Not { src, .. } => {
-                if let Operand::Reg(r) = src { used_regs.push(r.trim_start_matches('%').to_string()); }
+                if let Operand::Reg(r) = src {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
             }
             Instruction::Binary { src1, src2, .. } => {
-                if let Operand::Reg(r) = src1 { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Operand::Reg(r) = src2 { used_regs.push(r.trim_start_matches('%').to_string()); }
+                if let Operand::Reg(r) = src1 {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
+                if let Operand::Reg(r) = src2 {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
             }
-            Instruction::Store8 { buf, offset, val } => {
-                used_regs.push(buf.trim_start_matches('%').to_string());
-                if let Operand::Reg(r) = offset { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Operand::Reg(r) = val { used_regs.push(r.trim_start_matches('%').to_string()); }
+            Instruction::Store8 { buf, offset, val } | Instruction::Store64 { buf, offset, val } => {
+                used_regs.push(IvlLowerer::clean_name(buf).to_string());
+                if let Operand::Reg(r) = offset {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
+                if let Operand::Reg(r) = val {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
             }
-            Instruction::Load8 { buf, offset, .. } => {
-                used_regs.push(buf.trim_start_matches('%').to_string());
-                if let Operand::Reg(r) = offset { used_regs.push(r.trim_start_matches('%').to_string()); }
-            }
-            Instruction::Store64 { buf, offset, val } => {
-                used_regs.push(buf.trim_start_matches('%').to_string());
-                if let Operand::Reg(r) = offset { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Operand::Reg(r) = val { used_regs.push(r.trim_start_matches('%').to_string()); }
-            }
-            Instruction::Load64 { buf, offset, .. } => {
-                used_regs.push(buf.trim_start_matches('%').to_string());
-                if let Operand::Reg(r) = offset { used_regs.push(r.trim_start_matches('%').to_string()); }
+            Instruction::Load8 { buf, offset, .. } | Instruction::Load64 { buf, offset, .. } => {
+                used_regs.push(IvlLowerer::clean_name(buf).to_string());
+                if let Operand::Reg(r) = offset {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
             }
             Instruction::StoreStr { buf, .. } => {
-                used_regs.push(buf.trim_start_matches('%').to_string());
+                used_regs.push(IvlLowerer::clean_name(buf).to_string());
             }
-            Instruction::SlicePtr { slice, .. } => {
-                used_regs.push(slice.trim_start_matches('%').to_string());
+            Instruction::SlicePtr { slice, .. } | Instruction::SliceLen { slice, .. } => {
+                used_regs.push(IvlLowerer::clean_name(slice).to_string());
             }
-            Instruction::SliceLen { slice, .. } => {
-                used_regs.push(slice.trim_start_matches('%').to_string());
+            Instruction::BrIf { cond, .. }
+            | Instruction::BreakIf(cond)
+            | Instruction::ContinueIf(cond) => {
+                used_regs.push(IvlLowerer::clean_name(cond).to_string());
             }
-            Instruction::BrIf { cond, .. } | Instruction::BreakIf(cond) | Instruction::ContinueIf(cond) => {
-                used_regs.push(cond.trim_start_matches('%').to_string());
+            Instruction::Ret(Some(Operand::Reg(r))) => {
+                used_regs.push(IvlLowerer::clean_name(r).to_string())
             }
-            Instruction::Ret(Some(Operand::Reg(r))) => used_regs.push(r.trim_start_matches('%').to_string()),
             Instruction::RetIf { cond, val } => {
-                used_regs.push(cond.trim_start_matches('%').to_string());
-                if let Some(Operand::Reg(r)) = val { used_regs.push(r.trim_start_matches('%').to_string()); }
+                used_regs.push(IvlLowerer::clean_name(cond).to_string());
+                if let Some(Operand::Reg(r)) = val {
+                    used_regs.push(IvlLowerer::clean_name(r).to_string());
+                }
             }
             Instruction::Call { args, .. } => {
                 for a in args {
                     if let Operand::Reg(r) = a {
-                        used_regs.push(r.trim_start_matches('%').to_string());
+                        used_regs.push(IvlLowerer::clean_name(r).to_string());
                     }
                 }
             }
             Instruction::Syscall { rax, rdi, rsi, rdx, r10, r8, r9, .. } => {
-                if let Operand::Reg(r) = rax { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Operand::Reg(r) = rdi { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Operand::Reg(r) = rsi { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Operand::Reg(r) = rdx { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Some(Operand::Reg(r)) = r10 { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Some(Operand::Reg(r)) = r8 { used_regs.push(r.trim_start_matches('%').to_string()); }
-                if let Some(Operand::Reg(r)) = r9 { used_regs.push(r.trim_start_matches('%').to_string()); }
+                for op in [Some(rax), Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()].into_iter().flatten() {
+                    if let Operand::Reg(r) = op {
+                        used_regs.push(IvlLowerer::clean_name(r).to_string());
+                    }
+                }
             }
             _ => {}
         }
@@ -1500,29 +1112,35 @@ impl Verifier {
 
     /// Phân tích Definite Assignment chuẩn xác qua duyệt luồng tiến (Forward Jump & Structured Loop)
     fn check_definite_assignment_cfg(func: &Function) -> Option<VerificationResult> {
-        let mut defined: std::collections::HashSet<String> = func.params.iter().flat_map(|p| {
-            let c = p.name.trim_start_matches('%').to_string();
-            if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
-                vec![c.clone(), format!("{}_len", c)]
-            } else {
-                vec![c]
-            }
-        }).collect();
+        let mut defined: HashSet<String> = func
+            .params
+            .iter()
+            .flat_map(|p| {
+                let c = IvlLowerer::clean_name(&p.name).to_string();
+                if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
+                    vec![c.clone(), format!("{}_len", c)]
+                } else {
+                    vec![c]
+                }
+            })
+            .collect();
 
-        let mut all_ret_vars: std::collections::HashSet<String> =
+        let mut all_ret_vars: HashSet<String> =
             ["ret", "result", "res"].into_iter().map(String::from).collect();
         if let Some(cr) = Self::find_canonical_ret_var(func) {
-            all_ret_vars.insert(cr.trim_start_matches('%').to_string());
+            all_ret_vars.insert(IvlLowerer::clean_name(&cr).to_string());
         }
         for s in &func.instructions {
-            if let Instruction::Ret(Some(Operand::Reg(r))) | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } = &s.inst {
-                all_ret_vars.insert(r.trim_start_matches('%').to_string());
+            if let Instruction::Ret(Some(Operand::Reg(r)))
+            | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } = &s.inst
+            {
+                all_ret_vars.insert(IvlLowerer::clean_name(r).to_string());
             }
         }
 
         // Lưu trạng thái tập biến tại các nhánh nhảy tiến tới LABEL hoặc thoát LOOP
-        let mut incoming_label: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
-        let mut loop_exit_states: Vec<Option<std::collections::HashSet<String>>> = Vec::new();
+        let mut incoming_label: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut loop_exit_states: Vec<Option<HashSet<String>>> = Vec::new();
         let mut reachable = true;
 
         for s_inst in &func.instructions {
@@ -1610,61 +1228,75 @@ impl Verifier {
         None
     }
 
-    /// Tìm tên biến đại diện cho giá trị trả về của hàm trong ENSURE
+    /// Tìm tên biến đại diện cho giá trị trả về của hàm trong ENSURE (Deterministic 100%)
     pub fn find_canonical_ret_var(func: &Function) -> Option<String> {
-        let mut ensure_vars = std::collections::HashSet::new();
+        let mut ensure_vars_set = HashSet::new();
         for si in &func.instructions {
             if let Instruction::Ensure(e) = &si.inst {
-                Self::collect_vars(e, &mut ensure_vars);
+                Self::collect_vars(e, &mut ensure_vars_set);
             }
         }
+        let mut ensure_vars: Vec<String> = ensure_vars_set.iter().cloned().collect();
+        ensure_vars.sort();
+
+        let param_names: HashSet<String> = func
+            .params
+            .iter()
+            .map(|p| IvlLowerer::clean_name(&p.name).to_string())
+            .collect();
+
         // Thu thập tất cả các thanh ghi trả về (cả RET và RET_IF)
-        let mut ret_regs = Vec::new();
+        let mut non_param_ret_regs = Vec::new();
+        let mut all_ret_regs = Vec::new();
         for s_inst in func.instructions.iter().rev() {
             match &s_inst.inst {
-                Instruction::Ret(Some(Operand::Reg(r))) => ret_regs.push(r.trim_start_matches('%').to_string()),
-                Instruction::RetIf { val: Some(Operand::Reg(r)), .. } => ret_regs.push(r.trim_start_matches('%').to_string()),
+                Instruction::Ret(Some(Operand::Reg(r)))
+                | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } => {
+                    let clean = IvlLowerer::clean_name(r).to_string();
+                    all_ret_regs.push(clean.clone());
+                    if !param_names.contains(&clean) {
+                        non_param_ret_regs.push(clean);
+                    }
+                }
                 _ => {}
             }
         }
-        // Ưu tiên 1: Biến nào trong ret_regs có mặt trực tiếp trong ensure_vars
-        for r in &ret_regs {
-            if ensure_vars.contains(r) {
+        // Ưu tiên 1: Biến trả về không phải param có mặt trực tiếp trong ensure_vars
+        for r in &non_param_ret_regs {
+            if ensure_vars_set.contains(r) {
                 return Some(r.clone());
             }
         }
         // Ưu tiên 2: Tên quy ước chuẩn: "ret", "res", "result" nếu có trong ensure_vars
         for standard in &["ret", "res", "result"] {
-            if ensure_vars.contains(*standard) {
+            if ensure_vars_set.contains(*standard) && !param_names.contains(*standard) {
                 return Some(standard.to_string());
             }
         }
-        // Ưu tiên 3: Thanh ghi trả về đầu tiên tìm thấy
-        if let Some(first_ret) = ret_regs.first() {
+        // Ưu tiên 3: Thanh ghi trả về đầu tiên không phải là tham số hàm
+        if let Some(first_ret) = non_param_ret_regs.first() {
             return Some(first_ret.clone());
         }
-        // Ưu tiên 4: Biến trong ENSURE không phải là param của hàm
-        let param_names: std::collections::HashSet<String> = func
-            .params
-            .iter()
-            .map(|p| p.name.trim_start_matches('%').to_string())
-            .collect();
+        // Ưu tiên 4: Biến trong ENSURE không phải là param của hàm (đã sort deterministic)
         for ev in &ensure_vars {
             if !param_names.contains(ev) {
                 return Some(ev.clone());
             }
         }
-        None
+        // Ưu tiên 5: Hàm trả về trực tiếp chính tham số đầu vào (vd: RET x, ENSURE x >= 0)
+        for r in &all_ret_regs {
+            if ensure_vars_set.contains(r) {
+                return Some(r.clone());
+            }
+        }
+        all_ret_regs.first().cloned()
     }
 
     /// Thu thập tất cả tên biến xuất hiện trong biểu thức
-    pub fn collect_vars(expr: &Expr, vars: &mut std::collections::HashSet<String>) {
+    pub fn collect_vars(expr: &Expr, vars: &mut HashSet<String>) {
         match expr {
-            Expr::Var(name) => {
-                vars.insert(name.trim_start_matches('%').to_string());
-            }
-            Expr::Len(name) => {
-                vars.insert(name.trim_start_matches('%').to_string());
+            Expr::Var(name) | Expr::Len(name) => {
+                vars.insert(IvlLowerer::clean_name(name).to_string());
             }
             Expr::Not(inner) => {
                 Self::collect_vars(inner, vars);

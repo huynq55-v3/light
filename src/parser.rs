@@ -1204,7 +1204,7 @@ impl Parser {
             return Ok(Expr::IntConst(num));
         }
         if let Ok(unum) = s.parse::<u64>() {
-            return Ok(Expr::IntConst(unum as i64));
+            return Ok(Expr::UIntConst(unum));
         }
         if let Ok(_flt) = s.parse::<f64>() {
             return Err(ParseError {

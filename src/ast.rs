@@ -66,6 +66,7 @@ pub enum BinOp {
 pub enum Expr {
     Var(String),
     IntConst(i64),
+    UIntConst(u64),
     FloatConst(f64),
     BoolConst(bool),
     Binary {

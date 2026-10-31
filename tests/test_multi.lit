@@ -1,13 +1,13 @@
 # Multi-Function Symbol Resolution Test (calling multiple independent functions)
 FUNC add_five(x: i64) -> i64
   %rcx = CONST i64 5
-  %rdi = ADD i64 %rdi %rcx
+  %rdi = ADD i64 x %rcx
   RET %rdi
 END_FUNC
 
 FUNC mul_two(x: i64) -> i64
   %rcx = CONST i64 2
-  %rdi = MUL i64 %rdi %rcx
+  %rdi = MUL i64 x %rcx
   RET %rdi
 END_FUNC
 

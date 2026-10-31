@@ -167,10 +167,10 @@ impl VcGen {
         match expr {
             IvlExpr::Var(v) => {
                 let clean = v.trim_start_matches('%');
-                if self.declared_mems.contains(clean) {
-                    clean.to_string()
-                } else if let Some(m) = self.current_mem.get(clean) {
+                if let Some(m) = self.current_mem.get(clean) {
                     m.clone()
+                } else if self.declared_mems.contains(clean) {
+                    clean.to_string()
                 } else {
                     format!("{}_mem_0", clean)
                 }

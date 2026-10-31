@@ -235,7 +235,7 @@ impl MachineCodeEmitter {
             let clean = p.name.trim_start_matches('%').to_string();
             slots.insert(clean.clone(), next_slot);
             next_slot += 8;
-            if matches!(p.ty, Type::Slice(_)) {
+            if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
                 slots.insert(format!("{}_len", clean), next_slot);
                 next_slot += 8;
             }
@@ -385,7 +385,7 @@ impl MachineCodeEmitter {
                     self.emit_store_stack(abi_regs[reg_idx], slot);
                     reg_idx += 1;
                 }
-                if matches!(p.ty, Type::Slice(_)) {
+                if matches!(p.ty, Type::Slice(_) | Type::Array(_, _)) {
                     let len_name = format!("{}_len", clean);
                     if let Some(&len_slot) = slots.get(&len_name) {
                         if reg_idx >= abi_regs.len() {
@@ -847,10 +847,10 @@ impl MachineCodeEmitter {
                         load_op_into_reg(self, arg, target_reg);
                         reg_idx += 1;
 
-                        // Nếu callee parameter tại vị trí này là Type::Slice, truyền tiếp len vào thanh ghi tiếp theo
+                        // Nếu callee parameter tại vị trí này là Type::Slice hoặc Type::Array, truyền tiếp len vào thanh ghi tiếp theo
                         if let Some(callee) = target_func {
                             if let Some(param) = callee.params.get(arg_idx) {
-                                if matches!(param.ty, Type::Slice(_)) {
+                                if matches!(param.ty, Type::Slice(_) | Type::Array(_, _)) {
                                     if reg_idx >= abi_regs.len() {
                                         return Err(format!(
                                             "Call to '{}' in function '{}' exceeds maximum 6 ABI register slots (note: slice<T> consumes 2 slots)",
@@ -995,7 +995,16 @@ impl MachineCodeEmitter {
     /// Đóng gói mã máy x86_64 thành file thực thi nhị phân Linux ELF64 hoàn chỉnh
     pub fn emit_elf64(&self, output_path: &str) -> std::io::Result<()> {
         let _ = std::fs::remove_file(output_path);
-        let mut file = File::create(output_path)?;
+        let tmp_path = format!(
+            "{}.tmp.{}.{}",
+            output_path,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let mut file = File::create(&tmp_path)?;
 
         let elf_header_size = 64usize;
         let prog_header_size = 56usize;
@@ -1049,6 +1058,8 @@ impl MachineCodeEmitter {
         file.set_permissions(perms)?;
         file.sync_all()?;
         drop(file);
+
+        std::fs::rename(&tmp_path, output_path)?;
 
         Ok(())
     }

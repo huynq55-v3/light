@@ -3103,18 +3103,211 @@ END_FUNC
     );
 }
 
+#[test]
+fn test_v96_negative_constants_in_contracts_not_treated_as_unsigned() {
+    // V96: Regression test for Expr::IntConst(n) vs Expr::UIntConst(u).
+    // Negative constants like -4096 or -1 in ENSURE/REQUIRE must use signed comparison (bvsge),
+    // NOT unsigned comparison (bvuge), which previously caused 0 >= -4096 to fail!
+    let code = r#"
+FUNC sys_wrapper(fd: i64) -> i64
+  REQUIRE fd >= 0
+  %rax = CONST i64 3
+  %z = CONST i64 0
+  %res = SYSCALL %rax fd %z %z
+  ENSURE %res >= -4096
+  RET %res
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V96");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V96 failed: Negative constant -4096 in ENSURE must be verified with signed bvsge! Got: {:?}",
+        res
+    );
+}
 
+#[test]
+fn test_v97_canonical_ret_var_ignores_input_parameters_in_ret_if() {
+    // V97: When a function has `RET_IF %cond param_name` and `RET %res` with `ENSURE %ret >= low`,
+    // `find_canonical_ret_var` must select `%ret` (or `%res`), NOT the input parameter `param_name`.
+    let code = r#"
+FUNC clamp_test(val: i64, low: i64, high: i64) -> i64
+  REQUIRE low <= high
+  ENSURE %ret >= low && %ret <= high
+  %is_low = LT i64 val low
+  RET_IF %is_low low
+  %is_high = GT i64 val high
+  BR_IF %is_high .lbl_high
+  %res = MOV val
+  JUMP .lbl_merge
+LABEL .lbl_high
+  %res = MOV high
+LABEL .lbl_merge
+  RET %res
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V97");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V97 failed: clamp_test with RET_IF returning parameter `low` must verify ENSURE %ret! Got: {:?}",
+        res
+    );
+}
 
+#[test]
+fn test_v98_entire_standard_library_verifies_cleanly() {
+    // V98: All 4 standard library modules (std/alloc.lit, std/fs.lit, std/io.lit, std/string.lit)
+    // must pass 100% of Z3 formal verification checks without any failure!
+    for std_file in ["std/alloc.lit", "std/fs.lit", "std/io.lit", "std/string.lit"] {
+        let prog = Parser::parse_file(std_file).unwrap_or_else(|e| panic!("Parse {}: {}", std_file, e));
+        for func in &prog.functions {
+            let results = Verifier::verify_function(func, Some(&prog));
+            for r in &results {
+                assert!(
+                    matches!(r, VerificationResult::Verified { .. }),
+                    "Stdlib verification failed in {}::{}: {:?}",
+                    std_file,
+                    func.name,
+                    r
+                );
+            }
+        }
+    }
+}
 
+#[test]
+fn test_v99_loop_call_havocs_memory_soundness() {
+    // V99: Previously, `collect_modified_mems` manually scanned AST instructions inside a loop
+    // and forgot `Instruction::Call`. As a result, a loop calling a helper that mutates a buffer
+    // did NOT havoc the buffer in the loop's inductive/exit step!
+    // With `extract_modified_targets_from_ivl`, any `Havoc(mem)` emitted by `CALL` inside a loop
+    // automatically triggers loop-level memory havoc unless preserved by `INVARIANT`.
+    let code = r#"
+FUNC clobber(buf: slice<u8>) -> i64
+  REQUIRE len(buf) >= 4
+  ENSURE %r == 0
+  STORE8 buf 0 99
+  %r = MOV 0
+  RET %r
+END_FUNC
 
+FUNC caller_loop_unsound() -> i64
+  ENSURE %v == 42
+  %buf = ALLOC slice<u8> 8
+  STORE8 %buf 0 42
+  %i = MOV 0
+  LOOP
+    INVARIANT %i >= 0 && %i <= 3
+    DECREASES 3 - %i
+    %done = EQ i64 %i 3
+    BREAK_IF %done
+    %dummy = CALL clobber %buf
+    %i = ADD i64 %i 1
+  END_LOOP
+  %v = LOAD8 u8 %buf 0
+  RET %v
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V99");
+    let res = Verifier::verify_function(&prog.functions[1], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
+        "V99 soundness failure: CALL inside LOOP must havoc buffer memory in post-loop state! Got: {:?}",
+        res
+    );
+}
 
+#[test]
+fn test_v100_slice_load64_underflow_bounds_check() {
+    // V100: Previously, 64-bit bounds check on a dynamic slice only checked `offset >= 0 && offset <= len(s) - 8`.
+    // In 64-bit two's complement bitvectors, if `len(s)` is negative (or < 8 and underflows signed),
+    // `len(s) - 8` can wrap around to `i64::MAX`, allowing out-of-bounds 64-bit loads!
+    // Now `emit_mem64_checks` strictly requires `bound >= 8` as well.
+    let code = r#"
+FUNC bad_slice_load64(s: slice<u8>) -> i64
+  ENSURE %v == %v
+  %v = LOAD64 s 0
+  RET %v
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V100");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { .. })),
+        "V100 soundness failure: LOAD64 on slice without REQUIRE len(s) >= 8 must fail bounds check! Got: {:?}",
+        res
+    );
+}
 
+#[test]
+fn test_v101_mixed_store_str_and_load64_fails_sort_check() {
+    // V101: `STORE_STR` writes bytes into `Array(BV64, BV8)` memory just like `STORE8`.
+    // Mixing `STORE_STR` and `LOAD64` on the same buffer must be rejected by the Memory Sort Consistency check.
+    let code = r#"
+FUNC mixed_str_and_64() -> i64
+  ENSURE %v == %v
+  %buf = ALLOC slice<u8> 16
+  STORE_STR %buf "hello"
+  %v = LOAD64 %buf 0
+  RET %v
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V101");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().any(|r| matches!(r, VerificationResult::Failed { goal_name, .. } if goal_name.contains("Memory Sort Consistency"))),
+        "V101 soundness failure: mixing STORE_STR and LOAD64 on same buffer must fail sort check! Got: {:?}",
+        res
+    );
+}
 
+#[test]
+fn test_v102_ret_overwriting_param_name_isolation() {
+    // V102: When a function returns in multiple branches and the `ENSURE` clause references both
+    // a parameter and the canonical return variable, early `RET` / `RET_IF` checks must substitute
+    // the return expression directly into `ENSURE` without mutating any variable in the active path.
+    let code = r#"
+FUNC multi_branch_ret(x: i64) -> i64
+  REQUIRE x >= 10 && x <= 1000
+  ENSURE %res >= 10 && x >= 10
+  %c = EQ i64 x 10
+  RET_IF %c 10
+  %res = ADD i64 x 1
+  RET %res
+END_FUNC
+"#;
+    let prog = Parser::parse(code).expect("Parse V102");
+    let res = Verifier::verify_function(&prog.functions[0], Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V102 failed: multi_branch_ret must verify cleanly! Got: {:?}",
+        res
+    );
+}
 
-
-
-
-
-
-
+#[test]
+fn test_v103_stdlib_parse_i64_ensures_non_negative() {
+    // V103: `std/string.lit` functions `str_parse_i64` and `parse_i64` now prove `ENSURE %res >= 0`,
+    // allowing callers to assert `%val >= 0` directly after calling `str_parse_i64`.
+    let code = r#"
+FUNC caller_uses_parse_i64(s: slice<u8>) -> i64
+  REQUIRE len(s) > 0 && len(s) <= 18
+  ENSURE %val >= 0
+  %val = CALL str_parse_i64 s
+  RET %val
+END_FUNC
+"#;
+    let mut prog = Parser::parse_file("std/string.lit").expect("Parse std/string.lit");
+    let caller_prog = Parser::parse(code).expect("Parse V103 caller");
+    let caller_fn = caller_prog.functions[0].clone();
+    prog.functions.push(caller_fn.clone());
+    let res = Verifier::verify_function(&caller_fn, Some(&prog));
+    assert!(
+        res.iter().all(|r| matches!(r, VerificationResult::Verified { .. })),
+        "V103: caller_uses_parse_i64 must verify ENSURE %val >= 0 via str_parse_i64 postcondition! Got: {:?}",
+        res
+    );
+}
 

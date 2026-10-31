@@ -6,7 +6,7 @@
 //! 1. `Assign`: Gán biểu thức giá trị toán học thuần túy (hỗ trợ cả biến số BitVec và Memory Array)
 //! 2. `Assert`: Khẳng định một thuộc tính phải đúng (nếu sai -> Báo lỗi & counter-example)
 //! 3. `Assume`: Giả định tiền đề hoặc điều kiện rẽ nhánh hợp lệ
-//! 4. `Havoc`: Quên giá trị cũ của các biến (phục vụ bất biến quy nạp cho vòng lặp)
+//! 4. `Havoc`: Giải phóng biến/bộ nhớ thành tự do (phục vụ bất biến quy nạp cho vòng lặp & lời gọi hàm)
 
 use crate::ast::*;
 use crate::verifier::PropertyCategory;
@@ -55,7 +55,7 @@ impl From<&Expr> for IvlExpr {
     }
 }
 
-/// Vi lệnh kiểm chứng toán học nguyên tử
+/// Vi lệnh kiểm chứng toán học nguyên tử (Boogie 4-Instruction Core)
 #[derive(Debug, Clone, PartialEq)]
 pub enum IvlStmt {
     /// Gán giá trị: `dest := expr` (hỗ trợ cả biến vô hướng và toán đồ bộ nhớ Array Memory)
@@ -84,13 +84,85 @@ pub enum IvlStmt {
     Comment(String),
 }
 
+/// Ngữ cảnh thông tin kiểu và bộ đệm của một hàm sau khi chuẩn hóa
+pub struct FunctionBufferContext {
+    /// Kích thước tĩnh của các buffer (ALLOC / ALLOC slice<T>)
+    pub buffer_sizes: HashMap<String, usize>,
+    /// Ánh xạ bí danh con trỏ/slice về tên buffer gốc (root buffer name, không có '%')
+    pub buffer_aliases: HashMap<String, String>,
+    /// Tập hợp các tham số đầu vào có kiểu slice<T> hoặc arr<T, N> (không có '%')
+    pub slice_params: HashSet<String>,
+    /// Tập hợp các biến mang kiểu số nguyên không dấu (u64 / u8)
+    pub unsigned_vars: HashSet<String>,
+}
+
+impl FunctionBufferContext {
+    pub fn analyze(func: &Function, program: Option<&Program>) -> Self {
+        let buffer_sizes = IvlLowerer::extract_buffer_sizes(func);
+        let buffer_aliases = IvlLowerer::extract_buffer_aliases(func);
+        let slice_params = func
+            .params
+            .iter()
+            .filter(|p| matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
+            .map(|p| IvlLowerer::clean_name(&p.name).to_string())
+            .collect();
+        let unsigned_vars = IvlLowerer::collect_unsigned_vars_with_prog(func, program);
+        Self {
+            buffer_sizes,
+            buffer_aliases,
+            slice_params,
+            unsigned_vars,
+        }
+    }
+
+    /// Tìm tên buffer gốc (đã bỏ '%') của một thanh ghi
+    pub fn resolve_root_buf<'a>(&'a self, reg: &'a str) -> String {
+        let clean = IvlLowerer::clean_name(reg);
+        self.buffer_aliases
+            .get(reg)
+            .or_else(|| self.buffer_aliases.get(clean))
+            .map(|s| IvlLowerer::clean_name(s).to_string())
+            .unwrap_or_else(|| clean.to_string())
+    }
+
+    /// Kiểm tra xem một thanh ghi có đại diện cho một buffer/slice được quản lý bộ nhớ hay không
+    pub fn is_known_buffer(&self, reg: &str) -> bool {
+        let clean = IvlLowerer::clean_name(reg);
+        let root = self.resolve_root_buf(reg);
+        self.buffer_sizes.contains_key(clean)
+            || self.buffer_sizes.contains_key(&root)
+            || self.buffer_aliases.contains_key(clean)
+            || self.slice_params.contains(&root)
+    }
+
+    /// Lấy biểu thức độ dài (theo bytes) của một buffer/slice nếu biết
+    pub fn bound_expr(&self, reg: &str) -> Option<IvlExpr> {
+        let clean = IvlLowerer::clean_name(reg);
+        let root = self.resolve_root_buf(reg);
+        if let Some(&sz) = self.buffer_sizes.get(&root).or_else(|| self.buffer_sizes.get(clean)) {
+            Some(IvlExpr::IntConst(sz as i64))
+        } else if self.slice_params.contains(&root) {
+            Some(IvlExpr::Len(root))
+        } else if self.buffer_aliases.contains_key(clean) {
+            Some(IvlExpr::Var(format!("{}_len", clean)))
+        } else {
+            None
+        }
+    }
+}
+
 /// Bộ chuyển đổi toán học: hạ cấp Function trong Light sang các chuỗi kiểm chứng IVL
 pub struct IvlLowerer;
 
 impl IvlLowerer {
+    #[inline]
+    pub fn clean_name(name: &str) -> &str {
+        name.trim_start_matches('%')
+    }
+
     pub fn operand_to_expr(op: &Operand) -> IvlExpr {
         match op {
-            Operand::Reg(r) => IvlExpr::Var(r.trim_start_matches('%').to_string()),
+            Operand::Reg(r) => IvlExpr::Var(Self::clean_name(r).to_string()),
             Operand::Const(v) => match v {
                 Value::I64(n) => IvlExpr::IntConst(*n),
                 Value::U64(n) => IvlExpr::IntConst(*n as i64),
@@ -103,82 +175,16 @@ impl IvlLowerer {
     }
 
     pub fn subst_expr(expr: &IvlExpr, from: &str, to: &IvlExpr) -> IvlExpr {
-        let clean_from = from.trim_start_matches('%');
-        match expr {
-            IvlExpr::Var(v) => {
-                if v.trim_start_matches('%') == clean_from {
-                    to.clone()
-                } else {
-                    expr.clone()
-                }
-            }
-            IvlExpr::IntConst(_) | IvlExpr::BoolConst(_) => expr.clone(),
-            IvlExpr::Len(v) => {
-                if v.trim_start_matches('%') == clean_from {
-                    if let IvlExpr::Var(to_var) = to {
-                        IvlExpr::Len(to_var.clone())
-                    } else {
-                        expr.clone()
-                    }
-                } else {
-                    expr.clone()
-                }
-            }
-            IvlExpr::Binary { op, lhs, rhs, is_unsigned } => IvlExpr::Binary {
-                op: op.clone(),
-                lhs: Box::new(Self::subst_expr(lhs, from, to)),
-                rhs: Box::new(Self::subst_expr(rhs, from, to)),
-                is_unsigned: *is_unsigned,
-            },
-            IvlExpr::Ite { cond, then_val, else_val } => IvlExpr::Ite {
-                cond: Box::new(Self::subst_expr(cond, from, to)),
-                then_val: Box::new(Self::subst_expr(then_val, from, to)),
-                else_val: Box::new(Self::subst_expr(else_val, from, to)),
-            },
-            IvlExpr::Not(e) => IvlExpr::Not(Box::new(Self::subst_expr(e, from, to))),
-            IvlExpr::BitNot(e) => IvlExpr::BitNot(Box::new(Self::subst_expr(e, from, to))),
-            IvlExpr::Mask8(e) => IvlExpr::Mask8(Box::new(Self::subst_expr(e, from, to))),
-            IvlExpr::Select { mem, offset } => {
-                let clean_mem = mem.trim_start_matches('%');
-                let new_mem = if clean_mem == clean_from {
-                    if let IvlExpr::Var(to_var) = to {
-                        to_var.clone()
-                    } else {
-                        mem.clone()
-                    }
-                } else {
-                    mem.clone()
-                };
-                IvlExpr::Select {
-                    mem: new_mem,
-                    offset: Box::new(Self::subst_expr(offset, from, to)),
-                }
-            }
-            IvlExpr::Store { mem, offset, val } => {
-                let clean_mem = mem.trim_start_matches('%');
-                let new_mem = if clean_mem == clean_from {
-                    if let IvlExpr::Var(to_var) = to {
-                        to_var.clone()
-                    } else {
-                        mem.clone()
-                    }
-                } else {
-                    mem.clone()
-                };
-                IvlExpr::Store {
-                    mem: new_mem,
-                    offset: Box::new(Self::subst_expr(offset, from, to)),
-                    val: Box::new(Self::subst_expr(val, from, to)),
-                }
-            }
-        }
+        let mut map = HashMap::new();
+        map.insert(Self::clean_name(from).to_string(), to.clone());
+        Self::subst_expr_map(expr, &map)
     }
 
     /// Thay thế đồng thời nhiều biến cùng lúc (tránh lỗi Variable Capture khi gọi hàm)
     pub fn subst_expr_map(expr: &IvlExpr, map: &HashMap<String, IvlExpr>) -> IvlExpr {
         match expr {
             IvlExpr::Var(v) => {
-                let clean = v.trim_start_matches('%');
+                let clean = Self::clean_name(v);
                 if let Some(to) = map.get(clean) {
                     to.clone()
                 } else {
@@ -187,7 +193,7 @@ impl IvlLowerer {
             }
             IvlExpr::IntConst(_) | IvlExpr::BoolConst(_) => expr.clone(),
             IvlExpr::Len(v) => {
-                let clean = v.trim_start_matches('%');
+                let clean = Self::clean_name(v);
                 let len_key = format!("{}_len", clean);
                 if let Some(to_len) = map.get(&len_key) {
                     to_len.clone()
@@ -212,7 +218,7 @@ impl IvlLowerer {
             IvlExpr::BitNot(e) => IvlExpr::BitNot(Box::new(Self::subst_expr_map(e, map))),
             IvlExpr::Mask8(e) => IvlExpr::Mask8(Box::new(Self::subst_expr_map(e, map))),
             IvlExpr::Select { mem, offset } => {
-                let clean_mem = mem.trim_start_matches('%');
+                let clean_mem = Self::clean_name(mem);
                 let new_mem = if let Some(IvlExpr::Var(to_var)) = map.get(clean_mem) {
                     to_var.clone()
                 } else {
@@ -224,7 +230,7 @@ impl IvlLowerer {
                 }
             }
             IvlExpr::Store { mem, offset, val } => {
-                let clean_mem = mem.trim_start_matches('%');
+                let clean_mem = Self::clean_name(mem);
                 let new_mem = if let Some(IvlExpr::Var(to_var)) = map.get(clean_mem) {
                     to_var.clone()
                 } else {
@@ -241,76 +247,107 @@ impl IvlLowerer {
 
     /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (u64 / u8)
     pub fn collect_unsigned_vars(func: &Function) -> HashSet<String> {
+        Self::collect_unsigned_vars_with_prog(func, None)
+    }
+
+    /// Thu thập danh sách các biến/tham số có kiểu số nguyên không dấu (u64 / u8) kèm thông tin toàn chương trình
+    pub fn collect_unsigned_vars_with_prog(func: &Function, program: Option<&Program>) -> HashSet<String> {
         let mut unsigned = HashSet::new();
-        if matches!(func.return_ty, Some(Type::U64 | Type::U8)) {
-            unsigned.insert("ret".to_string());
-            unsigned.insert("%ret".to_string());
+        let insert_both = |set: &mut HashSet<String>, name: &str| {
+            let clean = Self::clean_name(name).to_string();
+            set.insert(clean.clone());
+            set.insert(format!("%{}", clean));
+        };
+
+        let ret_is_unsigned = matches!(func.return_ty, Some(Type::U64 | Type::U8));
+        if ret_is_unsigned {
+            for r in ["ret", "res", "result"] {
+                insert_both(&mut unsigned, r);
+            }
         }
         for p in &func.params {
             if matches!(p.ty, Type::U64 | Type::U8) {
-                let clean = p.name.trim_start_matches('%').to_string();
-                unsigned.insert(clean.clone());
-                unsigned.insert(format!("%{}", clean));
+                insert_both(&mut unsigned, &p.name);
             }
         }
         for si in &func.instructions {
             match &si.inst {
                 Instruction::AssignConst { dest, ty, val } => {
                     if matches!(ty, Type::U64 | Type::U8) || matches!(val, Value::U64(_)) {
-                        let clean = dest.trim_start_matches('%').to_string();
-                        unsigned.insert(clean.clone());
-                        unsigned.insert(format!("%{}", clean));
+                        insert_both(&mut unsigned, dest);
                     }
                 }
                 Instruction::Binary { dest, ty, .. } => {
                     if matches!(ty, Type::U64 | Type::U8) {
-                        let clean = dest.trim_start_matches('%').to_string();
-                        unsigned.insert(clean.clone());
-                        unsigned.insert(format!("%{}", clean));
+                        insert_both(&mut unsigned, dest);
                     }
                 }
                 Instruction::Load8 { dest, .. } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    unsigned.insert(clean.clone());
-                    unsigned.insert(format!("%{}", clean));
+                    insert_both(&mut unsigned, dest);
                 }
                 Instruction::AllocSlice { dest, elem_ty, .. } => {
                     if matches!(elem_ty, Type::U64 | Type::U8) {
-                        let clean = dest.trim_start_matches('%').to_string();
-                        unsigned.insert(clean.clone());
-                        unsigned.insert(format!("%{}", clean));
+                        insert_both(&mut unsigned, dest);
                     }
+                }
+                Instruction::Call { dest: Some(dest), func_name, .. } => {
+                    if let Some(prog) = program {
+                        if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
+                            if matches!(callee.return_ty, Some(Type::U64 | Type::U8)) {
+                                insert_both(&mut unsigned, dest);
+                            }
+                        }
+                    }
+                }
+                Instruction::Ret(Some(Operand::Reg(r)))
+                | Instruction::RetIf { val: Some(Operand::Reg(r)), .. } if ret_is_unsigned => {
+                    insert_both(&mut unsigned, r);
                 }
                 _ => {}
             }
         }
+
+        // Fixed-point propagation across MOV instructions
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for si in &func.instructions {
+                if let Instruction::Mov { dest, src } = &si.inst {
+                    let s_clean = Self::clean_name(src);
+                    let d_clean = Self::clean_name(dest);
+                    if unsigned.contains(s_clean) && !unsigned.contains(d_clean) {
+                        insert_both(&mut unsigned, d_clean);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
         unsigned
     }
 
     /// Kiểm tra biểu thức có chứa biến hoặc hằng số không dấu hay không
     pub fn expr_has_unsigned(e: &Expr, unsigned_vars: &HashSet<String>) -> bool {
         match e {
-            Expr::Var(v) => {
-                let clean = v.trim_start_matches('%');
-                unsigned_vars.contains(v) || unsigned_vars.contains(clean) || unsigned_vars.contains(&format!("%{}", clean))
-            }
+            Expr::Var(v) => unsigned_vars.contains(Self::clean_name(v)),
             Expr::Binary { lhs, rhs, .. } => {
                 Self::expr_has_unsigned(lhs, unsigned_vars) || Self::expr_has_unsigned(rhs, unsigned_vars)
             }
             Expr::Not(inner) => Self::expr_has_unsigned(inner, unsigned_vars),
-            Expr::IntConst(n) => (*n as u64) > (i64::MAX as u64),
-            Expr::Len(_) | Expr::FloatConst(_) | Expr::BoolConst(_) => false,
+            Expr::UIntConst(_) => true,
+            Expr::IntConst(_) | Expr::Len(_) | Expr::FloatConst(_) | Expr::BoolConst(_) => false,
         }
     }
 
     /// Hạ cấp biểu thức Expr sang IvlExpr có xét kiểu dấu (signed vs unsigned) cho các phép toán
     pub fn expr_to_ivl_typed(e: &Expr, unsigned_vars: &HashSet<String>) -> IvlExpr {
         match e {
-            Expr::Var(v) => IvlExpr::Var(v.clone()),
+            Expr::Var(v) => IvlExpr::Var(Self::clean_name(v).to_string()),
             Expr::IntConst(n) => IvlExpr::IntConst(*n),
+            Expr::UIntConst(u) => IvlExpr::IntConst(*u as i64),
             Expr::FloatConst(f) => IvlExpr::IntConst(*f as i64),
             Expr::BoolConst(b) => IvlExpr::BoolConst(*b),
-            Expr::Len(v) => IvlExpr::Len(v.clone()),
+            Expr::Len(v) => IvlExpr::Len(Self::clean_name(v).to_string()),
             Expr::Binary { op, lhs, rhs } => {
                 let is_unsigned = match op {
                     BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte | BinOp::Div | BinOp::Mod => {
@@ -329,44 +366,48 @@ impl IvlLowerer {
         }
     }
 
-    /// Thu thập tất cả các biến bị sửa đổi trong một dải lệnh
-    pub fn collect_modified_vars(
-        instructions: &[SpannedInstruction],
-        aliases: Option<&HashMap<String, String>>,
-    ) -> HashSet<String> {
-        let mut modified = HashSet::new();
-        for si in instructions {
-            match &si.inst {
-                Instruction::AssignConst { dest, .. }
-                | Instruction::Binary { dest, .. }
-                | Instruction::Not { dest, .. }
-                | Instruction::SliceLen { dest, .. }
-                | Instruction::Load8 { dest, .. }
-                | Instruction::Load64 { dest, .. } => {
-                    modified.insert(dest.trim_start_matches('%').to_string());
-                }
-                Instruction::Alloc { dest, .. }
-                | Instruction::AllocSlice { dest, .. } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    modified.insert(clean.clone());
-                    modified.insert(format!("{}_len", clean));
-                }
-                Instruction::Mov { dest, .. }
-                | Instruction::SlicePtr { dest, .. } => {
-                    let clean = dest.trim_start_matches('%').to_string();
-                    modified.insert(clean.clone());
-                    if aliases.is_some_and(|a| a.contains_key(&clean) || a.contains_key(dest)) {
-                        modified.insert(format!("{}_len", clean));
+    /// Trích xuất tự động mọi biến vô hướng và bộ nhớ bị sửa đổi trực tiếp từ chuỗi 4 lệnh IVL!
+    /// (Chuẩn kiến trúc Boogie: không cần quét thủ công từng Instruction của ngôn ngữ nguồn)
+    pub fn extract_modified_targets_from_ivl(stmts: &[IvlStmt]) -> (Vec<String>, Vec<String>) {
+        let mut scalar_set = HashSet::new();
+        let mut mem_set = HashSet::new();
+
+        for st in stmts {
+            match st {
+                IvlStmt::Assign { dest, is_memory, .. } => {
+                    let clean = Self::clean_name(dest);
+                    // Bỏ qua các biến tạm nội bộ của hệ thống đường dẫn/nhánh/vòng lặp
+                    if clean.starts_with("__") {
+                        continue;
+                    }
+                    if *is_memory {
+                        mem_set.insert(clean.to_string());
+                    } else {
+                        scalar_set.insert(clean.to_string());
                     }
                 }
-                Instruction::Call { dest: Some(dest), .. }
-                | Instruction::Syscall { dest: Some(dest), .. } => {
-                    modified.insert(dest.trim_start_matches('%').to_string());
+                IvlStmt::Havoc { vars, is_memory } => {
+                    for v in vars {
+                        let clean = Self::clean_name(v);
+                        if clean.starts_with("__") {
+                            continue;
+                        }
+                        if *is_memory {
+                            mem_set.insert(clean.to_string());
+                        } else {
+                            scalar_set.insert(clean.to_string());
+                        }
+                    }
                 }
                 _ => {}
             }
         }
-        modified
+
+        let mut scalars: Vec<String> = scalar_set.into_iter().collect();
+        scalars.sort();
+        let mut mems: Vec<String> = mem_set.into_iter().collect();
+        mems.sort();
+        (scalars, mems)
     }
 
     /// Thu thập bí danh các buffer (kể cả tham số slice<T>: %ptr = SLICE_PTR s hoặc %alias = MOV s)
@@ -377,7 +418,7 @@ impl IvlLowerer {
             .params
             .iter()
             .filter(|p| matches!(p.ty, Type::Slice(_) | Type::Array(_, _)))
-            .map(|p| p.name.trim_start_matches('%').to_string())
+            .map(|p| Self::clean_name(&p.name).to_string())
             .collect();
 
         for sp in &slice_params {
@@ -391,8 +432,8 @@ impl IvlLowerer {
             for s_inst in &func.instructions {
                 match &s_inst.inst {
                     Instruction::SlicePtr { dest, slice } => {
-                        let s_clean = slice.trim_start_matches('%').to_string();
-                        let d_clean = dest.trim_start_matches('%').to_string();
+                        let s_clean = Self::clean_name(slice).to_string();
+                        let d_clean = Self::clean_name(dest).to_string();
                         let root = aliases
                             .get(slice)
                             .or_else(|| aliases.get(&s_clean))
@@ -405,8 +446,8 @@ impl IvlLowerer {
                         }
                     }
                     Instruction::Mov { dest, src } => {
-                        let s_clean = src.trim_start_matches('%').to_string();
-                        let d_clean = dest.trim_start_matches('%').to_string();
+                        let s_clean = Self::clean_name(src).to_string();
+                        let d_clean = Self::clean_name(dest).to_string();
                         if let Some(root) = aliases.get(src).or_else(|| aliases.get(&s_clean)).cloned() {
                             if !aliases.contains_key(&d_clean) {
                                 aliases.insert(dest.clone(), root.clone());
@@ -428,39 +469,18 @@ impl IvlLowerer {
         aliases
     }
 
-    /// Thu thập tất cả các bộ đệm bộ nhớ bị ghi trong một dải lệnh
-    pub fn collect_modified_mems(instructions: &[SpannedInstruction], aliases: Option<&HashMap<String, String>>) -> HashSet<String> {
-        let mut modified = HashSet::new();
-        for si in instructions {
-            match &si.inst {
-                Instruction::Store8 { buf, .. }
-                | Instruction::Store64 { buf, .. }
-                | Instruction::StoreStr { buf, .. } => {
-                    let root = if let Some(als) = aliases {
-                        als.get(buf).unwrap_or(buf)
-                    } else {
-                        buf
-                    };
-                    modified.insert(root.trim_start_matches('%').to_string());
-                }
-                _ => {}
-            }
-        }
-        modified
-    }
-
     /// Thu thập độ dài các buffer tĩnh và lan truyền qua các bí danh
     pub fn extract_buffer_sizes(func: &Function) -> HashMap<String, usize> {
         let mut buffer_sizes = HashMap::new();
         for s_inst in &func.instructions {
             match &s_inst.inst {
                 Instruction::Alloc { dest, size } => {
-                    let clean = dest.trim_start_matches('%').to_string();
+                    let clean = Self::clean_name(dest).to_string();
                     buffer_sizes.insert(dest.clone(), *size);
                     buffer_sizes.insert(clean, *size);
                 }
                 Instruction::AllocSlice { dest, len, .. } => {
-                    let clean = dest.trim_start_matches('%').to_string();
+                    let clean = Self::clean_name(dest).to_string();
                     buffer_sizes.insert(dest.clone(), *len);
                     buffer_sizes.insert(clean, *len);
                 }
@@ -473,21 +493,10 @@ impl IvlLowerer {
             changed = false;
             for s_inst in &func.instructions {
                 match &s_inst.inst {
-                    Instruction::SlicePtr { dest, slice } => {
-                        let s_clean = slice.trim_start_matches('%');
-                        let d_clean = dest.trim_start_matches('%').to_string();
+                    Instruction::SlicePtr { dest, slice } | Instruction::Mov { dest, src: slice } => {
+                        let s_clean = Self::clean_name(slice);
+                        let d_clean = Self::clean_name(dest).to_string();
                         if let Some(&sz) = buffer_sizes.get(slice).or_else(|| buffer_sizes.get(s_clean)) {
-                            if !buffer_sizes.contains_key(&d_clean) {
-                                buffer_sizes.insert(dest.clone(), sz);
-                                buffer_sizes.insert(d_clean, sz);
-                                changed = true;
-                            }
-                        }
-                    }
-                    Instruction::Mov { dest, src } => {
-                        let s_clean = src.trim_start_matches('%');
-                        let d_clean = dest.trim_start_matches('%').to_string();
-                        if let Some(&sz) = buffer_sizes.get(src).or_else(|| buffer_sizes.get(s_clean)) {
                             if !buffer_sizes.contains_key(&d_clean) {
                                 buffer_sizes.insert(dest.clone(), sz);
                                 buffer_sizes.insert(d_clean, sz);
@@ -502,45 +511,48 @@ impl IvlLowerer {
         buffer_sizes
     }
 
-    /// Hạ cấp một lệnh đơn lẻ thành chuỗi vi lệnh IVL
-    pub fn lower_inst(
-        si: &SpannedInstruction,
-        buffer_sizes: &HashMap<String, usize>,
-        buffer_aliases: Option<&HashMap<String, String>>,
+    /// Hạ cấp DUY NHẤT (Single Source of Truth) một lệnh đơn lẻ thành chuỗi 4 vi lệnh IVL
+    /// Kèm đầy đủ cả Safety Checks (bounds, alignment, div-by-zero, overflow, call contracts) lẫn State Transitions!
+    pub fn lower_atomic_instruction(
+        func: &Function,
+        s_inst: &SpannedInstruction,
+        ctx: &FunctionBufferContext,
+        program: Option<&Program>,
     ) -> Vec<IvlStmt> {
         let mut stmts = Vec::new();
-        let resolve_buf = |b: &str| -> String {
-            buffer_aliases
-                .and_then(|a| a.get(b))
-                .cloned()
-                .unwrap_or_else(|| b.to_string())
-        };
-        match &si.inst {
+
+        match &s_inst.inst {
+            Instruction::Assert(e) => {
+                stmts.push(IvlStmt::Assert {
+                    cond: Self::expr_to_ivl_typed(e, &ctx.unsigned_vars),
+                    goal_name: format!("Function '{}' - Line {}: Verify ASSERT directive", func.name, s_inst.loc.line),
+                    category: PropertyCategory::Functional,
+                    loc: s_inst.loc.clone(),
+                });
+            }
+
             Instruction::AssignConst { dest, val, .. } => {
                 stmts.push(IvlStmt::Assign {
-                    dest: dest.clone(),
+                    dest: Self::clean_name(dest).to_string(),
                     expr: Self::operand_to_expr(&Operand::Const(val.clone())),
                     is_memory: false,
                 });
             }
-            Instruction::Mov { dest, src } => {
-                let s_clean = src.trim_start_matches('%');
-                let d_clean = dest.trim_start_matches('%');
-                if buffer_sizes.contains_key(s_clean)
-                    || buffer_sizes.contains_key(src)
-                    || buffer_aliases.map(|a| a.contains_key(s_clean) || a.contains_key(src)).unwrap_or(false)
-                {
+
+            Instruction::Mov { dest, src } | Instruction::SlicePtr { dest, slice: src } => {
+                let s_clean = Self::clean_name(src);
+                let d_clean = Self::clean_name(dest);
+                if ctx.is_known_buffer(src) {
                     stmts.push(IvlStmt::Assign {
-                        dest: dest.clone(),
+                        dest: d_clean.to_string(),
                         expr: IvlExpr::IntConst(0),
                         is_memory: false,
                     });
-                    let actual_src = resolve_buf(src);
-                    let actual_clean = actual_src.trim_start_matches('%');
-                    let len_expr = if let Some(&sz) = buffer_sizes.get(&actual_src).or_else(|| buffer_sizes.get(src)) {
+                    let root = ctx.resolve_root_buf(src);
+                    let len_expr = if let Some(&sz) = ctx.buffer_sizes.get(&root).or_else(|| ctx.buffer_sizes.get(s_clean)) {
                         IvlExpr::IntConst(sz as i64)
                     } else {
-                        IvlExpr::Var(format!("{}_len", actual_clean))
+                        IvlExpr::Var(format!("{}_len", root))
                     };
                     stmts.push(IvlStmt::Assign {
                         dest: format!("{}_len", d_clean),
@@ -549,18 +561,73 @@ impl IvlLowerer {
                     });
                 } else {
                     stmts.push(IvlStmt::Assign {
-                        dest: dest.clone(),
+                        dest: d_clean.to_string(),
                         expr: IvlExpr::Var(s_clean.to_string()),
                         is_memory: false,
                     });
                 }
             }
+
             Instruction::Binary { op, ty, dest, src1, src2 } => {
                 let e1 = Self::operand_to_expr(src1);
                 let e2 = Self::operand_to_expr(src2);
                 let is_unsigned = matches!(ty, Type::U64 | Type::U8);
+
+                // Safety Check cho phép chia (Div / Mod)
+                if matches!(op, BinOp::Div | BinOp::Mod) {
+                    if is_unsigned {
+                        let div_zero = IvlExpr::Binary {
+                            op: BinOp::Neq,
+                            lhs: Box::new(e2.clone()),
+                            rhs: Box::new(IvlExpr::IntConst(0)),
+                            is_unsigned: true,
+                        };
+                        stmts.push(IvlStmt::Assert {
+                            cond: div_zero,
+                            goal_name: format!("Function '{}' - Line {}: Unsigned Division-by-Zero safety check", func.name, s_inst.loc.line),
+                            category: PropertyCategory::Safety,
+                            loc: s_inst.loc.clone(),
+                        });
+                    } else {
+                        let div_zero = IvlExpr::Binary {
+                            op: BinOp::Neq,
+                            lhs: Box::new(e2.clone()),
+                            rhs: Box::new(IvlExpr::IntConst(0)),
+                            is_unsigned: false,
+                        };
+                        let overflow_cond = IvlExpr::Binary {
+                            op: BinOp::And,
+                            lhs: Box::new(IvlExpr::Binary {
+                                op: BinOp::Eq,
+                                lhs: Box::new(e1.clone()),
+                                rhs: Box::new(IvlExpr::IntConst(i64::MIN)),
+                                is_unsigned: false,
+                            }),
+                            rhs: Box::new(IvlExpr::Binary {
+                                op: BinOp::Eq,
+                                lhs: Box::new(e2.clone()),
+                                rhs: Box::new(IvlExpr::IntConst(-1)),
+                                is_unsigned: false,
+                            }),
+                            is_unsigned: false,
+                        };
+                        let safe_div = IvlExpr::Binary {
+                            op: BinOp::And,
+                            lhs: Box::new(div_zero),
+                            rhs: Box::new(IvlExpr::Not(Box::new(overflow_cond))),
+                            is_unsigned: false,
+                        };
+                        stmts.push(IvlStmt::Assert {
+                            cond: safe_div,
+                            goal_name: format!("Function '{}' - Line {}: Division-by-Zero safety and Overflow check", func.name, s_inst.loc.line),
+                            category: PropertyCategory::Safety,
+                            loc: s_inst.loc.clone(),
+                        });
+                    }
+                }
+
                 stmts.push(IvlStmt::Assign {
-                    dest: dest.clone(),
+                    dest: Self::clean_name(dest).to_string(),
                     expr: IvlExpr::Binary {
                         op: op.clone(),
                         lhs: Box::new(e1),
@@ -570,6 +637,7 @@ impl IvlLowerer {
                     is_memory: false,
                 });
             }
+
             Instruction::Not { dest, ty, src } => {
                 let e = Self::operand_to_expr(src);
                 let expr = if matches!(ty, Type::Bool) {
@@ -578,92 +646,86 @@ impl IvlLowerer {
                     IvlExpr::BitNot(Box::new(e))
                 };
                 stmts.push(IvlStmt::Assign {
-                    dest: dest.clone(),
+                    dest: Self::clean_name(dest).to_string(),
                     expr,
                     is_memory: false,
                 });
             }
-            Instruction::AllocSlice { dest, len, .. } => {
-                let clean = dest.trim_start_matches('%');
+
+            Instruction::Alloc { dest, size: len } | Instruction::AllocSlice { dest, len, .. } => {
+                let clean = Self::clean_name(dest);
                 stmts.push(IvlStmt::Assign {
                     dest: format!("{}_len", clean),
                     expr: IvlExpr::IntConst(*len as i64),
                     is_memory: false,
                 });
             }
+
             Instruction::SliceLen { dest, slice } => {
-                let actual_slice = resolve_buf(slice);
-                let sl_clean = slice.trim_start_matches('%');
-                if let Some(&size) = buffer_sizes.get(&actual_slice).or_else(|| buffer_sizes.get(slice)) {
-                    stmts.push(IvlStmt::Assign {
-                        dest: dest.clone(),
-                        expr: IvlExpr::IntConst(size as i64),
-                        is_memory: false,
-                    });
+                let root = ctx.resolve_root_buf(slice);
+                let sl_clean = Self::clean_name(slice);
+                let len_expr = if let Some(&size) = ctx.buffer_sizes.get(&root).or_else(|| ctx.buffer_sizes.get(sl_clean)) {
+                    IvlExpr::IntConst(size as i64)
                 } else {
-                    stmts.push(IvlStmt::Assign {
-                        dest: dest.clone(),
-                        expr: IvlExpr::Var(format!("{}_len", sl_clean)),
-                        is_memory: false,
-                    });
-                }
-            }
-            Instruction::SlicePtr { dest, slice } => {
-                let s_clean = slice.trim_start_matches('%');
-                let d_clean = dest.trim_start_matches('%');
-                if buffer_sizes.contains_key(s_clean)
-                    || buffer_sizes.contains_key(slice)
-                    || buffer_aliases.map(|a| a.contains_key(s_clean) || a.contains_key(slice)).unwrap_or(false)
-                {
-                    stmts.push(IvlStmt::Assign {
-                        dest: dest.clone(),
-                        expr: IvlExpr::IntConst(0),
-                        is_memory: false,
-                    });
-                    let actual_src = resolve_buf(slice);
-                    let actual_clean = actual_src.trim_start_matches('%');
-                    let len_expr = if let Some(&sz) = buffer_sizes.get(&actual_src).or_else(|| buffer_sizes.get(slice)) {
-                        IvlExpr::IntConst(sz as i64)
-                    } else {
-                        IvlExpr::Var(format!("{}_len", actual_clean))
-                    };
-                    stmts.push(IvlStmt::Assign {
-                        dest: format!("{}_len", d_clean),
-                        expr: len_expr,
-                        is_memory: false,
-                    });
-                } else {
-                    stmts.push(IvlStmt::Assign {
-                        dest: dest.clone(),
-                        expr: IvlExpr::Var(s_clean.to_string()),
-                        is_memory: false,
-                    });
-                }
-            }
-            Instruction::Load8 { dest, buf, offset } => {
-                let actual_buf = resolve_buf(buf);
-                let off_expr = Self::operand_to_expr(offset);
+                    IvlExpr::Var(format!("{}_len", sl_clean))
+                };
                 stmts.push(IvlStmt::Assign {
-                    dest: dest.clone(),
+                    dest: Self::clean_name(dest).to_string(),
+                    expr: len_expr,
+                    is_memory: false,
+                });
+            }
+
+            Instruction::Load8 { dest, buf, offset } => {
+                let root_buf = ctx.resolve_root_buf(buf);
+                let off_expr = Self::operand_to_expr(offset);
+
+                if let Some(bound_expr) = ctx.bound_expr(buf) {
+                    let in_bounds = IvlExpr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Gte,
+                            lhs: Box::new(off_expr.clone()),
+                            rhs: Box::new(IvlExpr::IntConst(0)),
+                            is_unsigned: false,
+                        }),
+                        rhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Lt,
+                            lhs: Box::new(off_expr.clone()),
+                            rhs: Box::new(bound_expr),
+                            is_unsigned: false,
+                        }),
+                        is_unsigned: false,
+                    };
+                    stmts.push(IvlStmt::Assert {
+                        cond: in_bounds,
+                        goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
+                }
+
+                let clean_d = Self::clean_name(dest).to_string();
+                stmts.push(IvlStmt::Assign {
+                    dest: clean_d.clone(),
                     expr: IvlExpr::Mask8(Box::new(IvlExpr::Select {
-                        mem: actual_buf,
+                        mem: root_buf,
                         offset: Box::new(off_expr),
                     })),
                     is_memory: false,
                 });
-                let clean_d = dest.trim_start_matches('%');
                 stmts.push(IvlStmt::Assume {
                     cond: IvlExpr::Binary {
                         op: BinOp::And,
                         lhs: Box::new(IvlExpr::Binary {
                             op: BinOp::Gte,
-                            lhs: Box::new(IvlExpr::Var(clean_d.to_string())),
+                            lhs: Box::new(IvlExpr::Var(clean_d.clone())),
                             rhs: Box::new(IvlExpr::IntConst(0)),
                             is_unsigned: false,
                         }),
                         rhs: Box::new(IvlExpr::Binary {
                             op: BinOp::Lte,
-                            lhs: Box::new(IvlExpr::Var(clean_d.to_string())),
+                            lhs: Box::new(IvlExpr::Var(clean_d)),
                             rhs: Box::new(IvlExpr::IntConst(255)),
                             is_unsigned: false,
                         }),
@@ -671,56 +733,102 @@ impl IvlLowerer {
                     },
                 });
             }
+
             Instruction::Store8 { buf, offset, val } => {
-                let actual_buf = resolve_buf(buf);
+                let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
                 let val_expr = Self::operand_to_expr(val);
+
+                if let Some(bound_expr) = ctx.bound_expr(buf) {
+                    let in_bounds = IvlExpr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Gte,
+                            lhs: Box::new(off_expr.clone()),
+                            rhs: Box::new(IvlExpr::IntConst(0)),
+                            is_unsigned: false,
+                        }),
+                        rhs: Box::new(IvlExpr::Binary {
+                            op: BinOp::Lt,
+                            lhs: Box::new(off_expr.clone()),
+                            rhs: Box::new(bound_expr),
+                            is_unsigned: false,
+                        }),
+                        is_unsigned: false,
+                    };
+                    stmts.push(IvlStmt::Assert {
+                        cond: in_bounds,
+                        goal_name: format!("Function '{}' - Line {}: Memory 8-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                        category: PropertyCategory::Safety,
+                        loc: s_inst.loc.clone(),
+                    });
+                }
+
                 stmts.push(IvlStmt::Assign {
-                    dest: actual_buf.clone(),
+                    dest: root_buf.clone(),
                     expr: IvlExpr::Store {
-                        mem: actual_buf,
+                        mem: root_buf,
                         offset: Box::new(off_expr),
                         val: Box::new(IvlExpr::Mask8(Box::new(val_expr))),
                     },
                     is_memory: true,
                 });
             }
+
             Instruction::Load64 { dest, buf, offset } => {
-                let actual_buf = resolve_buf(buf);
+                Self::emit_mem64_checks(func, s_inst, buf, offset, ctx, &mut stmts);
+                let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
                 stmts.push(IvlStmt::Assign {
-                    dest: dest.clone(),
+                    dest: Self::clean_name(dest).to_string(),
                     expr: IvlExpr::Select {
-                        mem: actual_buf,
+                        mem: root_buf,
                         offset: Box::new(off_expr),
                     },
                     is_memory: false,
                 });
             }
+
             Instruction::Store64 { buf, offset, val } => {
-                let actual_buf = resolve_buf(buf);
+                Self::emit_mem64_checks(func, s_inst, buf, offset, ctx, &mut stmts);
+                let root_buf = ctx.resolve_root_buf(buf);
                 let off_expr = Self::operand_to_expr(offset);
                 let val_expr = Self::operand_to_expr(val);
                 stmts.push(IvlStmt::Assign {
-                    dest: actual_buf.clone(),
+                    dest: root_buf.clone(),
                     expr: IvlExpr::Store {
-                        mem: actual_buf,
+                        mem: root_buf,
                         offset: Box::new(off_expr),
                         val: Box::new(val_expr),
                     },
                     is_memory: true,
                 });
             }
+
             Instruction::StoreStr { buf, offset, content } => {
-                let actual_buf = resolve_buf(buf);
+                let root_buf = ctx.resolve_root_buf(buf);
+                let buf_size = ctx
+                    .buffer_sizes
+                    .get(&root_buf)
+                    .or_else(|| ctx.buffer_sizes.get(Self::clean_name(buf)))
+                    .copied()
+                    .unwrap_or(0);
                 let bytes = content.as_bytes();
+                let req_size = *offset + bytes.len();
+                stmts.push(IvlStmt::Assert {
+                    cond: IvlExpr::BoolConst(req_size <= buf_size),
+                    goal_name: format!("Function '{}' - Line {}: String write within buffer '{}'", func.name, s_inst.loc.line, buf),
+                    category: PropertyCategory::Safety,
+                    loc: s_inst.loc.clone(),
+                });
+
                 for (i, &b) in bytes.iter().enumerate() {
                     let off_expr = IvlExpr::IntConst((*offset + i) as i64);
                     let val_expr = IvlExpr::IntConst(b as i64);
                     stmts.push(IvlStmt::Assign {
-                        dest: actual_buf.clone(),
+                        dest: root_buf.clone(),
                         expr: IvlExpr::Store {
-                            mem: actual_buf.clone(),
+                            mem: root_buf.clone(),
                             offset: Box::new(off_expr),
                             val: Box::new(val_expr),
                         },
@@ -728,24 +836,119 @@ impl IvlLowerer {
                     });
                 }
             }
-            Instruction::Alloc { dest, size } => {
-                let clean = dest.trim_start_matches('%');
-                stmts.push(IvlStmt::Assign {
-                    dest: format!("{}_len", clean),
-                    expr: IvlExpr::IntConst(*size as i64),
-                    is_memory: false,
-                });
+
+            Instruction::Call { dest, func_name, args } => {
+                if let Some(prog) = program {
+                    if let Some(callee) = prog.functions.iter().find(|f| &f.name == func_name) {
+                        if args.len() != callee.params.len() {
+                            stmts.push(IvlStmt::Assert {
+                                cond: IvlExpr::BoolConst(false),
+                                goal_name: format!(
+                                    "Function '{}' - Line {}: Call argument count mismatch for '{}' (expected {}, got {})",
+                                    func.name,
+                                    s_inst.loc.line,
+                                    func_name,
+                                    callee.params.len(),
+                                    args.len()
+                                ),
+                                category: PropertyCategory::Safety,
+                                loc: s_inst.loc.clone(),
+                            });
+                        }
+
+                        // Xây dựng bảng ánh xạ tham số đồng thời (Simultaneous Substitution Map)
+                        let mut param_map = HashMap::new();
+                        for (i, p) in callee.params.iter().enumerate() {
+                            if i < args.len() {
+                                let p_clean = Self::clean_name(&p.name).to_string();
+                                let arg_expr = Self::operand_to_expr(&args[i]);
+                                if let Operand::Reg(r) = &args[i] {
+                                    if let Some(b_expr) = ctx.bound_expr(r) {
+                                        let len_expr = match b_expr {
+                                            IvlExpr::Len(root_name) => IvlExpr::Var(format!("{}_len", root_name)),
+                                            other => other,
+                                        };
+                                        param_map.insert(format!("{}_len", p_clean), len_expr);
+                                    }
+                                }
+                                param_map.insert(p_clean, arg_expr);
+                            }
+                        }
+
+                        let callee_unsigned = Self::collect_unsigned_vars_with_prog(callee, program);
+                        for c_si in &callee.instructions {
+                            if let Instruction::Require(req) = &c_si.inst {
+                                let req_ivl = Self::expr_to_ivl_typed(req, &callee_unsigned);
+                                let subst_req = Self::subst_expr_map(&req_ivl, &param_map);
+                                stmts.push(IvlStmt::Assert {
+                                    cond: subst_req,
+                                    goal_name: format!("Function '{}' - Line {}: Verify REQUIRE contract of '{}'", func.name, s_inst.loc.line, func_name),
+                                    category: PropertyCategory::Safety,
+                                    loc: s_inst.loc.clone(),
+                                });
+                            }
+                        }
+
+                        // Havoc all memory buffers passed as slice/pointer arguments to the callee
+                        let mut havoc_mems = Vec::new();
+                        for a in args {
+                            if let Operand::Reg(r) = a {
+                                if ctx.is_known_buffer(r) {
+                                    let root = ctx.resolve_root_buf(r);
+                                    if !havoc_mems.contains(&root) {
+                                        havoc_mems.push(root);
+                                    }
+                                }
+                            }
+                        }
+                        if !havoc_mems.is_empty() {
+                            stmts.push(IvlStmt::Havoc {
+                                vars: havoc_mems,
+                                is_memory: true,
+                            });
+                        }
+
+                        if let Some(d) = dest {
+                            let clean_d = Self::clean_name(d).to_string();
+                            stmts.push(IvlStmt::Havoc {
+                                vars: vec![clean_d.clone()],
+                                is_memory: false,
+                            });
+                            let callee_ret = crate::verifier::Verifier::find_canonical_ret_var(callee)
+                                .unwrap_or_else(|| "ret".to_string());
+                            let mut ens_map = param_map;
+                            ens_map.insert(
+                                Self::clean_name(&callee_ret).to_string(),
+                                IvlExpr::Var(clean_d),
+                            );
+                            for c_si in &callee.instructions {
+                                if let Instruction::Ensure(ens) = &c_si.inst {
+                                    let ens_ivl = Self::expr_to_ivl_typed(ens, &callee_unsigned);
+                                    let subst_ens = Self::subst_expr_map(&ens_ivl, &ens_map);
+                                    stmts.push(IvlStmt::Assume { cond: subst_ens });
+                                }
+                            }
+                        }
+                    } else {
+                        stmts.push(IvlStmt::Assert {
+                            cond: IvlExpr::BoolConst(false),
+                            goal_name: format!("Function '{}' - Line {}: Call to undefined function '{}'", func.name, s_inst.loc.line, func_name),
+                            category: PropertyCategory::Safety,
+                            loc: s_inst.loc.clone(),
+                        });
+                    }
+                }
             }
+
             Instruction::Syscall { dest, rax, rdi, rsi, rdx, r10, r8, r9 } => {
-                let target = dest.clone().or_else(|| Some("%rax".to_string()));
+                let target = dest.clone().or_else(|| Some("rax".to_string()));
                 if let Some(d) = target {
-                    let clean_d = d.trim_start_matches('%').to_string();
+                    let clean_d = Self::clean_name(&d).to_string();
                     stmts.push(IvlStmt::Havoc {
                         vars: vec![clean_d.clone()],
                         is_memory: false,
                     });
-                    // Mô hình hóa khế ước hệ điều hành Linux Kernel x86_64:
-                    // 1. Mọi syscall khi lỗi đều trả về trong khoảng -4095..-1 (tức luôn >= -4096)
+                    // 1. Mọi syscall trên Linux Kernel x86_64 khi lỗi đều trả về trong khoảng -4095..-1 (luôn >= -4096)
                     stmts.push(IvlStmt::Assume {
                         cond: IvlExpr::Binary {
                             op: BinOp::Gte,
@@ -788,19 +991,14 @@ impl IvlLowerer {
                     });
                 }
 
-                // Havoc buffer memory for any buffer passed in syscall arguments (rdi, rsi, rdx, r10, r8, r9)
+                // Havoc buffer memory for any buffer passed in syscall arguments
                 let mut havoc_mems = Vec::new();
                 for arg_opt in [Some(rdi), Some(rsi), Some(rdx), r10.as_ref(), r8.as_ref(), r9.as_ref()] {
                     if let Some(Operand::Reg(r)) = arg_opt {
-                        let actual = buffer_aliases.and_then(|a| a.get(r)).unwrap_or(r);
-                        let clean = actual.trim_start_matches('%').to_string();
-                        if buffer_sizes.contains_key(actual)
-                            || buffer_sizes.contains_key(r)
-                            || buffer_sizes.contains_key(&clean)
-                            || buffer_aliases.map_or(false, |a| a.contains_key(r) || a.contains_key(&clean))
-                        {
-                            if !havoc_mems.contains(&clean) {
-                                havoc_mems.push(clean);
+                        if ctx.is_known_buffer(r) {
+                            let root = ctx.resolve_root_buf(r);
+                            if !havoc_mems.contains(&root) {
+                                havoc_mems.push(root);
                             }
                         }
                     }
@@ -812,8 +1010,127 @@ impl IvlLowerer {
                     });
                 }
             }
+
             _ => {}
         }
+
         stmts
+    }
+
+    fn emit_mem64_checks(
+        func: &Function,
+        s_inst: &SpannedInstruction,
+        buf: &str,
+        offset: &Operand,
+        ctx: &FunctionBufferContext,
+        stmts: &mut Vec<IvlStmt>,
+    ) {
+        let off_expr = Self::operand_to_expr(offset);
+
+        // 1. 8-byte alignment check
+        let align_check = IvlExpr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(IvlExpr::Binary {
+                op: BinOp::Mod,
+                lhs: Box::new(off_expr.clone()),
+                rhs: Box::new(IvlExpr::IntConst(8)),
+                is_unsigned: false,
+            }),
+            rhs: Box::new(IvlExpr::IntConst(0)),
+            is_unsigned: false,
+        };
+        stmts.push(IvlStmt::Assert {
+            cond: align_check,
+            goal_name: format!("Function '{}' - Line {}: Memory 64-bit 8-byte alignment check on '{}'", func.name, s_inst.loc.line, buf),
+            category: PropertyCategory::Safety,
+            loc: s_inst.loc.clone(),
+        });
+
+        // 2. Bounds check (chống cả tràn dưới len < 8 trên slice!)
+        let root_buf = ctx.resolve_root_buf(buf);
+        if let Some(&sz) = ctx.buffer_sizes.get(&root_buf).or_else(|| ctx.buffer_sizes.get(Self::clean_name(buf))) {
+            let in_bounds = if sz < 8 {
+                IvlExpr::BoolConst(false)
+            } else {
+                let max_off = (sz as i64) - 8;
+                IvlExpr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(IvlExpr::Binary {
+                        op: BinOp::Gte,
+                        lhs: Box::new(off_expr.clone()),
+                        rhs: Box::new(IvlExpr::IntConst(0)),
+                        is_unsigned: false,
+                    }),
+                    rhs: Box::new(IvlExpr::Binary {
+                        op: BinOp::Lte,
+                        lhs: Box::new(off_expr),
+                        rhs: Box::new(IvlExpr::IntConst(max_off)),
+                        is_unsigned: false,
+                    }),
+                    is_unsigned: false,
+                }
+            };
+            stmts.push(IvlStmt::Assert {
+                cond: in_bounds,
+                goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                category: PropertyCategory::Safety,
+                loc: s_inst.loc.clone(),
+            });
+        } else if let Some(bound_expr) = ctx.bound_expr(buf) {
+            // Đảm bảo: offset >= 0 && bound >= 8 && offset <= bound - 8 (tránh underflow khi bound < 8)
+            let max_off = IvlExpr::Binary {
+                op: BinOp::Sub,
+                lhs: Box::new(bound_expr.clone()),
+                rhs: Box::new(IvlExpr::IntConst(8)),
+                is_unsigned: false,
+            };
+            let len_at_least_8 = IvlExpr::Binary {
+                op: BinOp::Gte,
+                lhs: Box::new(bound_expr),
+                rhs: Box::new(IvlExpr::IntConst(8)),
+                is_unsigned: false,
+            };
+            let off_in_range = IvlExpr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(IvlExpr::Binary {
+                    op: BinOp::Gte,
+                    lhs: Box::new(off_expr.clone()),
+                    rhs: Box::new(IvlExpr::IntConst(0)),
+                    is_unsigned: false,
+                }),
+                rhs: Box::new(IvlExpr::Binary {
+                    op: BinOp::Lte,
+                    lhs: Box::new(off_expr),
+                    rhs: Box::new(max_off),
+                    is_unsigned: false,
+                }),
+                is_unsigned: false,
+            };
+            let in_bounds = IvlExpr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(len_at_least_8),
+                rhs: Box::new(off_in_range),
+                is_unsigned: false,
+            };
+            stmts.push(IvlStmt::Assert {
+                cond: in_bounds,
+                goal_name: format!("Function '{}' - Line {}: Memory 64-bit bounds check on '{}'", func.name, s_inst.loc.line, buf),
+                category: PropertyCategory::Safety,
+                loc: s_inst.loc.clone(),
+            });
+        } else {
+            let non_neg = IvlExpr::Binary {
+                op: BinOp::Gte,
+                lhs: Box::new(off_expr),
+                rhs: Box::new(IvlExpr::IntConst(0)),
+                is_unsigned: false,
+            };
+            stmts.push(IvlStmt::Assert {
+                cond: non_neg,
+                goal_name: format!("Function '{}' - Line {}: Memory 64-bit pointer offset non-negative check on '{}'", func.name, s_inst.loc.line, buf),
+                category: PropertyCategory::Safety,
+                loc: s_inst.loc.clone(),
+            });
+        }
     }
 }

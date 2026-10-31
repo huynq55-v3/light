@@ -23,7 +23,7 @@ END_FUNC
 
 # Tiến con trỏ used một cách an toàn (Z3 chứng minh không bao giờ tràn capacity)
 FUNC arena_bump(used: i64, capacity: i64, req_size: i64) -> i64
-  REQUIRE used >= 0 && capacity >= 0 && req_size >= 0
+  REQUIRE used >= 0 && capacity >= 0 && req_size >= 0 && req_size <= capacity
   REQUIRE used <= capacity - req_size
   %new_used = ADD i64 used req_size
   ENSURE %new_used >= used && %new_used <= capacity
@@ -45,7 +45,7 @@ FUNC arena_create(capacity: i64) -> i64
   %c_neg1 = CONST i64 -1
   %mmap_ptr = SYSCALL %c_9 %c_0 %total %c_3 %c_34 %c_neg1 %c_0
 
-  %failed = LT i64 %mmap_ptr 0
+  %failed = LTE i64 %mmap_ptr 0
   BR_IF %failed .create_fail
 
   %base_ptr = ADD i64 %mmap_ptr 24
