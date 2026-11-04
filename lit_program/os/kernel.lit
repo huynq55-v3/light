@@ -1,0 +1,35 @@
+# File: lit_program/os/kernel.lit
+# Nano-kernel: Nạp driver từ thư mục ../drivers/ và phân phối thẻ quyền năng
+
+include ../drivers/serial.lit
+
+func nano_kernel_boot void %0:io<0,0xffff> {
+    @b0
+        # 1. Cấp phát mảng 4 ô ký tự tại địa chỉ RAM 0x80000
+        %1 = const 0x80000 ptr<CharCell,4>
+
+        # 2. Dùng SLICE cắt từng ô (0, 1, 2, 3) để ghi chữ "LIT\n"
+        %2 = const 0 bv64
+        %3 = slice %1 %2 ptr<CharCell,1>
+        %4 = const 76 bv8               # 'L' (ASCII 76)
+        store %3 0 %4
+
+        %5 = const 1 bv64
+        %6 = slice %1 %5 ptr<CharCell,1>
+        %7 = const 73 bv8               # 'I' (ASCII 73)
+        store %6 0 %7
+
+        %8 = const 2 bv64
+        %9 = slice %1 %8 ptr<CharCell,1>
+        %10 = const 84 bv8              # 'T' (ASCII 84)
+        store %9 0 %10
+
+        %11 = const 3 bv64
+        %12 = slice %1 %11 ptr<CharCell,1>
+        %13 = const 10 bv8              # '\n' (ASCII 10)
+        store %12 0 %13
+
+        # 3. Uỷ quyền cho Driver Serial in toàn bộ mảng 4 ký tự ra màn hình QEMU
+        call drv_serial_print4 %0 %1
+        ret
+}

@@ -46,7 +46,7 @@ impl<'ctx> Verifier<'ctx> {
             Type::Bv8 => 8,
             Type::Bv16 => 16,
             Type::Bv32 => 32,
-            Type::Bv64 | Type::Ptr { .. } => 64,
+            Type::Bv64 | Type::Ptr { .. } | Type::Io { .. } => 64,
         };
         if bits < 64 {
             let max_val = BV::from_u64(self.ctx, (1u64 << bits) - 1, 64);
@@ -200,7 +200,27 @@ impl<'ctx> Verifier<'ctx> {
     }
 }
 
-/// HÀM CHÍNH: Kiểm chứng một hàm `Func` trong `Module` (Hỗ trợ Quy nạp Vòng lặp + Bảo mật Kernel)
+/// Kiểm tra tính hợp lệ khi truyền Thẻ quyền năng (Capability Subtyping / Attenuation):
+/// Cho phép thu hẹp quyền: io<a,b> -> io<c,d> nếu [c,d] nằm gọn trong [a,b]
+/// Cho phép thu hẹp vùng nhớ: ptr<L, M1> -> ptr<L, M2> nếu cùng Layout và M2 <= M1
+fn can_delegate(from: Type, to: Type) -> bool {
+    match (from, to) {
+        (Type::Io { min: a, max: b }, Type::Io { min: c, max: d }) => a <= c && d <= b,
+        (
+            Type::Ptr {
+                layout_id: l1,
+                max_elems: m1,
+            },
+            Type::Ptr {
+                layout_id: l2,
+                max_elems: m2,
+            },
+        ) => l1 == l2 && m2 <= m1,
+        _ => from == to,
+    }
+}
+
+/// HÀM CHÍNH: Kiểm chứng một hàm `Func` trong `Module` (Hỗ trợ Quy nạp Vòng lặp)
 pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
     let cfg = Config::new();
     let ctx = Context::new(&cfg);
@@ -247,11 +267,27 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
         for inst in &block.insts {
             match inst {
                 Inst::Const { dst, ty, val } => {
-                    if matches!(ty, Type::Ptr { .. }) {
+                    // 1. Cấm tuyệt đối việc tự chế tạo thẻ Io bằng hằng số
+                    if matches!(ty, Type::Io { .. }) {
                         return Err(format!(
-                            "Bảo mật: Cấm tạo con trỏ giả bằng lệnh const tại %{}",
+                            "Bảo mật: Không thể tạo thẻ quyền năng Io bằng const tại %{}",
                             dst
                         ));
+                    }
+                    // 2. Muốn ánh xạ địa chỉ RAM vật lý thành thẻ Ptr mới bằng const, hàm bắt buộc phải giữ thẻ gốc io<0, 0xffff>
+                    if matches!(ty, Type::Ptr { .. }) {
+                        let has_root_io = func.params.iter().any(|&(_, t)| {
+                            t == Type::Io {
+                                min: 0,
+                                max: 0xFFFF,
+                            }
+                        });
+                        if !has_root_io || *val < 0x10000 {
+                            return Err(format!(
+                                "Bảo mật: Hàm '{}' không giữ thẻ gốc io<0,0xffff> để ánh xạ RAM tại %{}",
+                                func.name, dst
+                            ));
+                        }
                     }
                     let bv = v.decl_reg(*dst, *ty);
                     v.solver.assert(&bv._eq(&BV::from_u64(&ctx, *val, 64)));
@@ -298,6 +334,61 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     let dst_bv = v.decl_reg(*dst, Type::Bv8);
                     v.solver.assert(&dst_bv._eq(&cond.ite(&one, &zero)));
                 }
+                Inst::Slice { dst, base, idx, ty } => {
+                    // 1. Kiểm tra %base là Ptr và kiểu đích `ty` cũng là Ptr cùng Layout
+                    let base_ty = *v
+                        .reg_tys
+                        .get(base)
+                        .ok_or("Biến base của slice chưa khai báo")?;
+                    let (l1, max_old) = match base_ty {
+                        Type::Ptr {
+                            layout_id,
+                            max_elems,
+                        } => (layout_id, max_elems),
+                        _ => return Err(format!("Biến %{} trong slice không phải kiểu Ptr", base)),
+                    };
+                    let (l2, max_new) = match *ty {
+                        Type::Ptr {
+                            layout_id,
+                            max_elems,
+                        } if layout_id == l1 && max_elems > 0 => (layout_id, max_elems),
+                        _ => {
+                            return Err(format!(
+                                "Kiểu đích của slice tại %{} phải cùng Layout với base",
+                                dst
+                            ));
+                        }
+                    };
+
+                    // 2. Z3 chứng minh: base != NULL và (idx + max_new <= max_old) (Không bao giờ tràn mảng!)
+                    let base_bv = v.get_reg(*base)?.clone();
+                    let idx_bv = v.get_reg(*idx)?.clone();
+                    let zero = BV::from_u64(&ctx, 0, 64);
+                    let m_old_bv = BV::from_u64(&ctx, max_old as u64, 64);
+                    let m_new_bv = BV::from_u64(&ctx, max_new as u64, 64);
+
+                    v.check(
+                        &base_bv._eq(&zero).not(),
+                        &format!("Slice trên con trỏ NULL %{}", base),
+                    )?;
+                    v.check(
+                        &idx_bv.bvadd_no_overflow(&m_new_bv, false),
+                        &format!("Tràn số cộng index khi slice tại %{}", dst),
+                    )?;
+                    v.check(
+                        &idx_bv.bvadd(&m_new_bv).bvule(&m_old_bv),
+                        &format!(
+                            "Tràn biên mảng khi slice tại %{}: idx + {} vượt quá {}",
+                            dst, max_new, max_old
+                        ),
+                    )?;
+
+                    // 3. Khai báo %dst = %base + (%idx * layout.size)
+                    let elem_size = BV::from_u64(&ctx, v.layouts[l2 as usize].size as u64, 64);
+                    let dst_bv = v.decl_reg(*dst, *ty);
+                    v.solver
+                        .assert(&dst_bv._eq(&base_bv.bvadd(&idx_bv.bvmul(&elem_size))));
+                }
                 Inst::Load {
                     dst,
                     ty,
@@ -328,19 +419,88 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                         )?;
                     }
                 }
-                Inst::HwIo { dst, .. } => {
-                    if !func.name.starts_with("kernel_") {
-                        return Err(format!(
-                            "Bảo mật: Hàm '{}' không có quyền Kernel để gọi HwIo!",
-                            func.name
-                        ));
+                Inst::HwIo {
+                    dst,
+                    cap,
+                    port_or_reg,
+                    ..
+                } => {
+                    // Kiểm tra biến `cap` có phải là thẻ Type::Io hợp lệ và cổng `port_or_reg` có nằm trong [min, max] không
+                    match v.reg_tys.get(cap) {
+                        Some(Type::Io { min, max })
+                            if *port_or_reg >= *min && *port_or_reg <= *max => {}
+                        Some(Type::Io { min, max }) => {
+                            return Err(format!(
+                                "Bảo mật I/O: Cổng 0x{:x} nằm ngoài phạm vi thẻ io<0x{:x}, 0x{:x}> của hàm '{}'",
+                                port_or_reg, min, max, func.name
+                            ));
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Bảo mật I/O: Biến %{} không phải thẻ quyền năng Type::Io",
+                                cap
+                            ));
+                        }
                     }
                     if let Some(d) = dst {
                         v.decl_reg(*d, Type::Bv64);
                     }
                 }
-                Inst::Call { dst: Some(d), .. } => {
-                    v.decl_reg(*d, Type::Bv64);
+                Inst::Call { dst, func_id, args } => {
+                    let callee = module
+                        .funcs
+                        .get(*func_id as usize)
+                        .ok_or("Call sai func_id")?;
+                    if args.len() != callee.params.len() {
+                        return Err(format!("Gọi hàm '{}' sai số lượng tham số", callee.name));
+                    }
+                    let saved_regs = v.regs.clone();
+                    for (&arg_r, &(param_r, param_ty)) in args.iter().zip(&callee.params) {
+                        let arg_ty = *v.reg_tys.get(&arg_r).ok_or("Biến Call arg chưa có kiểu")?;
+                        // Dùng `can_delegate` để cho phép thu hẹp thẻ quyền năng (Capability Attenuation) khi gọi Driver/App!
+                        if !can_delegate(arg_ty, param_ty) {
+                            return Err(format!(
+                                "Bảo mật: Không thể truyền kiểu {:?} vào {:?} khi gọi '{}'",
+                                arg_ty, param_ty, callee.name
+                            ));
+                        }
+                        v.regs
+                            .insert(param_r, saved_regs.get(&arg_r).unwrap().clone());
+                    }
+                    for (i, req) in callee.requires.iter().enumerate() {
+                        let cond = v.eval_z3_bool(req, None)?;
+                        v.check(
+                            &cond,
+                            &format!("Vi phạm @req #{} khi gọi hàm '{}'", i, callee.name),
+                        )?;
+                    }
+                    v.regs = saved_regs.clone();
+
+                    if let (Some(d), Some(ret_ty)) = (dst, callee.ret_ty) {
+                        let dst_bv = v.decl_reg(*d, ret_ty);
+                        let callee_ret_reg =
+                            callee.blocks.iter().flat_map(|b| &b.insts).find_map(|i| {
+                                if let Inst::Ret { val: Some(r) } = i {
+                                    Some(*r)
+                                } else {
+                                    None
+                                }
+                            });
+                        let mut ens_regs = v.regs.clone();
+                        for (&arg_r, &(param_r, _)) in args.iter().zip(&callee.params) {
+                            ens_regs.insert(param_r, saved_regs.get(&arg_r).unwrap().clone());
+                        }
+                        if let Some(ret_r) = callee_ret_reg {
+                            ens_regs.insert(ret_r, dst_bv.clone());
+                        }
+                        v.regs = ens_regs;
+                        for ens in &callee.ensures {
+                            let cond = v.eval_z3_bool(ens, None)?;
+                            v.solver.assert(&cond);
+                        }
+                        v.regs = saved_regs;
+                        v.regs.insert(*d, dst_bv);
+                    }
                 }
                 Inst::Br {
                     cond,
@@ -350,8 +510,17 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     let c_bv = v.get_reg(*cond)?;
                     let zero = BV::from_u64(&ctx, 0, 64);
                     let is_true = c_bv._eq(&zero).not();
-                    blk_conds.insert(*then_bb, is_true.clone());
-                    blk_conds.insert(*else_bb, is_true.not());
+                    // Nếu Block hiện tại đang nằm trong một nhánh trước đó, gộp (AND) cả 2 điều kiện lại!
+                    let (t_cond, e_cond) = if let Some(parent_c) = blk_conds.get(&block.id) {
+                        (
+                            Bool::and(&ctx, &[parent_c, &is_true]),
+                            Bool::and(&ctx, &[parent_c, &is_true.not()]),
+                        )
+                    } else {
+                        (is_true.clone(), is_true.not())
+                    };
+                    blk_conds.insert(*then_bb, t_cond);
+                    blk_conds.insert(*else_bb, e_cond);
                 }
                 Inst::Jmp { target_bb, args } => {
                     // KIỂM CHỨNG QUY NẠP VÒNG LẶP: Thay thế tham số của Block đích bằng `args` và kiểm tra `@inv`!

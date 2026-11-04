@@ -15,9 +15,7 @@ fn run() -> Result<(), String> {
     let out_path = args.get(2).cloned().unwrap_or_else(|| "a.out".to_string());
 
     // 1. Đọc và phân tích cú pháp SSA phẳng (.lt -> ir::Module)
-    let src =
-        fs::read_to_string(in_path).map_err(|e| format!("Không thể đọc '{}': {}", in_path, e))?;
-    let module = parser::parse_module(&src)?;
+    let module = parser::parse_file(in_path)?;
     println!(
         "[1/3] Parsed '{}' ({} layouts, {} funcs)",
         in_path,

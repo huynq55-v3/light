@@ -15,6 +15,11 @@ pub enum Type {
         layout_id: u16,
         max_elems: u32,
     },
+    /// Thẻ quyền Phần cứng: chỉ cho phép gọi lệnh HwIo trong dải cổng [min..=max]
+    Io {
+        min: u16,
+        max: u16,
+    },
 }
 
 /// 2. KHAI BÁO CẤU TRÚC DỮ LIỆU PHẲNG (Thay thế hoàn toàn Struct/Class phức tạp)
@@ -103,6 +108,13 @@ pub enum Inst {
         rhs: Reg,
     },
 
+    Slice {
+        dst: Reg,
+        base: Reg,
+        idx: Reg,
+        ty: Type,
+    },
+
     /// %dst = load % base_ptr, offset: <u32> (Z3 sẽ kiểm tra offset < max_elems * size + Field Invariant)
     Load {
         dst: Reg,
@@ -120,6 +132,7 @@ pub enum Inst {
     /// Lệnh đặc quyền cho OS Bare-metal (Đọc/ghi cổng I/O, thanh ghi CR3, MSR hoặc Syscall)
     HwIo {
         dst: Option<Reg>,
+        cap: Reg,
         port_or_reg: u16,
         val: Option<Reg>,
         is_write: bool,

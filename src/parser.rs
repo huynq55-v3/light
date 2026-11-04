@@ -1,5 +1,45 @@
 // File: src/parser.rs (Ngân sách: < 150 dòng - Thực tế: 145 dòng)
 use crate::ir::*;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+/// Đọc file .lit và đệ quy ghép các file `include <relative_path>` theo đúng thư mục của file hiện tại
+fn load_source_recursive(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<String, String> {
+    let canon = path
+        .canonicalize()
+        .map_err(|e| format!("Không tìm thấy file '{}': {}", path.display(), e))?;
+    if !visited.insert(canon.clone()) {
+        return Ok(String::new()); // Đã include rồi thì bỏ qua (Chống trùng lặp #pragma once)
+    }
+    let parent_dir = canon.parent().unwrap_or_else(|| Path::new("."));
+    let content = std::fs::read_to_string(&canon)
+        .map_err(|e| format!("Lỗi đọc '{}': {}", path.display(), e))?;
+
+    let mut combined = String::new();
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        let mut toks = line.split_whitespace();
+        if toks.next() == Some("include") {
+            let rel_path = toks
+                .next()
+                .ok_or("Thiếu đường dẫn sau từ khóa include")?
+                .trim_matches('"');
+            let next_path = parent_dir.join(rel_path);
+            combined.push_str(&load_source_recursive(&next_path, visited)?);
+            combined.push('\n');
+        } else {
+            combined.push_str(raw_line);
+            combined.push('\n');
+        }
+    }
+    Ok(combined)
+}
+
+pub fn parse_file(entry_path: &str) -> Result<Module, String> {
+    let mut visited = HashSet::new();
+    let full_src = load_source_recursive(Path::new(entry_path), &mut visited)?;
+    parse_module(&full_src)
+}
 
 fn p_reg(s: &str) -> Result<Reg, String> {
     s.trim_matches(|c| c == '%' || c == ',' || c == ':' || c == '(' || c == ')')
@@ -43,8 +83,28 @@ fn p_type(s: &str, layouts: &[Layout]) -> Result<Type, String> {
                 max_elems: p_u64(max)? as u32,
             })
         }
+        _ if s.starts_with("io<") && s.ends_with('>') => {
+            // Cú pháp: io<0x3f8,0x3ff>
+            let inner = &s[3..s.len() - 1];
+            let (min_s, max_s) = inner.split_once(',').ok_or("Lỗi cú pháp io<Min,Max>")?;
+            Ok(Type::Io {
+                min: p_u64(min_s)? as u16,
+                max: p_u64(max_s)? as u16,
+            })
+        }
         _ => Err(format!("Kiểu dữ liệu không hợp lệ: {}", s)),
     }
+}
+
+fn p_func_id(s: &str, funcs: &[Func]) -> Result<u32, String> {
+    if let Ok(id) = s.parse::<u32>() {
+        return Ok(id);
+    }
+    funcs
+        .iter()
+        .position(|f| f.name == s)
+        .map(|i| i as u32)
+        .ok_or_else(|| format!("Không tìm thấy hàm '{}'", s))
 }
 
 fn p_binop(s: &str) -> Option<BinOp> {
@@ -208,11 +268,6 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             }
             _ => {
                 // Các chỉ thị SSA bên trong Basic Block
-                let blk = m
-                    .funcs
-                    .last_mut()
-                    .and_then(|f| f.blocks.last_mut())
-                    .ok_or_else(|| err("Lệnh ngoài Block"))?;
                 let inst = match toks[0] {
                     "store" => Inst::Store {
                         base: p_reg(toks[1])?,
@@ -238,7 +293,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     "assert" => Inst::Assert(p_z3(&mut toks[1..].join(" ").split_whitespace())?),
                     "call" => Inst::Call {
                         dst: None,
-                        func_id: p_u64(toks[1])? as u32,
+                        func_id: p_func_id(toks[1], &m.funcs)?,
                         args: toks[2..]
                             .iter()
                             .map(|r| p_reg(r))
@@ -246,8 +301,9 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     },
                     "hwio_w" => Inst::HwIo {
                         dst: None,
-                        port_or_reg: p_u64(toks[1])? as u16,
-                        val: Some(p_reg(toks[2])?),
+                        cap: p_reg(toks[1])?,
+                        port_or_reg: p_u64(toks[2])? as u16,
+                        val: Some(p_reg(toks[3])?),
                         is_write: true,
                     },
                     dst if dst.starts_with('%') && toks.get(1) == Some(&"=") => {
@@ -257,6 +313,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                                 dst: d,
                                 val: p_u64(toks[3])?,
                                 ty: p_type(toks[4], &m.layouts)?,
+                            },
+                            "slice" => Inst::Slice {
+                                dst: d,
+                                base: p_reg(toks[3])?,
+                                idx: p_reg(toks[4])?,
+                                ty: p_type(toks[5], &m.layouts)?,
                             },
                             "load" => Inst::Load {
                                 dst: d,
@@ -272,7 +334,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                             },
                             "call" => Inst::Call {
                                 dst: Some(d),
-                                func_id: p_u64(toks[3])? as u32,
+                                func_id: p_func_id(toks[3], &m.funcs)?,
                                 args: toks[4..]
                                     .iter()
                                     .map(|r| p_reg(r))
@@ -280,7 +342,8 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                             },
                             "hwio_r" => Inst::HwIo {
                                 dst: Some(d),
-                                port_or_reg: p_u64(toks[3])? as u16,
+                                cap: p_reg(toks[3])?,
+                                port_or_reg: p_u64(toks[4])? as u16,
                                 val: None,
                                 is_write: false,
                             },
@@ -294,6 +357,11 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     }
                     _ => return Err(err("Không nhận diện được lệnh SSA")),
                 };
+                let blk = m
+                    .funcs
+                    .last_mut()
+                    .and_then(|f| f.blocks.last_mut())
+                    .ok_or_else(|| err("Lệnh ngoài Block"))?;
                 blk.insts.push(inst);
             }
         }
