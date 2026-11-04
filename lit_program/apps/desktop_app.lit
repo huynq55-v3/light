@@ -1,0 +1,60 @@
+# File: lit_program/apps/desktop_app.lit
+# Chương trình Ứng dụng: Sử dụng vùng nhớ Heap được Kernel cấp và Thư viện Vẽ gfx.lit
+
+include ../lib/gfx.lit
+
+layout HeapSlot 8 {
+    0: bv64
+}
+
+func app_desktop_run void %0:ptr<VgaCell,2000> %1:ptr<HeapSlot,8> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        # 1. Dùng thử vùng nhớ Heap mà Kernel cấp cho App (ghi dữ liệu vào slot 0)
+        %2 = const 0 bv64
+        %3 = slice %1 %2 ptr<HeapSlot,1>
+        %4 = const 2026 bv64
+        store %3 0 %4
+
+        # 2. Gọi thư viện gfx xóa toàn bộ màn hình sang nền Xanh Dương (Mã màu 0x1F: Chữ Trắng nền Xanh)
+        %5 = const 0x1f bv8
+        call gfx_clear_screen %0 %5
+
+        # 3. Vẽ dòng chữ vàng rực "LIGHT OS" (Mã màu 0x1E: Chữ Vàng nền Xanh) tại dòng y = 10, cột x = 35..42
+        %6 = const 10 bv64              # y = 10
+        %7 = const 0x1e bv8             # Màu 0x1E (Yellow on Blue)
+
+        %8 = const 35 bv64
+        %9 = const 76 bv8               # 'L'
+        call gfx_draw_char_xy %0 %8 %6 %9 %7
+
+        %10 = const 36 bv64
+        %11 = const 73 bv8              # 'I'
+        call gfx_draw_char_xy %0 %10 %6 %11 %7
+
+        %12 = const 37 bv64
+        %13 = const 71 bv8              # 'G'
+        call gfx_draw_char_xy %0 %12 %6 %13 %7
+
+        %14 = const 38 bv64
+        %15 = const 72 bv8              # 'H'
+        call gfx_draw_char_xy %0 %14 %6 %15 %7
+
+        %16 = const 39 bv64
+        %17 = const 84 bv8              # 'T'
+        call gfx_draw_char_xy %0 %16 %6 %17 %7
+
+        %18 = const 41 bv64
+        %19 = const 79 bv8              # 'O'
+        call gfx_draw_char_xy %0 %18 %6 %19 %7
+
+        %20 = const 42 bv64
+        %21 = const 83 bv8              # 'S'
+        call gfx_draw_char_xy %0 %20 %6 %21 %7
+
+        ret
+}

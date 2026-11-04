@@ -1,0 +1,46 @@
+# File: lit_program/lib/gfx.lit
+# Thư viện Đồ họa 2D thuần phần mềm (Không giữ thẻ io, gọi xuống drv_vga_set_cell)
+
+include ../drivers/vga_drv.lit
+
+# 1. Vẽ 1 ký tự tại tọa độ 2D (cột x = %1, dòng y = %2)
+func gfx_draw_char_xy void %0:ptr<VgaCell,2000> %1:bv64 %2:bv64 %3:bv8 %4:bv8 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 80                      # Cột x < 80
+    @req ult %2 25                      # Dòng y < 25
+    @req ult %3 128
+
+    @b0
+        %5 = const 80 bv64
+        %6 = mul %2 %5                  # %6 = y * 80
+        %7 = add %6 %1                  # %7 = y * 80 + x (Z3 tự chứng minh < 2000!)
+        call drv_vga_set_cell %0 %7 %3 %4
+        ret
+}
+
+# 2. Xóa / Tô màu toàn bộ màn hình (2000 ô) bằng vòng lặp quy nạp Z3
+func gfx_clear_screen void %0:ptr<VgaCell,2000> %1:bv8 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 2000                # Bất biến vòng lặp: %3 <= 2000
+        %4 = const 2000 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b3
+
+    @b2
+        %6 = const 32 bv8               # Ký tự khoảng trắng ' ' (ASCII 32)
+        call drv_vga_set_cell %0 %3 %6 %1
+        %7 = const 1 bv64
+        %8 = add %3 %7
+        jmp @b1 %8
+
+    @b3
+        ret
+}

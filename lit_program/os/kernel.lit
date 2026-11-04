@@ -1,35 +1,58 @@
 # File: lit_program/os/kernel.lit
-# Nano-kernel: Nạp driver từ thư mục ../drivers/ và phân phối thẻ quyền năng
+# KERNEL CORE: Quản lý Bộ nhớ (Heap), Bảng Tiến trình (Task) và Điểm vào Khởi động (Boot Entry)
 
-include ../drivers/serial.lit
+include ../apps/desktop_app.lit
 
-func nano_kernel_boot void %0:io<0,0xffff> {
+layout KernelState 16 {
+    0: bv64 @inv ule val 64             # heap_used <= 64
+    8: bv64 @inv ule val 16             # task_count <= 16
+}
+
+# 1. Cấp phát 8 khối Heap (Có @ens cam kết con trỏ trả về %5 nằm trong vùng RAM hợp lệ!)
+func kalloc_heap8 ptr<HeapSlot,8> %0:ptr<KernelState,1> %1:ptr<HeapSlot,64> %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x70000000
+    @req ule %2 56
+    @ens uge %5 0x10000                 # <--- Cam kết đầu ra: con trỏ %5 >= 0x10000
+    @ens ult %5 0x80000000              # <--- Cam kết đầu ra: con trỏ %5 < 0x80000000
+
     @b0
-        # 1. Cấp phát mảng 4 ô ký tự tại địa chỉ RAM 0x80000
-        %1 = const 0x80000 ptr<CharCell,4>
+        %3 = const 8 bv64
+        %4 = add %2 %3
+        store %0 0 %4
+        %5 = slice %1 %2 ptr<HeapSlot,8>
+        ret %5
+}
 
-        # 2. Dùng SLICE cắt từng ô (0, 1, 2, 3) để ghi chữ "LIT\n"
+# 2. Đăng ký Tiến trình vào bảng Task (Có @ens cam kết giá trị trả về %3 == %1 + 1!)
+func kregister_task bv64 %0:ptr<KernelState,1> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 16
+    @ens eq %3 add %1 1                 # <--- Cam kết đầu ra: %3 luôn bằng %1 + 1
+
+    @b0
+        %2 = const 1 bv64
+        %3 = add %1 %2
+        store %0 8 %3
+        ret %3
+}
+
+# 3. Nạp danh sách Startup (init.lit) và khởi chạy tại hàm cuối cùng (kernel_boot_entry)
+include init.lit
+
+func kernel_boot_entry void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0x78000 ptr<KernelState,1>
         %2 = const 0 bv64
-        %3 = slice %1 %2 ptr<CharCell,1>
-        %4 = const 76 bv8               # 'L' (ASCII 76)
-        store %3 0 %4
+        store %1 0 %2
+        store %1 8 %2
 
-        %5 = const 1 bv64
-        %6 = slice %1 %5 ptr<CharCell,1>
-        %7 = const 73 bv8               # 'I' (ASCII 73)
-        store %6 0 %7
+        %3 = const 0x80000 ptr<HeapSlot,64>
+        %4 = const 0xb8000 ptr<VgaCell,2000>
 
-        %8 = const 2 bv64
-        %9 = slice %1 %8 ptr<CharCell,1>
-        %10 = const 84 bv8              # 'T' (ASCII 84)
-        store %9 0 %10
-
-        %11 = const 3 bv64
-        %12 = slice %1 %11 ptr<CharCell,1>
-        %13 = const 10 bv8              # '\n' (ASCII 10)
-        store %12 0 %13
-
-        # 3. Uỷ quyền cho Driver Serial in toàn bộ mảng 4 ký tự ra màn hình QEMU
-        call drv_serial_print4 %0 %1
+        call init_startup %0 %1 %3 %4
         ret
 }
