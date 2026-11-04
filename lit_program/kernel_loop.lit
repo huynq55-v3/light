@@ -1,0 +1,31 @@
+# File: lit_program/kernel_loop.lit
+# Vòng lặp trong Kernel in "ABCDE\n" ra QEMU Serial và được Z3 chứng minh bằng quy nạp
+
+func kernel_main void {
+    @b0
+        %0 = const 0 bv64
+        jmp @b1 %0                      # Bắt đầu vòng lặp tại @b1 với tham số ban đầu %0 = 0
+
+    @b1 %1:bv64                         # %1 là biến chạy i của vòng lặp
+        @inv ule %1 5                   # BẤT BIẾN VÒNG LẶP: Z3 chứng minh %1 luôn <= 5
+
+        %2 = const 5 bv64
+        %3 = cmp ult %1 %2              # Kiểm tra: %1 < 5 ?
+        br %3 @b2 @b3                   # Đúng (< 5) -> Vào thân vòng lặp @b2 | Sai (>= 5) -> Thoát ra @b3
+
+    @b2                                 # Thân vòng lặp (Z3 tự biết ở đây %1 < 5)
+        %4 = const 65 bv64              # Mã ASCII của 'A' (65)
+        %5 = add %4 %1                  # Tính ký tự: 'A' + %1
+        assert ult %5 70                # Z3 chứng minh ký tự luôn nằm từ 'A' (65) đến 'E' (69)!
+        hwio_w 0x3f8 %5                 # In ký tự ra cổng Serial 0x3f8
+
+        %6 = const 1 bv64
+        %7 = add %1 %6                  # Tăng biến đếm: %7 = %1 + 1
+        jmp @b1 %7                      # Lặp lại @b1 với giá trị mới %7 (Z3 kiểm tra %7 <= 5)
+
+    @b3                                 # Thoát vòng lặp
+        assert eq %1 5                  # Z3 tự suy luận từ (@inv %1 <= 5) và not(%1 < 5) => %1 == 5!
+        %8 = const 10 bv8               # Ký tự xuống dòng '\n'
+        hwio_w 0x3f8 %8
+        ret
+}
