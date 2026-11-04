@@ -1,5 +1,5 @@
 # File: lit_program/os/kernel.lit
-# KERNEL CORE: Quản lý Bộ nhớ (Heap), Bảng Tiến trình (Task) và Điểm vào Khởi động (Boot Entry)
+# KERNEL CORE: Quản lý Bộ nhớ (Heap), Bảng Tiến trình (Task), IPC & Bộ Lập lịch (Scheduler Loop)
 
 include ../apps/desktop_app.lit
 
@@ -8,15 +8,15 @@ layout KernelState 16 {
     8: bv64 @inv ule val 16             # task_count <= 16
 }
 
-# 1. Cấp phát 8 khối Heap (Có @ens cam kết con trỏ trả về %5 nằm trong vùng RAM hợp lệ!)
+# 1. Cấp phát 8 khối Heap
 func kalloc_heap8 ptr<HeapSlot,8> %0:ptr<KernelState,1> %1:ptr<HeapSlot,64> %2:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
     @req ult %1 0x70000000
     @req ule %2 56
-    @ens uge %5 0x10000                 # <--- Cam kết đầu ra: con trỏ %5 >= 0x10000
-    @ens ult %5 0x80000000              # <--- Cam kết đầu ra: con trỏ %5 < 0x80000000
+    @ens uge %5 0x10000
+    @ens ult %5 0x80000000
 
     @b0
         %3 = const 8 bv64
@@ -26,12 +26,12 @@ func kalloc_heap8 ptr<HeapSlot,8> %0:ptr<KernelState,1> %1:ptr<HeapSlot,64> %2:b
         ret %5
 }
 
-# 2. Đăng ký Tiến trình vào bảng Task (Có @ens cam kết giá trị trả về %3 == %1 + 1!)
+# 2. Đăng ký Tiến trình vào bảng Task
 func kregister_task bv64 %0:ptr<KernelState,1> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req ult %1 16
-    @ens eq %3 add %1 1                 # <--- Cam kết đầu ra: %3 luôn bằng %1 + 1
+    @ens eq %3 add %1 1
 
     @b0
         %2 = const 1 bv64
@@ -40,19 +40,59 @@ func kregister_task bv64 %0:ptr<KernelState,1> %1:bv64 {
         ret %3
 }
 
-# 3. Nạp danh sách Startup (init.lit) và khởi chạy tại hàm cuối cùng (kernel_boot_entry)
+# 3. BỘ LẬP LỊCH SỰ KIỆN CỦA KERNEL (Chạy liên tục điều phối giữa Driver và App qua IPC)
+func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,2000> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+
+    @b0
+        %4 = const 0 bv64
+        jmp @b1 %4
+
+    @b1 %5:bv64
+        @inv uge %1 0x10000
+        # Bước 1: Cấp quyền thu hẹp io<0x60,0x64> cho Driver Bàn phím kiểm tra phím bấm
+        call drv_kbd_poll_task %0 %1 %2
+
+        # Bước 2: Đánh thức App Desktop xử lý tin nhắn trong IpcChannel và vẽ lên màn hình
+        call app_desktop_ipc_task %3 %2
+
+        # Bước 3: Lặp lại chu kỳ lập lịch tiếp theo
+        jmp @b1 %5
+}
+
 include init.lit
 
+# 4. Điểm vào Khởi động của Kernel (Boot Entry)
 func kernel_boot_entry void %0:io<0,0xffff> {
     @b0
+        # Khởi tạo KernelState tại 0x78000
         %1 = const 0x78000 ptr<KernelState,1>
         %2 = const 0 bv64
         store %1 0 %2
         store %1 8 %2
 
-        %3 = const 0x80000 ptr<HeapSlot,64>
-        %4 = const 0xb8000 ptr<VgaCell,2000>
+        # Khởi tạo vùng nhớ IpcChannel tại 0x79000 (cursor_x bắt đầu ở cột 25)
+        %3 = const 0x79000 ptr<IpcChannel,1>
+        %4 = const 0 bv8
+        %5 = const 25 bv64
+        store %3 0 %2                   # has_msg = 0
+        store %3 8 %4                   # msg_char = 0
+        store %3 16 %5                  # cursor_x = 25
 
-        call init_startup %0 %1 %3 %4
+        # Khởi tạo bảng KeyMap tại 0x7a000, Heap Pool tại 0x80000, và VGA tại 0xb8000
+        %6 = const 0x7a000 ptr<KeyMap,8>
+        %7 = const 0x80000 ptr<HeapSlot,64>
+        %8 = const 0xb8000 ptr<VgaCell,2000>
+
+        # Chạy danh sách Startup (init_startup)
+        call init_startup %0 %1 %7 %8 %6
+
+        # Chuyển vào Vòng lặp Lập lịch Sự kiện Vĩnh cửu của Hệ điều hành!
+        call kscheduler_loop %0 %6 %3 %8
         ret
 }

@@ -1,4 +1,4 @@
-// File: src/verify.rs (Ngân sách: < 250 dòng - Thực tế: ~175 dòng)
+// File: src/verify.rs (Bản hoàn thiện 100% - Giữ toàn cục biến SSA qua mọi tầng rẽ nhánh)
 use crate::ir::*;
 use std::collections::HashMap;
 use z3::ast::{Ast, BV, Bool};
@@ -10,18 +10,20 @@ pub struct Verifier<'ctx> {
     layouts: &'ctx [Layout],
     regs: HashMap<Reg, BV<'ctx>>,
     reg_tys: HashMap<Reg, Type>,
+    cur_cond: Option<Bool<'ctx>>, // Điều kiện nhánh của Block hiện tại
 }
 
 impl<'ctx> Verifier<'ctx> {
-    /// Hàm kiểm chứng một câu lệnh bất khả xâm phạm:
-    /// Muốn chứng minh `cond` LUÔN ĐÚNG, ta đẩy `!cond` vào Z3.
-    /// Nếu Z3 tìm ra nghiệm (SAT) -> Có trường hợp gây lỗi -> Trả về Phản ví dụ (Counter-example)!
     fn check(&self, cond: &Bool<'ctx>, err_msg: &str) -> Result<(), String> {
         self.solver.push();
+        // Nếu Block hiện tại đang nằm trong nhánh If/Else, chỉ áp dụng điều kiện nhánh lúc kiểm tra!
+        if let Some(c) = &self.cur_cond {
+            self.solver.assert(c);
+        }
         self.solver.assert(&cond.not());
         let res = self.solver.check();
         let out = match res {
-            SatResult::Unsat => Ok(()), // Tuyệt đối an toàn!
+            SatResult::Unsat => Ok(()),
             SatResult::Sat => {
                 let model = self.solver.get_model().unwrap();
                 Err(format!(
@@ -38,10 +40,8 @@ impl<'ctx> Verifier<'ctx> {
         out
     }
 
-    /// Khai báo một thanh ghi SSA mới vào không gian Z3 (Mọi thanh ghi đều mở rộng lên BV64)
     fn decl_reg(&mut self, r: Reg, ty: Type) -> BV<'ctx> {
         let bv = BV::new_const(self.ctx, format!("r{}", r), 64);
-        // Nếu kiểu nhỏ hơn 64-bit (Bv8, Bv16, Bv32), khóa chặt các bit cao bằng 0
         let bits = match ty {
             Type::Bv8 => 8,
             Type::Bv16 => 16,
@@ -63,8 +63,6 @@ impl<'ctx> Verifier<'ctx> {
             .ok_or_else(|| format!("Biến SSA %{} chưa được khởi tạo", r))
     }
 
-    /// Dịch cây biểu thức Z3Expr sang kiểu Bool/BV của Z3
-    /// `field_val` chỉ được truyền vào khi đang kiểm tra điều kiện `@inv` lúc Store/Load
     fn eval_z3_bv(&self, expr: &Z3Expr, field_val: Option<&BV<'ctx>>) -> Result<BV<'ctx>, String> {
         match expr {
             Z3Expr::Reg(r) => Ok(self.get_reg(*r)?.clone()),
@@ -84,7 +82,7 @@ impl<'ctx> Verifier<'ctx> {
                 .eval_z3_bv(l, field_val)?
                 .bvor(&self.eval_z3_bv(r, field_val)?)),
             Z3Expr::Not(e) => Ok(self.eval_z3_bv(e, field_val)?.bvnot()),
-            _ => Err("Biểu thức logic (Cmp/And/Or/Not) không thể dùng làm giá trị số BV".into()),
+            _ => Err("Biểu thức so sánh (Cmp) không thể dùng làm giá trị số BV".into()),
         }
     }
 
@@ -118,7 +116,6 @@ impl<'ctx> Verifier<'ctx> {
         }
     }
 
-    /// Bảng ánh xạ 1:1 từ BinOp sang phép toán BitVector của Z3
     fn eval_binop(&self, op: BinOp, lhs: &BV<'ctx>, rhs: &BV<'ctx>) -> BV<'ctx> {
         match op {
             BinOp::Add => lhs.bvadd(rhs),
@@ -137,7 +134,6 @@ impl<'ctx> Verifier<'ctx> {
         }
     }
 
-    /// Bảng ánh xạ 1:1 từ CmpOp sang phép so sánh BitVector của Z3
     fn eval_cmpop(&self, op: CmpOp, lhs: &BV<'ctx>, rhs: &BV<'ctx>) -> Bool<'ctx> {
         match op {
             CmpOp::Eq => lhs._eq(rhs),
@@ -153,7 +149,6 @@ impl<'ctx> Verifier<'ctx> {
         }
     }
 
-    /// Kiểm tra hợp lệ con trỏ `Ptr` và tìm `FieldDef` tương ứng với `offset`
     fn check_ptr_access(&self, base: Reg, offset: u32) -> Result<&'ctx FieldDef, String> {
         let ty = self.reg_tys.get(&base).ok_or("Biến base không tồn tại")?;
         let (layout_id, max_elems) = match ty {
@@ -168,7 +163,6 @@ impl<'ctx> Verifier<'ctx> {
             .get(layout_id)
             .ok_or("layout_id không tồn tại")?;
 
-        // 1. Kiểm tra con trỏ khác NULL (base != 0)
         let base_bv = self.get_reg(base)?;
         let zero = BV::from_u64(self.ctx, 0, 64);
         self.check(
@@ -176,7 +170,6 @@ impl<'ctx> Verifier<'ctx> {
             &format!("Null pointer dereference tại %{}", base),
         )?;
 
-        // 2. Kiểm tra giới hạn vùng nhớ (offset < max_elems * layout.size)
         let max_bytes = max_elems.saturating_mul(layout.size);
         if offset >= max_bytes {
             return Err(format!(
@@ -185,7 +178,6 @@ impl<'ctx> Verifier<'ctx> {
             ));
         }
 
-        // 3. Kiểm tra căn lề trường dữ liệu trong Layout (offset % layout.size phải khớp 1 FieldDef)
         let field_offset = offset % layout.size;
         layout
             .fields
@@ -200,9 +192,6 @@ impl<'ctx> Verifier<'ctx> {
     }
 }
 
-/// Kiểm tra tính hợp lệ khi truyền Thẻ quyền năng (Capability Subtyping / Attenuation):
-/// Cho phép thu hẹp quyền: io<a,b> -> io<c,d> nếu [c,d] nằm gọn trong [a,b]
-/// Cho phép thu hẹp vùng nhớ: ptr<L, M1> -> ptr<L, M2> nếu cùng Layout và M2 <= M1
 fn can_delegate(from: Type, to: Type) -> bool {
     match (from, to) {
         (Type::Io { min: a, max: b }, Type::Io { min: c, max: d }) => a <= c && d <= b,
@@ -220,7 +209,6 @@ fn can_delegate(from: Type, to: Type) -> bool {
     }
 }
 
-/// HÀM CHÍNH: Kiểm chứng một hàm `Func` trong `Module` (Hỗ trợ Quy nạp Vòng lặp)
 pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
     let cfg = Config::new();
     let ctx = Context::new(&cfg);
@@ -230,9 +218,9 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
         layouts: &module.layouts,
         regs: HashMap::new(),
         reg_tys: HashMap::new(),
+        cur_cond: None,
     };
 
-    // 1. Khởi tạo tham số hàm & Nạp hợp đồng đầu vào (@req)
     for &(reg, ty) in &func.params {
         v.decl_reg(reg, ty);
     }
@@ -241,12 +229,11 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
         v.solver.assert(&cond);
     }
 
-    // Lưu điều kiện rẽ nhánh (Branch Condition) truyền xuống từng Block từ lệnh Br
     let mut blk_conds: HashMap<BlockId, Bool> = HashMap::new();
 
-    // 2. Duyệt qua các Basic Block
     for block in &func.blocks {
-        // Khai báo tham số khối (Block Params) & Nạp giả thiết quy nạp (@inv của Block)
+        v.cur_cond = blk_conds.get(&block.id).cloned();
+
         for &(reg, ty) in &block.params {
             v.decl_reg(reg, ty);
         }
@@ -255,26 +242,15 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
             v.solver.assert(&cond);
         }
 
-        // Nếu Block này là nhánh Then/Else của lệnh Br trước đó, bật điều kiện nhánh trong phạm vi Block
-        let has_branch_cond = if let Some(c) = blk_conds.get(&block.id) {
-            v.solver.push();
-            v.solver.assert(c);
-            true
-        } else {
-            false
-        };
-
         for inst in &block.insts {
             match inst {
                 Inst::Const { dst, ty, val } => {
-                    // 1. Cấm tuyệt đối việc tự chế tạo thẻ Io bằng hằng số
                     if matches!(ty, Type::Io { .. }) {
                         return Err(format!(
                             "Bảo mật: Không thể tạo thẻ quyền năng Io bằng const tại %{}",
                             dst
                         ));
                     }
-                    // 2. Muốn ánh xạ địa chỉ RAM vật lý thành thẻ Ptr mới bằng const, hàm bắt buộc phải giữ thẻ gốc io<0, 0xffff>
                     if matches!(ty, Type::Ptr { .. }) {
                         let has_root_io = func.params.iter().any(|&(_, t)| {
                             t == Type::Io {
@@ -335,7 +311,6 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     v.solver.assert(&dst_bv._eq(&cond.ite(&one, &zero)));
                 }
                 Inst::Slice { dst, base, idx, ty } => {
-                    // 1. Kiểm tra %base là Ptr và kiểu đích `ty` cũng là Ptr cùng Layout
                     let base_ty = *v
                         .reg_tys
                         .get(base)
@@ -359,8 +334,6 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                             ));
                         }
                     };
-
-                    // 2. Z3 chứng minh: base != NULL và (idx + max_new <= max_old) (Không bao giờ tràn mảng!)
                     let base_bv = v.get_reg(*base)?.clone();
                     let idx_bv = v.get_reg(*idx)?.clone();
                     let zero = BV::from_u64(&ctx, 0, 64);
@@ -383,7 +356,6 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                         ),
                     )?;
 
-                    // 3. Khai báo %dst = %base + (%idx * layout.size)
                     let elem_size = BV::from_u64(&ctx, v.layouts[l2 as usize].size as u64, 64);
                     let dst_bv = v.decl_reg(*dst, *ty);
                     v.solver
@@ -425,7 +397,6 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     port_or_reg,
                     ..
                 } => {
-                    // Kiểm tra biến `cap` có phải là thẻ Type::Io hợp lệ và cổng `port_or_reg` có nằm trong [min, max] không
                     match v.reg_tys.get(cap) {
                         Some(Type::Io { min, max })
                             if *port_or_reg >= *min && *port_or_reg <= *max => {}
@@ -457,7 +428,6 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     let saved_regs = v.regs.clone();
                     for (&arg_r, &(param_r, param_ty)) in args.iter().zip(&callee.params) {
                         let arg_ty = *v.reg_tys.get(&arg_r).ok_or("Biến Call arg chưa có kiểu")?;
-                        // Dùng `can_delegate` để cho phép thu hẹp thẻ quyền năng (Capability Attenuation) khi gọi Driver/App!
                         if !can_delegate(arg_ty, param_ty) {
                             return Err(format!(
                                 "Bảo mật: Không thể truyền kiểu {:?} vào {:?} khi gọi '{}'",
@@ -510,8 +480,7 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     let c_bv = v.get_reg(*cond)?;
                     let zero = BV::from_u64(&ctx, 0, 64);
                     let is_true = c_bv._eq(&zero).not();
-                    // Nếu Block hiện tại đang nằm trong một nhánh trước đó, gộp (AND) cả 2 điều kiện lại!
-                    let (t_cond, e_cond) = if let Some(parent_c) = blk_conds.get(&block.id) {
+                    let (t_cond, e_cond) = if let Some(parent_c) = &v.cur_cond {
                         (
                             Bool::and(&ctx, &[parent_c, &is_true]),
                             Bool::and(&ctx, &[parent_c, &is_true.not()]),
@@ -523,7 +492,6 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     blk_conds.insert(*else_bb, e_cond);
                 }
                 Inst::Jmp { target_bb, args } => {
-                    // KIỂM CHỨNG QUY NẠP VÒNG LẶP: Thay thế tham số của Block đích bằng `args` và kiểm tra `@inv`!
                     let target_blk = func
                         .blocks
                         .iter()
@@ -578,11 +546,7 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                         )?;
                     }
                 }
-                _ => {}
             }
-        }
-        if has_branch_cond {
-            v.solver.pop(1);
         }
     }
     Ok(())
