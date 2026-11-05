@@ -1,0 +1,227 @@
+# File: lit_program/lib/std_tensor.lit
+# THƯ VIỆN TOÁN HỌC TENSOR & TRANSFORMER BARE-METAL (100% Z3 Formal Verified)
+
+include std_lib.lit
+
+# 1. Căn bậc hai số nguyên (Integer Sqrt) phục vụ RMSNorm của Gemma/Qwen
+func tensor_isqrt bv64 %0:bv64 {
+    @ens uge %9 1
+    @ens ule %9 65536
+
+    @b0
+        %1 = const 1 bv64
+        jmp @b1 %1
+
+    @b1 %2:bv64
+        @inv uge %2 1
+        @inv ule %2 65536
+        %3 = const 256 bv64
+        %4 = cmp ult %2 %3
+        br %4 @b2 @b4
+
+    @b2
+        %5 = mul %2 %2
+        %6 = cmp ule %5 %0
+        br %6 @b3 @b4
+
+    @b3
+        %7 = add %2 %1
+        jmp @b1 %7
+
+    @b4
+        %8 = const 0 bv64
+        %9 = add %2 %8
+        ret %9
+}
+
+# 2. Tích vô hướng (Dot Product) của 2 Vector 8 chiều
+func tensor_dot8 bv64 %0:ptr<DiskQword,8> %1:ptr<DiskQword,8> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 8
+        %5 = const 8 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b3
+
+    @b2
+        %7 = slice %0 %3 ptr<DiskQword,1>
+        %8 = load %7 0 bv64
+        %9 = slice %1 %3 ptr<DiskQword,1>
+        %10 = load %9 0 bv64
+
+        %11 = const 0xffff bv64
+        %12 = and %8 %11
+        %13 = and %10 %11
+        %14 = mul %12 %13
+
+        %15 = const 0xffffffffffff bv64
+        %16 = and %4 %15
+        %17 = add %16 %14
+
+        %18 = const 1 bv64
+        %19 = add %3 %18
+        jmp @b1 %19 %17
+
+    @b3
+        ret %4
+}
+
+# 3. Chuẩn hóa RMSNorm (Root Mean Square Normalization của Gemma): x[i] = (x[i] * 64) / sqrt(mean(x^2) + 1)
+func tensor_rmsnorm8 void %0:ptr<DiskQword,8> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = call tensor_dot8 %0 %0
+        %2 = const 3 bv64
+        %3 = lshr %1 %2                     # mean_sq = sum(x^2) / 8
+        %4 = call tensor_isqrt %3           # rms = isqrt(mean_sq) (>= 1)
+        %5 = const 0 bv64
+        jmp @b1 %5
+
+    @b1 %6:bv64
+        @inv ule %6 8
+        %7 = const 8 bv64
+        %8 = cmp ult %6 %7
+        br %8 @b2 @b3
+
+    @b2
+        %9 = slice %0 %6 ptr<DiskQword,1>
+        %10 = load %9 0 bv64
+        %11 = const 0xffff bv64
+        %12 = and %10 %11
+        %13 = const 6 bv64
+        %14 = shl %12 %13                   # x[i] * 64
+        %15 = udiv %14 %4                   # Chia cho rms (Z3 chứng minh %4 >= 1, không bao giờ chia cho 0!)
+        store %9 0 %15
+
+        %16 = const 1 bv64
+        %17 = add %6 %16
+        jmp @b1 %17
+
+    @b3
+        ret
+}
+
+# 4. Nhân Ma trận 8x8 (%0) với Vector 8x1 (%1) -> Vector 8x1 (%2)
+func tensor_matmul8x8 void %0:ptr<DiskQword,64> %1:ptr<DiskQword,8> %2:ptr<DiskQword,8> {
+    @req uge %0 0x10000
+    @req ult %0 0x70000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+
+    @b0
+        %3 = const 0 bv64
+        jmp @b1 %3
+
+    @b1 %4:bv64
+        @inv ule %4 8
+        %5 = const 8 bv64
+        %6 = cmp ult %4 %5
+        br %6 @b2 @b3
+
+    @b2
+        %7 = const 3 bv64
+        %8 = shl %4 %7
+        %9 = slice %0 %8 ptr<DiskQword,8>
+        %10 = call tensor_dot8 %9 %1
+        %11 = slice %2 %4 ptr<DiskQword,1>
+        store %11 0 %10
+
+        %12 = const 1 bv64
+        %13 = add %4 %12
+        jmp @b1 %13
+
+    @b3
+        ret
+}
+
+# 5. Cộng Kết nối Tắt (Residual Connection: dst[i] = dst[i] + (src[i] >> 4))
+func tensor_residual_add8 void %0:ptr<DiskQword,8> %1:ptr<DiskQword,8> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 8
+        %4 = const 8 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b3
+
+    @b2
+        %6 = slice %0 %3 ptr<DiskQword,1>
+        %7 = load %6 0 bv64
+        %8 = slice %1 %3 ptr<DiskQword,1>
+        %9 = load %8 0 bv64
+
+        %10 = const 0xffff bv64
+        %11 = and %7 %10
+        %12 = const 4 bv64
+        %13 = lshr %9 %12
+        %14 = and %13 %10
+        %15 = add %11 %14
+        store %6 0 %15
+
+        %16 = const 1 bv64
+        %17 = add %3 %16
+        jmp @b1 %17
+
+    @b3
+        ret
+}
+
+# 6. Tìm Token ID có xác suất cao nhất trong 16 Token ứng viên của Bảng Classifier tại 0x40000000
+func tensor_classify_token bv64 %0:ptr<DiskQword,512> %1:ptr<DiskQword,8> {
+    @req uge %0 0x10000
+    @req ult %0 0x70000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @ens ult %18 16
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2 %2 %2
+
+    @b1 %3:bv64 %4:bv64 %5:bv64
+        # %3: tok_id (0..16), %4: best_tok (0..15), %5: best_score
+        @inv ule %3 16
+        @inv ult %4 16
+        %6 = const 16 bv64
+        %7 = cmp ult %3 %6
+        br %7 @b2 @b5
+
+    @b2
+        %8 = const 3 bv64
+        %9 = shl %3 %8
+        %10 = slice %0 %9 ptr<DiskQword,8>
+        %11 = call tensor_dot8 %10 %1
+        %12 = cmp ugt %11 %5
+        %13 = const 1 bv64
+        %14 = add %3 %13
+        br %12 @b3 @b4
+
+    @b3
+        jmp @b1 %14 %3 %11
+
+    @b4
+        jmp @b1 %14 %4 %5
+
+    @b5
+        %18 = add %4 %2
+        ret %18
+}

@@ -13,7 +13,7 @@ pub enum Type {
     /// Con trỏ có miền giới hạn: trỏ tới Layout thứ `layout_id`, tối đa `max_elems` phần tử
     Ptr {
         layout_id: u16,
-        max_elems: u32,
+        max_elems: u64,
     },
     /// Thẻ quyền Phần cứng: chỉ cho phép gọi lệnh HwIo trong dải cổng [min..=max]
     Io {

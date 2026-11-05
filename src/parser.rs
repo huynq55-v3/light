@@ -80,7 +80,7 @@ fn p_type(s: &str, layouts: &[Layout]) -> Result<Type, String> {
                 as u16;
             Ok(Type::Ptr {
                 layout_id: id,
-                max_elems: p_u64(max)? as u32,
+                max_elems: p_u64(max)?,
             })
         }
         _ if s.starts_with("io<") && s.ends_with('>') => {
@@ -312,7 +312,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                                     .collect::<Result<_, _>>()?,
                             }
                         }
-                    },
+                    }
                     "hwio_w" => Inst::HwIo {
                         dst: None,
                         cap: p_reg(toks[1])?,
@@ -367,7 +367,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                                             .collect::<Result<_, _>>()?,
                                     }
                                 }
-                            },
+                            }
                             "hwio_r" => Inst::HwIo {
                                 dst: Some(d),
                                 cap: p_reg(toks[3])?,

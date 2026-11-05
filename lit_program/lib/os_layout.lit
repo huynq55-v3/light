@@ -6,7 +6,7 @@ layout DiskQword 8 {
     0: bv64
 }
 
-layout IpcChannel 160 {
+layout IpcChannel 168 {
     0: bv64
     8: bv8 @inv ult val 128
     16: bv64 @inv ult val 1260
@@ -27,6 +27,7 @@ layout IpcChannel 160 {
     136: bv64 @inv ule val 1280
     144: bv64 @inv ule val 720
     152: bv64                               # LBA của file đang mở trong Editor
+    160: bv64                               # Trạng thái giữ phím Shift (1 = đang giữ Shift, 0 = nhả)
 }
 
 layout VfsEntry 32 {

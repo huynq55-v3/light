@@ -191,7 +191,167 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
         ret
 }
 
-# 3. Lắng nghe và đọc gói tin Bàn phím & Chuột
+# Chuyển đổi mã ASCII khi người dùng đang giữ phím Shift
+func kbd_apply_shift bv64 %0:bv64 %1:bv64 {
+    # %0: ascii_char, %1: shift_down (0 hoặc 1)
+    @ens ult %40 128
+
+    @b0
+        %2 = const 0x7f bv64
+        %3 = and %0 %2
+        %4 = const 0 bv64
+        %5 = cmp eq %1 %4
+        br %5 @b99 @b1
+
+    @b1
+        # '=' (61) -> '+' (43)
+        %6 = const 61 bv64
+        %7 = cmp eq %3 %6
+        br %7 @b10 @b2
+
+    @b10
+        %8 = const 43 bv64
+        jmp @b100 %8
+
+    @b2
+        # '/' (47) -> '?' (63)
+        %9 = const 47 bv64
+        %10 = cmp eq %3 %9
+        br %10 @b20 @b3
+
+    @b20
+        %11 = const 63 bv64
+        jmp @b100 %11
+
+    @b3
+        # '1' (49) -> '!' (33)
+        %12 = const 49 bv64
+        %13 = cmp eq %3 %12
+        br %13 @b30 @b4
+
+    @b30
+        %14 = const 33 bv64
+        jmp @b100 %14
+
+    @b4
+        # '3' (51) -> '#' (35)
+        %15 = const 51 bv64
+        %16 = cmp eq %3 %15
+        br %16 @b40 @b5
+
+    @b40
+        %17 = const 35 bv64
+        jmp @b100 %17
+
+    @b5
+        # '5' (53) -> '%' (37)
+        %18 = const 53 bv64
+        %19 = cmp eq %3 %18
+        br %19 @b50 @b6
+
+    @b50
+        %20 = const 37 bv64
+        jmp @b100 %20
+
+    @b6
+        # '7' (55) -> '&' (38)
+        %21 = const 55 bv64
+        %22 = cmp eq %3 %21
+        br %22 @b60 @b7
+
+    @b60
+        %23 = const 38 bv64
+        jmp @b100 %23
+
+    @b7
+        # '8' (56) -> '*' (42)
+        %24 = const 56 bv64
+        %25 = cmp eq %3 %24
+        br %25 @b70 @b8
+
+    @b70
+        %26 = const 42 bv64
+        jmp @b100 %26
+
+    @b8
+        # '9' (57) -> '(' (40)
+        %27 = const 57 bv64
+        %28 = cmp eq %3 %27
+        br %28 @b80 @b9
+
+    @b80
+        %29 = const 40 bv64
+        jmp @b100 %29
+
+    @b9
+        # '0' (48) -> ')' (41)
+        %30 = const 48 bv64
+        %31 = cmp eq %3 %30
+        br %31 @b90 @b11
+
+    @b90
+        %32 = const 41 bv64
+        jmp @b100 %32
+
+    @b11
+        # '-' (45) -> '_' (95)
+        %33 = const 45 bv64
+        %34 = cmp eq %3 %33
+        br %34 @b110 @b12
+
+    @b110
+        %35 = const 95 bv64
+        jmp @b100 %35
+
+    @b12
+        # ';' (59) -> ':' (58)
+        %36 = const 59 bv64
+        %37 = cmp eq %3 %36
+        br %37 @b120 @b13
+
+    @b120
+        %38 = const 58 bv64
+        jmp @b100 %38
+
+    @b13
+        # '[' (91) -> '{' (123)
+        %41 = const 91 bv64
+        %42 = cmp eq %3 %41
+        br %42 @b130 @b14
+
+    @b130
+        %43 = const 123 bv64
+        jmp @b100 %43
+
+    @b14
+        # ']' (93) -> '}' (125)
+        %44 = const 93 bv64
+        %45 = cmp eq %3 %44
+        br %45 @b140 @b15
+
+    @b140
+        %46 = const 125 bv64
+        jmp @b100 %46
+
+    @b15
+        # '.' (46) -> '>' (62)
+        %47 = const 46 bv64
+        %48 = cmp eq %3 %47
+        br %48 @b150 @b99
+
+    @b150
+        %49 = const 62 bv64
+        jmp @b100 %49
+
+    @b99
+        jmp @b100 %3
+
+    @b100 %40:bv64
+        @inv ult %40 128
+        ret %40
+}
+
+# 3. Lắng nghe và đọc gói tin Bàn phím (Hỗ trợ giữ/nhả Shift) & Chuột
 func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
@@ -228,6 +388,32 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         jmp @b8
 
     @b5
+        # Kiểm tra Nhấn phím Shift: Left Shift (42) hoặc Right Shift (54)
+        %30 = const 42 bv64
+        %31 = const 54 bv64
+        %32 = cmp eq %12 %30
+        %33 = cmp eq %12 %31
+        %34 = or %32 %33
+        br %34 @b51 @b52
+
+    @b51
+        store %2 160 %8                     # shift_down = 1
+        jmp @b8
+
+    @b52
+        # Kiểm tra Nhả phím Shift: Left Shift Release (170) hoặc Right Shift Release (182)
+        %35 = const 170 bv64
+        %36 = const 182 bv64
+        %37 = cmp eq %12 %35
+        %38 = cmp eq %12 %36
+        %39 = or %37 %38
+        br %39 @b53 @b54
+
+    @b53
+        store %2 160 %10                    # shift_down = 0
+        jmp @b8
+
+    @b54
         %16 = const 64 bv64
         %17 = cmp ult %12 %16
         br %17 @b6 @b8
@@ -249,7 +435,9 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         br %28 @b7 @b8
 
     @b7
-        store %2 8 %27
+        %40 = load %2 160 bv64              # Đọc trạng thái shift_down
+        %41 = call kbd_apply_shift %27 %40
+        store %2 8 %41
         store %2 0 %8
         jmp @b8
 

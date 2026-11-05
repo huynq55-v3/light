@@ -187,6 +187,7 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         %12 = const 1 bv64
         %44 = load %3 64 bv64               # prev_mx
         %45 = load %3 72 bv64               # prev_my
+        %95 = const 0x40000000 ptr<DiskQword,2048>
 
         # Kiểm tra nếu có Click chuột
         %13 = cmp ne %10 %11
@@ -270,8 +271,7 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         br %75 @b8 @b6
 
     @b8
-        # Gọi App đang chạy: Truyền Backbuffer (%2) để App vẽ ngầm và gọi ui_invalidate_rect!
-        call %5 %2 %3 %6 %7 %4
+        call %5 %2 %3 %6 %7 %4 %95 %0
         store %3 32 %11
 
         %53 = load %3 56 bv64
@@ -286,7 +286,7 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
     @b13
         store %3 96 %11
         call drv_ata_read_sector %0 %6 %55
-        call %5 %2 %3 %6 %7 %4
+        call %5 %2 %3 %6 %7 %4 %95 %0
         jmp @b6
 
     @b16
@@ -297,7 +297,7 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
     @b17
         store %3 104 %11
         call drv_ata_write_sector %0 %6 %60
-        call %5 %2 %3 %6 %7 %4
+        call %5 %2 %3 %6 %7 %4 %95 %0
         jmp @b6
 
     @b14

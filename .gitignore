@@ -3,3 +3,4 @@
 repo-to-text*
 *.img
 /storage
+/gemma_local_model

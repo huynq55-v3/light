@@ -515,6 +515,33 @@ func font_get_glyph bv64 %0:bv64 {
         ret %173
 
     @b114
+        %175 = const 43 bv64                # '+'
+        %176 = cmp eq %8 %175
+        br %176 @b115 @b116
+
+    @b115
+        %177 = const 0x000018187E181800 bv64
+        ret %177
+
+    @b116
+        %178 = const 63 bv64                # '?'
+        %179 = cmp eq %8 %178
+        br %179 @b117 @b118
+
+    @b117
+        %180 = const 0x001800183060663C bv64
+        ret %180
+
+    @b118
+        %181 = const 42 bv64                # '*'
+        %182 = cmp eq %8 %181
+        br %182 @b119 @b120
+
+    @b119
+        %183 = const 0x0000663CFF3C6600 bv64
+        ret %183
+
+    @b120
         %174 = const 0 bv64
         ret %174
 }

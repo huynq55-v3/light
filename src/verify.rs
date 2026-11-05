@@ -170,8 +170,8 @@ impl<'ctx> Verifier<'ctx> {
             &format!("Null pointer dereference tại %{}", base),
         )?;
 
-        let max_bytes = max_elems.saturating_mul(layout.size);
-        if offset >= max_bytes {
+        let max_bytes = max_elems.saturating_mul(layout.size as u64);
+        if (offset as u64) >= max_bytes {
             return Err(format!(
                 "Tràn vùng nhớ Ptr: offset {} >= max_bytes {}",
                 offset, max_bytes
