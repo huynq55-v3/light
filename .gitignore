@@ -1,3 +1,5 @@
 /target
 *.elf
 repo-to-text*
+*.img
+/storage

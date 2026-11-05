@@ -1,0 +1,37 @@
+# File: lit_program/lib/os_layout.lit
+# Định nghĩa các cấu trúc dữ liệu phẳng (Layout) dùng chung cho toàn hệ thống Light OS
+
+layout DiskQword 8 {
+    0: bv64
+}
+
+layout IpcChannel 152 {
+    0: bv64
+    8: bv8 @inv ult val 128
+    16: bv64 @inv ult val 1260
+    24: bv64 @inv ult val 700
+    32: bv64
+    40: bv64 @inv ult val 4
+    48: bv64
+    56: bv64 @inv ult val 4
+    64: bv64 @inv ult val 1260
+    72: bv64 @inv ult val 700
+    80: bv64
+    88: bv64 @inv ult val 16
+    96: bv64 @inv ult val 268435456
+    104: bv64 @inv ult val 268435456
+    112: bv64 @inv ule val 1
+    120: bv64 @inv ule val 1280
+    128: bv64 @inv ule val 720
+    136: bv64 @inv ule val 1280
+    144: bv64 @inv ule val 720
+}
+
+layout VfsEntry 32 {
+    0: bv64                                 # 8 ký tự tên file ngắn (ASCII Qword)
+    8: bv32                                 # Offset trong String Pool
+    12: bv32                                # Chiều dài chuỗi đường dẫn
+    16: bv64                                # Sector LBA bắt đầu trên đĩa
+    24: bv32                                # Kích thước file thực tế (byte)
+    28: bv32                                # Cờ trạng thái (FLAG_APP, FLAG_DATA...)
+}

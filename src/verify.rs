@@ -205,6 +205,8 @@ fn can_delegate(from: Type, to: Type) -> bool {
                 max_elems: m2,
             },
         ) => l1 == l2 && m2 <= m1,
+        (Type::Bv64, Type::Bv8 | Type::Bv16 | Type::Bv32)
+        | (Type::Bv8 | Type::Bv16 | Type::Bv32, Type::Bv64) => true,
         _ => from == to,
     }
 }
@@ -472,6 +474,26 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                         v.regs.insert(*d, dst_bv);
                     }
                 }
+                Inst::CallPtr { dst, target, args } => {
+                    if !v.regs.contains_key(target) {
+                        return Err(format!(
+                            "Biến %{} làm con trỏ gọi hàm chưa được định nghĩa",
+                            target
+                        ));
+                    }
+                    for arg in args {
+                        if !v.regs.contains_key(arg) {
+                            return Err(format!(
+                                "Biến %{} làm đối số hàm chưa được định nghĩa",
+                                arg
+                            ));
+                        }
+                    }
+                    if let Some(d) = dst {
+                        let dst_bv = v.decl_reg(*d, Type::Bv64);
+                        v.regs.insert(*d, dst_bv);
+                    }
+                }
                 Inst::Br {
                     cond,
                     then_bb,
@@ -492,6 +514,16 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
                     blk_conds.insert(*else_bb, e_cond);
                 }
                 Inst::Jmp { target_bb, args } => {
+                    // Truyền/hợp nhất điều kiện đường đi (cur_cond) khi nhảy xuôi tới Join Block
+                    if *target_bb > block.id {
+                        if let Some(c) = &v.cur_cond {
+                            let merged = match blk_conds.get(target_bb) {
+                                Some(prev) => Bool::or(&ctx, &[prev, c]),
+                                None => c.clone(),
+                            };
+                            blk_conds.insert(*target_bb, merged);
+                        }
+                    }
                     let target_blk = func
                         .blocks
                         .iter()

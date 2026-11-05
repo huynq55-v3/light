@@ -291,13 +291,27 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     },
                     "assume" => Inst::Assume(p_z3(&mut toks[1..].join(" ").split_whitespace())?),
                     "assert" => Inst::Assert(p_z3(&mut toks[1..].join(" ").split_whitespace())?),
-                    "call" => Inst::Call {
-                        dst: None,
-                        func_id: p_func_id(toks[1], &m.funcs)?,
-                        args: toks[2..]
-                            .iter()
-                            .map(|r| p_reg(r))
-                            .collect::<Result<_, _>>()?,
+                    "call" => {
+                        let target_str = toks[1];
+                        if target_str.starts_with('%') {
+                            Inst::CallPtr {
+                                dst: None,
+                                target: p_reg(target_str)?,
+                                args: toks[2..]
+                                    .iter()
+                                    .map(|r| p_reg(r))
+                                    .collect::<Result<_, _>>()?,
+                            }
+                        } else {
+                            Inst::Call {
+                                dst: None,
+                                func_id: p_func_id(target_str, &m.funcs)?,
+                                args: toks[2..]
+                                    .iter()
+                                    .map(|r| p_reg(r))
+                                    .collect::<Result<_, _>>()?,
+                            }
+                        }
                     },
                     "hwio_w" => Inst::HwIo {
                         dst: None,
@@ -332,13 +346,27 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                                 lhs: p_reg(toks[4])?,
                                 rhs: p_reg(toks[5])?,
                             },
-                            "call" => Inst::Call {
-                                dst: Some(d),
-                                func_id: p_func_id(toks[3], &m.funcs)?,
-                                args: toks[4..]
-                                    .iter()
-                                    .map(|r| p_reg(r))
-                                    .collect::<Result<_, _>>()?,
+                            "call" => {
+                                let target_str = toks[3];
+                                if target_str.starts_with('%') {
+                                    Inst::CallPtr {
+                                        dst: Some(d),
+                                        target: p_reg(target_str)?,
+                                        args: toks[4..]
+                                            .iter()
+                                            .map(|r| p_reg(r))
+                                            .collect::<Result<_, _>>()?,
+                                    }
+                                } else {
+                                    Inst::Call {
+                                        dst: Some(d),
+                                        func_id: p_func_id(target_str, &m.funcs)?,
+                                        args: toks[4..]
+                                            .iter()
+                                            .map(|r| p_reg(r))
+                                            .collect::<Result<_, _>>()?,
+                                    }
+                                }
                             },
                             "hwio_r" => Inst::HwIo {
                                 dst: Some(d),

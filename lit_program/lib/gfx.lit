@@ -1,46 +1,281 @@
 # File: lit_program/lib/gfx.lit
-# Thư viện Đồ họa 2D thuần phần mềm (Không giữ thẻ io, gọi xuống drv_vga_set_cell)
+# Thư viện Đồ họa 2D HD 1280x720 (Gọn nhẹ cho cả Kernel và App Binary)
 
 include ../drivers/vga_drv.lit
+include font.lit
+include os_layout.lit
 
-# 1. Vẽ 1 ký tự tại tọa độ 2D (cột x = %1, dòng y = %2)
-func gfx_draw_char_xy void %0:ptr<VgaCell,2000> %1:bv64 %2:bv64 %3:bv8 %4:bv8 {
+# 1. Chấm 1 điểm ảnh RGB tại tọa độ (x = %1, y = %2)
+func gfx_put_pixel void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
-    @req ult %1 80                      # Cột x < 80
-    @req ult %2 25                      # Dòng y < 25
-    @req ult %3 128
+    @req ult %1 1280
+    @req ult %2 720
 
     @b0
-        %5 = const 80 bv64
-        %6 = mul %2 %5                  # %6 = y * 80
-        %7 = add %6 %1                  # %7 = y * 80 + x (Z3 tự chứng minh < 2000!)
-        call drv_vga_set_cell %0 %7 %3 %4
+        %4 = const 1280 bv64
+        %5 = mul %2 %4
+        %6 = add %5 %1
+        call drv_vga_set_cell %0 %6 %3
         ret
 }
 
-# 2. Xóa / Tô màu toàn bộ màn hình (2000 ô) bằng vòng lặp quy nạp Z3
-func gfx_clear_screen void %0:ptr<VgaCell,2000> %1:bv8 {
+# 2. Tô màu Hình chữ nhật đặc từ cột x1 (%1)..x2 (%3), dòng y1 (%2)..y2 (%4)
+func gfx_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
+    @req ule %1 1280
+    @req ule %2 720
+    @req ule %3 1280
+    @req ule %4 720
 
     @b0
-        %2 = const 0 bv64
         jmp @b1 %2
 
-    @b1 %3:bv64
-        @inv ule %3 2000                # Bất biến vòng lặp: %3 <= 2000
-        %4 = const 2000 bv64
-        %5 = cmp ult %3 %4
-        br %5 @b2 @b3
+    @b1 %6:bv64
+        @inv ule %6 720
+        %7 = cmp ult %6 %4
+        br %7 @b2 @b6
 
     @b2
-        %6 = const 32 bv8               # Ký tự khoảng trắng ' ' (ASCII 32)
-        call drv_vga_set_cell %0 %3 %6 %1
-        %7 = const 1 bv64
-        %8 = add %3 %7
-        jmp @b1 %8
+        jmp @b3 %1
+
+    @b3 %8:bv64
+        @inv ult %6 720
+        @inv ule %8 1280
+        %9 = cmp ult %8 %3
+        br %9 @b4 @b5
+
+    @b4
+        call gfx_put_pixel %0 %8 %6 %5
+        %10 = const 1 bv64
+        %11 = add %8 %10
+        jmp @b3 %11
+
+    @b5
+        %12 = const 1 bv64
+        %13 = add %6 %12
+        jmp @b1 %13
+
+    @b6
+        ret
+}
+
+# 3. Vẽ 1 ký tự Font Bitmap phóng đại 2x (16x16 pixel) sắc nét trên màn hình HD (chỉ vẽ nét chữ)
+func gfx_draw_char16 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req ule %2 1260
+    @req ule %3 700
+
+    @b0
+        %9 = call font_get_glyph %4
+        %10 = const 0 bv64
+        jmp @b1 %10
+
+    @b1 %11:bv64
+        @inv ule %11 8
+        %12 = const 8 bv64
+        %13 = cmp ult %11 %12
+        br %13 @b2 @b8
+
+    @b2
+        %14 = const 0 bv64
+        jmp @b3 %14
+
+    @b3 %15:bv64
+        @inv ult %11 8
+        @inv ule %15 8
+        %16 = const 8 bv64
+        %17 = cmp ult %15 %16
+        br %17 @b4 @b7
+
+    @b4
+        %18 = const 3 bv64
+        %19 = shl %11 %18
+        %20 = add %19 %15
+        %21 = lshr %9 %20
+        %22 = const 1 bv64
+        %23 = and %21 %22
+        %24 = const 0 bv64
+        %25 = cmp ne %23 %24
+        br %25 @b5 @b6
+
+    @b5
+        %26 = shl %15 %22
+        %27 = shl %11 %22
+        %28 = add %2 %26
+        %29 = add %3 %27
+        %30 = add %28 %22
+        %31 = add %29 %22
+        call gfx_put_pixel %0 %28 %29 %5
+        call gfx_put_pixel %0 %30 %29 %5
+        call gfx_put_pixel %0 %28 %31 %5
+        call gfx_put_pixel %0 %30 %31 %5
+        jmp @b6
+
+    @b6
+        %32 = const 1 bv64
+        %33 = add %15 %32
+        jmp @b3 %33
+
+    @b7
+        %34 = const 1 bv64
+        %35 = add %11 %34
+        jmp @b1 %35
+
+    @b8
+        ret
+}
+
+# 5. In chuỗi 8 ký tự (nén trong 1 Qword) bằng Font HD 16x16
+func gfx_draw_str8 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req ule %2 1100
+    @req ule %3 700
+
+    @b0
+        %6 = const 0 bv64
+        jmp @b1 %6
+
+    @b1 %7:bv64
+        @inv ule %7 8
+        %8 = const 8 bv64
+        %9 = cmp ult %7 %8
+        br %9 @b2 @b3
+
+    @b2
+        %10 = const 3 bv64
+        %11 = shl %7 %10
+        %12 = lshr %4 %11
+        %13 = const 0xff bv64
+        %14 = and %12 %13
+        %15 = const 4 bv64
+        %16 = shl %7 %15
+        %17 = add %2 %16
+        call gfx_draw_char16 %0 %1 %17 %3 %14 %5
+        %18 = const 1 bv64
+        %19 = add %7 %18
+        jmp @b1 %19
 
     @b3
+        ret
+}
+
+# API Tổng quát: Đăng ký cập nhật 1 vùng hình chữ nhật (x1=%1, y1=%2, x2=%3, y2=%4) lên màn hình
+func ui_invalidate_rect void %0:ptr<IpcChannel,1> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 1280
+    @req ule %2 720
+    @req ule %3 1280
+    @req ule %4 720
+
+    @b0
+        %5 = load %0 80 bv64
+        %6 = const 0 bv64
+        %7 = cmp eq %5 %6
+        br %7 @b1 @b2
+
+    @b1
+        # Nếu chưa có vùng bẩn nào trong frame này -> Gán trực tiếp (x1, y1, x2, y2)
+        %8 = const 1 bv64
+        store %0 80 %8
+        store %0 120 %1
+        store %0 128 %2
+        store %0 136 %3
+        store %0 144 %4
+        ret
+
+    @b2
+        # Nếu đã có vùng bẩn -> Tự động gộp khung bao (Union: min(x1), min(y1), max(x2), max(y2))
+        %9 = load %0 120 bv64
+        %10 = cmp ult %1 %9
+        br %10 @b3 @b4
+
+    @b3
+        store %0 120 %1
+        jmp @b4
+
+    @b4
+        %11 = load %0 128 bv64
+        %12 = cmp ult %2 %11
+        br %12 @b5 @b6
+
+    @b5
+        store %0 128 %2
+        jmp @b6
+
+    @b6
+        %13 = load %0 136 bv64
+        %14 = cmp ugt %3 %13
+        br %14 @b7 @b8
+
+    @b7
+        store %0 136 %3
+        jmp @b8
+
+    @b8
+        %15 = load %0 144 bv64
+        %16 = cmp ugt %4 %15
+        br %16 @b9 @b10
+
+    @b9
+        store %0 144 %4
+        jmp @b10
+
+    @b10
+        ret
+}
+
+# Chép đúng hình chữ nhật (x1=%2, y1=%3, x2=%4, y2=%5) từ Backbuffer (%1) ra VRAM màn hình thật (%0)
+func gfx_blit_rect void %0:ptr<VgaCell,921600> %1:ptr<VgaCell,921600> %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req ule %2 1280
+    @req ule %3 720
+    @req ule %4 1280
+    @req ule %5 720
+
+    @b0
+        jmp @b1 %3
+
+    @b1 %6:bv64
+        @inv ule %6 720
+        %7 = cmp ult %6 %5
+        br %7 @b2 @b6
+
+    @b2
+        jmp @b3 %2
+
+    @b3 %8:bv64
+        @inv ult %6 720
+        @inv ule %8 1280
+        %9 = cmp ult %8 %4
+        br %9 @b4 @b5
+
+    @b4
+        %10 = const 1280 bv64
+        %11 = mul %6 %10
+        %12 = add %11 %8
+        %13 = call drv_vga_get_cell %1 %12
+        call drv_vga_set_cell %0 %12 %13
+        %14 = const 1 bv64
+        %15 = add %8 %14
+        jmp @b3 %15
+
+    @b5
+        %16 = const 1 bv64
+        %17 = add %6 %16
+        jmp @b1 %17
+
+    @b6
         ret
 }

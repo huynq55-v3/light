@@ -2,12 +2,13 @@
 # Module Driver Serial độc lập hoàn toàn với Kernel
 
 layout CharCell 8 {
-    0: bv8 @inv ult val 128             # Mỗi ô chứa 1 ký tự ASCII chuẩn (< 128)
+    0: bv8 @inv ult val 128                 # Mỗi ô chứa 1 ký tự ASCII chuẩn (< 128)
 }
 
 # 1. Hàm xuất 1 ký tự đơn lẻ ra cổng COM1 (0x3f8)
 func drv_serial_putc void %0:io<0x3f8,0x3ff> %1:bv8 {
     @req ult %1 128
+
     @b0
         hwio_w %0 0x3f8 %1
         ret
@@ -15,29 +16,29 @@ func drv_serial_putc void %0:io<0x3f8,0x3ff> %1:bv8 {
 
 # 2. Hàm in mảng 4 ký tự bằng Vòng lặp + Lệnh SLICE
 func drv_serial_print4 void %0:io<0x3f8,0x3ff> %1:ptr<CharCell,4> {
-    @req uge %1 0x10000                 # Đảm bảo địa chỉ mảng nằm trong vùng RAM hợp lệ (không NULL, không tràn)
+    @req uge %1 0x10000                     # Đảm bảo địa chỉ mảng nằm trong vùng RAM hợp lệ (không NULL, không tràn)
     @req ult %1 0x80000000
 
     @b0
         %2 = const 0 bv64
-        jmp @b1 %2                      # Bắt đầu vòng lặp với chỉ số %3 = 0
+        jmp @b1 %2                          # Bắt đầu vòng lặp với chỉ số %3 = 0
 
-    @b1 %3:bv64                         # %3 là biến chạy i của vòng lặp
-        @inv ule %3 4                   # Bất biến vòng lặp: %3 luôn <= 4
+    @b1 %3:bv64                             # %3 là biến chạy i của vòng lặp
+        @inv ule %3 4                       # Bất biến vòng lặp: %3 luôn <= 4
         %4 = const 4 bv64
-        %5 = cmp ult %3 %4              # Kiểm tra: %3 < 4 ?
+        %5 = cmp ult %3 %4                  # Kiểm tra: %3 < 4 ?
         br %5 @b2 @b3
 
-    @b2                                 # Thân vòng lặp (Z3 biết chắc chắn %3 < 4 => %3 + 1 <= 4)
+    @b2                                     # Thân vòng lặp (Z3 biết chắc chắn %3 < 4 => %3 + 1 <= 4)
         # Dùng lệnh SLICE cắt lấy đúng ô thứ %3 từ mảng 4 ô %1:
         %6 = slice %1 %3 ptr<CharCell,1>
-        %7 = load %6 0 bv8              # Đọc ký tự tại ô %6 (thừa hưởng @inv < 128 từ Layout CharCell)
-        call drv_serial_putc %0 %7      # Gọi hàm in ký tự ra cổng Serial
+        %7 = load %6 0 bv8                  # Đọc ký tự tại ô %6 (thừa hưởng @inv < 128 từ Layout CharCell)
+        call drv_serial_putc %0 %7          # Gọi hàm in ký tự ra cổng Serial
 
         %8 = const 1 bv64
-        %9 = add %3 %8                  # Tăng biến đếm: %9 = %3 + 1
+        %9 = add %3 %8                      # Tăng biến đếm: %9 = %3 + 1
         jmp @b1 %9
 
-    @b3                                 # Thoát vòng lặp (%3 == 4)
+    @b3                                     # Thoát vòng lặp (%3 == 4)
         ret
 }

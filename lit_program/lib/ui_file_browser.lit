@@ -1,0 +1,225 @@
+# File: lit_program/lib/ui_file_browser.lit
+# Thư viện UI Component: Hộp thoại Duyệt File VFS Storage (File Explorer TreeView)
+
+include ui_button.lit
+include os_layout.lit
+
+# 1. Hiển thị Giao diện Trình duyệt Thư mục Root (Storage TreeView)
+func ui_fb_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 {
+    # %0: fb, %1: font_buf, %2: vfs_dir_buf, %3: start_x, %4: start_y, %5: selected_idx, %6: total_files
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 40
+    @req ule %3 440
+    @req uge %4 30
+    @req ule %4 300
+    @req ule %5 8
+    @req ule %6 8
+
+    @b0
+        # a. Panel bao quanh Browser (Rộng 820px, Cao 420px, viền 1px: 0x334155 - Không fill lại toàn bộ nền để chống nhấp nháy!)
+        %7 = const 820 bv64
+        %8 = add %3 %7
+        %9 = const 420 bv64
+        %10 = add %4 %9
+        %12 = const 1 bv64
+        %13 = add %4 %12
+        %14 = const 0x334155 bv32
+        call gfx_fill_rect %0 %3 %4 %8 %13 %14
+
+        # b. Nhóm 1: Thư mục "APPS/   " (Amber 0xfbbf24, y = start_y + 20)
+        %17 = const 0x1e293b bv32
+        %28 = const 24 bv64
+        %29 = add %3 %28
+        %30 = const 20 bv64
+        %31 = add %4 %30
+        %32 = const 0x2020202f53505041 bv64 # "APPS/   "
+        %33 = const 0xfbbf24 bv32
+        call gfx_draw_str8 %0 %1 %29 %31 %32 %33
+
+        # Danh sách app nhị phân: EDITOR & VIEWER (Màu xám slate 0x64748b)
+        %34 = const 50 bv64
+        %35 = add %3 %34
+        %36 = const 48 bv64
+        %37 = add %4 %36
+        %38 = const 0x524f544944452020 bv64 # "  EDITOR"
+        %39 = const 0x64748b bv32
+        call gfx_draw_str8 %0 %1 %35 %37 %38 %39
+        %40 = const 178 bv64
+        %41 = add %3 %40
+        %42 = const 0x20202020464c452e bv64 # ".ELF    "
+        call gfx_draw_str8 %0 %1 %41 %37 %42 %39
+
+        %43 = const 76 bv64
+        %44 = add %4 %43
+        %45 = const 0x5245574549562020 bv64 # "  VIEWER"
+        call gfx_draw_str8 %0 %1 %35 %44 %45 %39
+        call gfx_draw_str8 %0 %1 %41 %44 %42 %39
+
+        # c. Nhóm 2: Thư mục "DATA/   " (Blue 0x60a5fa, y = start_y + 114)
+        %46 = const 114 bv64
+        %47 = add %4 %46
+        %48 = const 0x2020202f41544144 bv64 # "DATA/   "
+        %49 = const 0x60a5fa bv32
+        call gfx_draw_str8 %0 %1 %29 %47 %48 %49
+
+        # File 1: NOTE.TXT (y = start_y + 142)
+        %50 = const 36 bv64
+        %51 = add %3 %50
+        %52 = const 142 bv64
+        %53 = const 172 bv64
+        %54 = add %4 %52
+        %55 = add %4 %53
+        %56 = const 380 bv64
+        %57 = add %3 %56
+
+        # Highlight nếu chọn NOTE.TXT (selected_idx == 0 hoặc 2)
+        %58 = const 0 bv64
+        %59 = const 2 bv64
+        %60 = cmp eq %5 %58
+        %61 = cmp eq %5 %59
+        %62 = or %60 %61
+        br %62 @b1 @b2
+
+    @b1
+        %63 = const 0x2563eb bv32           # Highlight Xanh dương
+        call gfx_fill_rect %0 %51 %54 %57 %55 %63
+        %64 = const 0xffffff bv32           # Chữ trắng
+        jmp @b3 %64
+
+    @b2
+        call gfx_fill_rect %0 %51 %54 %57 %55 %17
+        %65 = const 0x38bdf8 bv32           # Chữ cyan
+        jmp @b3 %65
+
+    @b3 %66:bv32
+        %67 = const 46 bv64
+        %68 = add %3 %67
+        %69 = const 148 bv64
+        %70 = add %4 %69
+        %71 = const 0x542e45544f4e203e bv64 # "> NOTE.T" (liền mạch, không khoảng trống!)
+        call gfx_draw_str8 %0 %1 %68 %70 %71 %66
+        %72 = const 174 bv64
+        %73 = add %3 %72
+        %74 = const 0x2020202020205458 bv64 # "XT      "
+        call gfx_draw_str8 %0 %1 %73 %70 %74 %66
+
+        # Thư mục con: "  PROJ/ " (y = start_y + 184)
+        %75 = const 184 bv64
+        %76 = add %4 %75
+        %77 = const 0x202f4a4f52502020 bv64 # "  PROJ/ "
+        call gfx_draw_str8 %0 %1 %35 %76 %77 %49
+
+        # File 2: DEMO.LIT (y = start_y + 210)
+        %78 = const 64 bv64
+        %79 = add %3 %78
+        %80 = const 210 bv64
+        %81 = const 240 bv64
+        %82 = add %4 %80
+        %83 = add %4 %81
+
+        # Highlight nếu chọn DEMO.LIT (selected_idx == 1 hoặc 3)
+        %84 = const 1 bv64
+        %85 = const 3 bv64
+        %86 = cmp eq %5 %84
+        %87 = cmp eq %5 %85
+        %88 = or %86 %87
+        br %88 @b4 @b5
+
+    @b4
+        %89 = const 0x2563eb bv32
+        call gfx_fill_rect %0 %79 %82 %57 %83 %89
+        %90 = const 0xffffff bv32
+        jmp @b6 %90
+
+    @b5
+        call gfx_fill_rect %0 %79 %82 %57 %83 %17
+        %91 = const 0x38bdf8 bv32
+        jmp @b6 %91
+
+    @b6 %92:bv32
+        %93 = const 74 bv64
+        %94 = add %3 %93
+        %95 = const 216 bv64
+        %96 = add %4 %95
+        %97 = const 0x4c2e4f4d4544203e bv64 # "> DEMO.L" (liền mạch, không khoảng trống!)
+        call gfx_draw_str8 %0 %1 %94 %96 %97 %92
+        %98 = const 202 bv64
+        %99 = add %3 %98
+        %100 = const 0x2020202020205449 bv64  # "IT      "
+        call gfx_draw_str8 %0 %1 %99 %96 %100 %92
+        ret
+}
+
+# 2. Bắt sự kiện click chuột chọn file trong danh sách File Browser
+func ui_fb_check_click bv64 %0:bv64 %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    # %0: mouse_x, %1: mouse_y, %2: mouse_click, %3: start_x, %4: start_y, %5: total_files
+    # Trả về: chỉ số Entry trong VFS (2 cho NOTE.TXT, 3 cho DEMO.LIT), hoặc 0xffffff nếu không click trúng
+    @req ule %0 1280
+    @req ule %1 720
+    @req uge %3 40
+    @req ule %3 440
+    @req uge %4 30
+    @req ule %4 300
+    @req ule %5 8
+
+    @b0
+        # Click Dòng NOTE.TXT: x = start_x + 36..start_x + 380, y = start_y + 142..start_y + 172
+        %6 = const 36 bv64
+        %7 = add %3 %6
+        %8 = const 142 bv64
+        %9 = add %4 %8
+        %10 = const 344 bv64
+        %11 = const 30 bv64
+        %12 = call ui_btn_hit %0 %1 %2 %7 %9 %10 %11
+        %13 = const 0 bv64
+        %14 = cmp ne %12 %13
+        br %14 @b1 @b2
+
+    @b1
+        %15 = const 2 bv64                  # VFS Entry 2: NOTE.TXT
+        ret %15
+
+    @b2
+        # Click Dòng DEMO.LIT: x = start_x + 64..start_x + 380, y = start_y + 210..start_y + 240
+        %16 = const 64 bv64
+        %17 = add %3 %16
+        %18 = const 210 bv64
+        %19 = add %4 %18
+        %20 = const 316 bv64
+        %21 = call ui_btn_hit %0 %1 %2 %17 %19 %20 %11
+        %22 = cmp ne %21 %13
+        br %22 @b3 @b4
+
+    @b3
+        %23 = const 3 bv64                  # VFS Entry 3: DEMO.LIT
+        ret %23
+
+    @b4
+        %24 = const 0xffffff bv64           # Không click trúng file nào
+        ret %24
+}
+
+# 3. Lấy Sector LBA bắt đầu của file được chọn từ VFS Directory Table
+func ui_fb_get_file_lba bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    # %0: vfs_dir_buf, %1: file_idx
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 15
+    @ens ult %8 268435456
+
+    @b0
+        # start_sec nằm ở Qword thứ (file_idx * 4 + 2)
+        %2 = const 2 bv64
+        %3 = shl %1 %2
+        %4 = add %3 %2
+        %5 = slice %0 %4 ptr<DiskQword,1>
+        %6 = load %5 0 bv64
+        %7 = const 0xffffff bv64
+        %8 = and %6 %7
+        ret %8
+}

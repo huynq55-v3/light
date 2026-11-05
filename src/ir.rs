@@ -153,6 +153,11 @@ pub enum Inst {
         func_id: u32,
         args: Vec<Reg>,
     },
+    CallPtr {
+        dst: Option<Reg>,
+        target: Reg,
+        args: Vec<Reg>,
+    },
     Ret {
         val: Option<Reg>,
     },

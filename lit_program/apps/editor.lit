@@ -1,0 +1,465 @@
+# File: lit_program/apps/editor.lit
+# App: GRAPHICAL TEXT EDITOR (Tích hợp Compositor API ui_invalidate_rect & Dynamic VFS Lookup)
+
+include ../lib/ui_window.lit
+include ../lib/ui_file_browser.lit
+
+# 1. Tự động tìm Sector LBA của file trong VFS Directory Table theo ký tự đầu tên file ('N' = 78, 'D' = 68)
+func editor_find_file_lba bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ult %15 268435456
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 16
+        %4 = const 16 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b4
+
+    @b2
+        %6 = const 2 bv64
+        %7 = shl %3 %6
+        %8 = slice %0 %7 ptr<DiskQword,1>
+        %9 = load %8 0 bv64
+        %10 = const 0xff bv64
+        %11 = and %9 %10
+        %12 = cmp eq %11 %1
+        br %12 @b3 @b5
+
+    @b5
+        %13 = const 1 bv64
+        %14 = add %3 %13
+        jmp @b1 %14
+
+    @b3
+        %15 = call ui_fb_get_file_lba %0 %3
+        ret %15
+
+    @b4
+        %16 = const 0 bv64
+        jmp @b3
+}
+
+# 2. Render văn bản streaming trong vùng soạn thảo (trên Backbuffer %0)
+func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 220 bv64
+        %5 = const 148 bv64
+        jmp @b1 %3 %4 %5
+
+    @b1 %6:bv64 %7:bv64 %8:bv64
+        @inv ule %6 512
+        @inv uge %7 220
+        @inv ule %7 1060
+        @inv uge %8 148
+        @inv ule %8 560
+        %9 = const 512 bv64
+        %10 = cmp ult %6 %9
+        br %10 @b2 @b12
+
+    @b2
+        %11 = const 3 bv64
+        %12 = lshr %6 %11
+        %13 = slice %2 %12 ptr<DiskQword,1>
+        %14 = load %13 0 bv64
+        %15 = const 7 bv64
+        %16 = and %6 %15
+        %17 = shl %16 %11
+        %18 = lshr %14 %17
+        %19 = const 0xff bv64
+        %20 = and %18 %19
+
+        # Nếu gặp byte 0 (EOF) -> Dừng
+        %21 = const 0 bv64
+        %22 = cmp eq %20 %21
+        br %22 @b12 @b3
+
+    @b3
+        # Byte 10 (\n) -> Xuống dòng
+        %23 = const 10 bv64
+        %24 = cmp eq %20 %23
+        br %24 @b4 @b6
+
+    @b4
+        %25 = const 520 bv64
+        %26 = cmp ult %8 %25
+        br %26 @b5 @b12
+
+    @b5
+        %27 = const 1 bv64
+        %28 = add %6 %27
+        %29 = const 220 bv64
+        %30 = const 26 bv64
+        %31 = add %8 %30
+        jmp @b1 %28 %29 %31
+
+    @b6
+        # Bỏ qua byte 13 (\r)
+        %32 = const 13 bv64
+        %33 = cmp eq %20 %32
+        br %33 @b7 @b8
+
+    @b7
+        %34 = const 1 bv64
+        %35 = add %6 %34
+        jmp @b1 %35 %7 %8
+
+    @b8
+        # Wrap dòng nếu x > 1020
+        %36 = const 1020 bv64
+        %37 = cmp ugt %7 %36
+        br %37 @b9 @b11
+
+    @b9
+        %38 = const 520 bv64
+        %39 = cmp ult %8 %38
+        br %39 @b10 @b12
+
+    @b10
+        %40 = const 220 bv64
+        %41 = const 26 bv64
+        %42 = add %8 %41
+        jmp @b13 %40 %42
+
+    @b11
+        jmp @b13 %7 %8
+
+    @b13 %43:bv64 %44:bv64
+        @inv ule %6 511
+        @inv uge %43 220
+        @inv ule %43 1020
+        @inv uge %44 148
+        @inv ule %44 560
+        %45 = const 0x0f172a bv32
+        call gfx_draw_char16 %0 %1 %43 %44 %20 %45
+        %46 = const 16 bv64
+        %47 = add %43 %46
+        %48 = const 1 bv64
+        %49 = add %6 %48
+        jmp @b1 %49 %47 %44
+
+    @b12
+        ret
+}
+
+# Hàm bắt buộc của mọi App: Tự vẽ Icon 52x52 của App lên Thanh Dock tại tọa độ (x = %1, y = %2)
+func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 1200
+    @req ule %2 650
+
+    @b0
+        # 1. Nền trang giấy trắng 52x52 (x .. x+52, y .. y+52)
+        %3 = const 52 bv64
+        %4 = add %1 %3
+        %5 = add %2 %3
+        %6 = const 0xf8fafc bv32
+        call gfx_fill_rect %0 %1 %2 %4 %5 %6
+
+        # 2. Phần băng rôn xanh dương trên đầu trang giấy (cao 14px)
+        %7 = const 14 bv64
+        %8 = add %2 %7
+        %9 = const 0x3b82f6 bv32
+        call gfx_fill_rect %0 %1 %2 %4 %8 %9
+
+        # 3. Ba dòng kẻ ngang tượng trưng cho văn bản bên trong Icon Editor
+        %10 = const 8 bv64
+        %11 = const 44 bv64
+        %12 = add %1 %10
+        %13 = add %1 %11
+
+        %14 = const 22 bv64
+        %15 = const 26 bv64
+        %16 = add %2 %14
+        %17 = add %2 %15
+        %18 = const 0x64748b bv32
+        call gfx_fill_rect %0 %12 %16 %13 %17 %18
+
+        %19 = const 32 bv64
+        %20 = const 36 bv64
+        %21 = add %2 %19
+        %22 = add %2 %20
+        call gfx_fill_rect %0 %12 %21 %13 %22 %18
+
+        %23 = const 42 bv64
+        %24 = const 46 bv64
+        %25 = add %2 %23
+        %26 = add %2 %24
+        call gfx_fill_rect %0 %12 %25 %13 %26 %18
+
+        # 4. Chấm xanh sáng dưới chân Icon (y + 60 .. y + 64)
+        %27 = const 23 bv64
+        %28 = const 29 bv64
+        %29 = const 60 bv64
+        %30 = const 64 bv64
+        %31 = add %1 %27
+        %32 = add %1 %28
+        %33 = add %2 %29
+        %34 = add %2 %30
+        %35 = const 0x38bdf8 bv32
+        call gfx_fill_rect %0 %31 %33 %32 %34 %35
+        ret
+}
+
+# 3. Hàm ứng dụng Soạn thảo chính (Vẽ lên Backbuffer %0 và phát tín hiệu ui_invalidate_rect)
+func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+
+    @b0
+        %5 = load %1 16 bv64                # mouse_x
+        %6 = load %1 24 bv64                # mouse_y
+        %7 = load %1 32 bv64                # mouse_click
+
+        %8 = const 200 bv64                 # win_x
+        %9 = const 60 bv64                  # win_y
+        %10 = const 880 bv64                # win_w
+        %11 = const 540 bv64                # win_h
+        %12 = const 0 bv64
+        %13 = const 1 bv64
+
+        # 1. Nếu vừa mở App hoặc vừa nạp xong file từ đĩa (app_inited == 0): Vẽ toàn bộ cửa sổ
+        %14 = load %1 112 bv64
+        %15 = cmp eq %14 %12
+        br %15 @b35 @b1
+
+    @b1
+        # 2. Nếu có Click chuột khi cửa sổ đang mở
+        %16 = cmp ne %7 %12
+        br %16 @b2 @b30
+
+    @b2
+        # Kiểm tra nút Đóng [X]
+        %17 = call ui_win_check_close %5 %6 %7 %8 %9 %10
+        %18 = cmp ne %17 %12
+        br %18 @b21 @b3
+
+    @b21
+        %19 = slice %2 %12 ptr<DiskQword,1>
+        store %19 0 %12
+        store %1 88 %12
+        call ui_win_close_app %1
+        ret
+
+    @b3
+        # Kiểm tra Click trên thanh công cụ Toolbar (y = 96..124)
+        %20 = const 96 bv64
+        %21 = const 28 bv64
+
+        # Nút [NEW] (x = 240, w = 80)
+        %22 = const 240 bv64
+        %23 = const 80 bv64
+        %24 = call ui_btn_hit %5 %6 %7 %22 %20 %23 %21
+        %25 = cmp ne %24 %12
+        br %25 @b4 @b5
+
+    @b4
+        %26 = slice %2 %12 ptr<DiskQword,1>
+        store %26 0 %12
+        store %1 88 %12
+        jmp @b36
+
+    @b5
+        # Nút [BROWSE] (x = 340, w = 110)
+        %27 = const 340 bv64
+        %28 = const 110 bv64
+        %29 = call ui_btn_hit %5 %6 %7 %27 %20 %28 %21
+        %30 = cmp ne %29 %12
+        br %30 @b6 @b7
+
+    @b6
+        %31 = const 3 bv64
+        store %1 88 %31
+        jmp @b36
+
+    @b7
+        # Nút [SAVE] (x = 470, w = 80)
+        %32 = const 470 bv64
+        %33 = call ui_btn_hit %5 %6 %7 %32 %20 %23 %21
+        %34 = cmp ne %33 %12
+        br %34 @b8 @b10
+
+    @b8
+        %35 = load %1 88 bv64
+        %36 = cmp eq %35 %13
+        br %36 @b81 @b82
+
+    @b81
+        %37 = const 68 bv64                 # 'D' (DEMO.LIT)
+        %38 = call editor_find_file_lba %4 %37
+        store %1 104 %38
+        ret
+
+    @b82
+        %39 = const 78 bv64                 # 'N' (NOTE.TXT)
+        %40 = call editor_find_file_lba %4 %39
+        store %1 104 %40
+        ret
+
+    @b10
+        # Nếu đang ở Browser View (mode == 3): Kiểm tra click chọn file
+        %41 = load %1 88 bv64
+        %42 = const 3 bv64
+        %43 = cmp eq %41 %42
+        br %43 @b11 @b99
+
+    @b11
+        %44 = const 230 bv64
+        %45 = const 140 bv64
+        %46 = const 4 bv64
+        %47 = call ui_fb_check_click %5 %6 %7 %44 %45 %46
+        %48 = const 16 bv64
+        %49 = cmp ult %47 %48
+        br %49 @b12 @b99
+
+    @b12
+        # Chọn file xong -> Đặt app_inited = 0 để sau khi đọc đĩa xong vẽ lại nội dung file
+        store %1 112 %12
+        %50 = const 3 bv64
+        %51 = cmp eq %47 %50
+        br %51 @b121 @b122
+
+    @b121
+        store %1 88 %13
+        %52 = const 68 bv64                 # 'D' (DEMO.LIT)
+        %53 = call editor_find_file_lba %4 %52
+        store %1 96 %53
+        ret
+
+    @b122
+        store %1 88 %12
+        %54 = const 78 bv64                 # 'N' (NOTE.TXT)
+        %55 = call editor_find_file_lba %4 %54
+        store %1 96 %55
+        ret
+
+    @b30
+        # 3. Xử lý gõ phím khi đang ở chế độ Edit
+        %56 = load %1 88 bv64
+        %57 = const 3 bv64
+        %58 = cmp eq %56 %57
+        br %58 @b99 @b31
+
+    @b31
+        %59 = load %1 0 bv64
+        %60 = cmp ne %59 %12
+        br %60 @b32 @b99
+
+    @b32
+        store %1 0 %12
+        %61 = load %1 8 bv8
+        %62 = const 27 bv8
+        %63 = cmp eq %61 %62
+        br %63 @b21 @b33
+
+    @b33
+        %64 = slice %2 %12 ptr<DiskQword,1>
+        %65 = load %64 0 bv64
+        %66 = const 8 bv64
+        %67 = shl %65 %66
+        %68 = or %67 %61
+        store %64 0 %68
+
+        # Vẽ chữ vào Backbuffer và chỉ Invalidate đúng vùng dòng chữ vừa gõ!
+        call editor_render_text %0 %3 %2
+        %69 = const 220 bv64
+        %70 = const 148 bv64
+        %71 = const 1060 bv64
+        %72 = const 560 bv64
+        call ui_invalidate_rect %1 %69 %70 %71 %72
+        ret
+
+    @b35
+        # 4. Vẽ khung cửa sổ vào Backbuffer (Chỉ chạy khi mở cửa sổ hoặc vừa nạp file)
+        store %1 112 %13
+        %73 = const 0x2020524f54494445 bv64 # "EDITOR  "
+        %74 = const 0xffffff bv32
+        call ui_win_draw %0 %3 %8 %9 %10 %11 %73 %74
+        %75 = const 1086 bv64
+        %76 = const 606 bv64
+        call ui_invalidate_rect %1 %8 %9 %75 %76
+        jmp @b36
+
+    @b36
+        # 5. Vẽ thanh Toolbar + Vùng nội dung vào Backbuffer rồi Invalidate vùng Client (202, 96..1078, 598)
+        %77 = load %1 88 bv64
+        %78 = const 3 bv64
+        %79 = cmp eq %77 %78
+
+        %80 = const 96 bv64
+        %81 = const 28 bv64
+        %82 = const 0x2563eb bv32
+        %83 = const 0x334155 bv32
+        %84 = const 0xffffff bv32
+        %85 = const 3 bv64
+        %86 = const 6 bv64
+        %87 = const 4 bv64
+
+        %88 = const 240 bv64
+        %89 = const 80 bv64
+        %90 = const 0x57454e bv64
+        call ui_btn_draw_text %0 %3 %88 %80 %89 %81 %83 %84 %90 %85 %12
+
+        %91 = const 340 bv64
+        %92 = const 110 bv64
+        %93 = const 0x4553574f5242 bv64
+        br %79 @b361 @b362
+
+    @b361
+        call ui_btn_draw_text %0 %3 %91 %80 %92 %81 %82 %84 %93 %86 %12
+        jmp @b37
+
+    @b362
+        call ui_btn_draw_text %0 %3 %91 %80 %92 %81 %83 %84 %93 %86 %12
+        jmp @b37
+
+    @b37
+        %94 = const 470 bv64
+        %95 = const 0x45564153 bv64
+        call ui_btn_draw_text %0 %3 %94 %80 %89 %81 %83 %84 %95 %87 %12
+
+        %96 = const 202 bv64
+        %97 = const 1078 bv64
+        %98 = const 132 bv64
+        %99 = const 598 bv64
+        br %79 @b40 @b50
+
+    @b40
+        %100 = const 0x0f172a bv32
+        call gfx_fill_rect %0 %96 %98 %97 %99 %100
+        %101 = const 230 bv64
+        %102 = const 140 bv64
+        call ui_fb_render %0 %3 %4 %101 %102 %77 %87
+        call ui_invalidate_rect %1 %96 %80 %97 %99
+        ret
+
+    @b50
+        call gfx_fill_rect %0 %96 %98 %97 %99 %84
+        call editor_render_text %0 %3 %2
+        call ui_invalidate_rect %1 %96 %80 %97 %99
+        ret
+
+    @b99
+        ret
+}

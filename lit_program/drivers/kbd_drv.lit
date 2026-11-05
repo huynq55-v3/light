@@ -1,74 +1,197 @@
 # File: lit_program/drivers/kbd_drv.lit
-# Chương trình Driver Bàn phím PS/2 (Cổng 0x60..0x64) + Hộp thư Zero-Copy IPC
+# Driver Chuột + Bàn phím PS/2
+include ../lib/os_layout.lit
 
 layout KeyMap 8 {
-    0: bv64                             # Mỗi phần tử 64-bit nén 8 mã ASCII của 8 Scancode liên tiếp
+    0: bv64
 }
 
-layout IpcChannel 24 {
-    0: bv64                             # Offset 0: has_msg (0 = trống, 1 = có phím mới)
-    8: bv8 @inv ult val 128             # Offset 8: msg_char (Mã ASCII chuẩn < 128)
-    16: bv64 @inv ult val 70            # Offset 16: cursor_x (Vị trí cột con trỏ gõ chữ < 70)
+func drv_kbd_init void %0:io<0x60,0x64> %1:ptr<KeyMap,8> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %2 = const 0 bv64
+        %3 = slice %1 %2 ptr<KeyMap,1>
+        %4 = const 0x3635343332311b00 bv64
+        store %3 0 %4
+
+        %5 = const 1 bv64
+        %6 = slice %1 %5 ptr<KeyMap,1>
+        %7 = const 0x20083d2d30393837 bv64
+        store %6 0 %7
+
+        %8 = const 2 bv64
+        %9 = slice %1 %8 ptr<KeyMap,1>
+        %10 = const 0x4955595452455751 bv64
+        store %9 0 %10
+
+        %11 = const 3 bv64
+        %12 = slice %1 %11 ptr<KeyMap,1>
+        %13 = const 0x5341000a5d5b504f bv64
+        store %12 0 %13
+
+        %14 = const 4 bv64
+        %15 = slice %1 %14 ptr<KeyMap,1>
+        %16 = const 0x3b4c4b4a48474644 bv64
+        store %15 0 %16
+
+        %17 = const 5 bv64
+        %18 = slice %1 %17 ptr<KeyMap,1>
+        %19 = const 0x5643585a00000000 bv64
+        store %18 0 %19
+
+        %20 = const 6 bv64
+        %21 = slice %1 %20 ptr<KeyMap,1>
+        %22 = const 0x00002f2e2c4d4e42 bv64
+        store %21 0 %22
+
+        %23 = const 7 bv64
+        %24 = slice %1 %23 ptr<KeyMap,1>
+        %25 = const 0x0000000000002000 bv64
+        store %24 0 %25
+
+        %26 = const 0xa8 bv8
+        hwio_w %0 0x64 %26
+        %27 = const 0xd4 bv8
+        hwio_w %0 0x64 %27
+        %28 = const 0xf4 bv8
+        hwio_w %0 0x60 %28
+        %29 = hwio_r %0 0x60
+        ret
 }
 
-# 1. Khởi tạo bảng mã bàn phím US QWERTY (64 Scancode nằm gọn trong 8 phần tử KeyMap)
-func drv_kbd_init void %0:ptr<KeyMap,8> {
+# Xử lý gói tin 3-byte của Chuột với phát hiện Sườn Lên (Rising-Edge Click)
+func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
 
     @b0
-        # Nhóm 0 (Scancode 0..7): ESC, '1', '2', '3', '4', '5', '6'
-        %1 = const 0 bv64
-        %2 = slice %0 %1 ptr<KeyMap,1>
-        %3 = const 0x3635343332310000 bv64
-        store %2 0 %3
+        %2 = load %0 40 bv64
+        %3 = const 0 bv64
+        %4 = cmp eq %2 %3
+        br %4 @b1 @b2
 
-        # Nhóm 1 (Scancode 8..15): '7', '8', '9', '0', '-', '=', Backspace, Tab
-        %4 = const 1 bv64
-        %5 = slice %0 %4 ptr<KeyMap,1>
-        %6 = const 0x20003d2d30393837 bv64
-        store %5 0 %6
+    @b1
+        %5 = const 8 bv64
+        %6 = and %1 %5
+        %7 = cmp ne %6 %3
+        br %7 @b3 @b12
 
-        # Nhóm 2 (Scancode 16..23): 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I'
-        %7 = const 2 bv64
-        %8 = slice %0 %7 ptr<KeyMap,1>
-        %9 = const 0x4955595452455751 bv64
-        store %8 0 %9
+    @b3
+        # Chỉ kích hoạt mouse_click = 1 khi nút trái chuyển từ Nhả (0) sang Nhấn (1)!
+        %8 = const 1 bv64
+        %9 = load %0 48 bv64
+        %50 = and %9 %8
+        %51 = and %1 %8
+        %52 = xor %50 %8
+        %53 = and %51 %52
+        store %0 48 %1
+        store %0 40 %8
+        %54 = cmp ne %53 %3
+        br %54 @b19 @b12
 
-        # Nhóm 3 (Scancode 24..31): 'O', 'P', '[', ']', Enter, Ctrl, 'A', 'S'
-        %10 = const 3 bv64
-        %11 = slice %0 %10 ptr<KeyMap,1>
-        %12 = const 0x534100005d5b504f bv64
-        store %11 0 %12
+    @b19
+        store %0 32 %8
+        jmp @b12
 
-        # Nhóm 4 (Scancode 32..39): 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';'
-        %13 = const 4 bv64
-        %14 = slice %0 %13 ptr<KeyMap,1>
-        %15 = const 0x3b4c4b4a48474644 bv64
-        store %14 0 %15
+    @b2
+        %10 = const 1 bv64
+        %11 = cmp eq %2 %10
+        br %11 @b4 @b5
 
-        # Nhóm 5 (Scancode 40..47): ..., 'Z', 'X', 'C', 'V'
-        %16 = const 5 bv64
-        %17 = slice %0 %16 ptr<KeyMap,1>
-        %18 = const 0x5643585a00000000 bv64
-        store %17 0 %18
+    @b4
+        # Byte 1: Quãng đường ngang dx thực tế (%1 = 0..255)
+        %12 = load %0 48 bv64
+        %13 = load %0 16 bv64
+        %14 = const 2 bv64
+        store %0 40 %14
+        %15 = const 0xff bv64
+        %16 = and %1 %15
+        %17 = const 16 bv64
+        %18 = and %12 %17
+        %19 = cmp eq %18 %3
+        br %19 @b6 @b7
 
-        # Nhóm 6 (Scancode 48..55): 'B', 'N', 'M', ',', '.', '/'
-        %19 = const 6 bv64
-        %20 = slice %0 %19 ptr<KeyMap,1>
-        %21 = const 0x00002f2e2c4d4e42 bv64
-        store %20 0 %21
+    @b6
+        %20 = shl %16 %10
+        %21 = add %13 %20
+        %22 = const 1259 bv64
+        %23 = cmp ult %21 %22
+        br %23 @b8 @b9
 
-        # Nhóm 7 (Scancode 56..63): Alt, Space (Scancode 57 = 0x20)
-        %22 = const 7 bv64
-        %23 = slice %0 %22 ptr<KeyMap,1>
-        %24 = const 0x0000000000002000 bv64
-        store %23 0 %24
+    @b8
+        store %0 16 %21
+        jmp @b12
 
+    @b9
+        store %0 16 %22
+        jmp @b12
+
+    @b7
+        %24 = const 256 bv64
+        %25 = sub %24 %16
+        %26 = shl %25 %10
+        %27 = cmp ugt %13 %26
+        br %27 @b10 @b11
+
+    @b10
+        %28 = sub %13 %26
+        store %0 16 %28
+        jmp @b12
+
+    @b11
+        store %0 16 %3
+        jmp @b12
+
+    @b5
+        # Byte 2: Quãng đường dọc dy thực tế (%1 = 0..255)
+        %29 = load %0 48 bv64
+        %30 = load %0 24 bv64
+        store %0 40 %3
+        %31 = const 0xff bv64
+        %32 = and %1 %31
+        %33 = const 32 bv64
+        %34 = and %29 %33
+        %35 = cmp eq %34 %3
+        br %35 @b13 @b14
+
+    @b13
+        %36 = shl %32 %10
+        %37 = cmp ugt %30 %36
+        br %37 @b15 @b16
+
+    @b15
+        %38 = sub %30 %36
+        store %0 24 %38
+        jmp @b12
+
+    @b16
+        store %0 24 %3
+        jmp @b12
+
+    @b14
+        %39 = const 256 bv64
+        %40 = sub %39 %32
+        %41 = shl %40 %10
+        %42 = add %30 %41
+        %43 = const 699 bv64
+        %44 = cmp ult %42 %43
+        br %44 @b17 @b18
+
+    @b17
+        store %0 24 %42
+        jmp @b12
+
+    @b18
+        store %0 24 %43
+        jmp @b12
+
+    @b12
         ret
 }
 
-# 2. Tác vụ kiểm tra bàn phím và đẩy ký tự vào hộp thư IpcChannel
+# 3. Lắng nghe và đọc gói tin Bàn phím & Chuột
 func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
@@ -76,45 +199,64 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
     @req ult %2 0x80000000
 
     @b0
-        # Đọc cổng trạng thái 0x64: Nếu bit 0 == 1 nghĩa là có phím vừa được nhấn/nhả
-        %3 = hwio_r %0 0x64
-        %4 = const 1 bv64
-        %5 = and %3 %4
-        %6 = const 0 bv64
-        %7 = cmp ne %5 %6
-        br %7 @b1 @b4
+        %3 = const 0 bv64
+        jmp @b1 %3
 
-    @b1
-        # Đọc Scancode từ cổng dữ liệu 0x60 (Chỉ lấy mã nhấn phím < 64, bỏ qua mã nhả phím >= 0x80)
-        %8 = hwio_r %0 0x60
-        %9 = const 64 bv64
-        %10 = cmp ult %8 %9
-        br %10 @b2 @b4
+    @b1 %4:bv64
+        @inv ule %4 24
+        %5 = const 24 bv64
+        %6 = cmp ult %4 %5
+        br %6 @b2 @b9
 
     @b2
-        # Dùng SLICE tra nhóm 8 phím: group = scancode >> 3 (Z3 tự chứng minh < 8!)
-        %11 = const 3 bv64
-        %12 = lshr %8 %11
-        %13 = slice %1 %12 ptr<KeyMap,1>
-        %14 = load %13 0 bv64
-
-        # Dịch bit lấy đúng mã ASCII: bit_shift = (scancode & 7) * 8 (Z3 tự chứng minh < 64!)
-        %15 = const 7 bv64
-        %16 = and %8 %15
-        %17 = shl %16 %11
-        %18 = lshr %14 %17
-        %19 = const 0x7f bv64
-        %20 = and %18 %19               # Ký tự ASCII (< 128)
-
-        %21 = cmp ugt %20 %6
-        br %21 @b3 @b4
+        %7 = hwio_r %0 0x64
+        %8 = const 1 bv64
+        %9 = and %7 %8
+        %10 = const 0 bv64
+        %11 = cmp ne %9 %10
+        br %11 @b3 @b9
 
     @b3
-        # Đẩy ký tự vào IpcChannel (Zero-Copy) để đánh thức Ứng dụng!
-        store %2 8 %20                  # Lưu ký tự vào offset 8 (Z3 chứng minh %20 < 128)
-        store %2 0 %4                   # Bật cờ has_msg = 1 tại offset 0
-        jmp @b4
+        %12 = hwio_r %0 0x60
+        %13 = const 32 bv64
+        %14 = and %7 %13
+        %15 = cmp ne %14 %10
+        br %15 @b4 @b5
 
     @b4
+        call drv_mouse_handle_byte %2 %12
+        jmp @b8
+
+    @b5
+        %16 = const 64 bv64
+        %17 = cmp ult %12 %16
+        br %17 @b6 @b8
+
+    @b6
+        %18 = const 3 bv64
+        %19 = lshr %12 %18
+        %20 = slice %1 %19 ptr<KeyMap,1>
+        %21 = load %20 0 bv64
+
+        %22 = const 7 bv64
+        %23 = and %12 %22
+        %24 = shl %23 %18
+        %25 = lshr %21 %24
+        %26 = const 0x7f bv64
+        %27 = and %25 %26
+
+        %28 = cmp ugt %27 %10
+        br %28 @b7 @b8
+
+    @b7
+        store %2 8 %27
+        store %2 0 %8
+        jmp @b8
+
+    @b8
+        %29 = add %4 %8
+        jmp @b1 %29
+
+    @b9
         ret
 }
