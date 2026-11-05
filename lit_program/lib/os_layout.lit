@@ -1,11 +1,12 @@
 # File: lit_program/lib/os_layout.lit
 # Định nghĩa các cấu trúc dữ liệu phẳng (Layout) dùng chung cho toàn hệ thống Light OS
 
+# File: lit_program/lib/os_layout.lit
 layout DiskQword 8 {
     0: bv64
 }
 
-layout IpcChannel 152 {
+layout IpcChannel 160 {
     0: bv64
     8: bv8 @inv ult val 128
     16: bv64 @inv ult val 1260
@@ -17,7 +18,7 @@ layout IpcChannel 152 {
     64: bv64 @inv ult val 1260
     72: bv64 @inv ult val 700
     80: bv64
-    88: bv64 @inv ult val 16
+    88: bv64                                # Trạng thái Browser: 0 = Edit, >0 = (prefix_off << 8) | prefix_len + 1
     96: bv64 @inv ult val 268435456
     104: bv64 @inv ult val 268435456
     112: bv64 @inv ule val 1
@@ -25,6 +26,7 @@ layout IpcChannel 152 {
     128: bv64 @inv ule val 720
     136: bv64 @inv ule val 1280
     144: bv64 @inv ule val 720
+    152: bv64                               # LBA của file đang mở trong Editor
 }
 
 layout VfsEntry 32 {

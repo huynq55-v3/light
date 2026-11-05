@@ -341,13 +341,18 @@ pub fn sync_disk_to_storage(disk_path: &Path, storage_root: &Path) -> Result<usi
             continue;
         }
         let rel_path = String::from_utf8_lossy(&pool_buf[poff..poff + plen]).to_string();
-        let mut file_buf = vec![0u8; entry.file_size as usize];
+        let mut file_buf = vec![0u8; SECTOR_SIZE];
         disk_file
             .seek(SeekFrom::Start(entry.start_sec * SECTOR_SIZE as u64))
             .map_err(|e| e.to_string())?;
         disk_file
             .read_exact(&mut file_buf)
             .map_err(|e| e.to_string())?;
+        let actual_len = file_buf
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(entry.file_size as usize);
+        let file_buf = &file_buf[..actual_len];
 
         let dest = storage_root.join(&rel_path);
         if let Some(parent) = dest.parent() {

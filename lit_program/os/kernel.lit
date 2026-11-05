@@ -47,7 +47,7 @@ func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> 
         jmp @b1 %9
 }
 
-func init_startup void %0:io<0,0xffff> %1:ptr<KernelState,1> %2:ptr<KeyMap,8> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
+func init_startup void %0:io<0,0xffff> %1:ptr<KernelState,1> %2:ptr<KeyMap,8> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -56,6 +56,8 @@ func init_startup void %0:io<0,0xffff> %1:ptr<KernelState,1> %2:ptr<KeyMap,8> %3
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x80000000
 
     @b0
         %6 = const 0 bv64
@@ -65,20 +67,33 @@ func init_startup void %0:io<0,0xffff> %1:ptr<KernelState,1> %2:ptr<KeyMap,8> %3
         %8 = call kregister_task %1 %7
         call drv_kbd_init %0 %2
 
-        # 1. Đọc Sector 1 (Bảng Directory Table Flat VFS) vào 0x7b000 (%3)
-        %9 = const 1 bv64
-        call drv_ata_read_sector %0 %3 %9
+        # 1. Đọc Sector 0 (Superblock) tạm vào %3 để lấy dir_start_lba (Qword 2) và pool_start_lba (Qword 4)
+        call drv_ata_read_sector %0 %3 %6
+        %9 = const 2 bv64
+        %10 = slice %3 %9 ptr<DiskQword,1>
+        %11 = load %10 0 bv64
+        %12 = const 0xffffff bv64
+        %13 = and %11 %12                   # dir_start_lba (Sector 1)
 
-        # 2. Khởi tạo bộ đệm văn bản 0x88000 (%4) trống lúc bật máy
-        %11 = slice %4 %6 ptr<DiskQword,1>
-        store %11 0 %6
+        %14 = const 4 bv64
+        %15 = slice %3 %14 ptr<DiskQword,1>
+        %16 = load %15 0 bv64
+        %17 = and %16 %12                   # pool_start_lba (Sector 17)
 
-        %16 = const 79 bv8
-        %17 = const 75 bv8
-        %18 = const 10 bv8
-        call drv_serial_putc %0 %16
-        call drv_serial_putc %0 %17
-        call drv_serial_putc %0 %18
+        # 2. Nạp Directory Table vào 0x7b000 (%3) và Path String Pool vào 0x7c000 (%5)
+        call drv_ata_read_sector %0 %3 %13
+        call drv_ata_read_sector %0 %5 %17
+
+        # 3. Khởi tạo bộ đệm văn bản 0x88000 (%4) trống lúc bật máy
+        %18 = slice %4 %6 ptr<DiskQword,1>
+        store %18 0 %6
+
+        %19 = const 79 bv8
+        %20 = const 75 bv8
+        %21 = const 10 bv8
+        call drv_serial_putc %0 %19
+        call drv_serial_putc %0 %20
+        call drv_serial_putc %0 %21
         ret
 }
 
@@ -122,7 +137,7 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         %13 = const 0x200000 ptr<VgaCell,921600>  # VRAM thực tế (0x200000)
         %17 = const 0x600000 ptr<VgaCell,921600>  # Backbuffer trong RAM (0x600000)
 
-        call init_startup %0 %1 %8 %9 %11
+        call init_startup %0 %1 %8 %9 %11 %10
 
         # Vẽ nền Desktop + Dock vào Backbuffer (%17), rồi Blit toàn màn hình sang VRAM (%13)
         %14 = const 1280 bv64
