@@ -123,8 +123,8 @@ func ui_fb_draw_pool_str void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv6
 
     @b3
         %13 = call std_mem_get_byte %1 %11
-        %14 = const 4 bv64
-        %15 = shl %8 %14
+        %14 = const 9 bv64                  # Mỗi ký tự rộng 8px + cách nhau 1px = 9px!
+        %15 = mul %8 %14
         %16 = add %2 %15
         call gfx_draw_char16 %0 %1 %16 %3 %13 %6
         %17 = const 1 bv64

@@ -194,7 +194,8 @@ func drv_ata_write_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
 }
 
 # 3. Nạp 64 Sector (32.768 bytes = 4096 Qwords) mã máy của App từ đĩa vào vùng RAM 0x90000
-func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,4096> %2:bv64 {
+# 3. Nạp 256 Sector (131.072 bytes = 16384 Qwords) mã máy của App từ đĩa vào vùng RAM 0x90000
+func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> %2:bv64 {
     @req uge %1 0x10000
     @req ult %1 0x70000000
     @req ult %2 268435000
@@ -204,8 +205,8 @@ func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,4096> %2:bv64 {
         jmp @b1 %3
 
     @b1 %4:bv64
-        @inv ule %4 64
-        %5 = const 64 bv64
+        @inv ule %4 256
+        %5 = const 256 bv64
         %6 = cmp ult %4 %5
         br %6 @b2 @b3
 

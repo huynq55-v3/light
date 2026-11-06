@@ -76,7 +76,7 @@ func ui_btn_draw void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:
         ret
 }
 
-# 3. Vẽ nút bấm hoàn chỉnh có chữ căn lề chính giữa tuyệt đối
+# 3. Vẽ nút bấm hoàn chỉnh có chữ căn lề chính giữa tuyệt đối (Font 8x16, rộng 9px/chữ)
 func ui_btn_draw_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv32 %7:bv32 %8:bv64 %9:bv64 %10:bv64 {
     # %0: fb, %1: font_buf, %2: btn_x, %3: btn_y, %4: btn_w, %5: btn_h
     # %6: bg_color, %7: text_color, %8: title_qword, %9: char_count, %10: is_hover
@@ -96,9 +96,9 @@ func ui_btn_draw_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %
     @b0
         call ui_btn_draw %0 %2 %3 %4 %5 %6 %10
 
-        # Tính bề rộng text = char_count * 16
-        %11 = const 4 bv64
-        %12 = shl %9 %11
+        # Chỗ 1: Tính bề rộng text = char_count * 9 (thay vì shl 4)
+        %11 = const 9 bv64
+        %12 = mul %9 %11
 
         # Căn lề ngang: pad_x = (btn_w - text_w) / 2 nếu btn_w >= text_w
         %13 = const 1 bv64
@@ -138,7 +138,8 @@ func ui_btn_draw_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %
         %29 = const 0xff bv64
         %30 = and %28 %29
 
-        %31 = shl %24 %11
+        # Chỗ 2: Tọa độ X của chữ thứ %24 = %18 + (%24 * 9)
+        %31 = mul %24 %11
         %32 = add %18 %31
         call gfx_draw_char16 %0 %1 %32 %22 %30 %7
 

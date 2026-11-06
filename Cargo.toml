@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 z3 = "0.12" # Hoặc bật feature: z3 = { version = "0.12", features = ["static-link-z3"] }
+ab_glyph = "0.2"

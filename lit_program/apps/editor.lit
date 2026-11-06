@@ -105,7 +105,7 @@ func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<
         @inv ule %44 560
         %45 = const 0x0f172a bv32
         call gfx_draw_char16 %0 %1 %43 %44 %20 %45
-        %46 = const 16 bv64
+        %46 = const 9 bv64
         %47 = add %43 %46
         %48 = const 1 bv64
         %49 = add %6 %48

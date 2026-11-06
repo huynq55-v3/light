@@ -61,7 +61,8 @@ func gfx_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %
         ret
 }
 
-# 3. Vẽ 1 ký tự Font Bitmap phóng đại 2x (16x16 pixel) sắc nét trên màn hình HD (chỉ vẽ nét chữ)
+# Thay thế hàm gfx_draw_char16 trong lit_program/lib/gfx.lit:
+# Vẽ 1 ký tự Font Roboto 8x16 độ phân giải thực (16 dòng dọc thực sự thay vì phóng đại 2x2 bị răng cưa)
 func gfx_draw_char16 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -71,66 +72,78 @@ func gfx_draw_char16 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3
     @req ule %3 700
 
     @b0
-        %9 = call font_get_glyph %4
-        %10 = const 0 bv64
-        jmp @b1 %10
+        %6 = call font_get_glyph_top %4
+        %7 = call font_get_glyph_bot %4
+        %8 = const 0 bv64
+        jmp @b1 %8
 
-    @b1 %11:bv64
-        @inv ule %11 8
-        %12 = const 8 bv64
-        %13 = cmp ult %11 %12
-        br %13 @b2 @b8
+    @b1 %9:bv64                             # %9: dòng y từ 0..15 (16 dòng dọc thật!)
+        @inv ule %9 16
+        %10 = const 16 bv64
+        %11 = cmp ult %9 %10
+        br %11 @b2 @b11
 
     @b2
-        %14 = const 0 bv64
-        jmp @b3 %14
+        # Nếu y < 8 thì lấy từ %6 (top), nếu y >= 8 thì lấy từ %7 (bot)
+        %12 = const 8 bv64
+        %13 = cmp ult %9 %12
+        br %13 @b3 @b4
 
-    @b3 %15:bv64
-        @inv ult %11 8
-        @inv ule %15 8
-        %16 = const 8 bv64
-        %17 = cmp ult %15 %16
-        br %17 @b4 @b7
+    @b3
+        jmp @b5 %6 %9
 
     @b4
-        %18 = const 3 bv64
-        %19 = shl %11 %18
-        %20 = add %19 %15
-        %21 = lshr %9 %20
-        %22 = const 1 bv64
-        %23 = and %21 %22
-        %24 = const 0 bv64
-        %25 = cmp ne %23 %24
-        br %25 @b5 @b6
+        %14 = sub %9 %12
+        jmp @b5 %7 %14
 
-    @b5
-        %26 = shl %15 %22
-        %27 = shl %11 %22
-        %28 = add %2 %26
-        %29 = add %3 %27
-        %30 = add %28 %22
-        %31 = add %29 %22
-        call gfx_put_pixel %0 %28 %29 %5
-        call gfx_put_pixel %0 %30 %29 %5
-        call gfx_put_pixel %0 %28 %31 %5
-        call gfx_put_pixel %0 %30 %31 %5
-        jmp @b6
+    @b5 %15:bv64 %16:bv64
+        @inv ult %9 16
+        @inv ult %16 8
+        %17 = const 0 bv64
+        jmp @b6 %17
 
-    @b6
-        %32 = const 1 bv64
-        %33 = add %15 %32
-        jmp @b3 %33
+    @b6 %18:bv64                            # %18: cột x từ 0..7
+        @inv ult %9 16
+        @inv ult %16 8
+        @inv ule %18 8
+        %19 = const 8 bv64
+        %20 = cmp ult %18 %19
+        br %20 @b7 @b10
 
     @b7
-        %34 = const 1 bv64
-        %35 = add %11 %34
-        jmp @b1 %35
+        %21 = const 3 bv64
+        %22 = shl %16 %21
+        %23 = add %22 %18
+        %24 = lshr %15 %23
+        %25 = const 1 bv64
+        %26 = and %24 %25
+        %27 = const 0 bv64
+        %28 = cmp ne %26 %27
+        br %28 @b8 @b9
 
     @b8
+        # Vẽ đúng tỷ lệ 1:1 sắc nét (8x16 chuẩn, không kéo dãn ngang 2x!)
+        %29 = const 1 bv64
+        %31 = add %2 %18
+        %32 = add %3 %9
+        call gfx_put_pixel %0 %31 %32 %5
+        jmp @b9
+
+    @b9
+        %34 = const 1 bv64
+        %35 = add %18 %34
+        jmp @b6 %35
+
+    @b10
+        %36 = const 1 bv64
+        %37 = add %9 %36
+        jmp @b1 %37
+
+    @b11
         ret
 }
 
-# 5. In chuỗi 8 ký tự (nén trong 1 Qword) bằng Font HD 16x16
+# 5. In chuỗi 8 ký tự (nén trong 1 Qword) bằng Font 8x16 (mỗi ký tự cách nhau 9px)
 func gfx_draw_str8 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -155,8 +168,8 @@ func gfx_draw_str8 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:b
         %12 = lshr %4 %11
         %13 = const 0xff bv64
         %14 = and %12 %13
-        %15 = const 4 bv64
-        %16 = shl %7 %15
+        %15 = const 9 bv64                  # <-- Mỗi chữ cách nhau 9px
+        %16 = mul %7 %15                    # <-- Đổi từ shl sang mul (offset_x = i * 9)
         %17 = add %2 %16
         call gfx_draw_char16 %0 %1 %17 %3 %14 %5
         %18 = const 1 bv64

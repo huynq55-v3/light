@@ -488,7 +488,7 @@ pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
     bin.extend_from_slice(&[0x90, 0x90, 0x90]);
 
     bin.extend_from_slice(&code);
-    if bin.len() > 32768 {
+    if bin.len() > 131072 {
         return Err(format!("App binary quá lớn ({} > 32768 bytes)!", bin.len()));
     }
     Ok(bin)

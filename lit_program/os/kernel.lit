@@ -20,7 +20,7 @@ func kregister_task bv64 %0:ptr<KernelState,1> %1:bv64 {
         ret %3
 }
 
-func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,921600> %4:ptr<VgaCell,921600> %5:ptr<DiskQword,64> %6:ptr<DiskQword,4096> %7:ptr<DiskQword,64> {
+func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,921600> %4:ptr<VgaCell,921600> %5:ptr<DiskQword,64> %6:ptr<DiskQword,16384> %7:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -133,7 +133,7 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         %9 = const 0x7b000 ptr<DiskQword,64>  # Bảng Thư mục ảo (Sector 1)
         %10 = const 0x7c000 ptr<DiskQword,64>  # Bảng Font
         %11 = const 0x88000 ptr<DiskQword,64>  # Bộ đệm file văn bản
-        %12 = const 0x90000 ptr<DiskQword,4096>  # Vùng RAM nạp App Binary (0x90000)
+        %12 = const 0x90000 ptr<DiskQword,16384>  # Vùng RAM nạp App Binary (0x90000)
         %13 = const 0x200000 ptr<VgaCell,921600>  # VRAM thực tế (0x200000)
         %17 = const 0x600000 ptr<VgaCell,921600>  # Backbuffer trong RAM (0x600000)
 

@@ -76,7 +76,7 @@ func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
 }
 
 # 2. Vẽ Thanh Dock Động: Quét VFS (%3), nạp từng App vào 0x90000 (%4) và gọi hàm app_draw_icon (0x90008) của chính App đó!
-func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,4096> {
+func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,16384> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -164,7 +164,7 @@ func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChann
 }
 
 # 3. Bộ Điều phối Sự kiện & Compositor (%1 = VRAM 0x200000, %2 = Backbuffer 0x600000)
-func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,4096> %6:ptr<DiskQword,64> {
+func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,16384> %6:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
