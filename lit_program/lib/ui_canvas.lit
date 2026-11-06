@@ -1,0 +1,85 @@
+# File: lit_program/lib/ui_canvas.lit
+# THƯ VIỆN KHUNG VẼ CỬA SỔ CÔ LẬP (SANDBOXED WINDOW CANVAS LIBRARY)
+# Chuyển đổi tọa độ cục bộ của App sang tọa độ màn hình và kẹp biên toán học bằng Z3
+
+include gfx.lit
+include std_lib.lit
+
+# 1. Tô màu Hình chữ nhật theo tọa độ CỤC BỘ bên trong Cửa sổ (win_x=200, win_y=60, win_w=880, win_h=540)
+#    Z3 chứng minh: Dù App truyền %1..%4 lớn bao nhiêu, vùng vẽ thực tế KHÔNG BAO GIỜ tràn ra ngoài cửa sổ!
+func canvas_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+    # %0: Backbuffer, %1: rel_x1, %2: rel_y1, %3: rel_x2, %4: rel_y2, %5: color
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        # Giới hạn vùng nội dung cửa sổ (Client Area): rộng tối đa 876px, cao tối đa 536px
+        %6 = const 876 bv64
+        %7 = const 536 bv64
+
+        %8 = call std_min %1 %6             # clamped_x1 <= 876
+        %9 = call std_min %2 %7             # clamped_y1 <= 536
+        %10 = call std_min %3 %6            # clamped_x2 <= 876
+        %11 = call std_min %4 %7            # clamped_y2 <= 536
+
+        # Cộng tọa độ gốc của vùng Client cửa sổ (origin_x = 202, origin_y = 62)
+        %12 = const 202 bv64
+        %13 = const 62 bv64
+
+        %14 = add %12 %8                    # abs_x1 <= 1078 (< 1280)
+        %15 = add %13 %9                    # abs_y1 <= 598  (< 720)
+        %16 = add %12 %10                   # abs_x2 <= 1078 (< 1280)
+        %17 = add %13 %11                   # abs_y2 <= 598  (< 720)
+
+        call gfx_fill_rect %0 %14 %15 %16 %17 %5
+        ret
+}
+
+# 2. Vẽ 1 ký tự Font 8x16 theo tọa độ CỤC BỘ bên trong Cửa sổ (Không bao giờ lấn ra ngoài viền cửa sổ!)
+func canvas_draw_char void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+    # %0: Backbuffer, %1: Font/Pool, %2: rel_x, %3: rel_y, %4: ascii, %5: color
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %6 = const 860 bv64
+        %7 = const 516 bv64
+        %8 = call std_min %2 %6             # clamped_x <= 860
+        %9 = call std_min %3 %7             # clamped_y <= 516
+
+        %10 = const 202 bv64
+        %11 = const 62 bv64
+        %12 = add %10 %8                    # abs_x <= 1062 (<= 1260)
+        %13 = add %11 %9                    # abs_y <= 578  (<= 700)
+
+        call gfx_draw_char16 %0 %1 %12 %13 %4 %5
+        ret
+}
+
+# 3. Yêu cầu Compositor cập nhật 1 vùng hình chữ nhật theo tọa độ CỤC BỘ của Cửa sổ
+func canvas_invalidate_rect void %0:ptr<IpcChannel,1> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %5 = const 876 bv64
+        %6 = const 536 bv64
+
+        %7 = call std_min %1 %5
+        %8 = call std_min %2 %6
+        %9 = call std_min %3 %5
+        %10 = call std_min %4 %6
+
+        %11 = const 202 bv64
+        %12 = const 62 bv64
+
+        %13 = add %11 %7
+        %14 = add %12 %8
+        %15 = add %11 %9
+        %16 = add %12 %10
+
+        call ui_invalidate_rect %0 %13 %14 %15 %16
+        ret
+}

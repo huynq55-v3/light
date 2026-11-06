@@ -3,6 +3,7 @@
 
 include ui_button.lit
 include std_lib.lit
+include vfs_api.lit
 
 # 1. Kiểm tra đường dẫn tại (path_off=%1, path_len=%2) có bắt đầu bằng tiền tố thư mục hiện tại (pref_off=%3, pref_len=%4) không
 func ui_fb_match_prefix bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
@@ -250,20 +251,9 @@ func ui_fb_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQw
         br %35 @b4 @b11
 
     @b4
-        # Đọc Qword 1 của VfsEntry thứ %28: low32 = path_offset, high32 = path_len
-        %36 = const 2 bv64
-        %37 = shl %28 %36
+        %43 = call vfs_entry_get_path_off %2 %28
+        %47 = call vfs_entry_get_path_len %2 %28
         %38 = const 1 bv64
-        %39 = add %37 %38
-        %40 = slice %2 %39 ptr<DiskQword,1>
-        %41 = load %40 0 bv64
-
-        %42 = const 0xff bv64
-        %43 = and %41 %42                   # path_offset (<= 255)
-        %44 = const 32 bv64
-        %45 = lshr %41 %44
-        %46 = const 0x7f bv64
-        %47 = and %45 %46                   # path_len (<= 127)
 
         # Nếu path_len == 0 (Slot trống) -> Bỏ qua
         %48 = cmp eq %47 %7
@@ -408,19 +398,9 @@ func ui_fb_handle_click bv64 %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:bv64 %
         br %32 @b4 @b12
 
     @b4
-        %33 = const 2 bv64
-        %34 = shl %25 %33
+        %40 = call vfs_entry_get_path_off %1 %25
+        %44 = call vfs_entry_get_path_len %1 %25
         %35 = const 1 bv64
-        %36 = add %34 %35
-        %37 = slice %1 %36 ptr<DiskQword,1>
-        %38 = load %37 0 bv64
-
-        %39 = const 0xff bv64
-        %40 = and %38 %39                   # path_off
-        %41 = const 32 bv64
-        %42 = lshr %38 %41
-        %43 = const 0x7f bv64
-        %44 = and %42 %43                   # path_len
 
         %45 = cmp eq %44 %9
         br %45 @b10 @b5
@@ -481,12 +461,8 @@ func ui_fb_handle_click bv64 %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:bv64 %
         ret %80
 
     @b82
-        # Là FILE -> Đọc start_sec tại Qword (idx * 4 + 2)
-        %81 = add %34 %33
-        %82 = slice %1 %81 ptr<DiskQword,1>
-        %83 = load %82 0 bv64
-        %84 = const 0xffffff bv64
-        %85 = and %83 %84
+        # Là FILE -> Đọc start_sec chuẩn qua vfs_api.lit!
+        %85 = call vfs_entry_get_lba %1 %25
         %86 = const 0x300000000 bv64        # Tag 3 = Mở File
         %87 = or %86 %85
         ret %87

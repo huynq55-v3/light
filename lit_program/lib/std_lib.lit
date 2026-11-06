@@ -58,7 +58,7 @@ func std_max bv64 %0:bv64 %1:bv64 {
 # 1. Đọc 1 byte (0..255) tại vị trí byte_idx (%1 = 0..511) từ bộ đệm 512-byte (%0)
 func std_mem_get_byte bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
-    @req ult %0 0x80000000
+    @req ult %0 0x10000000000
     @req ult %1 512
     @ens ult %11 256
 
@@ -80,7 +80,7 @@ func std_mem_get_byte bv64 %0:ptr<DiskQword,64> %1:bv64 {
 # 2. Ghi 1 byte (%2 = 0..255) vào vị trí byte_idx (%1 = 0..511) trong bộ đệm 512-byte (%0)
 func std_mem_set_byte void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
-    @req ult %0 0x80000000
+    @req ult %0 0x10000000000
     @req ult %1 512
 
     @b0
@@ -110,7 +110,7 @@ func std_mem_set_byte void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
 # 3. Xóa trắng toàn bộ bộ đệm 512-byte (64 Qwords) về 0
 func std_mem_zero void %0:ptr<DiskQword,64> {
     @req uge %0 0x10000
-    @req ult %0 0x80000000
+    @req ult %0 0x10000000000
 
     @b0
         %1 = const 0 bv64
@@ -141,7 +141,7 @@ func std_mem_zero void %0:ptr<DiskQword,64> {
 # 1. Tính độ dài chuỗi kết thúc bằng byte 0 (Trả về 0..511, được Z3 bảo chứng < 512!)
 func std_str_len bv64 %0:ptr<DiskQword,64> {
     @req uge %0 0x10000
-    @req ult %0 0x80000000
+    @req ult %0 0x10000000000
     @ens ult %3 511
 
     @b0
@@ -173,7 +173,7 @@ func std_str_len bv64 %0:ptr<DiskQword,64> {
 # 2. Xử lý phím gõ vào bộ đệm chuỗi (Hỗ trợ cả Nối ký tự vào cuối + Phím Backspace = 8 xóa lùi!)
 func std_str_push_or_bs void %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
-    @req ult %0 0x80000000
+    @req ult %0 0x10000000000
 
     @b0
         %2 = call std_str_len %0

@@ -1,4 +1,4 @@
-// File: src/elf64.rs (16GB HugePage RAM + Hardware Register Allocation rbx, r12..r15)
+// File: src/elf64.rs (64GB Virtual Arena per App: 0x10_0000_0000 & 0x20_0000_0000 + SMP AP Trampoline)
 use crate::ir::*;
 use std::collections::HashMap;
 
@@ -41,15 +41,22 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
     elf.extend_from_slice(&(base + 0x60).to_le_bytes());
     elf.extend_from_slice(&0u16.to_le_bytes());
 
-    // 3. Trampoline 32-bit -> 64-bit Long Mode + 16GB RAM + 4MB VRAM (0x200000) + 4MB Backbuffer (0x600000):
+    // 3. Trampoline 32-bit -> 64-bit Long Mode:
+    //    - Giữ nguyên PDPT[1..16] để map Local APIC (0xFEE00000 ở mốc 4GB)
+    //    - Bổ sung PDPT[64]  (64GB  = 0x10_0000_0000) -> PD tại 0x4000 (RAM vật lý từ 16MB)
+    //    - Bổ sung PDPT[128] (128GB = 0x20_0000_0000) -> PD tại 0x5000 (RAM vật lý từ 32MB)
     elf.extend_from_slice(&[
         0xFA, 0xBC, 0x00, 0x00, 0x07, 0x00, // cli; mov esp, 0x70000
-        0xBF, 0x00, 0x10, 0x00, 0x00, 0xB9, 0x00, 0x0C, 0x00, 0x00, 0x31, 0xC0, 0xFC, 0xF3,
-        0xAB, // Clear Page Tables 0x1000..0x4000
-        0xC7, 0x05, 0x00, 0x10, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00, // PML4[0] = 0x2003
+        0xBF, 0x00, 0x10, 0x00, 0x00, 0xB9, 0x00, 0x14, 0x00, 0x00, 0x31, 0xC0, 0xFC, 0xF3,
+        0xAB, // Clear Page Tables 0x1000..0x6000 (5 pages)
+        0xC7, 0x05, 0x00, 0x10, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00, // PML4[0]   = 0x2003
         0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00,
-        0x00, // PDPT[0] = 0x3003 (0..1GB)
-        // Vòng lặp ánh xạ PDPT[1..15] = 1GB..16GB RAM phẳng bằng 1GB HugePages (0x83)
+        0x00, // PDPT[0]   = 0x3003 (Lô 0: 0GB)
+        0xC7, 0x05, 0x00, 0x22, 0x00, 0x00, 0x03, 0x40, 0x00,
+        0x00, // PDPT[64]  = 0x4003 (Lô 1: 64GB)
+        0xC7, 0x05, 0x00, 0x24, 0x00, 0x00, 0x03, 0x50, 0x00,
+        0x00, // PDPT[128] = 0x5003 (Lô 2: 128GB)
+        // Vòng lặp A: Map PDPT[1..16] = 1GB HugePages (Bao phủ Local APIC 0xFEE000F0 tại 4GB!)
         0xB9, 0x01, 0x00, 0x00, 0x00, // mov ecx, 1
         0x89, 0xC8, 0xC1, 0xE0, 0x1E, // mov eax, ecx; shl eax, 30
         0x0D, 0x83, 0x00, 0x00, 0x00, // or eax, 0x83
@@ -57,14 +64,23 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
         0x89, 0xC8, 0xC1, 0xE8, 0x02, // mov eax, ecx; shr eax, 2
         0x89, 0x04, 0xCD, 0x04, 0x20, 0x00, 0x00, // mov [ecx*8 + 0x2004], eax
         0x41, 0x83, 0xF9, 0x10, 0x7C, 0xDD, // inc ecx; cmp ecx, 16; jl -35
-        0xC7, 0x05, 0x00, 0x30, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00, // PD[0] = 0..2MB RAM
-        // Đọc địa chỉ vật lý Linear Framebuffer từ PCI VGA BAR0
+        // Vòng lặp B: Map 8 trang 2MB (16MB/lô) cho Lô 0 (0x3000), Lô 1 (0x4000) và Lô 2 (0x5000):
+        0x31, 0xC9, // xor ecx, ecx (ecx = 0..8)
+        0x89, 0xC8, 0xC1, 0xE0, 0x15, 0x0D, 0x83, 0x00, 0x00,
+        0x00, // eax = (ecx << 21) | 0x83
+        0x89, 0x04, 0xCD, 0x00, 0x30, 0x00, 0x00, // PD_Lô_0[ecx] = phys 0MB + ecx*2MB
+        0x05, 0x00, 0x00, 0x00, 0x01, // eax += 16MB (0x1000000)
+        0x89, 0x04, 0xCD, 0x00, 0x40, 0x00,
+        0x00, // PD_Lô_1[ecx] (64GB)  = phys 16MB + ecx*2MB
+        0x05, 0x00, 0x00, 0x00, 0x01, // eax += 16MB (0x2000000)
+        0x89, 0x04, 0xCD, 0x00, 0x50, 0x00,
+        0x00, // PD_Lô_2[ecx] (128GB) = phys 32MB + ecx*2MB
+        0x41, 0x83, 0xF9, 0x08, 0x7C, 0xD1, // inc ecx; cmp ecx, 8; jl -41
+        // Đọc địa chỉ vật lý Linear Framebuffer từ PCI VGA BAR0 ghi vào PD_Lô_0[1..2] (0x200000..0x600000)
         0xB8, 0x10, 0x10, 0x00, 0x80, 0x66, 0xBA, 0xF8, 0x0C, 0xEF, 0x66, 0xBA, 0xFC, 0x0C, 0xED,
         0x25, 0x00, 0x00, 0xE0, 0xFF, 0x0D, 0x83, 0x00, 0x00, 0x00, 0xA3, 0x08, 0x30, 0x00, 0x00,
         0x05, 0x00, 0x00, 0x20, 0x00, 0xA3, 0x10, 0x30, 0x00, 0x00,
-        // Ánh xạ 4MB Backbuffer RAM tại Virtual 0x600000..0xA00000
-        0xC7, 0x05, 0x18, 0x30, 0x00, 0x00, 0x83, 0x00, 0x60, 0x00, 0xC7, 0x05, 0x20, 0x30, 0x00,
-        0x00, 0x83, 0x00, 0x80, 0x00, // Bật PAE + Long Mode + Paging
+        // Bật PAE + Long Mode + Paging
         0xB8, 0x00, 0x10, 0x00, 0x00, 0x0F, 0x22, 0xD8, 0x0F, 0x20, 0xE0, 0x83, 0xC8, 0x20, 0x0F,
         0x22, 0xE0, 0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x0F,
         0x30, 0x0F, 0x20, 0xC0, 0x0D, 0x00, 0x00, 0x00, 0x80, 0x0F, 0x22, 0xC0, 0x0F, 0x01, 0x15,
@@ -75,8 +91,86 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
     elf.extend_from_slice(&start64.to_le_bytes());
     elf.extend_from_slice(&0x0008u16.to_le_bytes());
 
-    let call_rel = (entry_offset as u32) + 2;
+    // 4. Đoạn khởi tạo 64-bit của BSP (Core 0):
     elf.extend_from_slice(&[0x66, 0xB8, 0x10, 0x00, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0]);
+
+    // Xây dựng AP Trampoline tại 0x8000 (Chạy khi được đánh thức -> Tính xong -> Tự động HLT ngủ 0% CPU!)
+    let mut ap_code: Vec<u8> = Vec::new();
+    ap_code.extend_from_slice(&[
+        0xFA, // cli
+        0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0x0F, 0x01, 0x16, 0xF0,
+        0x80, // lgdt [0x80F0]
+        0x0F, 0x20, 0xC0, 0x66, 0x83, 0xC8, 0x01, 0x0F, 0x22, 0xC0, // CR0.PE = 1
+    ]);
+    let ap_32_addr = 0x8000u16 + (ap_code.len() as u16) + 5;
+    ap_code.push(0xEA);
+    ap_code.extend_from_slice(&ap_32_addr.to_le_bytes());
+    ap_code.extend_from_slice(&0x0018u16.to_le_bytes());
+
+    ap_code.extend_from_slice(&[
+        0x66, 0xB8, 0x10, 0x00, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xB8, 0x00, 0x10, 0x00, 0x00,
+        0x0F, 0x22, 0xD8, // CR3 = 0x1000
+        0x0F, 0x20, 0xE0, 0x83, 0xC8, 0x20, 0x0F, 0x22, 0xE0, // CR4.PAE = 1
+        0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x0F,
+        0x30, // EFER.LME = 1
+        0x0F, 0x20, 0xC0, 0x0D, 0x00, 0x00, 0x00, 0x80, 0x0F, 0x22, 0xC0, // CR0.PG = 1
+    ]);
+    let ap_64_addr = 0x8000u32 + (ap_code.len() as u32) + 7;
+    ap_code.push(0xEA);
+    ap_code.extend_from_slice(&ap_64_addr.to_le_bytes());
+    ap_code.extend_from_slice(&0x0008u16.to_le_bytes());
+
+    ap_code.extend_from_slice(&[
+        0x66, 0xB8, 0x10, 0x00, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xB8, 0x01, 0x00, 0x00, 0x00,
+        0x0F, 0xA2, // cpuid (eax=1)
+        0x89, 0xD8, 0xC1, 0xE8, 0x18, 0x83, 0xE0, 0x07, // eax = apic_id (1..7)
+        0x89, 0xC1, 0xC1, 0xE1, 0x0C, 0xBC, 0x00, 0x00, 0x06, 0x00, 0x48, 0x29, 0xCC, 0x89, 0xC5,
+        0xC1, 0xE5, 0x05, 0x48, 0x81, 0xC5, 0x00, 0xE0, 0x07, 0x00, 0x48, 0x8B, 0x45,
+        0x00, // mov rax, [rbp + 0]
+        0x48, 0x85, 0xC0, // test rax, rax
+        0x74, 0x18, // jz sleep_hlt
+        0x55, // push rbp
+        0x48, 0x8B, 0x7D, 0x08, // mov rdi, [rbp + 8]
+        0x48, 0x8B, 0x75, 0x10, // mov rsi, [rbp + 16]
+        0xFF, 0xD0, // call rax
+        0x5D, // pop rbp
+        0x48, 0x89, 0x45, 0x18, // mov [rbp + 24], rax
+        0x48, 0xC7, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, // mov qword [rbp + 0], 0
+        0xFA, 0xF4, 0xEB, 0xFC, // cli; hlt; jmp -4
+    ]);
+
+    for (idx, &b) in ap_code.iter().enumerate() {
+        let addr = (0x8000 + idx) as u32;
+        elf.extend_from_slice(&[0xC6, 0x04, 0x25]);
+        elf.extend_from_slice(&addr.to_le_bytes());
+        elf.push(b);
+    }
+
+    let ap_gdt: [u64; 4] = [
+        0x0000000000000000,
+        0x00AF9A000000FFFF,
+        0x00CF92000000FFFF,
+        0x00CF9A000000FFFF,
+    ];
+    let mut gdt_bytes = Vec::new();
+    for entry in ap_gdt {
+        gdt_bytes.extend_from_slice(&entry.to_le_bytes());
+    }
+    for (idx, &b) in gdt_bytes.iter().enumerate() {
+        let addr = (0x8100 + idx) as u32;
+        elf.extend_from_slice(&[0xC6, 0x04, 0x25]);
+        elf.extend_from_slice(&addr.to_le_bytes());
+        elf.push(b);
+    }
+
+    elf.extend_from_slice(&[
+        0x48, 0xC7, 0xC7, 0x00, 0xE0, 0x07, 0x00, 0xB9, 0x20, 0x00, 0x00, 0x00, 0x31, 0xC0, 0xF3,
+        0x48, 0xAB, 0x66, 0xC7, 0x04, 0x25, 0xF0, 0x80, 0x00, 0x00, 0x1F, 0x00, 0xC7, 0x04, 0x25,
+        0xF2, 0x80, 0x00, 0x00, 0x00, 0x81, 0x00, 0x00, 0xB8, 0xF0, 0x00, 0xE0, 0xFE, 0xC7, 0x00,
+        0xFF, 0x01, 0x00, 0x00,
+    ]);
+
+    let call_rel = (entry_offset as u32) + 2;
     elf.push(0xE8);
     elf.extend_from_slice(&call_rel.to_le_bytes());
     elf.extend_from_slice(&[0xFA, 0xF4]);
@@ -92,56 +186,116 @@ fn slot(r: Reg) -> i32 {
     -(((r as i32) + 1) * 8)
 }
 
-/// Ánh xạ trực tiếp 5 biến SSA đầu tiên (%0..%4) vào 5 thanh ghi phần cứng CPU (rbx, r12..r15)
-fn emit_load_rax(c: &mut Vec<u8>, r: Reg) {
-    match r {
-        0 => c.extend_from_slice(&[0x48, 0x89, 0xD8]), // mov rax, rbx
-        1 => c.extend_from_slice(&[0x4C, 0x89, 0xE0]), // mov rax, r12
-        2 => c.extend_from_slice(&[0x4C, 0x89, 0xE8]), // mov rax, r13
-        3 => c.extend_from_slice(&[0x4C, 0x89, 0xF0]), // mov rax, r14
-        4 => c.extend_from_slice(&[0x4C, 0x89, 0xF8]), // mov rax, r15
-        _ => {
-            c.extend_from_slice(&[0x48, 0x8B, 0x85]);
-            c.extend_from_slice(&slot(r).to_le_bytes());
+fn pick_hot_regs(func: &Func) -> [Reg; 5] {
+    let mut score: HashMap<Reg, u32> = HashMap::new();
+    for &(r, _) in &func.params {
+        *score.entry(r).or_insert(0) += 2;
+    }
+    for (bi, b) in func.blocks.iter().enumerate() {
+        let weight = if bi > 0 { 16 } else { 1 };
+        for &(r, _) in &b.params {
+            *score.entry(r).or_insert(0) += 100 * weight;
         }
+        for inst in &b.insts {
+            match inst {
+                Inst::Bin { dst, lhs, rhs, .. } | Inst::Cmp { dst, lhs, rhs, .. } => {
+                    *score.entry(*dst).or_insert(0) += weight;
+                    *score.entry(*lhs).or_insert(0) += weight;
+                    *score.entry(*rhs).or_insert(0) += weight;
+                }
+                Inst::Slice { dst, base, idx, .. } => {
+                    *score.entry(*dst).or_insert(0) += weight;
+                    *score.entry(*base).or_insert(0) += weight;
+                    *score.entry(*idx).or_insert(0) += weight;
+                }
+                Inst::Load { dst, base, .. } => {
+                    *score.entry(*dst).or_insert(0) += weight;
+                    *score.entry(*base).or_insert(0) += weight;
+                }
+                Inst::Store { base, val, .. } => {
+                    *score.entry(*base).or_insert(0) += weight;
+                    *score.entry(*val).or_insert(0) += weight;
+                }
+                Inst::Br { cond, .. } => {
+                    *score.entry(*cond).or_insert(0) += weight;
+                }
+                Inst::Jmp { args, .. } | Inst::Call { args, .. } => {
+                    for &a in args {
+                        *score.entry(a).or_insert(0) += weight * 2;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut ranked: Vec<(Reg, u32)> = score.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut out = [u32::MAX; 5];
+    for (i, &(r, _)) in ranked.iter().take(5).enumerate() {
+        out[i] = r;
+    }
+    out
+}
+
+fn emit_load_rax(c: &mut Vec<u8>, r: Reg, hot: &[Reg; 5]) {
+    if r == hot[0] {
+        c.extend_from_slice(&[0x48, 0x89, 0xD8]);
+    } else if r == hot[1] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xE0]);
+    } else if r == hot[2] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xE8]);
+    } else if r == hot[3] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xF0]);
+    } else if r == hot[4] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xF8]);
+    } else {
+        c.extend_from_slice(&[0x48, 0x8B, 0x85]);
+        c.extend_from_slice(&slot(r).to_le_bytes());
     }
 }
 
-fn emit_load_rcx(c: &mut Vec<u8>, r: Reg) {
-    match r {
-        0 => c.extend_from_slice(&[0x48, 0x89, 0xD9]), // mov rcx, rbx
-        1 => c.extend_from_slice(&[0x4C, 0x89, 0xE1]), // mov rcx, r12
-        2 => c.extend_from_slice(&[0x4C, 0x89, 0xE9]), // mov rcx, r13
-        3 => c.extend_from_slice(&[0x4C, 0x89, 0xF1]), // mov rcx, r14
-        4 => c.extend_from_slice(&[0x4C, 0x89, 0xF9]), // mov rcx, r15
-        _ => {
-            c.extend_from_slice(&[0x48, 0x8B, 0x8D]);
-            c.extend_from_slice(&slot(r).to_le_bytes());
-        }
+fn emit_load_rcx(c: &mut Vec<u8>, r: Reg, hot: &[Reg; 5]) {
+    if r == hot[0] {
+        c.extend_from_slice(&[0x48, 0x89, 0xD9]);
+    } else if r == hot[1] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xE1]);
+    } else if r == hot[2] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xE9]);
+    } else if r == hot[3] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xF1]);
+    } else if r == hot[4] {
+        c.extend_from_slice(&[0x4C, 0x89, 0xF9]);
+    } else {
+        c.extend_from_slice(&[0x48, 0x8B, 0x8D]);
+        c.extend_from_slice(&slot(r).to_le_bytes());
     }
 }
 
-fn emit_store_rax(c: &mut Vec<u8>, r: Reg) {
-    match r {
-        0 => c.extend_from_slice(&[0x48, 0x89, 0xC3]), // mov rbx, rax
-        1 => c.extend_from_slice(&[0x49, 0x89, 0xC4]), // mov r12, rax
-        2 => c.extend_from_slice(&[0x49, 0x89, 0xC5]), // mov r13, rax
-        3 => c.extend_from_slice(&[0x49, 0x89, 0xC6]), // mov r14, rax
-        4 => c.extend_from_slice(&[0x49, 0x89, 0xC7]), // mov r15, rax
-        _ => {
-            c.extend_from_slice(&[0x48, 0x89, 0x85]);
-            c.extend_from_slice(&slot(r).to_le_bytes());
-        }
+fn emit_store_rax(c: &mut Vec<u8>, r: Reg, hot: &[Reg; 5]) {
+    if r == hot[0] {
+        c.extend_from_slice(&[0x48, 0x89, 0xC3]);
+    } else if r == hot[1] {
+        c.extend_from_slice(&[0x49, 0x89, 0xC4]);
+    } else if r == hot[2] {
+        c.extend_from_slice(&[0x49, 0x89, 0xC5]);
+    } else if r == hot[3] {
+        c.extend_from_slice(&[0x49, 0x89, 0xC6]);
+    } else if r == hot[4] {
+        c.extend_from_slice(&[0x49, 0x89, 0xC7]);
+    } else {
+        c.extend_from_slice(&[0x48, 0x89, 0x85]);
+        c.extend_from_slice(&slot(r).to_le_bytes());
     }
 }
 
-fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
+fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64, u64), String> {
     let mut code: Vec<u8> = Vec::new();
     let mut func_addrs: HashMap<u32, usize> = HashMap::new();
     let mut call_patches: Vec<(usize, u32)> = Vec::new();
 
     for (f_idx, func) in module.funcs.iter().enumerate() {
         func_addrs.insert(f_idx as u32, code.len());
+        let hot = pick_hot_regs(func);
 
         let mut reg_tys: HashMap<Reg, Type> = func.params.iter().cloned().collect();
         for b in &func.blocks {
@@ -179,7 +333,6 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
 
         let max_reg = reg_tys.keys().max().copied().unwrap_or(32);
         let frame_size = (((max_reg as u32 + 8) * 8 + 15) & !15).max(0x800);
-        // Prologue: push rbp; mov rbp, rsp; sub rsp, frame_size; push rbx, r12..r15
         code.extend_from_slice(&[0x55, 0x48, 0x89, 0xE5, 0x48, 0x81, 0xEC]);
         code.extend_from_slice(&frame_size.to_le_bytes());
         code.extend_from_slice(&[
@@ -196,13 +349,13 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
         ];
         for (i, &(reg, _)) in func.params.iter().take(6).enumerate() {
             code.extend_from_slice(abi_to_rax[i]);
-            emit_store_rax(&mut code, reg);
+            emit_store_rax(&mut code, reg, &hot);
         }
         for (i, &(reg, _)) in func.params.iter().skip(6).enumerate() {
             let caller_off = (16 + i * 8) as i32;
             code.extend_from_slice(&[0x48, 0x8B, 0x85]);
             code.extend_from_slice(&caller_off.to_le_bytes());
-            emit_store_rax(&mut code, reg);
+            emit_store_rax(&mut code, reg, &hot);
         }
 
         let mut blk_addrs: HashMap<BlockId, usize> = HashMap::new();
@@ -215,11 +368,11 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                     Inst::Const { dst, val, .. } => {
                         code.extend_from_slice(&[0x48, 0xB8]);
                         code.extend_from_slice(&val.to_le_bytes());
-                        emit_store_rax(&mut code, *dst);
+                        emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Bin { dst, op, lhs, rhs } => {
-                        emit_load_rax(&mut code, *lhs);
-                        emit_load_rcx(&mut code, *rhs);
+                        emit_load_rax(&mut code, *lhs, &hot);
+                        emit_load_rcx(&mut code, *rhs, &hot);
                         match op {
                             BinOp::Add => code.extend_from_slice(&[0x48, 0x01, 0xC8]),
                             BinOp::Sub => code.extend_from_slice(&[0x48, 0x29, 0xC8]),
@@ -239,11 +392,11 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                                 0x48, 0x99, 0x48, 0xF7, 0xF9, 0x48, 0x89, 0xD0,
                             ]),
                         }
-                        emit_store_rax(&mut code, *dst);
+                        emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Cmp { dst, op, lhs, rhs } => {
-                        emit_load_rax(&mut code, *lhs);
-                        emit_load_rcx(&mut code, *rhs);
+                        emit_load_rax(&mut code, *lhs, &hot);
+                        emit_load_rcx(&mut code, *rhs, &hot);
                         let setcc = match op {
                             CmpOp::Eq => 0x94,
                             CmpOp::Ne => 0x95,
@@ -259,7 +412,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                         code.extend_from_slice(&[
                             0x48, 0x39, 0xC8, 0x0F, setcc, 0xC0, 0x48, 0x0F, 0xB6, 0xC0,
                         ]);
-                        emit_store_rax(&mut code, *dst);
+                        emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Slice { dst, base, idx, ty } => {
                         let layout_id = match ty {
@@ -267,12 +420,12 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             _ => return Err("Lỗi kiểu Slice".into()),
                         };
                         let elem_size = module.layouts[layout_id].size;
-                        emit_load_rax(&mut code, *idx);
+                        emit_load_rax(&mut code, *idx, &hot);
                         code.extend_from_slice(&[0x48, 0x69, 0xC0]);
                         code.extend_from_slice(&elem_size.to_le_bytes());
-                        emit_load_rcx(&mut code, *base);
+                        emit_load_rcx(&mut code, *base, &hot);
                         code.extend_from_slice(&[0x48, 0x01, 0xC8]);
-                        emit_store_rax(&mut code, *dst);
+                        emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Load {
                         dst,
@@ -280,7 +433,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                         base,
                         offset,
                     } => {
-                        emit_load_rcx(&mut code, *base);
+                        emit_load_rcx(&mut code, *base, &hot);
                         match ty {
                             Type::Bv8 => code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0x81]),
                             Type::Bv16 => code.extend_from_slice(&[0x48, 0x0F, 0xB7, 0x81]),
@@ -288,11 +441,11 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             _ => code.extend_from_slice(&[0x48, 0x8B, 0x81]),
                         }
                         code.extend_from_slice(&offset.to_le_bytes());
-                        emit_store_rax(&mut code, *dst);
+                        emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Store { base, offset, val } => {
-                        emit_load_rcx(&mut code, *base);
-                        emit_load_rax(&mut code, *val);
+                        emit_load_rcx(&mut code, *base, &hot);
+                        emit_load_rax(&mut code, *val, &hot);
                         match reg_tys.get(val).unwrap_or(&Type::Bv64) {
                             Type::Bv8 => code.extend_from_slice(&[0x88, 0x81]),
                             Type::Bv16 => code.extend_from_slice(&[0x66, 0x89, 0x81]),
@@ -310,7 +463,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                     } => {
                         if *is_write {
                             let v_reg = val.unwrap();
-                            emit_load_rax(&mut code, v_reg);
+                            emit_load_rax(&mut code, v_reg, &hot);
                             if *port_or_reg == 3 {
                                 code.extend_from_slice(&[0x0F, 0x22, 0xD8]);
                             } else {
@@ -326,6 +479,11 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                         } else if let Some(d) = dst {
                             if *port_or_reg == 3 {
                                 code.extend_from_slice(&[0x0F, 0x20, 0xD8]);
+                            } else if *port_or_reg == 0x10 {
+                                code.extend_from_slice(&[
+                                    0x0F, 0x31, 0x48, 0xC1, 0xE2, 0x20, 0x48, 0x09, 0xD0, 0x48,
+                                    0xC1, 0xE8, 0x14, 0x25, 0xFF, 0x00, 0x00, 0x00,
+                                ]);
                             } else {
                                 code.extend_from_slice(&[0x31, 0xC0, 0x66, 0xBA]);
                                 code.extend_from_slice(&port_or_reg.to_le_bytes());
@@ -335,7 +493,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                                     code.push(0xEC);
                                 }
                             }
-                            emit_store_rax(&mut code, *d);
+                            emit_store_rax(&mut code, *d, &hot);
                         }
                     }
                     Inst::Br {
@@ -343,7 +501,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                         then_bb,
                         else_bb,
                     } => {
-                        emit_load_rax(&mut code, *cond);
+                        emit_load_rax(&mut code, *cond, &hot);
                         code.extend_from_slice(&[0x48, 0x85, 0xC0, 0x0F, 0x85, 0, 0, 0, 0]);
                         jmp_patches.push((code.len() - 4, *then_bb));
                         code.extend_from_slice(&[0xE9, 0, 0, 0, 0]);
@@ -356,8 +514,8 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             .find(|b| b.id == *target_bb)
                             .ok_or("Không tìm thấy BlockId")?;
                         for (&arg_r, &(param_r, _)) in args.iter().zip(&target_blk.params) {
-                            emit_load_rax(&mut code, arg_r);
-                            emit_store_rax(&mut code, param_r);
+                            emit_load_rax(&mut code, arg_r, &hot);
+                            emit_store_rax(&mut code, param_r, &hot);
                         }
                         code.extend_from_slice(&[0xE9, 0, 0, 0, 0]);
                         jmp_patches.push((code.len() - 4, *target_bb));
@@ -377,11 +535,11 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]);
                         }
                         for &r in args.iter().skip(6).rev() {
-                            emit_load_rax(&mut code, r);
+                            emit_load_rax(&mut code, r, &hot);
                             code.push(0x50);
                         }
                         for (i, &r) in args.iter().take(6).enumerate() {
-                            emit_load_rax(&mut code, r);
+                            emit_load_rax(&mut code, r, &hot);
                             code.extend_from_slice(rax_to_abi[i]);
                         }
                         code.extend_from_slice(&[0xE8, 0, 0, 0, 0]);
@@ -392,7 +550,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             code.extend_from_slice(&total_stack.to_le_bytes());
                         }
                         if let Some(d) = dst {
-                            emit_store_rax(&mut code, *d);
+                            emit_store_rax(&mut code, *d, &hot);
                         }
                     }
                     Inst::CallPtr { dst, target, args } => {
@@ -410,14 +568,14 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]);
                         }
                         for &r in args.iter().skip(6).rev() {
-                            emit_load_rax(&mut code, r);
+                            emit_load_rax(&mut code, r, &hot);
                             code.push(0x50);
                         }
                         for (i, &r) in args.iter().take(6).enumerate() {
-                            emit_load_rax(&mut code, r);
+                            emit_load_rax(&mut code, r, &hot);
                             code.extend_from_slice(rax_to_abi[i]);
                         }
-                        emit_load_rax(&mut code, *target);
+                        emit_load_rax(&mut code, *target, &hot);
                         code.extend_from_slice(&[0xFF, 0xD0]);
                         let total_stack = (extra * 8 + pad) as i32;
                         if total_stack > 0 {
@@ -425,12 +583,21 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
                             code.extend_from_slice(&total_stack.to_le_bytes());
                         }
                         if let Some(d) = dst {
-                            emit_store_rax(&mut code, *d);
+                            emit_store_rax(&mut code, *d, &hot);
                         }
                     }
                     Inst::Ret { val } => {
+                        if func.name == "smp_dispatch_worker" {
+                            emit_load_rax(&mut code, 1, &hot);
+                            code.extend_from_slice(&[
+                                0xC1, 0xE0, 0x18, 0xBA, 0x10, 0x03, 0xE0, 0xFE, 0x89, 0x02, 0xBA,
+                                0x00, 0x03, 0xE0, 0xFE, 0xC7, 0x02, 0x00, 0x45, 0x00, 0x00, 0xB9,
+                                0x00, 0x04, 0x00, 0x00, 0xE2, 0xFE, 0xC7, 0x02, 0x08, 0x46, 0x00,
+                                0x00,
+                            ]);
+                        }
                         if let Some(r) = val {
-                            emit_load_rax(&mut code, *r);
+                            emit_load_rax(&mut code, *r, &hot);
                         }
                         code.extend_from_slice(&[
                             0x48, 0x83, 0xC4, 0x08, 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C,
@@ -462,11 +629,17 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64), String> {
         .position(|f| f.name == "app_draw_icon")
         .and_then(|i| func_addrs.get(&(i as u32)).copied())
         .unwrap_or(0) as u64;
-    Ok((code, entry_offset, icon_offset))
+    let worker_offset = module
+        .funcs
+        .iter()
+        .position(|f| f.name == "app_smp_worker")
+        .and_then(|i| func_addrs.get(&(i as u32)).copied())
+        .unwrap_or(0) as u64;
+    Ok((code, entry_offset, icon_offset, worker_offset))
 }
 
 pub fn compile_elf64(module: &Module) -> Result<Vec<u8>, String> {
-    let (code, entry_offset, _) = compile_raw(module)?;
+    let (code, entry_offset, _, _) = compile_raw(module)?;
     Ok(pack_elf64(&code, entry_offset))
 }
 
@@ -474,22 +647,30 @@ pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
     if !module.funcs.iter().any(|f| f.name == "app_draw_icon") {
         return Err("Mỗi App bắt buộc phải implement hàm 'func app_draw_icon'!".into());
     }
-    let (code, entry_offset, icon_offset) = compile_raw(module)?;
-    let mut bin = Vec::with_capacity(16 + code.len());
+    let (code, entry_offset, icon_offset, worker_offset) = compile_raw(module)?;
+    let mut bin = Vec::with_capacity(24 + code.len());
 
-    let rel_main = (entry_offset as i32) + 11;
+    let rel_main = (entry_offset as i32) + 19;
     bin.push(0xE9);
     bin.extend_from_slice(&rel_main.to_le_bytes());
     bin.extend_from_slice(&[0x90, 0x90, 0x90]);
 
-    let rel_icon = (icon_offset as i32) + 3;
+    let rel_icon = (icon_offset as i32) + 11;
     bin.push(0xE9);
     bin.extend_from_slice(&rel_icon.to_le_bytes());
     bin.extend_from_slice(&[0x90, 0x90, 0x90]);
 
+    let rel_worker = (worker_offset as i32) + 3;
+    bin.push(0xE9);
+    bin.extend_from_slice(&rel_worker.to_le_bytes());
+    bin.extend_from_slice(&[0x90, 0x90, 0x90]);
+
     bin.extend_from_slice(&code);
     if bin.len() > 131072 {
-        return Err(format!("App binary quá lớn ({} > 32768 bytes)!", bin.len()));
+        return Err(format!(
+            "App binary quá lớn ({} > 131072 bytes)!",
+            bin.len()
+        ));
     }
     Ok(bin)
 }

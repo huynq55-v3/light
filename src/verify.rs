@@ -5,7 +5,7 @@ use z3::ast::{Ast, BV, Bool};
 use z3::{Config, Context, Params, SatResult, Solver};
 
 pub const RAM_MIN: u64 = 0x1_0000;
-pub const RAM_TOP: u64 = 0x8000_0000;
+pub const RAM_TOP: u64 = 0x100_0000_0000;
 pub const STACK_BUDGET: u64 = 0x6_0000;
 const TIMEOUT_MS: u32 = 10_000;
 const ROOT_IO: Type = Type::Io {

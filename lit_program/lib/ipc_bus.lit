@@ -1,0 +1,161 @@
+# File: lit_program/lib/ipc_bus.lit
+# THƯ VIỆN GIAO TIẾP LIÊN TIẾN TRÌNH ZERO-COPY (VERIFIED IPC BUS LIBRARY)
+
+include os_layout.lit
+
+func ipc_key_push void %0:ptr<IpcChannel,1> %1:bv8 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 128
+
+    @b0
+        %2 = const 1 bv64
+        store %0 8 %1
+        store %0 0 %2
+        ret
+}
+
+func ipc_key_pop bv8 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ult %7 128
+
+    @b0
+        %1 = load %0 0 bv64
+        %2 = const 0 bv64
+        %3 = cmp ne %1 %2
+        br %3 @b1 @b2
+
+    @b1
+        store %0 0 %2
+        %4 = load %0 8 bv8
+        jmp @b3 %4
+
+    @b2
+        %5 = const 0 bv8
+        jmp @b3 %5
+
+    @b3 %7:bv8
+        @inv ult %7 128
+        ret %7
+}
+
+func ipc_mouse_get_x bv64 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ult %1 1260
+
+    @b0
+        %1 = load %0 16 bv64
+        ret %1
+}
+
+func ipc_mouse_get_y bv64 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ult %1 700
+
+    @b0
+        %1 = load %0 24 bv64
+        ret %1
+}
+
+func ipc_mouse_get_click bv64 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = load %0 32 bv64
+        ret %1
+}
+
+func ipc_mouse_clear_click void %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = const 0 bv64
+        store %0 32 %1
+        ret
+}
+
+func ipc_disk_req_read void %0:ptr<IpcChannel,1> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %2 = const 0xffffff bv64
+        %3 = and %1 %2
+        store %0 96 %3
+        ret
+}
+
+func ipc_disk_req_write void %0:ptr<IpcChannel,1> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %2 = const 0xffffff bv64
+        %3 = and %1 %2
+        store %0 104 %3
+        ret
+}
+
+func ipc_disk_take_read_req bv64 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ult %1 268435456
+
+    @b0
+        %1 = load %0 96 bv64
+        %2 = const 0 bv64
+        store %0 96 %2
+        ret %1
+}
+
+func ipc_disk_take_write_req bv64 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ult %1 268435456
+
+    @b0
+        %1 = load %0 104 bv64
+        %2 = const 0 bv64
+        store %0 104 %2
+        ret %1
+}
+
+# Khởi tạo toàn bộ Hộp thư Giao tiếp IpcChannel về trạng thái chuẩn lúc Boot
+func ipc_channel_init void %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = const 0 bv64
+        %2 = const 0 bv8
+        %3 = const 640 bv64                 # Tâm màn hình X = 640
+        %4 = const 360 bv64                 # Tâm màn hình Y = 360
+
+        store %0 0 %1
+        store %0 8 %2
+        store %0 16 %3
+        store %0 24 %4
+        store %0 32 %1
+        store %0 40 %1
+        store %0 48 %1
+        store %0 56 %1
+        store %0 64 %3
+        store %0 72 %4
+        store %0 80 %1
+        store %0 88 %1
+        store %0 96 %1
+        store %0 104 %1
+        store %0 112 %1
+        store %0 120 %1
+        store %0 128 %1
+        store %0 136 %1
+        store %0 144 %1
+        store %0 152 %1
+        store %0 160 %1
+        ret
+}

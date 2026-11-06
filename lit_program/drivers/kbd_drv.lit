@@ -1,6 +1,7 @@
 # File: lit_program/drivers/kbd_drv.lit
 # Driver Chuột + Bàn phím PS/2
 include ../lib/os_layout.lit
+include ../lib/ipc_bus.lit
 
 layout KeyMap 8 {
     0: bv64
@@ -435,8 +436,7 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
     @b7
         %40 = load %2 160 bv64              # Đọc trạng thái shift_down
         %41 = call kbd_apply_shift %27 %40
-        store %2 8 %41
-        store %2 0 %8
+        call ipc_key_push %2 %41
         jmp @b8
 
     @b8

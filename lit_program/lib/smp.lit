@@ -1,0 +1,103 @@
+# File: lit_program/lib/smp.lit
+include os_layout.lit
+
+func smp_get_ap_count bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = const 0 bv64
+        %2 = slice %0 %1 ptr<DiskQword,1>
+        %3 = load %2 0 bv64
+        ret %3
+}
+
+# Giao việc BẤT ĐỒNG BỘ cho Nhân CPU thứ %1 (1..7) chạy tại Cổng Worker Lô 2 (128GB + 0x10 = 0x2000000010)
+func smp_dispatch_worker void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 1
+    @req ule %1 7
+
+    @b0
+        %4 = const 2 bv64
+        %5 = shl %1 %4
+        %6 = const 1 bv64
+        %7 = const 2 bv64
+        %8 = const 3 bv64
+
+        %9 = add %5 %6
+        %10 = add %5 %7
+        %11 = add %5 %8
+
+        %12 = slice %0 %9 ptr<DiskQword,1>
+        %13 = slice %0 %10 ptr<DiskQword,1>
+        %14 = slice %0 %11 ptr<DiskQword,1>
+        %15 = slice %0 %5 ptr<DiskQword,1>
+
+        %16 = const 0 bv64
+        store %12 0 %2
+        store %13 0 %3
+        store %14 0 %16
+
+        %17 = const 0x2000000010 bv64
+        store %15 0 %17
+        ret
+}
+
+func smp_is_worker_done bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 1
+    @req ule %1 7
+    @ens ule %7 1
+
+    @b0
+        %2 = const 2 bv64
+        %3 = shl %1 %2
+        %4 = slice %0 %3 ptr<DiskQword,1>
+        %5 = load %4 0 bv64
+        %6 = const 0 bv64
+        %7 = cmp eq %5 %6
+        ret %7
+}
+
+func smp_poll_all_done bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ule %10 1
+
+    @b0
+        %1 = const 1 bv64
+        jmp @b1 %1
+
+    @b1 %2:bv64
+        @inv uge %2 1
+        @inv ule %2 8
+        %3 = const 8 bv64
+        %4 = cmp ult %2 %3
+        br %4 @b2 @b4
+
+    @b2
+        %5 = call smp_is_worker_done %0 %2
+        %6 = const 0 bv64
+        %7 = cmp eq %5 %6
+        br %7 @b5 @b3
+
+    @b3
+        %8 = const 1 bv64
+        %9 = add %2 %8
+        jmp @b1 %9
+
+    @b4
+        %11 = const 1 bv64
+        jmp @b6 %11
+
+    @b5
+        %12 = const 0 bv64
+        jmp @b6 %12
+
+    @b6 %10:bv64
+        @inv ule %10 1
+        ret %10
+}

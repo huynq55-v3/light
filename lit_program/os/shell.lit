@@ -1,11 +1,13 @@
 # File: lit_program/os/shell.lit
-# COMPOSITOR & DOCK SHELL: Quản lý Backbuffer (0x600000) -> VRAM (0x200000) qua ui_invalidate_rect
-
 include ../lib/gfx.lit
 include ../drivers/ata_disk.lit
 include ../drivers/kbd_drv.lit
+include ../lib/vfs_api.lit
+include ../lib/cap_mem.lit
+include ../lib/ipc_bus.lit
+include ../lib/smp.lit
+include ../lib/std_lib.lit
 
-# 1. Vẽ Con trỏ Chuột macOS 12x18 trực tiếp lên VRAM
 func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -75,8 +77,7 @@ func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         ret
 }
 
-# 2. Vẽ Thanh Dock Động: Quét VFS (%3), nạp từng App vào 0x90000 (%4) và gọi hàm app_draw_icon (0x90008) của chính App đó!
-func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,16384> {
+func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,16384> %5:ptr<DiskQword,16384> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -84,87 +85,118 @@ func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChann
     @req uge %3 0x10000
     @req ult %3 0x80000000
     @req uge %4 0x10000
-    @req ult %4 0x70000000
+    @req ult %4 0x10000000000
+    @req uge %5 0x10000
+    @req ult %5 0x10000000000
 
     @b0
-        # 1. Vẽ Khay kính macOS Dock ở đáy màn hình
-        %5 = const 464 bv64
-        %6 = const 824 bv64
-        %7 = const 630 bv64
-        %8 = const 712 bv64
-        %9 = const 0x0b0e14 bv32
-        call gfx_fill_rect %1 %5 %7 %6 %8 %9
+        %6 = const 464 bv64
+        %7 = const 824 bv64
+        %8 = const 630 bv64
+        %9 = const 712 bv64
+        %10 = const 0x0b0e14 bv32
+        call gfx_fill_rect %1 %6 %8 %7 %9 %10
 
-        %10 = const 460 bv64
-        %11 = const 820 bv64
-        %12 = const 624 bv64
-        %13 = const 706 bv64
-        %14 = const 0x262f45 bv32
-        call gfx_fill_rect %1 %10 %12 %11 %13 %14
+        %11 = const 460 bv64
+        %12 = const 820 bv64
+        %13 = const 624 bv64
+        %14 = const 706 bv64
+        %15 = const 0x262f45 bv32
+        call gfx_fill_rect %1 %11 %13 %12 %14 %15
 
-        %15 = const 626 bv64
-        %16 = const 0x566991 bv32
-        call gfx_fill_rect %1 %10 %12 %11 %15 %16
+        %16 = const 626 bv64
+        %17 = const 0x566991 bv32
+        call gfx_fill_rect %1 %11 %13 %12 %16 %17
 
-        # 2. Vòng lặp quét tối đa 4 slot đầu trong bảng VFS Directory Table (%3)
-        %17 = const 0 bv64
-        jmp @b1 %17
+        %18 = const 0 bv64
+        %19 = const 1 bv64
+        %20 = const 634 bv64
 
-    @b1 %18:bv64
-        @inv ule %18 4
-        %19 = const 4 bv64
-        %20 = cmp ult %18 %19
-        br %20 @b2 @b5
+        %21 = call vfs_entry_is_app %3 %18
+        %22 = cmp ne %21 %18
+        br %22 @b1 @b2
+
+    @b1
+        %23 = call vfs_entry_get_lba %3 %18
+        call drv_ata_load_app %0 %4 %23
+        %24 = const 530 bv64
+        %25 = slice %4 %19 ptr<DiskQword,1>
+        call %25 %1 %24 %20
+        jmp @b2
 
     @b2
-        # Kiểm tra trường flags tại Qword (idx * 4 + 3): Có phải FLAG_APP (bit 32 == 1) không?
-        %21 = const 2 bv64
-        %22 = shl %18 %21
-        %23 = const 3 bv64
-        %24 = add %22 %23
-        %25 = slice %3 %24 ptr<DiskQword,1>
-        %26 = load %25 0 bv64
-        %27 = const 32 bv64
-        %28 = lshr %26 %27
-        %29 = const 1 bv64
-        %30 = and %28 %29
-        %31 = const 0 bv64
-        %32 = cmp ne %30 %31
-        br %32 @b3 @b4
+        %26 = call vfs_entry_is_app %3 %19
+        %27 = cmp ne %26 %18
+        br %27 @b3 @b4
 
     @b3
-        # Lấy start_sec tại Qword (idx * 4 + 2) và nạp App Binary vào 0x90000 (%4)
-        %33 = add %22 %21
-        %34 = slice %3 %33 ptr<DiskQword,1>
-        %35 = load %34 0 bv64
-        %36 = const 0xffffff bv64
-        %37 = and %35 %36
-        call drv_ata_load_app %0 %4 %37
-
-        # Tính tọa độ X của Icon thứ %18 trên Dock: icon_x = 530 + idx * 168
-        %38 = const 168 bv64
-        %39 = mul %18 %38
-        %40 = const 530 bv64
-        %41 = add %40 %39
-        %42 = const 634 bv64
-
-        # Gọi thẳng cổng Qword #1 (0x90008 = app_draw_icon) của App vừa nạp!
-        %43 = slice %4 %29 ptr<DiskQword,1>
-        call %43 %1 %41 %42
+        %28 = call vfs_entry_get_lba %3 %19
+        call drv_ata_load_app %0 %5 %28
+        %29 = const 698 bv64
+        %30 = slice %5 %19 ptr<DiskQword,1>
+        call %30 %1 %29 %20
         jmp @b4
 
     @b4
-        %44 = const 1 bv64
-        %45 = add %18 %44
-        jmp @b1 %45
-
-    @b5
-        call ui_invalidate_rect %2 %10 %12 %6 %8
+        call ui_invalidate_rect %2 %11 %13 %7 %9
         ret
 }
 
-# 3. Bộ Điều phối Sự kiện & Compositor (%1 = VRAM 0x200000, %2 = Backbuffer 0x600000)
-func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,16384> %6:ptr<DiskQword,64> {
+func bg_keep_alive_app1 void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %2 = const 0 bv64
+        %3 = const 2 bv64
+        %4 = call cap_state_get %0 %3
+        %5 = const 108 bv64
+        %6 = cmp eq %4 %5
+        br %6 @b1 @b6
+
+    @b1
+        %7 = call smp_poll_all_done %1
+        %8 = cmp ne %7 %2
+        br %8 @b2 @b6
+
+    @b2
+        %9 = call cap_state_get %0 %2
+        %10 = const 99000000 bv64
+        %11 = call std_min %9 %10
+        %12 = const 800000 bv64
+        %13 = add %11 %12
+        call cap_state_set %0 %2 %13
+
+        %14 = const 30000000 bv64
+        %15 = urem %13 %14
+        %16 = const 1 bv64
+        jmp @b3 %16
+
+    @b3 %17:bv64
+        @inv uge %17 1
+        @inv ule %17 8
+        %18 = const 8 bv64
+        %19 = cmp ult %17 %18
+        br %19 @b4 @b6
+
+    @b4
+        %20 = const 1 bv64
+        %21 = sub %17 %20
+        %22 = const 100000 bv64
+        %23 = mul %21 %22
+        %24 = add %15 %23
+        %25 = add %24 %22
+        call smp_dispatch_worker %1 %17 %24 %25
+        %26 = add %17 %20
+        jmp @b3 %26
+
+    @b6
+        ret
+}
+
+func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,16384> %6:ptr<DiskQword,64> %7:ptr<DiskQword,16384> %8:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -174,134 +206,139 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
     @req uge %4 0x10000
     @req ult %4 0x80000000
     @req uge %5 0x10000
-    @req ult %5 0x70000000
+    @req ult %5 0x10000000000
     @req uge %6 0x10000
-    @req ult %6 0x80000000
+    @req ult %6 0x10000000000
+    @req uge %7 0x10000
+    @req ult %7 0x10000000000
+    @req uge %8 0x10000
+    @req ult %8 0x10000000000
 
     @b0
-        %7 = const 0x7c000 ptr<DiskQword,64>
-        %8 = load %3 16 bv64                # mouse_x
-        %9 = load %3 24 bv64                # mouse_y
-        %10 = load %3 32 bv64               # mouse_click
-        %11 = const 0 bv64
-        %12 = const 1 bv64
-        %44 = load %3 64 bv64               # prev_mx
-        %45 = load %3 72 bv64               # prev_my
-        %95 = const 0x40000000 ptr<DiskQword,2048>
+        %9 = const 0x7c000 ptr<DiskQword,64>
+        %10 = load %3 16 bv64
+        %11 = load %3 24 bv64
+        %12 = load %3 32 bv64
+        %13 = const 0 bv64
+        %14 = const 1 bv64
+        %15 = const 2 bv64
+        %44 = load %3 64 bv64
+        %45 = load %3 72 bv64
+        %95 = const 0x7e000 ptr<DiskQword,64>
 
-        # Kiểm tra nếu có Click chuột
-        %13 = cmp ne %10 %11
-        br %13 @b1 @b20
+        %49 = load %3 56 bv64
+        %52 = cmp ne %49 %15
+        br %52 @b90 @b91
+
+    @b90
+        call bg_keep_alive_app1 %8 %95
+        jmp @b91
+
+    @b91
+        %16 = cmp ne %12 %13
+        br %16 @b1 @b20
 
     @b1
-        %14 = const 624 bv64
-        %15 = cmp uge %9 %14
-        br %15 @b2 @b18
+        %17 = const 624 bv64
+        %18 = cmp uge %11 %17
+        br %18 @b2 @b18
 
     @b18
-        # Click phía trên thanh Dock: nếu có App đang chạy thì chuyển sự kiện cho App
         %65 = load %3 56 bv64
-        %66 = cmp ne %65 %11
+        %66 = cmp ne %65 %13
         br %66 @b8 @b19
 
     @b19
-        store %3 32 %11
+        store %3 32 %13
         jmp @b6
 
     @b2
-        # Click vào Icon #1 trên Dock (EDITOR: x = 510..600)
-        %16 = const 510 bv64
-        %17 = const 600 bv64
-        %18 = cmp uge %8 %16
-        %19 = cmp ult %8 %17
-        %20 = and %18 %19
-        br %20 @b3 @b4
+        %19 = const 510 bv64
+        %20 = const 600 bv64
+        %21 = cmp uge %10 %19
+        %22 = cmp ult %10 %20
+        %23 = and %21 %22
+        br %23 @b3 @b4
 
     @b3
-        %21 = const 2 bv64
-        %22 = slice %4 %21 ptr<DiskQword,1>
-        %23 = load %22 0 bv64
-        %24 = const 0xffffff bv64
-        %25 = and %23 %24
-        call drv_ata_load_app %0 %5 %25
-        %70 = slice %6 %11 ptr<DiskQword,1>
-        store %70 0 %11
-        store %3 0 %11
-        store %3 56 %12
-        store %3 32 %11
-        store %3 88 %11
-        store %3 96 %11
-        store %3 104 %11
-        store %3 112 %11
+        store %3 0 %13
+        store %3 56 %14
+        store %3 32 %13
+        store %3 88 %13
+        store %3 112 %13
         jmp @b8
 
     @b4
-        # Click vào Icon #2 trên Dock (VIEWER: x = 680..770)
         %26 = const 680 bv64
         %27 = const 770 bv64
-        %28 = cmp uge %8 %26
-        %29 = cmp ult %8 %27
+        %28 = cmp uge %10 %26
+        %29 = cmp ult %10 %27
         %30 = and %28 %29
         br %30 @b5 @b19
 
     @b5
-        %31 = const 6 bv64
-        %32 = slice %4 %31 ptr<DiskQword,1>
-        %33 = load %32 0 bv64
-        %34 = const 0xffffff bv64
-        %35 = and %33 %34
-        call drv_ata_load_app %0 %5 %35
-        %36 = const 2 bv64
-        store %3 0 %11
-        store %3 56 %36
-        store %3 32 %11
-        store %3 88 %11
-        store %3 96 %11
-        store %3 104 %11
-        store %3 112 %11
+        %31 = call cap_state_get %8 %15
+        store %3 0 %13
+        store %3 56 %15
+        store %3 32 %13
+        store %3 88 %31
+        store %3 112 %13
         jmp @b8
 
     @b20
-        # Nếu không Click chuột, kiểm tra có Phím bấm mới cho App đang mở không
         %71 = load %3 0 bv64
         %72 = load %3 56 bv64
-        %73 = cmp ne %71 %11
-        %74 = cmp ne %72 %11
-        %75 = and %73 %74
+        %73 = cmp ne %71 %13
+        %74 = cmp ne %72 %13
+
+        %96 = load %3 88 bv64
+        %97 = const 100 bv64
+        %98 = cmp uge %96 %97
+        %99 = or %73 %98
+        %75 = and %99 %74
         br %75 @b8 @b6
 
     @b8
-        call %5 %2 %3 %6 %7 %4 %95 %0
-        store %3 32 %11
+        %50 = load %3 56 bv64
+        %51 = cmp eq %50 %14
+        br %51 @b81 @b82
+
+    @b81
+        call %5 %2 %3 %6 %9 %4 %95
+        jmp @b83
+
+    @b82
+        call %7 %2 %3 %8 %9 %4 %95
+        jmp @b83
+
+    @b83
+        store %3 32 %13
 
         %53 = load %3 56 bv64
-        %54 = cmp eq %53 %11
+        %54 = cmp eq %53 %13
         br %54 @b14 @b15
 
     @b15
-        %55 = load %3 96 bv64
-        %56 = cmp ne %55 %11
+        %55 = call ipc_disk_take_read_req %3
+        %56 = cmp ne %55 %13
         br %56 @b13 @b16
 
     @b13
-        store %3 96 %11
         call drv_ata_read_sector %0 %6 %55
-        call %5 %2 %3 %6 %7 %4 %95 %0
+        call %5 %2 %3 %6 %9 %4 %95
         jmp @b6
 
     @b16
-        %60 = load %3 104 bv64
-        %61 = cmp ne %60 %11
+        %60 = call ipc_disk_take_write_req %3
+        %61 = cmp ne %60 %13
         br %61 @b17 @b6
 
     @b17
-        store %3 104 %11
         call drv_ata_write_sector %0 %6 %60
-        call %5 %2 %3 %6 %7 %4 %95 %0
+        call %5 %2 %3 %6 %9 %4 %95
         jmp @b6
 
     @b14
-        # Khi App đóng: Xóa vùng cửa sổ trên Backbuffer (%2) và gọi ui_invalidate_rect!
         %57 = const 180 bv64
         %58 = const 50 bv64
         %59 = const 1100 bv64
@@ -312,53 +349,45 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         jmp @b6
 
     @b6
-        # =====================================================================
-        # COMPOSITOR ENGINE: Chỉ Blit từ Backbuffer (%2) sang VRAM (%1) vùng đã Invalidate
-        # =====================================================================
-        %37 = load %3 80 bv64               # dmg_dirty
-        %38 = cmp ne %37 %11
+        %37 = load %3 80 bv64
+        %38 = cmp ne %37 %13
         br %38 @b7 @b10
 
     @b7
-        store %3 80 %11                     # Reset dmg_dirty = 0
+        store %3 80 %13
 
-        # 1. Xóa con chuột cũ trên VRAM (%1) bằng cách chép ô 12x18 từ Backbuffer (%2)
         %80 = const 12 bv64
         %81 = const 18 bv64
         %82 = add %44 %80
         %83 = add %45 %81
         call gfx_blit_rect %1 %2 %44 %45 %82 %83
 
-        # 2. Chép đúng hình chữ nhật (dmg_x1, dmg_y1 .. dmg_x2, dmg_y2) từ Backbuffer (%2) sang VRAM (%1)
         %84 = load %3 120 bv64
         %85 = load %3 128 bv64
         %86 = load %3 136 bv64
         %87 = load %3 144 bv64
         call gfx_blit_rect %1 %2 %84 %85 %86 %87
 
-        # 3. Vẽ con chuột mới lên VRAM (%1)
-        call gfx_draw_cursor %1 %8 %9
-        store %3 64 %8
-        store %3 72 %9
+        call gfx_draw_cursor %1 %10 %11
+        store %3 64 %10
+        store %3 72 %11
         jmp @b12
 
     @b10
-        # Nếu không có vùng bẩn nào (dmg_dirty == 0), kiểm tra chuột có di chuyển không
-        %46 = cmp ne %8 %44
-        %47 = cmp ne %9 %45
+        %46 = cmp ne %10 %44
+        %47 = cmp ne %11 %45
         %48 = or %46 %47
         br %48 @b11 @b12
 
     @b11
-        # Chuột di chuyển: Chép ô 12x18 từ Backbuffer (%2) sang VRAM (%1) để xóa chuột cũ, rồi vẽ chuột mới!
         %88 = const 12 bv64
         %89 = const 18 bv64
         %90 = add %44 %88
         %91 = add %45 %89
         call gfx_blit_rect %1 %2 %44 %45 %90 %91
-        call gfx_draw_cursor %1 %8 %9
-        store %3 64 %8
-        store %3 72 %9
+        call gfx_draw_cursor %1 %10 %11
+        store %3 64 %10
+        store %3 72 %11
         jmp @b12
 
     @b12

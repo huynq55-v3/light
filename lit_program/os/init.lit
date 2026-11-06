@@ -1,0 +1,79 @@
+# File: lit_program/os/init.lit
+include shell.lit
+include ../drivers/serial.lit
+
+func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x10000000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x10000000000
+
+    @b0
+        call drv_vga_init %0
+        call drv_kbd_init %0 %1
+
+        %6 = const 0 bv64
+        call drv_ata_read_sector %0 %2 %6
+
+        %7 = const 2 bv64
+        %8 = call cap_state_get %2 %7
+        %9 = const 0xffffff bv64
+        %10 = and %8 %9
+
+        %11 = const 4 bv64
+        %12 = call cap_state_get %2 %11
+        %13 = and %12 %9
+
+        call drv_ata_read_sector %0 %2 %10
+        call drv_ata_read_sector %0 %4 %13
+
+        call std_mem_zero %3
+        call std_mem_zero %5
+
+        %14 = const 79 bv8
+        %15 = const 75 bv8
+        %16 = const 10 bv8
+        call drv_serial_putc %0 %14
+        call drv_serial_putc %0 %15
+        call drv_serial_putc %0 %16
+        ret
+}
+
+func sys_init_desktop void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,16384> %6:ptr<DiskQword,16384> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x10000000000
+    @req uge %6 0x10000
+    @req ult %6 0x10000000000
+
+    @b0
+        call ipc_channel_init %3
+
+        %7 = const 0 bv64
+        %8 = const 1280 bv64
+        %9 = const 720 bv64
+        %10 = const 0x161b26 bv32
+
+        call gfx_fill_rect %2 %7 %7 %8 %9 %10
+        call dock_render_bar %0 %2 %3 %4 %5 %6
+        store %3 80 %7
+        call gfx_blit_rect %1 %2 %7 %7 %8 %9
+
+        %11 = const 640 bv64
+        %12 = const 360 bv64
+        call gfx_draw_cursor %1 %11 %12
+        ret
+}

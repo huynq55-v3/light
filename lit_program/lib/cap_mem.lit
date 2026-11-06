@@ -1,0 +1,78 @@
+# File: lit_program/lib/cap_mem.lit
+include os_layout.lit
+
+func cap_state_get bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 64
+
+    @b0
+        %2 = slice %0 %1 ptr<DiskQword,1>
+        %3 = load %2 0 bv64
+        ret %3
+}
+
+func cap_state_set void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 64
+
+    @b0
+        %3 = slice %0 %1 ptr<DiskQword,1>
+        store %3 0 %2
+        ret
+}
+
+func cap_mem_copy void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 64
+        %4 = const 64 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b3
+
+    @b2
+        %6 = slice %1 %3 ptr<DiskQword,1>
+        %7 = load %6 0 bv64
+        %8 = slice %0 %3 ptr<DiskQword,1>
+        store %8 0 %7
+        %9 = const 1 bv64
+        %10 = add %3 %9
+        jmp @b1 %10
+
+    @b3
+        ret
+}
+
+func cap_mem_fill void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %2 64
+
+    @b0
+        %3 = const 0 bv64
+        jmp @b1 %3
+
+    @b1 %4:bv64
+        @inv ule %4 64
+        %5 = cmp ult %4 %2
+        br %5 @b2 @b3
+
+    @b2
+        %6 = slice %0 %4 ptr<DiskQword,1>
+        store %6 0 %1
+        %7 = const 1 bv64
+        %8 = add %4 %7
+        jmp @b1 %8
+
+    @b3
+        ret
+}

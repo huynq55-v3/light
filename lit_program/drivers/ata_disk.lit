@@ -4,7 +4,7 @@ include ../lib/os_layout.lit
 # 1. Đọc 1 sector (512 bytes = 64 Qwords) từ ổ đĩa ATA Primary Master (LBA 28-bit)
 func drv_ata_read_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
     @req uge %1 0x10000
-    @req ult %1 0x80000000
+    @req ult %1 0x10000000000
     @req ult %2 268435456
 
     @b0
@@ -99,7 +99,7 @@ func drv_ata_read_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
 # 2. Ghi 1 sector (512 bytes = 64 Qwords) vào ổ đĩa ATA Primary Master
 func drv_ata_write_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
     @req uge %1 0x10000
-    @req ult %1 0x80000000
+    @req ult %1 0x10000000000
     @req ult %2 268435456
 
     @b0
@@ -193,11 +193,10 @@ func drv_ata_write_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
         ret
 }
 
-# 3. Nạp 64 Sector (32.768 bytes = 4096 Qwords) mã máy của App từ đĩa vào vùng RAM 0x90000
-# 3. Nạp 256 Sector (131.072 bytes = 16384 Qwords) mã máy của App từ đĩa vào vùng RAM 0x90000
+# 3. Nạp 256 Sector (131.072 bytes = 16384 Qwords) mã máy của App từ đĩa vào Lô 64GB riêng biệt
 func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> %2:bv64 {
     @req uge %1 0x10000
-    @req ult %1 0x70000000
+    @req ult %1 0x10000000000
     @req ult %2 268435000
 
     @b0

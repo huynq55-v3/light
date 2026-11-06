@@ -1,18 +1,20 @@
 # File: lit_program/apps/editor.lit
-# App: GRAPHICAL TEXT EDITOR (Tích hợp Compositor API ui_invalidate_rect & Dynamic VFS Lookup)
+# App #1: GRAPHICAL TEXT EDITOR (Chạy trên Lô 1: 64GB = 0x10_0000_0000)
 
 include ../lib/ui_window.lit
 include ../lib/ui_file_browser.lit
 include ../lib/std_lib.lit
+include ../lib/ipc_bus.lit
+include ../lib/ui_canvas.lit
 
-# 2. Render văn bản streaming trong vùng soạn thảo (trên Backbuffer %0)
+# 1. Render văn bản streaming trong vùng soạn thảo (trên Backbuffer %0, lấy dữ liệu từ Lô 64GB %2)
 func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
-    @req ult %2 0x80000000
+    @req ult %2 0x10000000000
 
     @b0
         %3 = const 0 bv64
@@ -42,13 +44,11 @@ func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<
         %19 = const 0xff bv64
         %20 = and %18 %19
 
-        # Nếu gặp byte 0 (EOF) -> Dừng
         %21 = const 0 bv64
         %22 = cmp eq %20 %21
         br %22 @b12 @b3
 
     @b3
-        # Byte 10 (\n) -> Xuống dòng
         %23 = const 10 bv64
         %24 = cmp eq %20 %23
         br %24 @b4 @b6
@@ -67,7 +67,6 @@ func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<
         jmp @b1 %28 %29 %31
 
     @b6
-        # Bỏ qua byte 13 (\r)
         %32 = const 13 bv64
         %33 = cmp eq %20 %32
         br %33 @b7 @b8
@@ -78,7 +77,6 @@ func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<
         jmp @b1 %35 %7 %8
 
     @b8
-        # Wrap dòng nếu x > 1020
         %36 = const 1020 bv64
         %37 = cmp ugt %7 %36
         br %37 @b9 @b11
@@ -115,7 +113,7 @@ func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<
         ret
 }
 
-# Hàm bắt buộc của mọi App: Tự vẽ Icon 52x52 của App lên Thanh Dock tại tọa độ (x = %1, y = %2)
+# 2. Hàm bắt buộc của mọi App: Tự vẽ Icon 52x52 của App lên Thanh Dock
 func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -123,20 +121,17 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
     @req ule %2 650
 
     @b0
-        # 1. Nền trang giấy trắng 52x52 (x .. x+52, y .. y+52)
         %3 = const 52 bv64
         %4 = add %1 %3
         %5 = add %2 %3
         %6 = const 0xf8fafc bv32
         call gfx_fill_rect %0 %1 %2 %4 %5 %6
 
-        # 2. Phần băng rôn xanh dương trên đầu trang giấy (cao 14px)
         %7 = const 14 bv64
         %8 = add %2 %7
         %9 = const 0x3b82f6 bv32
         call gfx_fill_rect %0 %1 %2 %4 %8 %9
 
-        # 3. Ba dòng kẻ ngang tượng trưng cho văn bản bên trong Icon Editor
         %10 = const 8 bv64
         %11 = const 44 bv64
         %12 = add %1 %10
@@ -161,7 +156,6 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         %26 = add %2 %24
         call gfx_fill_rect %0 %12 %25 %13 %26 %18
 
-        # 4. Chấm xanh sáng dưới chân Icon (y + 60 .. y + 64)
         %27 = const 23 bv64
         %28 = const 29 bv64
         %29 = const 60 bv64
@@ -175,29 +169,28 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         ret
 }
 
-# 3. Hàm ứng dụng Soạn thảo chính (Hỗ trợ Path String Pool & Drill-down Explorer)
+# 3. Hàm ứng dụng Soạn thảo chính (Nhận vùng nhớ riêng %2 tại Lô 64GB = 0x10_0020_0000)
 func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
-    # %0: Backbuffer, %1: IpcChannel, %2: TextBuf (0x88000), %3: PoolBuf (0x7c000), %4: VfsDirBuf (0x7b000)
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
-    @req ult %2 0x80000000
+    @req ult %2 0x10000000000
     @req uge %3 0x10000
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
 
     @b0
-        %5 = load %1 16 bv64                # mouse_x
-        %6 = load %1 24 bv64                # mouse_y
-        %7 = load %1 32 bv64                # mouse_click
+        %5 = call ipc_mouse_get_x %1
+        %6 = call ipc_mouse_get_y %1
+        %7 = call ipc_mouse_get_click %1
 
-        %8 = const 200 bv64                 # win_x
-        %9 = const 60 bv64                  # win_y
-        %10 = const 880 bv64                # win_w
-        %11 = const 540 bv64                # win_h
+        %8 = const 200 bv64
+        %9 = const 60 bv64
+        %10 = const 880 bv64
+        %11 = const 540 bv64
         %12 = const 0 bv64
         %13 = const 1 bv64
 
@@ -224,7 +217,6 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         %20 = const 96 bv64
         %21 = const 28 bv64
 
-        # Nút [NEW] (x = 240, w = 80)
         %22 = const 240 bv64
         %23 = const 80 bv64
         %24 = call ui_btn_hit %5 %6 %7 %22 %20 %23 %21
@@ -238,7 +230,6 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         jmp @b36
 
     @b5
-        # Nút [BROWSE] (x = 340, w = 110) -> Mở Root (pref_off = 0, pref_len = 0 -> state = 1)
         %27 = const 340 bv64
         %28 = const 110 bv64
         %29 = call ui_btn_hit %5 %6 %7 %27 %20 %28 %21
@@ -250,7 +241,6 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         jmp @b36
 
     @b7
-        # Nút [SAVE] (x = 470, w = 80) -> Lưu vào LBA của file đang mở (ở offset 48)
         %32 = const 470 bv64
         %33 = call ui_btn_hit %5 %6 %7 %32 %20 %23 %21
         %34 = cmp ne %33 %12
@@ -264,11 +254,10 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %38 @b81 @b99
 
     @b81
-        store %1 104 %37
+        call ipc_disk_req_write %1 %37
         ret
 
     @b10
-        # Nếu đang ở chế độ Browser (offset 88 > 0): Giải mã pref_off và pref_len
         %41 = load %1 88 bv64
         %42 = cmp ugt %41 %12
         br %42 @b11 @b99
@@ -276,18 +265,18 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @b11
         %43 = sub %41 %13
         %44 = const 0x7f bv64
-        %45 = and %43 %44                   # pref_len (<= 127)
+        %45 = and %43 %44
         %46 = const 8 bv64
         %47 = lshr %43 %46
         %48 = const 0xff bv64
-        %49 = and %47 %48                   # pref_off (<= 255)
+        %49 = and %47 %48
 
         %50 = const 230 bv64
         %51 = const 140 bv64
         %52 = call ui_fb_handle_click %3 %4 %5 %6 %7 %50 %51 %49 %45
 
         %53 = const 32 bv64
-        %54 = lshr %52 %53                  # tag (1 = Đổi Thư mục, 3 = Mở File)
+        %54 = lshr %52 %53
         %55 = const 0xffffff bv64
         %105 = and %52 %55
 
@@ -295,7 +284,6 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %106 @b121 @b12
 
     @b121
-        # Tag == 1: Mở Thư mục con (hoặc lùi BACK) -> Cập nhật offset 88 = payload + 1
         %107 = add %105 %13
         store %1 88 %107
         jmp @b36
@@ -306,11 +294,10 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %109 @b122 @b99
 
     @b122
-        # Tag == 3: Mở File tại LBA = %105!
         store %1 152 %105
         store %1 88 %12
         store %1 112 %12
-        store %1 96 %105
+        call ipc_disk_req_read %1 %105
         ret
 
     @b30
@@ -319,27 +306,26 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %58 @b99 @b31
 
     @b31
-        %59 = load %1 0 bv64
-        %60 = cmp ne %59 %12
+        %61 = call ipc_key_pop %1
+        %59 = const 0 bv8
+        %60 = cmp ne %61 %59
         br %60 @b32 @b99
 
     @b32
-        store %1 0 %12
-        %61 = load %1 8 bv8
         %62 = const 27 bv8
         %63 = cmp eq %61 %62
         br %63 @b21 @b33
 
     @b33
         call std_str_push_or_bs %2 %61
-        %64 = const 216 bv64
-        %65 = const 144 bv64
-        %66 = const 1064 bv64
-        %67 = const 564 bv64
+        %64 = const 14 bv64
+        %65 = const 82 bv64
+        %66 = const 862 bv64
+        %67 = const 502 bv64
         %68 = const 0xffffff bv32
-        call gfx_fill_rect %0 %64 %65 %66 %67 %68
+        call canvas_fill_rect %0 %64 %65 %66 %67 %68
         call editor_render_text %0 %3 %2
-        call ui_invalidate_rect %1 %64 %65 %66 %67
+        call canvas_invalidate_rect %1 %64 %65 %66 %67
         ret
 
     @b35
@@ -388,34 +374,35 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         %95 = const 0x45564153 bv64
         call ui_btn_draw_text %0 %3 %94 %80 %89 %81 %83 %84 %95 %87 %12
 
-        %96 = const 202 bv64
-        %97 = const 1078 bv64
-        %98 = const 132 bv64
-        %99 = const 598 bv64
+        %96 = const 0 bv64
+        %97 = const 876 bv64
+        %98 = const 70 bv64
+        %99 = const 536 bv64
+        %103 = const 34 bv64
         br %79 @b40 @b50
 
     @b40
         %100 = const 0x0f172a bv32
-        call gfx_fill_rect %0 %96 %98 %97 %99 %100
+        call canvas_fill_rect %0 %96 %98 %97 %99 %100
         %101 = const 230 bv64
         %102 = const 140 bv64
 
         %110 = sub %77 %13
         %111 = const 0x7f bv64
-        %112 = and %110 %111                # pref_len
+        %112 = and %110 %111
         %113 = const 8 bv64
         %114 = lshr %110 %113
         %115 = const 0xff bv64
-        %116 = and %114 %115                # pref_off
+        %116 = and %114 %115
 
         call ui_fb_render %0 %3 %4 %101 %102 %116 %112
-        call ui_invalidate_rect %1 %96 %80 %97 %99
+        call canvas_invalidate_rect %1 %96 %103 %97 %99
         ret
 
     @b50
-        call gfx_fill_rect %0 %96 %98 %97 %99 %84
+        call canvas_fill_rect %0 %96 %98 %97 %99 %84
         call editor_render_text %0 %3 %2
-        call ui_invalidate_rect %1 %96 %80 %97 %99
+        call canvas_invalidate_rect %1 %96 %103 %97 %99
         ret
 
     @b99

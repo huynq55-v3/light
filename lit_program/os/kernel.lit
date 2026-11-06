@@ -1,6 +1,7 @@
 # File: lit_program/os/kernel.lit
-include shell.lit
-include ../drivers/serial.lit
+# LIGHT OS MICRO-EXOKERNEL: Phân Lô 64GB cho từng App (Lô 1 = 64GB, Lô 2 = 128GB)
+
+include init.lit
 
 layout KernelState 16 {
     0: bv64 @inv ule val 64
@@ -20,7 +21,7 @@ func kregister_task bv64 %0:ptr<KernelState,1> %1:bv64 {
         ret %3
 }
 
-func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,921600> %4:ptr<VgaCell,921600> %5:ptr<DiskQword,64> %6:ptr<DiskQword,16384> %7:ptr<DiskQword,64> {
+func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,921600> %4:ptr<VgaCell,921600> %5:ptr<DiskQword,64> %6:ptr<DiskQword,16384> %7:ptr<DiskQword,64> %8:ptr<DiskQword,16384> %9:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -32,123 +33,56 @@ func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> 
     @req uge %5 0x10000
     @req ult %5 0x80000000
     @req uge %6 0x10000
-    @req ult %6 0x70000000
+    @req ult %6 0x10000000000
     @req uge %7 0x10000
-    @req ult %7 0x80000000
+    @req ult %7 0x10000000000
+    @req uge %8 0x10000
+    @req ult %8 0x10000000000
+    @req uge %9 0x10000
+    @req ult %9 0x10000000000
 
     @b0
-        %8 = const 0 bv64
-        jmp @b1 %8
+        %10 = const 0 bv64
+        jmp @b1 %10
 
-    @b1 %9:bv64
+    @b1 %11:bv64
         @inv uge %1 0x10000
         call drv_kbd_poll_task %0 %1 %2
-        call app_desktop_ipc_task %0 %3 %4 %2 %5 %6 %7
-        jmp @b1 %9
-}
-
-func init_startup void %0:io<0,0xffff> %1:ptr<KernelState,1> %2:ptr<KeyMap,8> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req uge %2 0x10000
-    @req ult %2 0x80000000
-    @req uge %3 0x10000
-    @req ult %3 0x80000000
-    @req uge %4 0x10000
-    @req ult %4 0x80000000
-    @req uge %5 0x10000
-    @req ult %5 0x80000000
-
-    @b0
-        %6 = const 0 bv64
-        %7 = call kregister_task %1 %6
-        call drv_vga_init %0
-
-        %8 = call kregister_task %1 %7
-        call drv_kbd_init %0 %2
-
-        # 1. Đọc Sector 0 (Superblock) tạm vào %3 để lấy dir_start_lba (Qword 2) và pool_start_lba (Qword 4)
-        call drv_ata_read_sector %0 %3 %6
-        %9 = const 2 bv64
-        %10 = slice %3 %9 ptr<DiskQword,1>
-        %11 = load %10 0 bv64
-        %12 = const 0xffffff bv64
-        %13 = and %11 %12                   # dir_start_lba (Sector 1)
-
-        %14 = const 4 bv64
-        %15 = slice %3 %14 ptr<DiskQword,1>
-        %16 = load %15 0 bv64
-        %17 = and %16 %12                   # pool_start_lba (Sector 17)
-
-        # 2. Nạp Directory Table vào 0x7b000 (%3) và Path String Pool vào 0x7c000 (%5)
-        call drv_ata_read_sector %0 %3 %13
-        call drv_ata_read_sector %0 %5 %17
-
-        # 3. Khởi tạo bộ đệm văn bản 0x88000 (%4) trống lúc bật máy
-        %18 = slice %4 %6 ptr<DiskQword,1>
-        store %18 0 %6
-
-        %19 = const 79 bv8
-        %20 = const 75 bv8
-        %21 = const 10 bv8
-        call drv_serial_putc %0 %19
-        call drv_serial_putc %0 %20
-        call drv_serial_putc %0 %21
-        ret
+        call app_desktop_ipc_task %0 %3 %4 %2 %5 %6 %7 %8 %9
+        jmp @b1 %11
 }
 
 func kernel_boot_entry void %0:io<0,0xffff> {
 
     @b0
+        # 1. LÔ 0 (0 GB): Hệ thống Kernel, VFS, VRAM & Backbuffer
         %1 = const 0x78000 ptr<KernelState,1>
         %2 = const 0 bv64
         store %1 0 %2
         store %1 8 %2
 
-        %4 = const 0x79000 ptr<IpcChannel,1>
-        %5 = const 0 bv8
-        %6 = const 640 bv64
-        %7 = const 360 bv64
-        store %4 0 %2
-        store %4 8 %5
-        store %4 16 %6
-        store %4 24 %7
-        store %4 32 %2
-        store %4 40 %2
-        store %4 48 %2
-        store %4 56 %2
-        store %4 64 %6
-        store %4 72 %7
-        store %4 80 %2
-        store %4 88 %2
-        store %4 96 %2
-        store %4 104 %2
-        store %4 112 %2
-        store %4 120 %2
-        store %4 128 %2
-        store %4 136 %2
-        store %4 144 %2
+        %3 = const 0x79000 ptr<IpcChannel,1>
+        %4 = const 0x7a000 ptr<KeyMap,8>
+        %5 = const 0x7b000 ptr<DiskQword,64>
+        %6 = const 0x7c000 ptr<DiskQword,64>
+        %9 = const 0x200000 ptr<VgaCell,921600>
+        %10 = const 0x600000 ptr<VgaCell,921600>
 
-        %8 = const 0x7a000 ptr<KeyMap,8>
-        %9 = const 0x7b000 ptr<DiskQword,64>  # Bảng Thư mục ảo (Sector 1)
-        %10 = const 0x7c000 ptr<DiskQword,64>  # Bảng Font
-        %11 = const 0x88000 ptr<DiskQword,64>  # Bộ đệm file văn bản
-        %12 = const 0x90000 ptr<DiskQword,16384>  # Vùng RAM nạp App Binary (0x90000)
-        %13 = const 0x200000 ptr<VgaCell,921600>  # VRAM thực tế (0x200000)
-        %17 = const 0x600000 ptr<VgaCell,921600>  # Backbuffer trong RAM (0x600000)
+        # 2. PHÂN LÔ 64 GIGABYTE CHO MỖI APP (Mỗi Lô cách nhau đúng 64GB = 0x10_0000_0000!):
+        #    - LÔ 1 (64 GB -> 128 GB): Dành riêng cho App #0 (Editor)
+        %8 = const 0x1000000000 ptr<DiskQword,16384>  # Lô #1 Code tại 64GB
+        %7 = const 0x1000200000 ptr<DiskQword,64>  # Lô #1 Heap tại 64GB + 2MB
 
-        call init_startup %0 %1 %8 %9 %11 %10
+        #    - LÔ 2 (128 GB -> 192 GB): Dành riêng cho App #1 (Pi Benchmark 100 chữ số)
+        %14 = const 0x2000000000 ptr<DiskQword,16384>  # Lô #2 Code tại 128GB (Worker: 0x2000000010)
+        %13 = const 0x2000200000 ptr<DiskQword,64>  # Lô #2 Heap tại 128GB + 2MB
 
-        # Vẽ nền Desktop + Dock vào Backbuffer (%17), rồi Blit toàn màn hình sang VRAM (%13)
-        %14 = const 1280 bv64
-        %15 = const 720 bv64
-        %16 = const 0x161b26 bv32
-        call gfx_fill_rect %17 %2 %2 %14 %15 %16
-        call dock_render_bar %0 %17 %4 %9 %12
-        store %4 80 %2
-        call gfx_blit_rect %13 %17 %2 %2 %14 %15
-        call gfx_draw_cursor %13 %6 %7
+        %11 = call kregister_task %1 %2
+        %12 = call kregister_task %1 %11
 
-        call kscheduler_loop %0 %8 %4 %13 %17 %9 %12 %11
+        call sys_init_drivers %0 %4 %5 %7 %6 %13
+        call sys_init_desktop %0 %9 %10 %3 %5 %8 %14
+
+        call kscheduler_loop %0 %4 %3 %9 %10 %5 %8 %7 %14 %13
         ret
 }
