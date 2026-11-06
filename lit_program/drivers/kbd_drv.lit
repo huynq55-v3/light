@@ -190,9 +190,7 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
     @b12
         ret
 }
-
-# Chuyển đổi mã ASCII khi người dùng đang giữ phím Shift
-func kbd_apply_shift bv64 %0:bv64 %1:bv64 {
+func kbd_apply_shift bv8 %0:bv64 %1:bv64 {
     # %0: ascii_char, %1: shift_down (0 hoặc 1)
     @ens ult %40 128
 

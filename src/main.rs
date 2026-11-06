@@ -10,6 +10,7 @@ use std::{env, fs, process};
 
 fn compile_and_verify_app(path: &str) -> Result<Vec<u8>, String> {
     let m = parser::parse_file(path)?;
+    verify::check_module(&m)?;
     for f in &m.funcs {
         verify::verify_func(&m, f)?;
     }
@@ -90,6 +91,16 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if args.len() > 2 && args[1] == "check" {
+        let m = parser::parse_file(&args[2])?;
+        verify::check_module(&m)?;
+        for f in &m.funcs {
+            verify::verify_func(&m, f)?;
+        }
+        println!("OK: {} hàm đã qua kiểm chứng", m.funcs.len());
+        return Ok(());
+    }
+
     if args.len() > 1 && args[1] == "pack" {
         println!("📦 Đang đóng gói 'storage/' vào 'disk.img'...");
         return build_disk_img();
@@ -110,6 +121,7 @@ fn run() -> Result<(), String> {
         module.funcs.len()
     );
 
+    verify::check_module(&module)?;
     for func in &module.funcs {
         verify::verify_func(&module, func)?;
         println!("  ✓ Z3 Verified: func '{}'", func.name);
