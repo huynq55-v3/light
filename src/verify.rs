@@ -52,7 +52,12 @@ fn dst_of(i: &Inst) -> Option<Reg> {
         | Inst::Bin { dst, .. }
         | Inst::Cmp { dst, .. }
         | Inst::Slice { dst, .. }
-        | Inst::Load { dst, .. } => Some(*dst),
+        | Inst::Load { dst, .. }
+        | Inst::Simd256 {
+            op: SimdOp::Dot,
+            dst,
+            ..
+        } => Some(*dst),
         Inst::HwIo { dst, .. } | Inst::Call { dst, .. } | Inst::CallPtr { dst, .. } => *dst,
         _ => None,
     }
@@ -77,6 +82,13 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
         Inst::Slice { base, idx, .. } => vec![*base, *idx],
         Inst::Load { base, .. } => vec![*base],
         Inst::Store { base, val, .. } => vec![*base, *val],
+        Inst::Simd256 { op, dst, lhs, rhs } => {
+            if *op == SimdOp::Dot {
+                vec![*lhs, *rhs]
+            } else {
+                vec![*dst, *lhs, *rhs]
+            }
+        }
         Inst::HwIo { cap, val, .. } => std::iter::once(*cap).chain(val.iter().copied()).collect(),
         Inst::Br { cond, .. } => vec![*cond],
         Inst::Jmp { args, .. } | Inst::Call { args, .. } => args.clone(),
@@ -574,6 +586,8 @@ impl<'ctx> Verifier<'ctx> {
             BinOp::Shl => l.bvshl(r),
             BinOp::LShr => l.bvlshr(r),
             BinOp::AShr => l.bvashr(r),
+            BinOp::FxMul => l.bvmul(r).bvlshr(&self.bv(16)),
+            BinOp::FxDiv => l.bvshl(&self.bv(16)).bvudiv(r),
         }
     }
 
@@ -791,6 +805,20 @@ impl<'ctx> Verifier<'ctx> {
                         &r.bvult(&self.bv(64)),
                         &format!("Dịch bit quá 64-bit tại %{}", dst),
                     )?,
+                    BinOp::FxMul => self.check(
+                        &l.bvmul_no_overflow(&r, false),
+                        &format!("Tràn số nhân điểm cố định Q16.16 (fxmul) tại %{}", dst),
+                    )?,
+                    BinOp::FxDiv => {
+                        self.check(
+                            &r._eq(&zero).not(),
+                            &format!("Lỗi chia cho 0 trong fxdiv tại %{}", dst),
+                        )?;
+                        self.check(
+                            &l.bvult(&self.bv(1u64 << 48)),
+                            &format!("Tràn số bị chia Q16.16 (fxdiv lhs >= 2^48) tại %{}", dst),
+                        )?;
+                    }
                     _ => {}
                 }
                 let res = self.eval_binop(*op, &l, &r);
@@ -880,6 +908,55 @@ impl<'ctx> Verifier<'ctx> {
                             offset
                         ),
                     )?;
+                }
+            }
+            Inst::Simd256 { op, dst, lhs, rhs } => {
+                for &ptr_reg in &[*lhs, *rhs] {
+                    let Type::Ptr {
+                        layout_id,
+                        max_elems,
+                    } = self.reg_ty(ptr_reg)?
+                    else {
+                        return Err(format!(
+                            "SIMD 256-bit: Toán hạng %{} không phải kiểu con trỏ Ptr",
+                            ptr_reg
+                        ));
+                    };
+                    let bytes = self.ptr_bytes(layout_id, max_elems)?;
+                    if bytes < 32 {
+                        return Err(format!(
+                            "Tràn vùng nhớ SIMD 256-bit: %{} chỉ có {} bytes (< 32 bytes / 256 bits)",
+                            ptr_reg, bytes
+                        ));
+                    }
+                }
+                if *op == SimdOp::Dot {
+                    self.decl_reg(*dst, Type::Bv64)?;
+                } else {
+                    let Type::Ptr {
+                        layout_id,
+                        max_elems,
+                    } = self.reg_ty(*dst)?
+                    else {
+                        return Err(format!(
+                            "SIMD 256-bit: Đích %{} không phải kiểu con trỏ Ptr",
+                            dst
+                        ));
+                    };
+                    let bytes = self.ptr_bytes(layout_id, max_elems)?;
+                    if bytes < 32 {
+                        return Err(format!(
+                            "Tràn vùng nhớ SIMD 256-bit: Đích %{} chỉ có {} bytes (< 32 bytes / 256 bits)",
+                            dst, bytes
+                        ));
+                    }
+                    let layout = &self.layouts[layout_id as usize];
+                    if layout.fields.iter().any(|f| f.inv.is_some()) {
+                        return Err(format!(
+                            "Bảo mật SIMD 256-bit: Không ghi đè 32-byte trực tiếp lên Layout '{}' có @inv",
+                            layout.name
+                        ));
+                    }
                 }
             }
             Inst::HwIo {

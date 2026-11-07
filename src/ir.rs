@@ -55,6 +55,18 @@ pub enum BinOp {
     Shl,
     LShr,
     AShr,
+    // Số thực Điểm cố định Q16.16 (Fixed-Point Arithmetic: fxmul = (a*b)>>16, fxdiv = (a<<16)/b)
+    FxMul,
+    FxDiv,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimdOp {
+    Add, // vadd256 %dst_ptr %lhs_ptr %rhs_ptr (AVX2 vpaddq 4x64-bit = 256-bit)
+    Sub, // vsub256 %dst_ptr %lhs_ptr %rhs_ptr (AVX2 vpsubq 4x64-bit = 256-bit)
+    Mul, // vmul256 %dst_ptr %lhs_ptr %rhs_ptr (AVX2 vpmuludq 4x64-bit = 256-bit)
+    Xor, // vxor256 %dst_ptr %lhs_ptr %rhs_ptr (AVX2 vpxor 256-bit)
+    Dot, // %dst_reg = vdot256 %lhs_ptr %rhs_ptr (AVX2 256-bit Horizontal Dot Product -> bv64)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +139,14 @@ pub enum Inst {
         base: Reg,
         offset: u32,
         val: Reg,
+    },
+
+    /// Tập lệnh Vector SIMD 256-bit (AVX2 YMM0..YMM15 / 32-byte Memory Vector Operations)
+    Simd256 {
+        op: SimdOp,
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
     },
 
     /// Lệnh đặc quyền cho OS Bare-metal (Đọc/ghi cổng I/O, thanh ghi CR3, MSR hoặc Syscall)

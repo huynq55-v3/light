@@ -122,6 +122,19 @@ fn p_binop(s: &str) -> Option<BinOp> {
         "shl" => Some(BinOp::Shl),
         "lshr" => Some(BinOp::LShr),
         "ashr" => Some(BinOp::AShr),
+        "fxmul" => Some(BinOp::FxMul),
+        "fxdiv" => Some(BinOp::FxDiv),
+        _ => None,
+    }
+}
+
+fn p_simdop(s: &str) -> Option<SimdOp> {
+    match s {
+        "vadd256" => Some(SimdOp::Add),
+        "vsub256" => Some(SimdOp::Sub),
+        "vmul256" => Some(SimdOp::Mul),
+        "vxor256" => Some(SimdOp::Xor),
+        "vdot256" => Some(SimdOp::Dot),
         _ => None,
     }
 }
@@ -274,6 +287,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                         offset: p_u64(toks[2])? as u32,
                         val: p_reg(toks[3])?,
                     },
+                    "vadd256" | "vsub256" | "vmul256" | "vxor256" => Inst::Simd256 {
+                        op: p_simdop(toks[0]).unwrap(),
+                        dst: p_reg(toks[1])?,
+                        lhs: p_reg(toks[2])?,
+                        rhs: p_reg(toks[3])?,
+                    },
                     "br" => Inst::Br {
                         cond: p_reg(toks[1])?,
                         then_bb: p_blk(toks[2])?,
@@ -374,6 +393,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                                 port_or_reg: p_u64(toks[4])? as u16,
                                 val: None,
                                 is_write: false,
+                            },
+                            "vdot256" => Inst::Simd256 {
+                                op: SimdOp::Dot,
+                                dst: d,
+                                lhs: p_reg(toks[3])?,
+                                rhs: p_reg(toks[4])?,
                             },
                             op_str => Inst::Bin {
                                 dst: d,

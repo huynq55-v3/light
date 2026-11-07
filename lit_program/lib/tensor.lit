@@ -1,0 +1,177 @@
+# File: lit_program/lib/tensor.lit
+# THƯ VIỆN VECTOR SIMD 256-BIT (AVX2), NHÂN MA TRẬN GEMM & SỐ THỰC Q16.16 CHO AI
+# Được Z3 chứng minh an toàn bộ nhớ 32-byte (256-bit) và không tràn số học 100%
+
+include os_layout.lit
+include std_lib.lit
+include cap_mem.lit
+
+# 1. Kiểm tra phần cứng CPU có đang bật chế độ AVX2 256-bit (YMM0..YMM15) hay không
+#    Đọc cờ phần cứng tại [0x7e008] (Slot 1 của bảng SMP Control 0x7e000)
+#    Trả về: 1 = Hardware AVX2 256-bit (YMM), 0 = SSE2 2x128-bit Fallback (XMM)
+func simd_has_avx2 bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @ens ule %4 1
+
+    @b0
+        %1 = const 1 bv64
+        %2 = slice %0 %1 ptr<DiskQword,1>
+        %3 = load %2 0 bv64
+        %4 = and %3 %1
+        ret %4
+}
+
+# 2. Nạp 4 phần tử 64-bit vào một Vector 256-bit (4 Qwords = 32 bytes) tại vị trí %1
+func vec256_store4 void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+
+    @b0
+        %6 = slice %0 %1 ptr<DiskQword,4>
+        store %6 0 %2
+        store %6 8 %3
+        store %6 16 %4
+        store %6 24 %5
+        ret
+}
+
+# 3. Cộng song song 2 Vector 256-bit (AVX2 vpaddq ymm0): dst[0..4] = a[0..4] + b[0..4]
+func vec256_add void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+    @req ule %2 60
+    @req ule %3 60
+
+    @b0
+        %4 = slice %0 %1 ptr<DiskQword,4>
+        %5 = slice %0 %2 ptr<DiskQword,4>
+        %6 = slice %0 %3 ptr<DiskQword,4>
+        vadd256 %4 %5 %6
+        ret
+}
+
+# 4. Trừ song song 2 Vector 256-bit (AVX2 vpsubq ymm0): dst[0..4] = a[0..4] - b[0..4]
+func vec256_sub void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+    @req ule %2 60
+    @req ule %3 60
+
+    @b0
+        %4 = slice %0 %1 ptr<DiskQword,4>
+        %5 = slice %0 %2 ptr<DiskQword,4>
+        %6 = slice %0 %3 ptr<DiskQword,4>
+        vsub256 %4 %5 %6
+        ret
+}
+
+# 5. Nhân song song 2 Vector 256-bit (AVX2 vpmuludq ymm0): dst[0..4] = a[0..4] * b[0..4]
+func vec256_mul void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+    @req ule %2 60
+    @req ule %3 60
+
+    @b0
+        %4 = slice %0 %1 ptr<DiskQword,4>
+        %5 = slice %0 %2 ptr<DiskQword,4>
+        %6 = slice %0 %3 ptr<DiskQword,4>
+        vmul256 %4 %5 %6
+        ret
+}
+
+# 6. XOR song song 2 Vector 256-bit (AVX2 vpxor ymm0): dst[0..4] = a[0..4] ^ b[0..4]
+func vec256_xor void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+    @req ule %2 60
+    @req ule %3 60
+
+    @b0
+        %4 = slice %0 %1 ptr<DiskQword,4>
+        %5 = slice %0 %2 ptr<DiskQword,4>
+        %6 = slice %0 %3 ptr<DiskQword,4>
+        vxor256 %4 %5 %6
+        ret
+}
+
+# 7. Tích vô hướng Vector 256-bit (AVX2 vdot256): sum = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
+func vec256_dot bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+    @req ule %2 60
+
+    @b0
+        %3 = slice %0 %1 ptr<DiskQword,4>
+        %4 = slice %0 %2 ptr<DiskQword,4>
+        %5 = vdot256 %3 %4
+        ret %5
+}
+
+# 8. Nhân 2 số thực Điểm cố định Q16.16 (1.0 = 65536): res = (a * b) >> 16
+func fx_q16_mul bv64 %0:bv64 %1:bv64 {
+    @req ule %0 0xffffffff
+    @req ule %1 0xffffffff
+
+    @b0
+        %2 = fxmul %0 %1
+        ret %2
+}
+
+# 9. Chia 2 số thực Điểm cố định Q16.16 (1.0 = 65536): res = (a << 16) / b
+func fx_q16_div bv64 %0:bv64 %1:bv64 {
+    @req ult %0 0x1000000000000
+    @req ugt %1 0
+
+    @b0
+        %2 = fxdiv %0 %1
+        ret %2
+}
+
+# 10. Nhân Ma trận GEMM 4x4 với Vector 4x1 bằng 4 lệnh AVX2 vdot256 liên tiếp!
+#     - Ma trận W (4x4 = 16 Qwords) nằm tại w_base (%1 <= 44)
+#     - Vector X (4 Qwords) nằm tại x_idx (%2 <= 60)
+#     - Vector kết quả Y (4 Qwords) ghi vào y_idx (%3 <= 60)
+#     - Trả về tổng 4 đầu ra của mạng Nơ-ron (Dot Sum)
+func tensor_gemm_4x4_vec4 bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 44
+    @req ule %2 60
+    @req ule %3 60
+
+    @b0
+        %4 = const 4 bv64
+        %5 = const 8 bv64
+        %6 = const 12 bv64
+
+        %7 = add %1 %4
+        %8 = add %1 %5
+        %9 = add %1 %6
+
+        %10 = call vec256_dot %0 %1 %2
+        %11 = call vec256_dot %0 %7 %2
+        %12 = call vec256_dot %0 %8 %2
+        %13 = call vec256_dot %0 %9 %2
+
+        call vec256_store4 %0 %3 %10 %11 %12 %13
+
+        # Cộng tổng 4 đầu ra (kẹp an toàn mỗi làn <= 0xffffffff để Z3 chứng minh không tràn)
+        %14 = const 0xffffffff bv64
+        %15 = and %10 %14
+        %16 = and %11 %14
+        %17 = and %12 %14
+        %18 = and %13 %14
+
+        %19 = add %15 %16
+        %20 = add %17 %18
+        %21 = add %19 %20
+        ret %21
+}

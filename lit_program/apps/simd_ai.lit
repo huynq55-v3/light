@@ -1,0 +1,559 @@
+# File: lit_program/apps/simd_ai.lit
+# App: MULTI-CORE SIMD AVX2 256-BIT & AI TENSOR BENCHMARK LAB
+# - Bấm [RUN SIMD]: Chạy LIÊN TỤC tập lệnh Vector 256-bit (vadd256, vsub256, vmul256, vxor256, vdot256),
+#   Nhân Ma trận GEMM 4x4 và Số thực Điểm cố định Q16.16 (fxmul, fxdiv) trên tất cả các nhân CPU!
+# - Bấm [STOP]: Dừng toàn bộ các nhân Worker AP và đưa CPU về 0%.
+
+include ../lib/ui_nuklear.lit
+include ../lib/ui_window.lit
+include ../lib/std_lib.lit
+include ../lib/ipc_bus.lit
+include ../lib/cap_mem.lit
+include ../lib/smp.lit
+include ../lib/tensor.lit
+
+# =============================================================================
+# 1. HÀM WORKER ĐA NHÂN (Chạy song song trên các nhân AP: Core 1..N-1)
+#    Thực thi vòng lặp tính toán Điểm cố định Q16.16 (fxmul, fxdiv) & Tensor Hash
+# =============================================================================
+func app_smp_worker bv64 %0:bv64 %1:bv64 {
+    @req ule %0 33554432
+    @req ule %1 33554432
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %0 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 33554432
+        %5 = const 33554432 bv64
+        %6 = cmp ult %3 %1
+        %7 = cmp ult %3 %5
+        %8 = and %6 %7
+        br %8 @b2 @b3
+
+    @b2
+        # Biến đổi số thực Điểm cố định Q16.16 (fxmul + fxdiv) trên mỗi nhân AP
+        %9 = const 0xffff bv64
+        %10 = and %3 %9
+        %11 = const 16 bv64
+        %12 = shl %10 %11
+        %13 = const 114688 bv64             # 1.75 trong Q16.16
+        %14 = fxmul %12 %13
+        %15 = const 0xffffffff bv64
+        %16 = and %14 %15
+        %17 = const 81920 bv64              # 1.25 trong Q16.16
+        %18 = fxdiv %16 %17
+        %19 = lshr %18 %11
+        %20 = xor %4 %19
+
+        %21 = const 1 bv64
+        %22 = add %3 %21
+        jmp @b1 %22 %20
+
+    @b3
+        ret %4
+}
+
+# =============================================================================
+# 2. HÀM VẼ ICON 52x52 LÊN THANH DOCK (Biểu tượng 4 Làn Vector SIMD Emerald)
+# =============================================================================
+func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 1200
+    @req ule %2 650
+
+    @b0
+        %3 = const 52 bv64
+        %4 = add %1 %3
+        %5 = add %2 %3
+        %6 = const 0x059669 bv32            # Emerald 600
+        call gfx_fill_rect %0 %1 %2 %4 %5 %6
+
+        %7 = const 4 bv64
+        %8 = add %1 %7
+        %9 = add %2 %7
+        %10 = sub %4 %7
+        %11 = sub %5 %7
+        %12 = const 0x064e3b bv32           # Emerald 900
+        call gfx_fill_rect %0 %8 %9 %10 %11 %12
+
+        %13 = const 10 bv64
+        %14 = const 15 bv64
+        %15 = const 20 bv64
+        %16 = const 25 bv64
+        %17 = const 29 bv64
+        %18 = const 34 bv64
+        %19 = const 39 bv64
+        %20 = const 44 bv64
+
+        %21 = add %1 %13
+        %22 = add %1 %14
+        %23 = add %1 %15
+        %24 = add %1 %16
+        %25 = add %1 %17
+        %26 = add %1 %18
+        %27 = add %1 %19
+        %28 = add %1 %20
+
+        %29 = const 12 bv64
+        %30 = const 40 bv64
+        %31 = add %2 %29
+        %32 = add %2 %30
+
+        %33 = const 0x34d399 bv32           # Emerald 400
+        %34 = const 0xfbbf24 bv32           # Amber 400
+        call gfx_fill_rect %0 %21 %31 %22 %32 %33
+        call gfx_fill_rect %0 %23 %31 %24 %32 %34
+        call gfx_fill_rect %0 %25 %31 %26 %32 %33
+        call gfx_fill_rect %0 %27 %31 %28 %32 %34
+        ret
+}
+
+# =============================================================================
+# 3. GIAO VIỆC ĐỘNG CHO TẤT CẢ CÁC CORE WORKER HIỆN CÓ (1 .. worker_count)
+#    Cổng nhảy Worker của App thứ 4 (Slot 3) nằm tại 0x4000000010
+# =============================================================================
+func simd_async_dispatch_workers void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 33030144
+
+    @b0
+        %2 = call smp_get_worker_count %0
+        %3 = const 1 bv64
+        jmp @b1 %3
+
+    @b1 %4:bv64
+        @inv uge %4 1
+        @inv ule %4 16
+        %5 = cmp ule %4 %2
+        br %5 @b2 @b3
+
+    @b2
+        %6 = const 262144 bv64
+        %7 = add %1 %6
+        %8 = const 0x4000000010 bv64
+        call smp_dispatch_worker %0 %4 %8 %1 %7
+
+        %9 = const 1 bv64
+        %10 = add %4 %9
+        jmp @b1 %10
+
+    @b3
+        ret
+}
+
+# =============================================================================
+# 4. THU THẬP KẾT QUẢ TỪ TẤT CẢ CÁC CORE WORKER HIỆN CÓ
+# =============================================================================
+func simd_collect_workers_result bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = call smp_get_worker_count %0
+        %2 = const 1 bv64
+        %3 = const 0 bv64
+        jmp @b1 %2 %3
+
+    @b1 %4:bv64 %5:bv64
+        @inv uge %4 1
+        @inv ule %4 16
+        %6 = cmp ule %4 %1
+        br %6 @b2 @b3
+
+    @b2
+        %7 = call smp_get_worker_result %0 %4
+        %8 = xor %5 %7
+        %9 = const 1 bv64
+        %10 = add %4 %9
+        jmp @b1 %10 %8
+
+    @b3
+        ret %5
+}
+
+# =============================================================================
+# 5. HÀM THỰC THI KERNEL VECTOR SIMD 256-BIT + GEMM 4x4 + FIXED-POINT Q16.16
+#    - Slot 16..19: Vector A (4x64-bit = 256-bit)
+#    - Slot 20..23: Vector B (4x64-bit = 256-bit)
+#    - Slot 24..27: Vector C (4x64-bit = 256-bit)
+#    - Slot 28..43: Ma trận W 4x4 (16x64-bit)
+#    - Slot 48: Tổng số phép toán SIMD Ops đã chạy
+#    - Slot 49: Kết quả Vector 256-bit (vadd256 + vmul256 + vsub256 + vdot256)
+#    - Slot 50: Kết quả Nhân Ma trận GEMM 4x4 bằng vdot256
+#    - Slot 51: Kết quả Số thực Điểm cố định Q16.16 (fxmul + fxdiv)
+#    - Slot 52: Cờ trạng thái chạy liên tục (0 = STOP, 108 = RUNNING)
+# =============================================================================
+func simd_run_tensor_step void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 64
+
+    @b0
+        %3 = const 48 bv64
+        %4 = call cap_state_get %0 %3
+        %5 = const 99000000 bv64
+        %6 = call std_min %4 %5
+        %50 = const 1 bv64
+        %51 = call std_max %1 %50
+        %7 = add %6 %51
+        call cap_state_set %0 %3 %7
+
+        %8 = const 10000 bv64
+        %9 = urem %7 %8
+
+        # 1. Khởi tạo Vector A (slot 16..19) = [step + 10, step + 20, step + 30, step + 40]
+        %10 = const 10 bv64
+        %11 = const 20 bv64
+        %12 = const 30 bv64
+        %13 = const 40 bv64
+        %14 = add %9 %10
+        %15 = add %9 %11
+        %16 = add %9 %12
+        %17 = add %9 %13
+        %18 = const 16 bv64
+        call vec256_store4 %0 %18 %14 %15 %16 %17
+
+        # 2. Khởi tạo Vector B (slot 20..23) = [2, 3, 4, 5]
+        %19 = const 2 bv64
+        %20 = const 3 bv64
+        %21 = const 4 bv64
+        %22 = const 5 bv64
+        %23 = const 20 bv64
+        call vec256_store4 %0 %23 %19 %20 %21 %22
+
+        # 3. Thực thi chuỗi lệnh SIMD 256-bit (AVX2 YMM0):
+        #    C (slot 24) = A + B (vadd256)
+        #    C (slot 24) = C * B (vmul256)
+        #    C (slot 24) = C - A (vsub256)
+        %24 = const 24 bv64
+        call vec256_add %0 %24 %18 %23
+        call vec256_mul %0 %24 %24 %23
+        call vec256_sub %0 %24 %24 %18
+
+        # Tính tích vô hướng C . B bằng vdot256 rồi lưu vào Slot 49
+        %25 = call vec256_dot %0 %24 %23
+        %26 = const 49 bv64
+        call cap_state_set %0 %26 %25
+
+        # 4. Khởi tạo Ma trận Trọng số W 4x4 (slot 28..43) và chạy GEMM 4x4 * Vec4
+        %27 = const 28 bv64
+        %28 = const 32 bv64
+        %29 = const 36 bv64
+        %30 = const 40 bv64
+        call vec256_store4 %0 %27 %50 %19 %50 %19
+        call vec256_store4 %0 %28 %19 %50 %20 %50
+        call vec256_store4 %0 %29 %50 %21 %50 %19
+        call vec256_store4 %0 %30 %20 %50 %19 %22
+
+        %31 = call tensor_gemm_4x4_vec4 %0 %27 %18 %24
+        %32 = const 50 bv64
+        call cap_state_set %0 %32 %31
+
+        # 5. Số thực Điểm cố định Q16.16 (fxmul & fxdiv) kết hợp với kết quả Worker AP (%2)
+        %33 = const 0xffff bv64
+        %34 = xor %31 %2
+        %35 = and %34 %33
+        %36 = const 16 bv64
+        %37 = shl %35 %36
+        %38 = const 114688 bv64             # 1.75 trong Q16.16
+        %39 = call fx_q16_mul %37 %38
+        %40 = const 81920 bv64              # 1.25 trong Q16.16
+        %41 = const 0xffffffff bv64
+        %42 = and %39 %41
+        %43 = call fx_q16_div %42 %40
+        %44 = lshr %43 %36
+        %45 = const 51 bv64
+        call cap_state_set %0 %45 %44
+        ret
+}
+
+# =============================================================================
+# 6. TIẾN TRÌNH CẬP NHẬT NHỊP BENCHMARK LIÊN TỤC (Trả về 1 nếu vừa xong 1 nhịp)
+# =============================================================================
+func simd_step_benchmark bv64 %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @ens ule %40 1
+
+    @b0
+        %2 = const 0 bv64
+        %3 = const 1 bv64
+        %4 = const 52 bv64
+        %5 = call cap_state_get %0 %4
+        %6 = const 108 bv64
+        %7 = cmp eq %5 %6
+        br %7 @b1 @b9
+
+    @b1
+        %8 = call smp_get_worker_count %1
+        %9 = cmp eq %8 %2
+        br %9 @b2 @b3
+
+    @b2
+        # Fallback khi chạy -smp 1 (0 Worker AP): chạy trực tiếp trên Core 0
+        %10 = const 4096 bv64
+        %11 = call app_smp_worker %2 %10
+        %12 = const 4 bv64
+        call simd_run_tensor_step %0 %12 %11
+        jmp @b10 %3
+
+    @b3
+        # Khi chạy đa nhân (-smp N): Kiểm tra tất cả Worker APs đã xong nhịp hiện tại chưa
+        %13 = call smp_poll_all_done %1
+        %14 = cmp ne %13 %2
+        br %14 @b4 @b9
+
+    @b4
+        %15 = const 2 bv64
+        %16 = shl %8 %15                    # ops_per_step = worker_count * 4 (<= 60)
+        %17 = call simd_collect_workers_result %1
+        call simd_run_tensor_step %0 %16 %17
+
+        %18 = const 48 bv64
+        %19 = call cap_state_get %0 %18
+        %20 = const 262144 bv64
+        %21 = const 0xfff bv64
+        %22 = and %19 %21
+        %23 = mul %22 %20
+        %24 = const 33030144 bv64
+        %25 = urem %23 %24
+        call simd_async_dispatch_workers %1 %25
+        jmp @b10 %3
+
+    @b9
+        jmp @b10 %2
+
+    @b10 %40:bv64
+        @inv ule %40 1
+        ret %40
+}
+
+# =============================================================================
+# 7. HÀM VẼ NỘI DUNG CỬA SỔ SIMD-AVX
+# =============================================================================
+func simd_render_dashboard void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+
+    @b0
+        %8 = const 240 bv64
+        %9 = const 90 bv64
+        %10 = const 800 bv64
+        %11 = const 470 bv64
+        %100 = add %8 %10
+        %101 = add %9 %11
+        %13 = const 0 bv64
+
+        %15 = const 0 bv64
+        %16 = slice %2 %15 ptr<DiskQword,64>
+
+        call nk_init %16 %1
+        %17 = const 0x5856412d444d4953 bv64 # "SIMD-AVX"
+        call nk_begin %0 %16 %3 %8 %9 %10 %11 %17
+
+        # HÀNG 1: Trạng thái Phần cứng Vector (AVX2 YMM vs SSE2 XMM)
+        %20 = const 26 bv64
+        %21 = const 2 bv64
+        call nk_layout_row_dynamic %16 %20 %21
+
+        %22 = const 0x203a454e49474e45 bv64 # "ENGINE: "
+        %23 = const 0x94a3b8 bv32
+        call nk_label %0 %16 %3 %22 %23
+
+        %24 = call simd_has_avx2 %4
+        %25 = cmp ne %24 %13
+        br %25 @b10 @b11
+
+    @b10
+        %26 = const 0x4d4d592032585641 bv64 # "AVX2 YMM"
+        %27 = const 0x4ade80 bv32           # Green neon
+        call nk_label %0 %16 %3 %26 %27
+        jmp @b12
+
+    @b11
+        %28 = const 0x4d4d582032455353 bv64 # "SSE2 XMM"
+        %29 = const 0xfbbf24 bv32           # Amber
+        call nk_label %0 %16 %3 %28 %29
+        jmp @b12
+
+    @b12
+        call nk_layout_row_end %16
+
+        # HÀNG 2: 2 Nút bấm Immediate Mode: [RUN SIMD] & [STOP]
+        %30 = const 34 bv64
+        call nk_layout_row_dynamic %16 %30 %21
+
+        %31 = const 0x444d4953204e5552 bv64 # "RUN SIMD"
+        %32 = call nk_button %0 %16 %3 %31
+        %33 = cmp ne %32 %13
+        br %33 @b20 @b21
+
+    @b20
+        %80 = const 52 bv64
+        %81 = const 108 bv64
+        %82 = const 1 bv64
+        call cap_state_set %2 %80 %81
+        call ipc_app_set_bg_running %1 %82
+        call simd_async_dispatch_workers %4 %13
+        call simd_run_tensor_step %2 %21 %13
+        call ipc_mouse_clear_click %1
+        jmp @b21
+
+    @b21
+        %34 = const 0x20202020504f5453 bv64 # "STOP    "
+        %35 = call nk_button %0 %16 %3 %34
+        %36 = cmp ne %35 %13
+        br %36 @b22 @b23
+
+    @b22
+        %83 = const 52 bv64
+        call cap_state_set %2 %83 %13
+        call ipc_app_set_bg_running %1 %13
+        call smp_stop_all_workers %4
+        call ipc_mouse_clear_click %1
+        jmp @b23
+
+    @b23
+        call nk_layout_row_end %16
+
+        # HÀNG 3: Hiển thị Số nhịp SIMD Steps đã chạy
+        %41 = const 28 bv64
+        call nk_layout_row_dynamic %16 %41 %21
+
+        %42 = const 0x53504f20444d4953 bv64 # "SIMD OPS"
+        call nk_label %0 %16 %3 %42 %23
+
+        %43 = const 48 bv64
+        %44 = call cap_state_get %2 %43
+        %45 = call std_u64_to_str8 %44
+        %46 = const 0x38bdf8 bv32           # Sky Blue
+        call nk_label %0 %16 %3 %45 %46
+        call nk_layout_row_end %16
+
+        # HÀNG 4: Kết quả Vector 256-bit (vadd256 + vmul256 + vsub256 + vdot256)
+        call nk_layout_row_dynamic %16 %41 %21
+
+        %47 = const 0x203a363532434556 bv64 # "VEC256: "
+        call nk_label %0 %16 %3 %47 %23
+
+        %48 = const 49 bv64
+        %49 = call cap_state_get %2 %48
+        %50 = call std_u64_to_str8 %49
+        %51 = const 0x34d399 bv32           # Emerald
+        call nk_label %0 %16 %3 %50 %51
+        call nk_layout_row_end %16
+
+        # HÀNG 5: Kết quả Nhân Ma trận GEMM 4x4 (4x vdot256)
+        call nk_layout_row_dynamic %16 %41 %21
+
+        %52 = const 0x3a3458344d4d4547 bv64 # "GEMM4X4:"
+        call nk_label %0 %16 %3 %52 %23
+
+        %53 = const 50 bv64
+        %54 = call cap_state_get %2 %53
+        %55 = call std_u64_to_str8 %54
+        %56 = const 0xa78bfa bv32           # Purple
+        call nk_label %0 %16 %3 %55 %56
+        call nk_layout_row_end %16
+
+        # HÀNG 6: Kết quả Số thực Điểm cố định Q16.16 (fxmul * 1.75 / fxdiv 1.25)
+        call nk_layout_row_dynamic %16 %41 %21
+
+        %57 = const 0x203a36312e363151 bv64 # "Q16.16: "
+        call nk_label %0 %16 %3 %57 %23
+
+        %58 = const 51 bv64
+        %59 = call cap_state_get %2 %58
+        %70 = call std_u64_to_str8 %59
+        %71 = const 0xfbbf24 bv32           # Amber
+        call nk_label %0 %16 %3 %70 %71
+        call nk_layout_row_end %16
+
+        call ui_invalidate_rect %1 %8 %9 %100 %101
+        ret
+}
+
+# =============================================================================
+# 8. HÀM ENTRY CHÍNH CỦA APP SIMD AVX2 & AI TENSOR LAB
+# =============================================================================
+func app_simd_ai_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x80000000
+
+    @b0
+        %13 = const 0 bv64
+        %14 = const 1 bv64
+
+        # Nếu đang ở chế độ chạy ngầm (active_app != 4): chỉ cập nhật nhịp SIMD!
+        %200 = load %1 56 bv64
+        %201 = const 4 bv64
+        %202 = cmp ne %200 %201
+        br %202 @b50 @b51
+
+    @b50
+        %203 = call simd_step_benchmark %2 %5
+        ret
+
+    @b51
+        %8 = const 240 bv64
+        %9 = const 90 bv64
+        %10 = const 800 bv64
+        %11 = const 470 bv64
+
+        # Kiểm tra click nút Close [X]
+        %12 = call ui_win_poll_close %1 %8 %9 %10
+        %15 = cmp ne %12 %13
+        br %15 @b90 @b91
+
+    @b90
+        ret
+
+    @b91
+        # Nếu vừa mở cửa sổ (offset 112 == 0) hoặc có click chuột (offset 32 != 0) -> Vẽ và xử lý nút bấm!
+        %60 = load %1 112 bv64
+        %61 = load %1 32 bv64
+        %62 = cmp eq %60 %13
+        %63 = cmp ne %61 %13
+        %64 = or %62 %63
+        br %64 @b92 @b93
+
+    @b92
+        store %1 112 %14
+        call simd_render_dashboard %0 %1 %2 %3 %5
+        ret
+
+    @b93
+        # Khi không có click chuột nhưng đang ở trạng thái RUNNING:
+        # Chỉ vẽ lại Dashboard khi các nhân Worker VỪA HOÀN THÀNH 1 NHỊP (%70 != 0) -> Chạy liên tục mượt 60 FPS!
+        %70 = call simd_step_benchmark %2 %5
+        %71 = cmp ne %70 %13
+        br %71 @b94 @b90
+
+    @b94
+        call simd_render_dashboard %0 %1 %2 %3 %5
+        ret
+}

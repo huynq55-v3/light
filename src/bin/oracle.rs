@@ -171,6 +171,14 @@ fn bv_total(op: BinOp, l: u64, r: u64) -> u64 {
                 ((l as i64) >> r) as u64
             }
         }
+        BinOp::FxMul => l.wrapping_mul(r) >> 16,
+        BinOp::FxDiv => {
+            if r == 0 {
+                u64::MAX
+            } else {
+                (l << 16) / r
+            }
+        }
     }
 }
 
@@ -186,6 +194,19 @@ fn alu(op: BinOp, l: u64, r: u64) -> Result<u64, String> {
         BinOp::Mul => l
             .checked_mul(r)
             .ok_or_else(|| format!("tràn số nhân {:#x} * {:#x}", l, r)),
+        BinOp::FxMul => l
+            .checked_mul(r)
+            .map(|p| p >> 16)
+            .ok_or_else(|| format!("tràn số fxmul {:#x} * {:#x}", l, r)),
+        BinOp::FxDiv => {
+            if r == 0 {
+                Err("chia cho 0 trong fxdiv".into())
+            } else if l >= (1u64 << 48) {
+                Err(format!("tràn số bị chia fxdiv {:#x} >= 2^48", l))
+            } else {
+                Ok((l << 16) / r)
+            }
+        }
         BinOp::UDiv | BinOp::URem if r == 0 => Err("chia cho 0".into()),
         BinOp::SDiv | BinOp::SRem if r == 0 => Err("chia cho 0".into()),
         BinOp::SDiv | BinOp::SRem if l == 1u64 << 63 && r == u64::MAX => {
@@ -755,6 +776,36 @@ impl<'a> Vm<'a> {
                             }
                         }
                         self.write(addr, bytes_of(vty), v);
+                    }
+                    Inst::Simd256 { op, dst, lhs, rhs } => {
+                        let (la, _) = get(&regs, *lhs, cur)?;
+                        let (ra, _) = get(&regs, *rhs, cur)?;
+                        if *op == SimdOp::Dot {
+                            let mut sum = 0u64;
+                            for lane in 0..4u64 {
+                                let lv = self.load(la + lane * 8, Type::Bv64, None)? & 0xFFFF_FFFF;
+                                let rv = self.load(ra + lane * 8, Type::Bv64, None)? & 0xFFFF_FFFF;
+                                sum = sum.wrapping_add(lv.wrapping_mul(rv));
+                            }
+                            self.set_reg(&mut regs, *dst, sum, Type::Bv64)
+                                .map_err(|w| bad(cur, w))?;
+                        } else {
+                            let (da, _) = get(&regs, *dst, cur)?;
+                            let mut out = [0u64; 4];
+                            for lane in 0..4usize {
+                                let lv = self.load(la + (lane as u64) * 8, Type::Bv64, None)?;
+                                let rv = self.load(ra + (lane as u64) * 8, Type::Bv64, None)?;
+                                out[lane] = match op {
+                                    SimdOp::Add => lv.wrapping_add(rv),
+                                    SimdOp::Sub => lv.wrapping_sub(rv),
+                                    SimdOp::Mul => (lv & 0xFFFF_FFFF).wrapping_mul(rv & 0xFFFF_FFFF),
+                                    _ => lv ^ rv,
+                                };
+                            }
+                            for lane in 0..4usize {
+                                self.write(da + (lane as u64) * 8, 8, out[lane]);
+                            }
+                        }
                     }
                     Inst::HwIo {
                         dst,
