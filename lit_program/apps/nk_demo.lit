@@ -20,7 +20,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         %3 = const 52 bv64
         %4 = add %1 %3
         %5 = add %2 %3
-        %6 = const 0x6366f1 bv32           # Indigo 500
+        %6 = const 0x6366f1 bv32            # Indigo 500
         call gfx_fill_rect %0 %1 %2 %4 %5 %6
 
         # Viền trong
@@ -29,7 +29,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         %9 = add %2 %7
         %10 = sub %4 %7
         %11 = sub %5 %7
-        %12 = const 0x4f46e5 bv32          # Indigo 600
+        %12 = const 0x4f46e5 bv32           # Indigo 600
         call gfx_fill_rect %0 %8 %9 %10 %11 %12
 
         # Chữ 'N' màu trắng cách điệu
@@ -74,7 +74,8 @@ func app_smp_worker bv64 %0:bv64 %1:bv64 {
 #    %2: App Persistent State (64 Qwords = 512 bytes)
 #    %3: Font Bitmap Buffer
 #    %4: VFS String Pool
-func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
+#    %5: SMP Control Area (0x7e000)
+func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -85,6 +86,8 @@ func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Di
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x80000000
 
     @b0
         # Kích thước cửa sổ Nuklear Demo: x=240, y=100, w=800, h=450

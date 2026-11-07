@@ -248,3 +248,209 @@ func std_u64_to_str8 bv64 %0:bv64 {
     @b3
         ret %5
 }
+
+# =============================================================================
+# PHẦN 4: PARSER LỆNH VÀ THAO TÁC TERMINAL BUFFER CHO CLI SHELL
+# =============================================================================
+
+# 1. Bỏ qua khoảng trắng (' ' = 32, '\t' = 9) bắt đầu từ vị trí %1 (< 512)
+func std_str_skip_spaces bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 512
+    @ens ule %99 511
+
+    @b0
+        jmp @b1 %1
+
+    @b1 %2:bv64
+        @inv ule %2 511
+        %3 = const 511 bv64
+        %4 = cmp ult %2 %3
+        br %4 @b2 @b5
+
+    @b2
+        %5 = call std_mem_get_byte %0 %2
+        %6 = const 32 bv64                  # ' ' (ASCII 32)
+        %7 = cmp eq %5 %6
+        %8 = const 9 bv64                   # '\t' (ASCII 9)
+        %9 = cmp eq %5 %8
+        %10 = or %7 %9
+        br %10 @b3 @b4
+
+    @b3
+        %11 = const 1 bv64
+        %12 = add %2 %11
+        jmp @b1 %12
+
+    @b4
+        jmp @b6 %2
+
+    @b5
+        jmp @b6 %3
+
+    @b6 %99:bv64
+        @inv ule %99 511
+        ret %99
+}
+
+# 2. Đọc từ đầu tiên từ vị trí %1 (tối đa 8 ký tự, dừng tại ' ', '\0', '\n') thành Qword
+func std_str_read_cmd_qword bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 511
+
+    @b0
+        %2 = const 0 bv64                   # i = 0 (0..8)
+        %3 = const 0 bv64                   # acc = 0
+        jmp @b1 %1 %2 %3
+
+    @b1 %4:bv64 %5:bv64 %6:bv64
+        @inv ule %4 511
+        @inv ule %5 8
+        %7 = const 8 bv64
+        %8 = cmp ult %5 %7
+        %9 = const 511 bv64
+        %10 = cmp ult %4 %9
+        %11 = and %8 %10
+        br %11 @b2 @b5
+
+    @b2
+        %12 = call std_mem_get_byte %0 %4
+        %13 = const 0 bv64                  # '\0'
+        %14 = cmp eq %12 %13
+        %15 = const 32 bv64                 # ' '
+        %16 = cmp eq %12 %15
+        %17 = or %14 %16
+        %18 = const 10 bv64                 # '\n'
+        %19 = cmp eq %12 %18
+        %20 = or %17 %19
+        br %20 @b5 @b3
+
+    @b3
+        %21 = const 3 bv64
+        %22 = shl %5 %21                    # bit_shift = i * 8
+        %23 = shl %12 %22                   # char_shifted = byte << (i * 8)
+        %24 = or %6 %23                     # acc = acc | char_shifted
+        %25 = const 1 bv64
+        %26 = add %4 %25
+        %27 = add %5 %25
+        jmp @b1 %26 %27 %24
+
+    @b5
+        ret %6
+}
+
+# 3. So sánh từ lệnh tại %1 với hằng số lệnh 8-byte %2
+func std_str_eq_qword bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 511
+    @ens ule %10 1
+
+    @b0
+        %3 = call std_str_read_cmd_qword %0 %1
+        %4 = cmp eq %3 %2
+        br %4 @b1 @b2
+
+    @b1
+        %5 = const 1 bv64
+        jmp @b3 %5
+
+    @b2
+        %6 = const 0 bv64
+        jmp @b3 %6
+
+    @b3 %10:bv64
+        @inv ule %10 1
+        ret %10
+}
+
+# 4. Đọc số nguyên thập phân u64 từ chuỗi bắt đầu tại %1
+func std_parse_u64 bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 511
+
+    @b0
+        %2 = const 0 bv64                   # acc = 0
+        jmp @b1 %1 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 511
+        @inv ule %4 18446744073709551615
+        %5 = const 511 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b5
+
+    @b2
+        %7 = call std_mem_get_byte %0 %3
+        %8 = const 48 bv64                  # '0'
+        %9 = const 57 bv64                  # '9'
+        %10 = cmp uge %7 %8
+        %11 = cmp ule %7 %9
+        %12 = and %10 %11
+
+        # Chống tràn số nhân u64 (acc <= (2^64-1 - 9) / 10 = 1844674407370955160)
+        %100 = const 1844674407370955160 bv64
+        %101 = cmp ule %4 %100
+        %102 = and %12 %101
+        br %102 @b3 @b5
+
+    @b3
+        %13 = sub %7 %8                     # digit = c - '0'
+        %14 = const 10 bv64
+        %15 = mul %4 %14
+        %16 = add %15 %13
+        %17 = const 1 bv64
+        %18 = add %3 %17
+        jmp @b1 %18 %16
+
+    @b5
+        ret %4
+}
+
+# 5. Dịch chuyển các dòng trong bộ đệm 512-byte lên trên %1 bytes (Terminal Scrolling)
+func std_mem_shift_up void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 512
+
+    @b0
+        %2 = const 512 bv64
+        %3 = sub %2 %1                      # limit = 512 - shift_bytes
+        %4 = const 0 bv64
+        jmp @b1 %4
+
+    @b1 %5:bv64
+        @inv ule %5 512
+        %6 = cmp ult %5 %3
+        br %6 @b2 @b3
+
+    @b2
+        %7 = add %5 %1                      # src_idx = i + shift_bytes (< 512)
+        %8 = call std_mem_get_byte %0 %7
+        call std_mem_set_byte %0 %5 %8
+        %9 = const 1 bv64
+        %10 = add %5 %9
+        jmp @b1 %10
+
+    @b3
+        jmp @b4 %3
+
+    @b4 %11:bv64
+        @inv uge %11 0
+        @inv ule %11 512
+        %12 = cmp ult %11 %2
+        br %12 @b5 @b6
+
+    @b5
+        %13 = const 0 bv64
+        call std_mem_set_byte %0 %11 %13
+        %14 = const 1 bv64
+        %15 = add %11 %14
+        jmp @b4 %15
+
+    @b6
+        ret
+}

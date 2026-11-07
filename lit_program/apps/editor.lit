@@ -7,8 +7,9 @@ include ../lib/std_lib.lit
 include ../lib/ipc_bus.lit
 include ../lib/ui_canvas.lit
 include ../lib/cap_mem.lit
+include ../lib/ui_text_view.lit
 
-# 1. Render văn bản streaming trong vùng soạn thảo (trên Backbuffer %0, lấy dữ liệu từ Lô 64GB %2)
+# 1. Render văn bản streaming đa dòng qua thư viện dùng chung ui_text_view
 func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -18,99 +19,13 @@ func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<
     @req ult %2 0x10000000000
 
     @b0
-        %3 = const 0 bv64
-        %4 = const 220 bv64
-        %5 = const 148 bv64
-        jmp @b1 %3 %4 %5
-
-    @b1 %6:bv64 %7:bv64 %8:bv64
-        @inv ule %6 512
-        @inv uge %7 220
-        @inv ule %7 1060
-        @inv uge %8 148
-        @inv ule %8 560
-        %9 = const 512 bv64
-        %10 = cmp ult %6 %9
-        br %10 @b2 @b12
-
-    @b2
-        %11 = const 3 bv64
-        %12 = lshr %6 %11
-        %13 = slice %2 %12 ptr<DiskQword,1>
-        %14 = load %13 0 bv64
-        %15 = const 7 bv64
-        %16 = and %6 %15
-        %17 = shl %16 %11
-        %18 = lshr %14 %17
-        %19 = const 0xff bv64
-        %20 = and %18 %19
-
-        %21 = const 0 bv64
-        %22 = cmp eq %20 %21
-        br %22 @b12 @b3
-
-    @b3
-        %23 = const 10 bv64
-        %24 = cmp eq %20 %23
-        br %24 @b4 @b6
-
-    @b4
-        %25 = const 520 bv64
-        %26 = cmp ult %8 %25
-        br %26 @b5 @b12
-
-    @b5
-        %27 = const 1 bv64
-        %28 = add %6 %27
-        %29 = const 220 bv64
-        %30 = const 26 bv64
-        %31 = add %8 %30
-        jmp @b1 %28 %29 %31
-
-    @b6
-        %32 = const 13 bv64
-        %33 = cmp eq %20 %32
-        br %33 @b7 @b8
-
-    @b7
-        %34 = const 1 bv64
-        %35 = add %6 %34
-        jmp @b1 %35 %7 %8
-
-    @b8
-        %36 = const 1020 bv64
-        %37 = cmp ugt %7 %36
-        br %37 @b9 @b11
-
-    @b9
-        %38 = const 520 bv64
-        %39 = cmp ult %8 %38
-        br %39 @b10 @b12
-
-    @b10
-        %40 = const 220 bv64
-        %41 = const 26 bv64
-        %42 = add %8 %41
-        jmp @b13 %40 %42
-
-    @b11
-        jmp @b13 %7 %8
-
-    @b13 %43:bv64 %44:bv64
-        @inv ule %6 511
-        @inv uge %43 220
-        @inv ule %43 1020
-        @inv uge %44 148
-        @inv ule %44 560
-        %45 = const 0x0f172a bv32
-        call gfx_draw_char16 %0 %1 %43 %44 %20 %45
-        %46 = const 9 bv64
-        %47 = add %43 %46
-        %48 = const 1 bv64
-        %49 = add %6 %48
-        jmp @b1 %49 %47 %44
-
-    @b12
+        %3 = const 220 bv64
+        %4 = const 148 bv64
+        %5 = const 1020 bv64
+        %6 = const 520 bv64
+        %7 = const 0x0f172a bv32
+        %8 = const 1 bv64
+        call ui_text_view_render %0 %1 %2 %3 %4 %5 %6 %7 %8
         ret
 }
 
@@ -164,7 +79,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
 #    - Qword 0..61 (496 bytes): Nội dung văn bản
 #    - Qword 62: Trạng thái Browser (0 = Edit, >0 = Browser prefix)
 #    - Qword 63: LBA của file đang mở
-func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
+func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -175,9 +90,11 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x80000000
 
     @b0
-        %5 = call ipc_mouse_get_x %1
+        %500 = call ipc_mouse_get_x %1
         %6 = call ipc_mouse_get_y %1
         %7 = call ipc_mouse_get_click %1
 
@@ -213,7 +130,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
 
         %22 = const 240 bv64
         %23 = const 80 bv64
-        %24 = call ui_btn_hit %5 %6 %7 %22 %20 %23 %21
+        %24 = call ui_btn_hit %500 %6 %7 %22 %20 %23 %21
         %25 = cmp ne %24 %12
         br %25 @b4 @b5
 
@@ -225,7 +142,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @b5
         %27 = const 340 bv64
         %28 = const 110 bv64
-        %29 = call ui_btn_hit %5 %6 %7 %27 %20 %28 %21
+        %29 = call ui_btn_hit %500 %6 %7 %27 %20 %28 %21
         %30 = cmp ne %29 %12
         br %30 @b6 @b7
 
@@ -236,7 +153,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
 
     @b7
         %32 = const 470 bv64
-        %33 = call ui_btn_hit %5 %6 %7 %32 %20 %23 %21
+        %33 = call ui_btn_hit %500 %6 %7 %32 %20 %23 %21
         %34 = cmp ne %33 %12
         br %34 @b8 @b10
 
@@ -268,7 +185,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
 
         %50 = const 230 bv64
         %51 = const 140 bv64
-        %52 = call ui_fb_handle_click %3 %4 %5 %6 %7 %50 %51 %49 %45
+        %52 = call ui_fb_handle_click %3 %4 %500 %6 %7 %50 %51 %49 %45
 
         %53 = const 32 bv64
         %54 = lshr %52 %53
@@ -290,7 +207,9 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %109 @b122 @b99
 
     @b122
-        # Click tệp: Yêu cầu Shell đọc Sector. Shell đọc xong sẽ tự set Slot 63 = lba và Slot 62 = 0!
+        # Click tệp: Tự cập nhật Slot 62 = 0 và Slot 63 = lba trước khi yêu cầu Shell đọc sector
+        call cap_state_set %2 %200 %12
+        call cap_state_set %2 %201 %105
         store %1 112 %12
         call ipc_disk_req_read %1 %105
         ret
