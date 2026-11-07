@@ -1,0 +1,205 @@
+# File: lit_program/apps/nk_demo.lit
+# App Demo Nuklear-style GUI trên Light OS
+# Sử dụng thư viện ui_nuklear.lit: Immediate Mode Buttons, Dynamic Grid Layout, Zero Boilerplate
+
+include ../lib/ui_nuklear.lit
+include ../lib/ui_window.lit
+include ../lib/std_lib.lit
+include ../lib/ipc_bus.lit
+include ../lib/cap_mem.lit
+
+# 1. Hàm bắt buộc của mọi App: Tự vẽ Icon 52x52 của App lên Thanh Dock
+func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 1200
+    @req ule %2 650
+
+    @b0
+        # Nền icon 52x52 màu tím neon (Nuklear vibe)
+        %3 = const 52 bv64
+        %4 = add %1 %3
+        %5 = add %2 %3
+        %6 = const 0x6366f1 bv32           # Indigo 500
+        call gfx_fill_rect %0 %1 %2 %4 %5 %6
+
+        # Viền trong
+        %7 = const 4 bv64
+        %8 = add %1 %7
+        %9 = add %2 %7
+        %10 = sub %4 %7
+        %11 = sub %5 %7
+        %12 = const 0x4f46e5 bv32          # Indigo 600
+        call gfx_fill_rect %0 %8 %9 %10 %11 %12
+
+        # Chữ 'N' màu trắng cách điệu
+        %13 = const 12 bv64
+        %14 = const 18 bv64
+        %15 = add %1 %13
+        %16 = add %1 %14
+        %17 = const 0xffffff bv32
+        call gfx_fill_rect %0 %15 %9 %16 %11 %17
+
+        %18 = const 34 bv64
+        %19 = const 40 bv64
+        %20 = add %1 %18
+        %21 = add %1 %19
+        call gfx_fill_rect %0 %20 %9 %21 %11 %17
+
+        %22 = const 22 bv64
+        %23 = const 30 bv64
+        %24 = const 22 bv64
+        %25 = const 30 bv64
+        %26 = add %1 %22
+        %27 = add %1 %23
+        %28 = add %2 %24
+        %29 = add %2 %25
+        call gfx_fill_rect %0 %26 %28 %27 %29 %17
+        ret
+}
+
+# 2. Worker rỗng (nếu không dùng SMP)
+func app_smp_worker bv64 %0:bv64 %1:bv64 {
+    @req ule %0 33554432
+    @req ule %1 33554432
+
+    @b0
+        %2 = const 0 bv64
+        ret %2
+}
+
+# 3. Hàm Entry chính của App Nuklear Demo (được gọi liên tục mỗi frame từ Kernel)
+#    %0: Backbuffer FB
+#    %1: IPC Bus
+#    %2: App Persistent State (64 Qwords = 512 bytes)
+#    %3: Font Bitmap Buffer
+#    %4: VFS String Pool
+func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+
+    @b0
+        # Đọc mouse click và tọa độ để xử lý nút đóng cửa sổ
+        %5 = load %1 16 bv64                 # mouse_x
+        %6 = load %1 24 bv64                 # mouse_y
+        %7 = load %1 32 bv64                 # mouse_click
+
+        # Kích thước cửa sổ Nuklear Demo: x=240, y=100, w=560, h=360
+        %8 = const 240 bv64
+        %9 = const 100 bv64
+        %10 = const 800 bv64
+        %11 = const 450 bv64
+        %100 = add %8 %10
+        %101 = add %9 %11
+
+        # Kiểm tra click nút Close [X] trên Window Bar
+        %12 = call ui_win_check_close %5 %6 %7 %8 %9 %10
+        %13 = const 0 bv64
+        %14 = cmp ne %12 %13
+        br %14 @b90 @b91
+
+    @b90
+        call ui_win_close_app %1
+        ret
+
+    @b91
+        # Lấy slice đầu tiên của App State làm NuklearContext (128 bytes)
+        %15 = const 0 bv64
+        %16 = slice %2 %15 ptr<DiskQword,64>
+
+        # 1. Khởi tạo Context Nuklear từ IPC Bus
+        call nk_init %16 %1
+
+        # 2. Bắt đầu Window Frame Immediate Mode
+        %17 = const 0x4749552d4b4e bv64     # "NK-UIG"
+        call nk_begin %0 %16 %3 %8 %9 %10 %11 %17
+
+        # 3. Đọc biến đếm Click Counter từ Persistent State (Slot 32 trong DiskQword)
+        %18 = const 32 bv64
+        %19 = call cap_state_get %2 %18
+
+        # =========================================================================
+        # HÀNG 1: Tiêu đề Label
+        # =========================================================================
+        %20 = const 24 bv64                 # Chiều cao hàng = 24
+        %21 = const 1 bv64                  # 1 Cột
+        call nk_layout_row_dynamic %16 %20 %21
+
+        %22 = const 0x4955472054494c bv64   # "LIT GUI "
+        %23 = const 0x38bdf8 bv32           # Sky blue
+        call nk_label %0 %16 %3 %22 %23
+        call nk_layout_row_end %16
+
+        # =========================================================================
+        # HÀNG 2: 2 Cột Nút bấm Immediate Mode: [ADD +1] [RESET]
+        # =========================================================================
+        %24 = const 32 bv64                 # Chiều cao nút = 32
+        %25 = const 2 bv64                  # 2 Cột song song
+        call nk_layout_row_dynamic %16 %24 %25
+
+        # Button 1: [ADD +1]
+        %26 = const 0x20312b20444441 bv64   # "ADD +1 "
+        %27 = call nk_button %0 %16 %3 %26
+        %28 = cmp ne %27 %13
+        br %28 @b92 @b93
+
+    @b92
+        # Tăng counter (kẹp an toàn < 99999999 để Z3 chứng minh không tràn số)
+        %29 = const 9999999 bv64
+        %30 = cmp ult %19 %29
+        br %30 @b921 @b93
+
+    @b921
+        %31 = const 1 bv64
+        %32 = add %19 %31
+        call cap_state_set %2 %18 %32
+        call ipc_mouse_clear_click %1
+        jmp @b93
+
+    @b93
+        # Button 2: [CLEAR]
+        %41 = const 0x5241454c432020 bv64   # "  CLEAR"
+        %42 = call nk_button %0 %16 %3 %41
+        %43 = cmp ne %42 %13
+        br %43 @b94 @b95
+
+    @b94
+        %44 = const 0 bv64
+        call cap_state_set %2 %18 %44
+        call ipc_mouse_clear_click %1
+        jmp @b95
+
+    @b95
+        call nk_layout_row_end %16
+
+        # =========================================================================
+        # HÀNG 3: Hiển thị giá trị Counter hiện tại
+        # =========================================================================
+        %45 = const 28 bv64
+        call nk_layout_row_dynamic %16 %45 %25
+
+        %46 = const 0x20544e554f43 bv64     # "COUNT "
+        %47 = const 0x94a3b8 bv32           # Slate gray
+        call nk_label %0 %16 %3 %46 %47
+
+        # Chuyển đổi số Counter thành chuỗi hiển thị
+        %48 = call cap_state_get %2 %18
+        %49 = call std_u64_to_str8 %48
+        %50 = const 0x4ade80 bv32           # Green neon
+        call nk_label %0 %16 %3 %49 %50
+        call nk_layout_row_end %16
+
+        # =========================================================================
+        # Invalidate màn hình vùng cửa sổ để VGA phản ánh lên màn hình
+        # =========================================================================
+        call ui_invalidate_rect %1 %8 %9 %100 %101
+        ret
+}

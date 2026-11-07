@@ -156,16 +156,6 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         %26 = add %2 %24
         call gfx_fill_rect %0 %12 %25 %13 %26 %18
 
-        %27 = const 23 bv64
-        %28 = const 29 bv64
-        %29 = const 60 bv64
-        %30 = const 64 bv64
-        %31 = add %1 %27
-        %32 = add %1 %28
-        %33 = add %2 %29
-        %34 = add %2 %30
-        %35 = const 0x38bdf8 bv32
-        call gfx_fill_rect %0 %31 %33 %32 %34 %35
         ret
 }
 

@@ -40,7 +40,7 @@ func smp_dispatch_worker void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 {
         store %13 0 %3
         store %14 0 %16
 
-        %17 = const 0x2000000010 bv64
+        %17 = const 0x3000000010 bv64
         store %15 0 %17
         ret
 }

@@ -1,5 +1,5 @@
 # File: lit_program/os/kernel.lit
-# LIGHT OS MICRO-EXOKERNEL: Phân Lô 64GB cho từng App (Lô 1 = 64GB, Lô 2 = 128GB)
+# LIGHT OS MICRO-EXOKERNEL: Cấp Lô 64GB Động qua Bảng Quản trị Shell
 
 include init.lit
 
@@ -21,7 +21,7 @@ func kregister_task bv64 %0:ptr<KernelState,1> %1:bv64 {
         ret %3
 }
 
-func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,921600> %4:ptr<VgaCell,921600> %5:ptr<DiskQword,64> %6:ptr<DiskQword,16384> %7:ptr<DiskQword,64> %8:ptr<DiskQword,16384> %9:ptr<DiskQword,64> {
+func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:ptr<VgaCell,921600> %4:ptr<VgaCell,921600> %5:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -32,14 +32,6 @@ func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> 
     @req ult %4 0x80000000
     @req uge %5 0x10000
     @req ult %5 0x80000000
-    @req uge %6 0x10000
-    @req ult %6 0x10000000000
-    @req uge %7 0x10000
-    @req ult %7 0x10000000000
-    @req uge %8 0x10000
-    @req ult %8 0x10000000000
-    @req uge %9 0x10000
-    @req ult %9 0x10000000000
 
     @b0
         %10 = const 0 bv64
@@ -48,7 +40,7 @@ func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> 
     @b1 %11:bv64
         @inv uge %1 0x10000
         call drv_kbd_poll_task %0 %1 %2
-        call app_desktop_ipc_task %0 %3 %4 %2 %5 %6 %7 %8 %9
+        call app_desktop_ipc_task %0 %3 %4 %2 %5
         jmp @b1 %11
 }
 
@@ -68,21 +60,12 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         %9 = const 0x200000 ptr<VgaCell,921600>
         %10 = const 0x600000 ptr<VgaCell,921600>
 
-        # 2. PHÂN LÔ 64 GIGABYTE CHO MỖI APP (Mỗi Lô cách nhau đúng 64GB = 0x10_0000_0000!):
-        #    - LÔ 1 (64 GB -> 128 GB): Dành riêng cho App #0 (Editor)
-        %8 = const 0x1000000000 ptr<DiskQword,16384>  # Lô #1 Code tại 64GB
-        %7 = const 0x1000200000 ptr<DiskQword,64>  # Lô #1 Heap tại 64GB + 2MB
-
-        #    - LÔ 2 (128 GB -> 192 GB): Dành riêng cho App #1 (Pi Benchmark 100 chữ số)
-        %14 = const 0x2000000000 ptr<DiskQword,16384>  # Lô #2 Code tại 128GB (Worker: 0x2000000010)
-        %13 = const 0x2000200000 ptr<DiskQword,64>  # Lô #2 Heap tại 128GB + 2MB
-
         %11 = call kregister_task %1 %2
         %12 = call kregister_task %1 %11
 
-        call sys_init_drivers %0 %4 %5 %7 %6 %13
-        call sys_init_desktop %0 %9 %10 %3 %5 %8 %14
+        call sys_init_drivers %0 %4 %5 %6
+        call sys_init_desktop %0 %9 %10 %3 %5
 
-        call kscheduler_loop %0 %4 %3 %9 %10 %5 %8 %7 %14 %13
+        call kscheduler_loop %0 %4 %3 %9 %10 %5
         ret
 }

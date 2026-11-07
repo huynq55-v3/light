@@ -14,7 +14,7 @@ layout IpcChannel 168 {
     32: bv64
     40: bv64 @inv ult val 4
     48: bv64
-    56: bv64 @inv ult val 4
+    56: bv64 @inv ult val 8
     64: bv64 @inv ult val 1260
     72: bv64 @inv ult val 700
     80: bv64

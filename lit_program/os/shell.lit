@@ -15,65 +15,140 @@ func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
     @req ult %2 700
 
     @b0
-        %3 = const 0 bv64
-        jmp @b1 %3
+        %3 = const 0x22d3ee bv32
+        %4 = const 0x0f172a bv32
 
-    @b1 %4:bv64
-        @inv ule %4 12
-        %5 = const 12 bv64
-        %6 = cmp ult %4 %5
-        br %6 @b2 @b7
+        %5 = const 1 bv64
+        %6 = add %1 %5
+        %7 = add %2 %5
+        call gfx_put_pixel %0 %1 %2 %3
+        call gfx_put_pixel %0 %6 %2 %3
+        call gfx_put_pixel %0 %1 %7 %3
 
-    @b2
-        %7 = const 0 bv64
-        jmp @b3 %7
+        %8 = const 2 bv64
+        %9 = add %1 %8
+        %10 = add %2 %8
+        call gfx_put_pixel %0 %9 %2 %3
+        call gfx_put_pixel %0 %6 %7 %3
+        call gfx_put_pixel %0 %1 %10 %3
 
-    @b3 %8:bv64
-        @inv ult %4 12
-        @inv ule %8 12
-        %9 = cmp ule %8 %4
-        br %9 @b4 @b6
+        %11 = const 3 bv64
+        %12 = const 4 bv64
+        %13 = add %1 %11
+        %14 = add %2 %11
+        %15 = add %1 %12
+        %16 = add %2 %12
+        call gfx_put_pixel %0 %13 %2 %3
+        call gfx_put_pixel %0 %9 %7 %3
+        call gfx_put_pixel %0 %6 %10 %3
+        call gfx_put_pixel %0 %1 %14 %3
 
-    @b4
-        %10 = add %1 %8
-        %11 = add %2 %4
-        %12 = const 0xffffff bv32
-        call gfx_put_pixel %0 %10 %11 %12
-        %13 = cmp eq %8 %4
-        %14 = const 0 bv64
-        %15 = cmp eq %8 %14
-        %16 = const 11 bv64
-        %17 = cmp eq %4 %16
-        %18 = or %13 %15
-        %19 = or %18 %17
-        br %19 @b5 @b8
+        call gfx_put_pixel %0 %15 %2 %3
+        call gfx_put_pixel %0 %13 %7 %3
+        call gfx_put_pixel %0 %9 %10 %3
+        call gfx_put_pixel %0 %6 %14 %3
+        call gfx_put_pixel %0 %1 %16 %3
 
-    @b5
-        %20 = const 0x0f172a bv32
-        call gfx_put_pixel %0 %10 %11 %20
-        jmp @b8
+        %17 = const 5 bv64
+        %18 = const 6 bv64
+        %19 = add %1 %17
+        %20 = add %2 %17
+        %21 = add %1 %18
+        %22 = add %2 %18
+        call gfx_put_pixel %0 %19 %2 %3
+        call gfx_put_pixel %0 %15 %7 %3
+        call gfx_put_pixel %0 %13 %10 %3
+        call gfx_put_pixel %0 %9 %14 %3
+        call gfx_put_pixel %0 %6 %16 %3
+        call gfx_put_pixel %0 %1 %20 %3
 
-    @b8
-        %21 = const 1 bv64
-        %22 = add %8 %21
-        jmp @b3 %22
+        call gfx_put_pixel %0 %21 %2 %3
+        call gfx_put_pixel %0 %19 %7 %3
+        call gfx_put_pixel %0 %15 %10 %3
+        call gfx_put_pixel %0 %13 %14 %3
+        call gfx_put_pixel %0 %9 %16 %3
+        call gfx_put_pixel %0 %6 %20 %3
+        call gfx_put_pixel %0 %1 %22 %3
 
-    @b6
-        %23 = const 1 bv64
-        %24 = add %4 %23
-        jmp @b1 %24
+        %23 = const 7 bv64
+        %24 = const 8 bv64
+        %25 = add %1 %23
+        %26 = add %2 %23
+        %27 = add %1 %24
+        %28 = add %2 %24
+        call gfx_put_pixel %0 %25 %2 %3
+        call gfx_put_pixel %0 %21 %7 %3
+        call gfx_put_pixel %0 %19 %10 %3
+        call gfx_put_pixel %0 %15 %14 %3
+        call gfx_put_pixel %0 %13 %16 %3
+        call gfx_put_pixel %0 %9 %20 %3
+        call gfx_put_pixel %0 %6 %22 %3
+        call gfx_put_pixel %0 %1 %26 %3
 
-    @b7
-        %25 = const 4 bv64
-        %26 = const 7 bv64
-        %27 = const 12 bv64
-        %28 = const 17 bv64
-        %29 = add %1 %25
-        %30 = add %1 %26
-        %31 = add %2 %27
-        %32 = add %2 %28
-        %33 = const 0xffffff bv32
-        call gfx_fill_rect %0 %29 %31 %30 %32 %33
+        call gfx_put_pixel %0 %27 %2 %3
+        call gfx_put_pixel %0 %25 %7 %3
+        call gfx_put_pixel %0 %21 %10 %3
+        call gfx_put_pixel %0 %19 %14 %3
+        call gfx_put_pixel %0 %15 %16 %3
+        call gfx_put_pixel %0 %13 %20 %3
+        call gfx_put_pixel %0 %9 %22 %3
+        call gfx_put_pixel %0 %6 %26 %3
+        call gfx_put_pixel %0 %1 %28 %3
+
+        %29 = const 9 bv64
+        %30 = const 10 bv64
+        %31 = add %1 %29
+        %32 = add %2 %29
+        %33 = add %1 %30
+        %34 = add %2 %30
+        call gfx_put_pixel %0 %25 %10 %4
+        call gfx_put_pixel %0 %21 %14 %4
+        call gfx_put_pixel %0 %19 %16 %4
+        call gfx_put_pixel %0 %15 %20 %4
+        call gfx_put_pixel %0 %13 %22 %4
+        call gfx_put_pixel %0 %9 %26 %4
+        call gfx_put_pixel %0 %6 %28 %4
+        call gfx_put_pixel %0 %1 %32 %3
+
+        %35 = const 11 bv64
+        %36 = const 12 bv64
+        %37 = add %1 %35
+        %38 = add %2 %35
+        %39 = add %1 %36
+        %40 = add %2 %36
+        call gfx_put_pixel %0 %19 %20 %4
+        call gfx_put_pixel %0 %15 %22 %4
+        call gfx_put_pixel %0 %13 %26 %4
+        call gfx_put_pixel %0 %9 %28 %4
+        call gfx_put_pixel %0 %6 %32 %3
+        call gfx_put_pixel %0 %1 %38 %3
+
+        %41 = const 13 bv64
+        %42 = const 14 bv64
+        %43 = add %1 %41
+        %44 = add %2 %41
+        %45 = add %1 %42
+        %46 = add %2 %42
+        call gfx_put_pixel %0 %13 %28 %4
+        call gfx_put_pixel %0 %9 %32 %4
+        call gfx_put_pixel %0 %6 %38 %3
+        call gfx_put_pixel %0 %1 %44 %3
+
+        %47 = const 15 bv64
+        %48 = const 16 bv64
+        %49 = add %1 %47
+        %50 = add %2 %47
+        %51 = add %1 %48
+        %52 = add %2 %48
+        call gfx_put_pixel %0 %9 %38 %4
+        call gfx_put_pixel %0 %6 %44 %3
+        call gfx_put_pixel %0 %1 %50 %3
+
+        %53 = const 17 bv64
+        %54 = add %1 %53
+        %55 = add %2 %53
+        call gfx_put_pixel %0 %6 %50 %3
+        call gfx_put_pixel %0 %1 %55 %3
         ret
 }
 
@@ -128,86 +203,10 @@ func vmm_alloc_app_arena void %0:io<0,0xffff> %1:ptr<DiskQword,512> %2:ptr<DiskQ
         ret
 }
 
-func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,16384> %5:ptr<DiskQword,16384> {
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req uge %2 0x10000
-    @req ult %2 0x80000000
-    @req uge %3 0x10000
-    @req ult %3 0x80000000
-    @req uge %4 0x10000
-    @req ult %4 0x10000000000
-    @req uge %5 0x10000
-    @req ult %5 0x10000000000
-
-    @b0
-        %6 = const 464 bv64
-        %7 = const 824 bv64
-        %8 = const 630 bv64
-        %9 = const 712 bv64
-        %10 = const 0x0b0e14 bv32
-        call gfx_fill_rect %1 %6 %8 %7 %9 %10
-
-        %11 = const 460 bv64
-        %12 = const 820 bv64
-        %13 = const 624 bv64
-        %14 = const 706 bv64
-        %15 = const 0x262f45 bv32
-        call gfx_fill_rect %1 %11 %13 %12 %14 %15
-
-        %16 = const 626 bv64
-        %17 = const 0x566991 bv32
-        call gfx_fill_rect %1 %11 %13 %12 %16 %17
-
-        %18 = const 0 bv64
-        %19 = const 1 bv64
-        %20 = const 634 bv64
-
-        %21 = call vfs_entry_is_app %3 %18
-        %22 = cmp ne %21 %18
-        br %22 @b1 @b2
-
-    @b1
-        # Phát hiện App thứ %18 trong VFS -> Tự động tạo Lô 64GB mới trong Page Table ngay lúc chạy!
-        %31 = const 0x11000 ptr<DiskQword,512>
-        %32 = const 0x20000 ptr<DiskQword,4096>
-        call vmm_alloc_app_arena %0 %31 %32 %18
-        %35 = const 0x1000200000 ptr<DiskQword,64>
-        call std_mem_zero %35
-
-        %23 = call vfs_entry_get_lba %3 %18
-        call drv_ata_load_app %0 %4 %23
-        %24 = const 530 bv64
-        %25 = slice %4 %19 ptr<DiskQword,1>
-        call %25 %1 %24 %20
-        jmp @b2
-
-    @b2
-        %26 = call vfs_entry_is_app %3 %19
-        %27 = cmp ne %26 %18
-        br %27 @b3 @b4
-
-    @b3
-        # Phát hiện App thứ %19 trong VFS -> Tự động tạo Lô 64GB mới trong Page Table ngay lúc chạy!
-        %36 = const 0x11000 ptr<DiskQword,512>
-        %37 = const 0x20000 ptr<DiskQword,4096>
-        call vmm_alloc_app_arena %0 %36 %37 %19
-        %38 = const 0x2000200000 ptr<DiskQword,64>
-        call std_mem_zero %38
-
-        %28 = call vfs_entry_get_lba %3 %19
-        call drv_ata_load_app %0 %5 %28
-        %29 = const 698 bv64
-        %30 = slice %5 %19 ptr<DiskQword,1>
-        call %30 %1 %29 %20
-        jmp @b4
-
-    @b4
-        call ui_invalidate_rect %2 %11 %13 %7 %9
-        ret
-}
-
-func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,16384> %6:ptr<DiskQword,64> %7:ptr<DiskQword,16384> %8:ptr<DiskQword,64> {
+# =============================================================================
+# CÁC HÀM ĐIỀU PHỐI TỔNG QUÁT THEO SLOT (0..6) ĐẾN TỪNG LÔ 64GB
+# =============================================================================
+func app_dispatch_entry void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> %6:bv64 {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -217,13 +216,453 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
     @req uge %4 0x10000
     @req ult %4 0x80000000
     @req uge %5 0x10000
-    @req ult %5 0x10000000000
-    @req uge %6 0x10000
-    @req ult %6 0x10000000000
-    @req uge %7 0x10000
-    @req ult %7 0x10000000000
-    @req uge %8 0x10000
-    @req ult %8 0x10000000000
+    @req ult %5 0x80000000
+    @req ult %6 7
+
+    @b0
+        %7 = const 0 bv64
+        %8 = cmp eq %6 %7
+        br %8 @b1 @b2
+
+    @b1
+        %20 = const 0x1000000000 ptr<DiskQword,1>
+        %30 = const 0x1000200000 ptr<DiskQword,64>
+        call %20 %1 %2 %30 %3 %4 %5
+        ret
+
+    @b2
+        %9 = const 1 bv64
+        %10 = cmp eq %6 %9
+        br %10 @b3 @b4
+
+    @b3
+        %21 = const 0x2000000000 ptr<DiskQword,1>
+        %31 = const 0x2000200000 ptr<DiskQword,64>
+        call %21 %1 %2 %31 %3 %4 %5
+        ret
+
+    @b4
+        %11 = const 2 bv64
+        %12 = cmp eq %6 %11
+        br %12 @b5 @b6
+
+    @b5
+        %22 = const 0x3000000000 ptr<DiskQword,1>
+        %32 = const 0x3000200000 ptr<DiskQword,64>
+        call %22 %1 %2 %32 %3 %4 %5
+        ret
+
+    @b6
+        %13 = const 3 bv64
+        %14 = cmp eq %6 %13
+        br %14 @b7 @b8
+
+    @b7
+        %23 = const 0x4000000000 ptr<DiskQword,1>
+        %33 = const 0x4000200000 ptr<DiskQword,64>
+        call %23 %1 %2 %33 %3 %4 %5
+        ret
+
+    @b8
+        %15 = const 4 bv64
+        %16 = cmp eq %6 %15
+        br %16 @b9 @b10
+
+    @b9
+        %24 = const 0x5000000000 ptr<DiskQword,1>
+        %34 = const 0x5000200000 ptr<DiskQword,64>
+        call %24 %1 %2 %34 %3 %4 %5
+        ret
+
+    @b10
+        %17 = const 5 bv64
+        %18 = cmp eq %6 %17
+        br %18 @b11 @b12
+
+    @b11
+        %25 = const 0x6000000000 ptr<DiskQword,1>
+        %35 = const 0x6000200000 ptr<DiskQword,64>
+        call %25 %1 %2 %35 %3 %4 %5
+        ret
+
+    @b12
+        %26 = const 0x7000000000 ptr<DiskQword,1>
+        %36 = const 0x7000200000 ptr<DiskQword,64>
+        call %26 %1 %2 %36 %3 %4 %5
+        ret
+}
+
+func app_dispatch_draw_icon void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:bv64 %3:bv64 %4:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req ule %2 1200
+    @req ule %3 650
+    @req ult %4 7
+
+    @b0
+        %5 = const 0 bv64
+        %6 = cmp eq %4 %5
+        br %6 @b1 @b2
+
+    @b1
+        %20 = const 0x1000000008 ptr<DiskQword,1>
+        call %20 %1 %2 %3
+        ret
+
+    @b2
+        %7 = const 1 bv64
+        %8 = cmp eq %4 %7
+        br %8 @b3 @b4
+
+    @b3
+        %21 = const 0x2000000008 ptr<DiskQword,1>
+        call %21 %1 %2 %3
+        ret
+
+    @b4
+        %9 = const 2 bv64
+        %10 = cmp eq %4 %9
+        br %10 @b5 @b6
+
+    @b5
+        %22 = const 0x3000000008 ptr<DiskQword,1>
+        call %22 %1 %2 %3
+        ret
+
+    @b6
+        %11 = const 3 bv64
+        %12 = cmp eq %4 %11
+        br %12 @b7 @b8
+
+    @b7
+        %23 = const 0x4000000008 ptr<DiskQword,1>
+        call %23 %1 %2 %3
+        ret
+
+    @b8
+        %13 = const 4 bv64
+        %14 = cmp eq %4 %13
+        br %14 @b9 @b10
+
+    @b9
+        %24 = const 0x5000000008 ptr<DiskQword,1>
+        call %24 %1 %2 %3
+        ret
+
+    @b10
+        %15 = const 5 bv64
+        %16 = cmp eq %4 %15
+        br %16 @b11 @b12
+
+    @b11
+        %25 = const 0x6000000008 ptr<DiskQword,1>
+        call %25 %1 %2 %3
+        ret
+
+    @b12
+        %26 = const 0x7000000008 ptr<DiskQword,1>
+        call %26 %1 %2 %3
+        ret
+}
+
+func app_dispatch_load_app void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 7
+    @req ult %2 16777216
+
+    @b0
+        %3 = const 0 bv64
+        %4 = cmp eq %1 %3
+        br %4 @b1 @b2
+
+    @b1
+        %20 = const 0x1000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %20 %2
+        ret
+
+    @b2
+        %5 = const 1 bv64
+        %6 = cmp eq %1 %5
+        br %6 @b3 @b4
+
+    @b3
+        %21 = const 0x2000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %21 %2
+        ret
+
+    @b4
+        %7 = const 2 bv64
+        %8 = cmp eq %1 %7
+        br %8 @b5 @b6
+
+    @b5
+        %22 = const 0x3000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %22 %2
+        ret
+
+    @b6
+        %9 = const 3 bv64
+        %10 = cmp eq %1 %9
+        br %10 @b7 @b8
+
+    @b7
+        %23 = const 0x4000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %23 %2
+        ret
+
+    @b8
+        %11 = const 4 bv64
+        %12 = cmp eq %1 %11
+        br %12 @b9 @b10
+
+    @b9
+        %24 = const 0x5000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %24 %2
+        ret
+
+    @b10
+        %13 = const 5 bv64
+        %14 = cmp eq %1 %13
+        br %14 @b11 @b12
+
+    @b11
+        %25 = const 0x6000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %25 %2
+        ret
+
+    @b12
+        %26 = const 0x7000000000 ptr<DiskQword,16384>
+        call drv_ata_load_app %0 %26 %2
+        ret
+}
+
+func app_dispatch_zero_state void %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 7
+
+    @b0
+        %2 = const 0 bv64
+        %3 = cmp eq %1 %2
+        br %3 @b1 @b2
+
+    @b1
+        %20 = const 0x1000200000 ptr<DiskQword,64>
+        call std_mem_zero %20
+        ret
+
+    @b2
+        %4 = const 1 bv64
+        %5 = cmp eq %1 %4
+        br %5 @b3 @b4
+
+    @b3
+        %21 = const 0x2000200000 ptr<DiskQword,64>
+        call std_mem_zero %21
+        ret
+
+    @b4
+        %6 = const 2 bv64
+        %7 = cmp eq %1 %6
+        br %7 @b5 @b6
+
+    @b5
+        %22 = const 0x3000200000 ptr<DiskQword,64>
+        call std_mem_zero %22
+        ret
+
+    @b6
+        %8 = const 3 bv64
+        %9 = cmp eq %1 %8
+        br %9 @b7 @b8
+
+    @b7
+        %23 = const 0x4000200000 ptr<DiskQword,64>
+        call std_mem_zero %23
+        ret
+
+    @b8
+        %10 = const 4 bv64
+        %11 = cmp eq %1 %10
+        br %11 @b9 @b10
+
+    @b9
+        %24 = const 0x5000200000 ptr<DiskQword,64>
+        call std_mem_zero %24
+        ret
+
+    @b10
+        %12 = const 5 bv64
+        %13 = cmp eq %1 %12
+        br %13 @b11 @b12
+
+    @b11
+        %25 = const 0x6000200000 ptr<DiskQword,64>
+        call std_mem_zero %25
+        ret
+
+    @b12
+        %26 = const 0x7000200000 ptr<DiskQword,64>
+        call std_mem_zero %26
+        ret
+}
+
+func app_dispatch_get_state bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 7
+    @req ult %2 64
+
+    @b0
+        %3 = const 0 bv64
+        %4 = cmp eq %1 %3
+        br %4 @b1 @b2
+
+    @b1
+        %20 = const 0x1000200000 ptr<DiskQword,64>
+        %30 = call cap_state_get %20 %2
+        ret %30
+
+    @b2
+        %5 = const 1 bv64
+        %6 = cmp eq %1 %5
+        br %6 @b3 @b4
+
+    @b3
+        %21 = const 0x2000200000 ptr<DiskQword,64>
+        %31 = call cap_state_get %21 %2
+        ret %31
+
+    @b4
+        %7 = const 2 bv64
+        %8 = cmp eq %1 %7
+        br %8 @b5 @b6
+
+    @b5
+        %22 = const 0x3000200000 ptr<DiskQword,64>
+        %32 = call cap_state_get %22 %2
+        ret %32
+
+    @b6
+        %9 = const 3 bv64
+        %10 = cmp eq %1 %9
+        br %10 @b7 @b8
+
+    @b7
+        %23 = const 0x4000200000 ptr<DiskQword,64>
+        %33 = call cap_state_get %23 %2
+        ret %33
+
+    @b8
+        %11 = const 4 bv64
+        %12 = cmp eq %1 %11
+        br %12 @b9 @b10
+
+    @b9
+        %24 = const 0x5000200000 ptr<DiskQword,64>
+        %34 = call cap_state_get %24 %2
+        ret %34
+
+    @b10
+        %13 = const 5 bv64
+        %14 = cmp eq %1 %13
+        br %14 @b11 @b12
+
+    @b11
+        %25 = const 0x6000200000 ptr<DiskQword,64>
+        %35 = call cap_state_get %25 %2
+        ret %35
+
+    @b12
+        %26 = const 0x7000200000 ptr<DiskQword,64>
+        %36 = call cap_state_get %26 %2
+        ret %36
+}
+
+# =============================================================================
+# THANH DOCK TỰ ĐỘNG QUÉT VFS VÀ CẤP PHÁT LÔ 64GB CHO TỐI ĐA 7 APPS
+# =============================================================================
+func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+
+    @b0
+        # Nền thanh Dock động căn giữa màn hình (rộng 510px, x: 385..895)
+        %6 = const 385 bv64
+        %7 = const 895 bv64
+        %8 = const 630 bv64
+        %9 = const 712 bv64
+        %10 = const 0x0b0e14 bv32
+        call gfx_fill_rect %1 %6 %8 %7 %9 %10
+
+        %11 = const 381 bv64
+        %12 = const 891 bv64
+        %13 = const 624 bv64
+        %14 = const 706 bv64
+        %15 = const 0x262f45 bv32
+        call gfx_fill_rect %1 %11 %13 %12 %14 %15
+
+        %16 = const 626 bv64
+        %17 = const 0x566991 bv32
+        call gfx_fill_rect %1 %11 %13 %12 %16 %17
+
+        # Vòng lặp duyệt tất cả các App slot 0..6 trong VFS
+        %18 = const 0 bv64
+        jmp @b1 %18
+
+    @b1 %19:bv64
+        @inv ule %19 7
+        %20 = const 7 bv64
+        %21 = cmp ult %19 %20
+        br %21 @b2 @b5
+
+    @b2
+        %22 = call vfs_entry_is_app %3 %19
+        %23 = const 0 bv64
+        %24 = cmp ne %22 %23
+        br %24 @b3 @b4
+
+    @b3
+        # Tự động cấp phát Lô 64GB độc lập cho App thứ %19
+        %31 = const 0x11000 ptr<DiskQword,512>
+        %32 = const 0x20000 ptr<DiskQword,4096>
+        call vmm_alloc_app_arena %0 %31 %32 %19
+        call app_dispatch_zero_state %0 %19
+
+        # Nạp binary của App từ VFS vào Lô Code tương ứng
+        %33 = call vfs_entry_get_lba %3 %19
+        call app_dispatch_load_app %0 %19 %33
+
+        # Tự động tính tọa độ hiển thị icon của từng App trên Dock
+        %34 = const 70 bv64
+        %35 = mul %19 %34
+        %36 = const 395 bv64
+        %37 = add %36 %35
+        %38 = const 634 bv64
+        call app_dispatch_draw_icon %0 %1 %37 %38 %19
+        jmp @b4
+
+    @b4
+        %39 = const 1 bv64
+        %40 = add %19 %39
+        jmp @b1 %40
+
+    @b5
+        call ui_invalidate_rect %2 %11 %13 %7 %9
+        ret
+}
+
+# =============================================================================
+# IPC VÀ ĐIỀU PHỐI CỬA SỔ DESKTOP KHÔNG CÒN HARDCODE APP
+# =============================================================================
+func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
 
     @b0
         %9 = const 0x7c000 ptr<DiskQword,64>
@@ -255,35 +694,31 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         jmp @b6
 
     @b2
-        %19 = const 510 bv64
-        %20 = const 600 bv64
+        # Vùng click Dock: x trong [390..880]
+        %19 = const 390 bv64
+        %20 = const 880 bv64
         %21 = cmp uge %10 %19
         %22 = cmp ult %10 %20
         %23 = and %21 %22
-        br %23 @b3 @b4
+        br %23 @b3 @b19
 
     @b3
-        store %3 0 %13
-        store %3 56 %14
-        store %3 32 %13
-        store %3 88 %13
-        store %3 112 %13
-        jmp @b8
+        # Tự động tính slot được click: clicked_slot = (mouse_x - 390) / 70
+        %24 = sub %10 %19
+        %25 = const 70 bv64
+        %26 = udiv %24 %25
+        %27 = call vfs_entry_is_app %4 %26
+        %28 = cmp ne %27 %13
+        br %28 @b4 @b19
 
     @b4
-        %26 = const 680 bv64
-        %27 = const 770 bv64
-        %28 = cmp uge %10 %26
-        %29 = cmp ult %10 %27
-        %30 = and %28 %29
-        br %30 @b5 @b19
-
-    @b5
-        %31 = call cap_state_get %8 %15
+        # Lấy State[2] của chính App được click để khôi phục trạng thái
+        %29 = call app_dispatch_get_state %0 %26 %15
+        %30 = add %26 %14
         store %3 0 %13
-        store %3 56 %15
+        store %3 56 %30
         store %3 32 %13
-        store %3 88 %31
+        store %3 88 %29
         store %3 112 %13
         jmp @b8
 
@@ -302,18 +737,12 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
 
     @b8
         %50 = load %3 56 bv64
-        %51 = cmp eq %50 %14
-        br %51 @b81 @b82
+        %51 = cmp ne %50 %13
+        br %51 @b81 @b6
 
     @b81
-        call %5 %2 %3 %6 %9 %4 %95
-        jmp @b83
-
-    @b82
-        call %7 %2 %3 %8 %9 %4 %95
-        jmp @b83
-
-    @b83
+        %52 = sub %50 %14
+        call app_dispatch_entry %0 %2 %3 %9 %4 %95 %52
         store %3 32 %13
 
         %53 = load %3 56 bv64
@@ -326,8 +755,9 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         br %56 @b13 @b16
 
     @b13
-        call drv_ata_read_sector %0 %6 %55
-        call %5 %2 %3 %6 %9 %4 %95
+        %67 = const 0x1000200000 ptr<DiskQword,64>
+        call drv_ata_read_sector %0 %67 %55
+        call app_dispatch_entry %0 %2 %3 %9 %4 %95 %52
         jmp @b6
 
     @b16
@@ -336,8 +766,9 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         br %61 @b17 @b6
 
     @b17
-        call drv_ata_write_sector %0 %6 %60
-        call %5 %2 %3 %6 %9 %4 %95
+        %68 = const 0x1000200000 ptr<DiskQword,64>
+        call drv_ata_write_sector %0 %68 %60
+        call app_dispatch_entry %0 %2 %3 %9 %4 %95 %52
         jmp @b6
 
     @b14
