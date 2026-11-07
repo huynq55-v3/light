@@ -207,60 +207,6 @@ func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChann
         ret
 }
 
-func bg_keep_alive_app1 void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
-    @req uge %0 0x10000
-    @req ult %0 0x10000000000
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-
-    @b0
-        %2 = const 0 bv64
-        %3 = const 2 bv64
-        %4 = call cap_state_get %0 %3
-        %5 = const 108 bv64
-        %6 = cmp eq %4 %5
-        br %6 @b1 @b6
-
-    @b1
-        %7 = call smp_poll_all_done %1
-        %8 = cmp ne %7 %2
-        br %8 @b2 @b6
-
-    @b2
-        %9 = call cap_state_get %0 %2
-        %10 = const 99000000 bv64
-        %11 = call std_min %9 %10
-        %12 = const 800000 bv64
-        %13 = add %11 %12
-        call cap_state_set %0 %2 %13
-
-        %14 = const 30000000 bv64
-        %15 = urem %13 %14
-        %16 = const 1 bv64
-        jmp @b3 %16
-
-    @b3 %17:bv64
-        @inv uge %17 1
-        @inv ule %17 8
-        %18 = const 8 bv64
-        %19 = cmp ult %17 %18
-        br %19 @b4 @b6
-
-    @b4
-        %20 = const 1 bv64
-        %21 = sub %17 %20
-        %22 = const 100000 bv64
-        %23 = mul %21 %22
-        %24 = add %15 %23
-        %25 = add %24 %22
-        call smp_dispatch_worker %1 %17 %24 %25
-        %26 = add %17 %20
-        jmp @b3 %26
-
-    @b6
-        ret
-}
-
 func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> %5:ptr<DiskQword,16384> %6:ptr<DiskQword,64> %7:ptr<DiskQword,16384> %8:ptr<DiskQword,64> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
@@ -291,15 +237,6 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         %45 = load %3 72 bv64
         %95 = const 0x7e000 ptr<DiskQword,64>
 
-        %49 = load %3 56 bv64
-        %52 = cmp ne %49 %15
-        br %52 @b90 @b91
-
-    @b90
-        call bg_keep_alive_app1 %8 %95
-        jmp @b91
-
-    @b91
         %16 = cmp ne %12 %13
         br %16 @b1 @b20
 

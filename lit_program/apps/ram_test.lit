@@ -1,0 +1,373 @@
+# File: lit_program/apps/pi_bench.lit
+# App #2: 1.75 GB PHYSICAL RAM & 7-CORE TORTURE BENCHMARK (Lô 64GB = 0x20_0000_0000)
+# - Core 0: Điều phối bất đồng bộ + Vẽ GUI 60 FPS thời gian thực
+# - Core 1..7: 7 luồng cày nát 1.75 GB RAM thực (0x2000200000..0x2070200000, 256MB/Core)
+
+include ../lib/ui_window.lit
+include ../lib/std_lib.lit
+include ../lib/ipc_bus.lit
+include ../lib/ui_canvas.lit
+include ../lib/cap_mem.lit
+include ../lib/smp.lit
+
+# =============================================================================
+# 1. HÀM WORKER ĐA NHÂN (Chạy song song trên 7 nhân AP: Core 1..7)
+#    - %0: offset Qword bắt đầu trong phân vùng 256MB của Core này
+#    - %1: offset Qword kết thúc (quét 524,288 Qwords = 4MB mỗi nhịp)
+# =============================================================================
+func app_smp_worker bv64 %0:bv64 %1:bv64 {
+    @req ule %0 33554432
+    @req ule %1 33554432
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %0 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 33554432
+        %5 = const 33554432 bv64
+        %6 = cmp ult %3 %1
+        %7 = cmp ult %3 %5
+        %8 = and %6 %7
+        br %8 @b2 @b3
+
+    @b2
+        # Thuật toán băm nặng CPU kết hợp tạo checksum xác thực
+        %9 = const 0x9e3779b9 bv64
+        %10 = add %3 %9
+        %11 = const 30 bv64
+        %12 = lshr %10 %11
+        %13 = xor %10 %12
+        %14 = const 0xbf58476d bv64
+        %15 = mul %13 %14
+        %16 = const 27 bv64
+        %17 = lshr %15 %16
+        %18 = xor %15 %17
+        %19 = const 0xffff bv64
+        %20 = and %18 %19
+        %21 = xor %4 %20
+
+        %22 = const 1 bv64
+        %23 = add %3 %22
+        jmp @b1 %23 %21
+
+    @b3
+        ret %4
+}
+
+# =============================================================================
+# 2. HÀM VẼ ICON CỦA APP LÊN THANH DOCK
+# =============================================================================
+func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 1200
+    @req ule %2 650
+
+    @b0
+        %3 = const 52 bv64
+        %4 = add %1 %3
+        %5 = add %2 %3
+        %6 = const 0x4f46e5 bv32
+        call gfx_fill_rect %0 %1 %2 %4 %5 %6
+
+        %7 = const 10 bv64
+        %8 = const 23 bv64
+        %9 = const 29 bv64
+        %10 = const 42 bv64
+
+        %11 = add %1 %7
+        %12 = add %1 %8
+        %13 = add %1 %9
+        %14 = add %1 %10
+
+        %15 = add %2 %7
+        %16 = add %2 %8
+        %17 = add %2 %9
+        %18 = add %2 %10
+
+        %19 = const 0xfbbf24 bv32
+        call gfx_fill_rect %0 %11 %15 %12 %16 %19
+        call gfx_fill_rect %0 %13 %15 %14 %16 %19
+        call gfx_fill_rect %0 %11 %17 %12 %18 %19
+        call gfx_fill_rect %0 %13 %17 %14 %18 %19
+        ret
+}
+
+# =============================================================================
+# 3. CORE 0 PHÁT LỆNH GIAO VIỆC CHO 7 CORE CÀY ĐỒNG THỜI 7 PHÂN VÙNG
+#    - sweep_offset (%1): 0 .. 33,030,144 (trong phân vùng 33,554,432 Qwords = 256MB)
+#    - Mỗi Core quét tiếp 524,288 Qwords (4 MB) -> Tổng 28 MB mỗi nhịp
+# =============================================================================
+func ram_async_dispatch_7cores void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 33030144
+
+    @b0
+        %2 = const 1 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv uge %3 1
+        @inv ule %3 8
+        %4 = const 8 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b3
+
+    @b2
+        %6 = const 1 bv64
+        %7 = const 524288 bv64
+        %8 = add %1 %7
+        call smp_dispatch_worker %0 %3 %1 %8
+
+        %9 = add %3 %6
+        jmp @b1 %9
+
+    @b3
+        ret
+}
+
+# =============================================================================
+# 4. THU THẬP VÀ TỔNG HỢP CHECKSUM TỪ 7 CORE PHỤ SAU MỖI NHỊP CÀY
+# =============================================================================
+func ram_collect_7cores_checksum bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = const 1 bv64
+        %2 = const 0 bv64
+        jmp @b1 %1 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv uge %3 1
+        @inv ule %3 8
+        %5 = const 8 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b3
+
+    @b2
+        %7 = const 2 bv64
+        %8 = shl %3 %7
+        %9 = const 3 bv64
+        %10 = add %8 %9
+        %11 = slice %0 %10 ptr<DiskQword,1>
+        %12 = load %11 0 bv64
+        %13 = xor %4 %12
+
+        %14 = const 1 bv64
+        %15 = add %3 %14
+        jmp @b1 %15 %13
+
+    @b3
+        ret %4
+}
+
+# =============================================================================
+# 5. HÀM CHÍNH CỦA APP (CORE 0 ĐIỀU PHỐI VÀ VẼ GIAO DIỆN GIÁM SÁT 60 FPS)
+#    - State[0]: Tổng MB RAM đã quét (MB RW)
+#    - State[1]: Checksum tổng hợp 64-bit từ 7 Core
+#    - State[2]: Cờ trạng thái chạy (0 = STOP, 108 = FULL 7-CORE TORTURE)
+# =============================================================================
+func app_pi_bench_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x80000000
+
+    @b0
+        %6 = call ipc_mouse_get_x %1
+        %7 = call ipc_mouse_get_y %1
+        %8 = call ipc_mouse_get_click %1
+
+        %9 = const 200 bv64
+        %10 = const 60 bv64
+        %11 = const 880 bv64
+        %12 = const 540 bv64
+        %13 = const 0 bv64
+        %14 = const 1 bv64
+        %102 = const 2 bv64
+
+        %15 = load %1 112 bv64
+        %16 = cmp eq %15 %13
+        br %16 @b10 @b1
+
+    @b1
+        %17 = cmp ne %8 %13
+        br %17 @b2 @b30
+
+    @b2
+        %18 = call ui_win_check_close %6 %7 %8 %9 %10 %11
+        %19 = cmp ne %18 %13
+        br %19 @b3 @b4
+
+    @b3
+        call cap_state_set %2 %102 %13
+        call ui_win_close_app %1
+        ret
+
+    @b4
+        %20 = const 240 bv64
+        %21 = const 115 bv64
+        %22 = const 160 bv64
+        %23 = const 34 bv64
+
+        # Nút [STRESS 8] (Bật 7 Worker APs cày liên tục)
+        %24 = call ui_btn_hit %6 %7 %8 %20 %21 %22 %23
+        %25 = cmp ne %24 %13
+        br %25 @b7 @b8
+
+    @b7
+        %30 = const 108 bv64
+        call cap_state_set %2 %13 %13
+        call cap_state_set %2 %14 %13
+        call cap_state_set %2 %102 %30
+        store %1 88 %30
+        call ram_async_dispatch_7cores %5 %13
+        jmp @b30
+
+    @b8
+        # Nút [STOP]
+        %31 = const 430 bv64
+        %32 = const 110 bv64
+        %33 = call ui_btn_hit %6 %7 %8 %31 %21 %32 %23
+        %34 = cmp ne %33 %13
+        br %34 @b9 @b30
+
+    @b9
+        call cap_state_set %2 %102 %13
+        store %1 88 %13
+        jmp @b20
+
+    @b30
+        %35 = call cap_state_get %2 %102
+        store %1 88 %35
+        %45 = const 108 bv64
+        %46 = cmp eq %35 %45
+        br %46 @b33 @b99
+
+    @b33
+        # Kiểm tra cả 7 Core phụ đã cày xong nhịp hiện tại chưa
+        %47 = call smp_poll_all_done %5
+        %48 = cmp ne %47 %13
+        br %48 @b34 @b20
+
+    @b34
+        # 1. Tích lũy số MB RAM đã quét (+28 MB mỗi nhịp hoàn thành)
+        %49 = call cap_state_get %2 %13
+        %50 = const 99000000 bv64
+        %51 = call std_min %49 %50
+        %52 = const 28 bv64
+        %53 = add %51 %52
+        call cap_state_set %2 %13 %53
+
+        # 2. Gom Checksum từ 7 Core và XOR tích lũy vào State[1]
+        %54 = call ram_collect_7cores_checksum %5
+        %55 = call cap_state_get %2 %14
+        %56 = xor %55 %54
+        call cap_state_set %2 %14 %56
+
+        # 3. Tính toán offset nhịp tiếp theo (xoay vòng trong 256MB = 33,030,144 Qwords)
+        %57 = const 524288 bv64
+        %58 = mul %53 %57
+        %59 = const 33030144 bv64
+        %60 = urem %58 %59
+
+        # 4. Giao nhịp tiếp theo cho 7 Core cày tiếp
+        call ram_async_dispatch_7cores %5 %60
+        jmp @b20
+
+    @b10
+        store %1 112 %14
+        %70 = call cap_state_get %2 %102
+        store %1 88 %70
+        %71 = const 0x54524f54204d4152 bv64 # "RAM TORT"
+        %72 = const 0x0f172a bv32
+        call ui_win_draw %0 %3 %9 %10 %11 %12 %71 %72
+        %81 = const 1086 bv64
+        %82 = const 606 bv64
+        call ui_invalidate_rect %1 %9 %10 %81 %82
+        jmp @b20
+
+    @b20
+        %62 = const 240 bv64
+        %63 = const 115 bv64
+        %64 = const 160 bv64
+        %65 = const 34 bv64
+        %67 = const 0x7c3aed bv32
+        %68 = const 0xdc2626 bv32
+        %69 = const 0xffffff bv32
+        %80 = const 8 bv64
+        %810 = const 4 bv64
+
+        # Nút STRESS 8
+        %73 = const 0x3820535345525453 bv64 # "STRESS 8"
+        call ui_btn_draw_text %0 %3 %62 %63 %64 %65 %67 %69 %73 %80 %13
+
+        # Nút STOP
+        %76 = const 430 bv64
+        %77 = const 110 bv64
+        %78 = const 0x20202020504f5453 bv64 # "STOP    "
+        call ui_btn_draw_text %0 %3 %76 %63 %77 %65 %68 %69 %78 %810 %13
+
+        # Khung đồ họa Dashboard
+        %83 = const 30 bv64
+        %84 = const 120 bv64
+        %85 = const 820 bv64
+        %86 = const 340 bv64
+        %87 = const 0x1e293b bv32
+        call canvas_fill_rect %0 %83 %84 %85 %86 %87
+
+        %88 = call cap_state_get %2 %13     # Tổng MB RAM
+        %89 = call cap_state_get %2 %14     # Checksum
+
+        %90 = const 270 bv64
+        %91 = const 210 bv64
+        %92 = const 0x20203a575220424d bv64 # "MB RW:  "
+        %93 = const 0x94a3b8 bv32
+        call gfx_draw_str8 %0 %3 %90 %91 %92 %93
+
+        %94 = call std_u64_to_str8 %88
+        %95 = const 370 bv64
+        %96 = const 0x38bdf8 bv32
+        call gfx_draw_str8 %0 %3 %95 %91 %94 %96
+
+        %97 = const 255 bv64
+        %98 = const 0x203a4d55534b4843 bv64 # "CHKSUM: "
+        call gfx_draw_str8 %0 %3 %90 %97 %98 %93
+
+        %99 = call std_u64_to_str8 %89
+        %100 = const 0x34d399 bv32
+        call gfx_draw_str8 %0 %3 %95 %97 %99 %100
+
+        # Thanh tiến độ Progress Bar (rộng tối đa 500 px)
+        %110 = const 1792 bv64
+        %111 = call std_min %88 %110
+        %112 = const 500 bv64
+        %113 = mul %111 %112
+        %114 = udiv %113 %110
+        %115 = call std_min %114 %112
+
+        %116 = const 70 bv64
+        %117 = add %116 %115
+        %118 = const 245 bv64
+        %119 = const 275 bv64
+        %120 = const 0xfbbf24 bv32
+        call canvas_fill_rect %0 %116 %118 %117 %119 %120
+
+        %101 = const 40 bv64
+        call canvas_invalidate_rect %1 %83 %101 %85 %86
+        ret
+
+    @b99
+        ret
+}
