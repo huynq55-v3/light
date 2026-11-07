@@ -18,7 +18,7 @@ layout IpcChannel 168 {
     64: bv64 @inv ult val 1260
     72: bv64 @inv ult val 700
     80: bv64
-    88: bv64                                # Trạng thái Browser: 0 = Edit, >0 = (prefix_off << 8) | prefix_len + 1
+    88: bv64                                # ipc_win_cmd: 0 = Normal, 1 = App requested Shell to close & reset
     96: bv64 @inv ult val 268435456
     104: bv64 @inv ult val 268435456
     112: bv64 @inv ule val 1
@@ -26,7 +26,7 @@ layout IpcChannel 168 {
     128: bv64 @inv ule val 720
     136: bv64 @inv ule val 1280
     144: bv64 @inv ule val 720
-    152: bv64                               # LBA của file đang mở trong Editor
+    152: bv64                               # ipc_bg_mask: Bitmask of apps running in background (bit i = 1 << slot)
     160: bv64                               # Trạng thái giữ phím Shift (1 = đang giữ Shift, 0 = nhả)
 }
 

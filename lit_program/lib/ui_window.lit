@@ -116,19 +116,51 @@ func ui_win_check_close bv64 %0:bv64 %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
         ret %13
 }
 
+# 4. Phát tín hiệu đóng App (offset 88 = 1) để Shell thu hồi tài nguyên và Reset App về như mới
 func ui_win_close_app void %0:ptr<IpcChannel,1> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
 
     @b0
         %1 = const 0 bv64
+        %2 = const 1 bv64
         store %0 0 %1
-        store %0 56 %1
-        store %0 80 %1
         store %0 32 %1
-        store %0 88 %1
-        store %0 96 %1
-        store %0 104 %1
-        store %0 112 %1
+        store %0 88 %2                      # Bật cờ ipc_win_cmd = 1 báo cho Shell biết App vừa bấm [X]!
         ret
+}
+
+# 5. Giao diện chuẩn dùng chung cho mọi App: Kiểm tra click nút [X] và tự động báo về Shell để đóng + Reset App
+func ui_win_poll_close bv64 %0:ptr<IpcChannel,1> %1:bv64 %2:bv64 %3:bv64 {
+    # %0: ipc, %1: win_x, %2: win_y, %3: win_w
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 40
+    @req ule %1 380
+    @req uge %2 30
+    @req ule %2 160
+    @req uge %3 400
+    @req ule %3 890
+    @ens ule %11 1
+
+    @b0
+        %4 = load %0 16 bv64                # mouse_x (< 1260)
+        %5 = load %0 24 bv64                # mouse_y (< 700)
+        %6 = load %0 32 bv64                # mouse_click
+        %7 = call ui_win_check_close %4 %5 %6 %1 %2 %3
+        %8 = const 0 bv64
+        %9 = cmp ne %7 %8
+        br %9 @b1 @b2
+
+    @b1
+        call ui_win_close_app %0
+        %10 = const 1 bv64
+        jmp @b3 %10
+
+    @b2
+        jmp @b3 %8
+
+    @b3 %11:bv64
+        @inv ule %11 1
+        ret %11
 }

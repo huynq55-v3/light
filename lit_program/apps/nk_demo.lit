@@ -68,7 +68,7 @@ func app_smp_worker bv64 %0:bv64 %1:bv64 {
         ret %2
 }
 
-# 3. Hàm Entry chính của App Nuklear Demo (được gọi liên tục mỗi frame từ Kernel)
+# 3. Hàm Entry chính của App Nuklear Demo
 #    %0: Backbuffer FB
 #    %1: IPC Bus
 #    %2: App Persistent State (64 Qwords = 512 bytes)
@@ -87,12 +87,7 @@ func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Di
     @req ult %4 0x80000000
 
     @b0
-        # Đọc mouse click và tọa độ để xử lý nút đóng cửa sổ
-        %5 = load %1 16 bv64                 # mouse_x
-        %6 = load %1 24 bv64                 # mouse_y
-        %7 = load %1 32 bv64                 # mouse_click
-
-        # Kích thước cửa sổ Nuklear Demo: x=240, y=100, w=560, h=360
+        # Kích thước cửa sổ Nuklear Demo: x=240, y=100, w=800, h=450
         %8 = const 240 bv64
         %9 = const 100 bv64
         %10 = const 800 bv64
@@ -100,18 +95,29 @@ func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Di
         %100 = add %8 %10
         %101 = add %9 %11
 
-        # Kiểm tra click nút Close [X] trên Window Bar
-        %12 = call ui_win_check_close %5 %6 %7 %8 %9 %10
+        # Kiểm tra click nút Close [X] trên Window Bar qua interface chuẩn
+        %12 = call ui_win_poll_close %1 %8 %9 %10
         %13 = const 0 bv64
         %14 = cmp ne %12 %13
         br %14 @b90 @b91
 
     @b90
-        call ui_win_close_app %1
         ret
 
     @b91
-        # Lấy slice đầu tiên của App State làm NuklearContext (128 bytes)
+        # Nếu cửa sổ đã vẽ lên màn hình (offset 112 != 0) VÀ không có click chuột (offset 32 == 0) -> Thoát ngay chống nháy chuột!
+        %60 = load %1 112 bv64
+        %61 = load %1 32 bv64
+        %62 = cmp eq %60 %13
+        %63 = cmp ne %61 %13
+        %64 = or %62 %63
+        br %64 @b910 @b90
+
+    @b910
+        %65 = const 1 bv64
+        store %1 112 %65
+
+        # Lấy slice đầu tiên của App State làm NuklearContext
         %15 = const 0 bv64
         %16 = slice %2 %15 ptr<DiskQword,64>
 
@@ -139,7 +145,7 @@ func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Di
         call nk_layout_row_end %16
 
         # =========================================================================
-        # HÀNG 2: 2 Cột Nút bấm Immediate Mode: [ADD +1] [RESET]
+        # HÀNG 2: 2 Cột Nút bấm Immediate Mode: [ADD +1] [CLEAR]
         # =========================================================================
         %24 = const 32 bv64                 # Chiều cao nút = 32
         %25 = const 2 bv64                  # 2 Cột song song
@@ -152,7 +158,7 @@ func app_nk_demo_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Di
         br %28 @b92 @b93
 
     @b92
-        # Tăng counter (kẹp an toàn < 99999999 để Z3 chứng minh không tràn số)
+        # Tăng counter (kẹp an toàn < 9999999 để Z3 chứng minh không tràn số)
         %29 = const 9999999 bv64
         %30 = cmp ult %19 %29
         br %30 @b921 @b93

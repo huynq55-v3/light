@@ -6,6 +6,7 @@ include ../lib/ui_file_browser.lit
 include ../lib/std_lib.lit
 include ../lib/ipc_bus.lit
 include ../lib/ui_canvas.lit
+include ../lib/cap_mem.lit
 
 # 1. Render văn bản streaming trong vùng soạn thảo (trên Backbuffer %0, lấy dữ liệu từ Lô 64GB %2)
 func editor_render_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
@@ -159,7 +160,10 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         ret
 }
 
-# 3. Hàm ứng dụng Soạn thảo chính (Nhận vùng nhớ riêng %2 tại Lô 64GB = 0x10_0020_0000)
+# 3. Hàm ứng dụng Soạn thảo chính (Lưu toàn bộ trạng thái vào vùng nhớ riêng %2 tại Lô 64GB)
+#    - Qword 0..61 (496 bytes): Nội dung văn bản
+#    - Qword 62: Trạng thái Browser (0 = Edit, >0 = Browser prefix)
+#    - Qword 63: LBA của file đang mở
 func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -183,6 +187,8 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         %11 = const 540 bv64
         %12 = const 0 bv64
         %13 = const 1 bv64
+        %200 = const 62 bv64                # Slot 62: Browser state
+        %201 = const 63 bv64                # Slot 63: Open file LBA
 
         %14 = load %1 112 bv64
         %15 = cmp eq %14 %12
@@ -193,14 +199,12 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %16 @b2 @b30
 
     @b2
-        %17 = call ui_win_check_close %5 %6 %7 %8 %9 %10
+        %17 = call ui_win_poll_close %1 %8 %9 %10
         %18 = cmp ne %17 %12
         br %18 @b21 @b3
 
     @b21
-        call std_mem_zero %2
-        store %1 88 %12
-        call ui_win_close_app %1
+        # Đóng qua interface chuẩn: Shell sẽ tự reset State %2 về 0!
         ret
 
     @b3
@@ -214,9 +218,8 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %25 @b4 @b5
 
     @b4
+        # Nút [NEW]: Xóa sạch văn bản + Slot 62 (mode = 0) + Slot 63 (lba = 0)
         call std_mem_zero %2
-        store %1 88 %12
-        store %1 152 %12
         jmp @b36
 
     @b5
@@ -227,7 +230,8 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %30 @b6 @b7
 
     @b6
-        store %1 88 %13
+        # Nút [BROWSE]: Bật Browser mode ở Slot 62
+        call cap_state_set %2 %200 %13
         jmp @b36
 
     @b7
@@ -237,7 +241,8 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %34 @b8 @b10
 
     @b8
-        %35 = load %1 152 bv64
+        # Nút [SAVE]: Ghi lại Sector nếu Slot 63 > 0
+        %35 = call cap_state_get %2 %201
         %36 = const 0xffffff bv64
         %37 = and %35 %36
         %38 = cmp ugt %37 %12
@@ -248,7 +253,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         ret
 
     @b10
-        %41 = load %1 88 bv64
+        %41 = call cap_state_get %2 %200
         %42 = cmp ugt %41 %12
         br %42 @b11 @b99
 
@@ -274,8 +279,9 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %106 @b121 @b12
 
     @b121
+        # Click thư mục: cập nhật Slot 62
         %107 = add %105 %13
-        store %1 88 %107
+        call cap_state_set %2 %200 %107
         jmp @b36
 
     @b12
@@ -284,14 +290,13 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         br %109 @b122 @b99
 
     @b122
-        store %1 152 %105
-        store %1 88 %12
+        # Click tệp: Yêu cầu Shell đọc Sector. Shell đọc xong sẽ tự set Slot 63 = lba và Slot 62 = 0!
         store %1 112 %12
         call ipc_disk_req_read %1 %105
         ret
 
     @b30
-        %56 = load %1 88 bv64
+        %56 = call cap_state_get %2 %200
         %58 = cmp ugt %56 %12
         br %58 @b99 @b31
 
@@ -304,9 +309,23 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @b32
         %62 = const 27 bv8
         %63 = cmp eq %61 %62
-        br %63 @b21 @b33
+        br %63 @b321 @b33
+
+    @b321
+        call ui_win_close_app %1
+        ret
 
     @b33
+        # Kẹp chiều dài văn bản < 490 bytes để không bao giờ chạm vào Slot 62, 63!
+        %202 = call std_str_len %2
+        %203 = const 490 bv64
+        %204 = cmp ult %202 %203
+        %205 = const 8 bv8
+        %206 = cmp eq %61 %205
+        %207 = or %204 %206
+        br %207 @b331 @b99
+
+    @b331
         call std_str_push_or_bs %2 %61
         %64 = const 14 bv64
         %65 = const 82 bv64
@@ -329,7 +348,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         jmp @b36
 
     @b36
-        %77 = load %1 88 bv64
+        %77 = call cap_state_get %2 %200
         %79 = cmp ugt %77 %12
 
         %80 = const 96 bv64

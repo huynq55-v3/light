@@ -8,6 +8,7 @@ gitignore-import-and-ignore: True
 # and contents sections (<content full_path="...">...</content>)
 ignore-tree-and-content:
   - ".repo-to-text-settings.yaml"
+  - "src/"
 
 # Ignore files and directories for contents sections
 ignore-content:

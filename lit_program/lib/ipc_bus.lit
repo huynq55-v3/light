@@ -159,3 +159,64 @@ func ipc_channel_init void %0:ptr<IpcChannel,1> {
         store %0 160 %1
         ret
 }
+
+# Gửi tín hiệu yêu cầu Shell đóng và Reset App hiện tại (offset 88 = 1)
+func ipc_win_request_close void %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = const 1 bv64
+        store %0 88 %1
+        ret
+}
+
+# Shell đọc và xóa tín hiệu đóng App (trả về 1 nếu App vừa bấm [X])
+func ipc_win_take_close_req bv64 %0:ptr<IpcChannel,1> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = load %0 88 bv64
+        %2 = const 0 bv64
+        store %0 88 %2
+        ret %1
+}
+
+# App bật/tắt chế độ chạy nền (Background Task) trên Bitmask (offset 152) theo đúng active_app hiện tại
+func ipc_app_set_bg_running void %0:ptr<IpcChannel,1> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %2 = load %0 56 bv64                # active_app (1..7)
+        %3 = const 1 bv64
+        %4 = cmp uge %2 %3
+        %5 = const 7 bv64
+        %6 = cmp ule %2 %5
+        %7 = and %4 %6
+        br %7 @b1 @b4
+
+    @b1
+        %8 = sub %2 %3                      # slot = active_app - 1 (0..6)
+        %9 = shl %3 %8                      # bit_mask = (1 << slot)
+        %10 = load %0 152 bv64
+        %11 = const 0 bv64
+        %12 = cmp ne %1 %11
+        br %12 @b2 @b3
+
+    @b2
+        %13 = or %10 %9
+        store %0 152 %13
+        ret
+
+    @b3
+        %14 = const 0xffffffffffffffff bv64
+        %15 = xor %9 %14
+        %16 = and %10 %15
+        store %0 152 %16
+        ret
+
+    @b4
+        ret
+}

@@ -574,6 +574,263 @@ func app_dispatch_get_state bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         ret %36
 }
 
+# Đọc/Ghi 1 Sector ổ đĩa cho bất kỳ App nào ở slot %1 (0..6), không còn hardcode cho riêng Editor!
+func app_dispatch_disk_io void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
+    # %1: app_slot (0..6), %2: lba (< 268435456), %3: is_write (0 = Read, 1 = Write)
+    @req ult %1 7
+    @req ult %2 268435456
+
+    @b0
+        %4 = const 0 bv64
+        %5 = cmp eq %1 %4
+        br %5 @b1 @b2
+
+    @b1
+        %20 = const 0x1000200000 ptr<DiskQword,64>
+        jmp @b20 %20
+
+    @b2
+        %6 = const 1 bv64
+        %7 = cmp eq %1 %6
+        br %7 @b3 @b4
+
+    @b3
+        %21 = const 0x2000200000 ptr<DiskQword,64>
+        jmp @b20 %21
+
+    @b4
+        %8 = const 2 bv64
+        %9 = cmp eq %1 %8
+        br %9 @b5 @b6
+
+    @b5
+        %22 = const 0x3000200000 ptr<DiskQword,64>
+        jmp @b20 %22
+
+    @b6
+        %10 = const 3 bv64
+        %11 = cmp eq %1 %10
+        br %11 @b7 @b8
+
+    @b7
+        %23 = const 0x4000200000 ptr<DiskQword,64>
+        jmp @b20 %23
+
+    @b8
+        %12 = const 4 bv64
+        %13 = cmp eq %1 %12
+        br %13 @b9 @b10
+
+    @b9
+        %24 = const 0x5000200000 ptr<DiskQword,64>
+        jmp @b20 %24
+
+    @b10
+        %14 = const 5 bv64
+        %15 = cmp eq %1 %14
+        br %15 @b11 @b12
+
+    @b11
+        %25 = const 0x6000200000 ptr<DiskQword,64>
+        jmp @b20 %25
+
+    @b12
+        %26 = const 0x7000200000 ptr<DiskQword,64>
+        jmp @b20 %26
+
+    @b20 %30:ptr<DiskQword,64>
+        @inv uge %30 0x10000
+        @inv ult %30 0x10000000000
+        %31 = cmp ne %3 %4
+        br %31 @b21 @b22
+
+    @b21
+        call drv_ata_write_sector %0 %30 %2
+        ret
+
+    @b22
+        call drv_ata_read_sector %0 %30 %2
+        ret
+}
+
+# Ghi giá trị vào vùng nhớ trạng thái của App ở slot %1 (0..6)
+func app_dispatch_set_state void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
+    # %1: app_slot (0..6), %2: state index (0..63), %3: value
+    @req ult %1 7
+    @req ult %2 64
+
+    @b0
+        %4 = const 0 bv64
+        %5 = cmp eq %1 %4
+        br %5 @b1 @b2
+
+    @b1
+        %20 = const 0x1000200000 ptr<DiskQword,64>
+        call cap_state_set %20 %2 %3
+        ret
+
+    @b2
+        %6 = const 1 bv64
+        %7 = cmp eq %1 %6
+        br %7 @b3 @b4
+
+    @b3
+        %21 = const 0x2000200000 ptr<DiskQword,64>
+        call cap_state_set %21 %2 %3
+        ret
+
+    @b4
+        %8 = const 2 bv64
+        %9 = cmp eq %1 %8
+        br %9 @b5 @b6
+
+    @b5
+        %22 = const 0x3000200000 ptr<DiskQword,64>
+        call cap_state_set %22 %2 %3
+        ret
+
+    @b6
+        %10 = const 3 bv64
+        %11 = cmp eq %1 %10
+        br %11 @b7 @b8
+
+    @b7
+        %23 = const 0x4000200000 ptr<DiskQword,64>
+        call cap_state_set %23 %2 %3
+        ret
+
+    @b8
+        %12 = const 4 bv64
+        %13 = cmp eq %1 %12
+        br %13 @b9 @b10
+
+    @b9
+        %24 = const 0x5000200000 ptr<DiskQword,64>
+        call cap_state_set %24 %2 %3
+        ret
+
+    @b10
+        %14 = const 5 bv64
+        %15 = cmp eq %1 %14
+        br %15 @b11 @b12
+
+    @b11
+        %25 = const 0x6000200000 ptr<DiskQword,64>
+        call cap_state_set %25 %2 %3
+        ret
+
+    @b12
+        %26 = const 0x7000200000 ptr<DiskQword,64>
+        call cap_state_set %26 %2 %3
+        ret
+}
+
+# SHELL TỰ ĐỘNG RESET TOÀN DIỆN APP KHI NHẬN TÍN HIỆU ĐÓNG [X]:
+# 1. Xóa sạch vùng nhớ State của App về 0 (như lần đầu tiên mở lên)
+# 2. Dừng toàn bộ các nhân SMP Worker nếu App đang chạy đa nhân
+# 3. Xóa bit chạy ngầm của App trong ipc_bg_mask (offset 152)
+# 4. Reset các cờ cửa sổ trên IpcChannel
+# 5. Xóa cửa sổ trên Backbuffer & đưa IpcChannel về trạng thái rảnh
+func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:bv64 {
+    # %1: backbuffer, %2: ipc, %3: smp_ctrl (0x7e000), %4: app_slot (0..6)
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req ult %4 7
+
+    @b0
+        # 1. Reset vùng nhớ Persistent State của App thứ %4 về 0!
+        call app_dispatch_zero_state %0 %4
+
+        # 2. Dừng toàn bộ các nhân Worker SMP
+        call smp_stop_all_workers %3
+
+        # 3. Xóa bit chạy ngầm của slot %4 trong ipc_bg_mask (offset 152)
+        %5 = const 1 bv64
+        %6 = shl %5 %4
+        %7 = const 0xffffffffffffffff bv64
+        %8 = xor %6 %7
+        %9 = load %2 152 bv64
+        %10 = and %9 %8
+        store %2 152 %10
+
+        # 4. Reset các cờ cửa sổ trên IpcChannel
+        %11 = const 0 bv64
+        store %2 0 %11
+        store %2 32 %11
+        store %2 56 %11
+        store %2 88 %11
+        store %2 96 %11
+        store %2 104 %11
+        store %2 112 %11
+
+        # 5. Xóa sạch vùng cửa sổ trên màn hình Desktop
+        %12 = const 180 bv64
+        %13 = const 50 bv64
+        %14 = const 1100 bv64
+        %15 = const 615 bv64
+        %16 = const 0x161b26 bv32
+        call gfx_fill_rect %1 %12 %13 %14 %15 %16
+        call ui_invalidate_rect %2 %12 %13 %14 %15
+        ret
+}
+
+# Điều phối nhịp chạy ngầm tổng quát dựa trên Bitmask (offset 152) — Không phụ thuộc vào bất kỳ App cụ thể nào
+func shell_bg_tick_apps void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+    @req uge %4 0x10000
+    @req ult %4 0x80000000
+    @req uge %5 0x10000
+    @req ult %5 0x80000000
+
+    @b0
+        %6 = load %2 152 bv64               # ipc_bg_mask
+        %7 = load %2 56 bv64                # active_app (1..7)
+        %8 = const 0 bv64
+        %9 = cmp eq %6 %8
+        br %9 @b5 @b6
+
+    @b6
+        jmp @b1 %8
+
+    @b1 %10:bv64
+        @inv ule %10 7
+        %11 = const 7 bv64
+        %12 = cmp ult %10 %11
+        br %12 @b2 @b5
+
+    @b2
+        %13 = const 1 bv64
+        %14 = add %10 %13
+        %15 = cmp eq %14 %7                 # Nếu đang là Foreground App thì đã chạy ở luồng chính rồi
+        br %15 @b4 @b21
+
+    @b21
+        %16 = shl %13 %10
+        %17 = and %6 %16
+        %18 = cmp ne %17 %8
+        br %18 @b3 @b4
+
+    @b3
+        call app_dispatch_entry %0 %1 %2 %3 %4 %5 %10
+        jmp @b4
+
+    @b4
+        %19 = add %10 %13
+        jmp @b1 %19
+
+    @b5
+        ret
+}
+
 # =============================================================================
 # THANH DOCK TỰ ĐỘNG QUÉT VFS VÀ CẤP PHÁT LÔ 64GB CHO TỐI ĐA 7 APPS
 # =============================================================================
@@ -712,13 +969,28 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         br %28 @b4 @b19
 
     @b4
-        # Lấy State[2] của chính App được click để khôi phục trạng thái
-        %29 = call app_dispatch_get_state %0 %26 %15
+        # Lấy App đang mở hiện tại trước khi switch
+        %100 = load %3 56 bv64
         %30 = add %26 %14
+        %101 = cmp ne %100 %30
+        br %101 @b41 @b42
+
+    @b41
+        # Khi chuyển sang App khác: Xóa sạch vùng cửa sổ làm việc cũ trên Backbuffer (%2) và VRAM
+        %102 = const 180 bv64
+        %103 = const 50 bv64
+        %104 = const 1100 bv64
+        %105 = const 615 bv64
+        %106 = const 0x161b26 bv32
+        call gfx_fill_rect %2 %102 %103 %104 %105 %106
+        call ui_invalidate_rect %3 %102 %103 %104 %105
+        jmp @b42
+
+    @b42
         store %3 0 %13
         store %3 56 %30
         store %3 32 %13
-        store %3 88 %29
+        store %3 88 %13
         store %3 112 %13
         jmp @b8
 
@@ -727,13 +999,17 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         %72 = load %3 56 bv64
         %73 = cmp ne %71 %13
         %74 = cmp ne %72 %13
+        br %74 @b201 @b6
 
-        %96 = load %3 88 bv64
-        %97 = const 100 bv64
-        %98 = cmp uge %96 %97
-        %99 = or %73 %98
-        %75 = and %99 %74
-        br %75 @b8 @b6
+    @b201
+        # Kiểm tra xem CHÍNH Foreground App hiện tại (%72) có bật bit chạy liên tục trong ipc_bg_mask (offset 152) không
+        %96 = load %3 152 bv64
+        %97 = sub %72 %14
+        %98 = shl %14 %97
+        %99 = and %96 %98
+        %108 = cmp ne %99 %13
+        %109 = or %73 %108
+        br %109 @b8 @b6
 
     @b8
         %50 = load %3 56 bv64
@@ -742,46 +1018,54 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
 
     @b81
         %52 = sub %50 %14
+        %200 = const 7 bv64
+        %201 = cmp ult %52 %200
+        br %201 @b82 @b6
+
+    @b82
         call app_dispatch_entry %0 %2 %3 %9 %4 %95 %52
         store %3 32 %13
 
-        %53 = load %3 56 bv64
-        %54 = cmp eq %53 %13
+        # Kiểm tra xem App có vừa phát tín hiệu bấm nút [X] (offset 88 != 0) không?
+        %53 = call ipc_win_take_close_req %3
+        %54 = cmp ne %53 %13
         br %54 @b14 @b15
 
+    @b14
+        # Shell đứng ra đóng cửa sổ và Reset toàn bộ trạng thái của App %52 về như mới!
+        call shell_close_and_reset_app %0 %2 %3 %95 %52
+        jmp @b6
+
     @b15
+        # Kiểm tra yêu cầu đọc đĩa từ App %52
         %55 = call ipc_disk_take_read_req %3
         %56 = cmp ne %55 %13
         br %56 @b13 @b16
 
     @b13
-        %67 = const 0x1000200000 ptr<DiskQword,64>
-        call drv_ata_read_sector %0 %67 %55
+        call app_dispatch_disk_io %0 %52 %55 %13
+        %62 = const 62 bv64
+        %63 = const 63 bv64
+        call app_dispatch_set_state %0 %52 %62 %13
+        call app_dispatch_set_state %0 %52 %63 %55
         call app_dispatch_entry %0 %2 %3 %9 %4 %95 %52
         jmp @b6
 
     @b16
+        # Kiểm tra yêu cầu ghi đĩa từ App %52
         %60 = call ipc_disk_take_write_req %3
         %61 = cmp ne %60 %13
         br %61 @b17 @b6
 
     @b17
-        %68 = const 0x1000200000 ptr<DiskQword,64>
-        call drv_ata_write_sector %0 %68 %60
+        call app_dispatch_disk_io %0 %52 %60 %14
         call app_dispatch_entry %0 %2 %3 %9 %4 %95 %52
         jmp @b6
 
-    @b14
-        %57 = const 180 bv64
-        %58 = const 50 bv64
-        %59 = const 1100 bv64
-        %62 = const 615 bv64
-        %63 = const 0x161b26 bv32
-        call gfx_fill_rect %2 %57 %58 %59 %62 %63
-        call ui_invalidate_rect %3 %57 %58 %59 %62
-        jmp @b6
-
     @b6
+        # Điều phối nhịp chạy ngầm tổng quát cho các App đăng ký trong ipc_bg_mask
+        call shell_bg_tick_apps %0 %2 %3 %9 %4 %95
+
         %37 = load %3 80 bv64
         %38 = cmp ne %37 %13
         br %38 @b7 @b10
