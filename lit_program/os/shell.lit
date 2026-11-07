@@ -77,6 +77,57 @@ func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         ret
 }
 
+# Cấp phát ĐỘNG 1 Lô 64GB mới trong Page Table cho App thứ %3 (Có bao nhiêu App thì tạo bấy nhiêu Lô!)
+func vmm_alloc_app_arena void %0:io<0,0xffff> %1:ptr<DiskQword,512> %2:ptr<DiskQword,4096> %3:bv64 {
+    # %0: Root IO (để flush CR3), %1: Bảng PDPT (0x11000), %2: Bể bảng trang PD_Pool (0x20000), %3: app_idx
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req ult %3 7
+
+    @b0
+        # 1. Tính địa chỉ vật lý của bảng PD riêng cho App thứ %3: pd_phys = 0x20000 + app_idx * 4096
+        %4 = const 12 bv64
+        %5 = shl %3 %4
+        %6 = const 0x20003 bv64             # 0x20000 | Present | RW (0x03)
+        %7 = add %6 %5
+
+        # 2. Ghi vào ô PDPT[(app_idx + 1) * 64] -> Mở khóa Lô 64GB tại địa chỉ ảo (app_idx + 1) * 64GB!
+        %8 = const 1 bv64
+        %9 = add %3 %8
+        %10 = const 6 bv64
+        %11 = shl %9 %10                    # pdpt_idx = (app_idx + 1) * 64
+        %12 = slice %1 %11 ptr<DiskQword,1>
+        store %12 0 %7
+
+        # 3. Cấp phát 2 trang 2MB HugePage (Code + Heap) từ RAM vật lý (16MB + app_idx * 8MB) vào PD_Pool
+        %13 = const 9 bv64
+        %14 = shl %3 %13                    # pd_pool_qword_idx = app_idx * 512
+        %15 = const 2 bv64
+        %16 = add %3 %15
+        %17 = const 23 bv64
+        %18 = shl %16 %17                   # phys_base = (app_idx + 2) * 8MB
+        %19 = const 0x83 bv64               # Present | RW | 2MB HugePage
+        %20 = or %18 %19
+
+        # Ghi trang Code (0..2MB của Lô 64GB)
+        %21 = slice %2 %14 ptr<DiskQword,1>
+        store %21 0 %20
+
+        # Ghi trang Heap/Data (2..4MB của Lô 64GB)
+        %22 = add %14 %8
+        %23 = const 0x200000 bv64
+        %24 = add %20 %23
+        %25 = slice %2 %22 ptr<DiskQword,1>
+        store %25 0 %24
+
+        # 4. Làm mới thanh ghi CR3 (0x10000) để CPU kích hoạt ngay Lô 64GB vừa tạo!
+        %26 = const 0x10000 bv64
+        hwio_w %0 3 %26
+        ret
+}
+
 func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,16384> %5:ptr<DiskQword,16384> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
@@ -117,6 +168,13 @@ func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChann
         br %22 @b1 @b2
 
     @b1
+        # Phát hiện App thứ %18 trong VFS -> Tự động tạo Lô 64GB mới trong Page Table ngay lúc chạy!
+        %31 = const 0x11000 ptr<DiskQword,512>
+        %32 = const 0x20000 ptr<DiskQword,4096>
+        call vmm_alloc_app_arena %0 %31 %32 %18
+        %35 = const 0x1000200000 ptr<DiskQword,64>
+        call std_mem_zero %35
+
         %23 = call vfs_entry_get_lba %3 %18
         call drv_ata_load_app %0 %4 %23
         %24 = const 530 bv64
@@ -130,6 +188,13 @@ func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChann
         br %27 @b3 @b4
 
     @b3
+        # Phát hiện App thứ %19 trong VFS -> Tự động tạo Lô 64GB mới trong Page Table ngay lúc chạy!
+        %36 = const 0x11000 ptr<DiskQword,512>
+        %37 = const 0x20000 ptr<DiskQword,4096>
+        call vmm_alloc_app_arena %0 %36 %37 %19
+        %38 = const 0x2000200000 ptr<DiskQword,64>
+        call std_mem_zero %38
+
         %28 = call vfs_entry_get_lba %3 %19
         call drv_ata_load_app %0 %5 %28
         %29 = const 698 bv64
