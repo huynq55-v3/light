@@ -53,6 +53,7 @@ fn dst_of(i: &Inst) -> Option<Reg> {
         | Inst::Cmp { dst, .. }
         | Inst::Slice { dst, .. }
         | Inst::Load { dst, .. }
+        | Inst::Sync { dst, .. }
         | Inst::Simd256 {
             op: SimdOp::Dot,
             dst,
@@ -89,6 +90,14 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
                 vec![*dst, *lhs, *rhs]
             }
         }
+        Inst::Spawn {
+            smp,
+            core,
+            fn_addr,
+            slice_ptr,
+            arg1,
+        } => vec![*smp, *core, *fn_addr, *slice_ptr, *arg1],
+        Inst::Sync { smp, core, .. } => vec![*smp, *core],
         Inst::HwIo { cap, val, .. } => std::iter::once(*cap).chain(val.iter().copied()).collect(),
         Inst::Br { cond, .. } => vec![*cond],
         Inst::Jmp { args, .. } | Inst::Call { args, .. } => args.clone(),
@@ -411,6 +420,8 @@ struct Verifier<'ctx> {
     layouts: &'ctx [Layout],
     regs: Env<'ctx>,
     reg_tys: HashMap<Reg, Type>,
+    slice_base: HashMap<Reg, Reg>,
+    active_spawns: Vec<(BV<'ctx>, BV<'ctx>, u64)>,
     cur_cond: Option<Bool<'ctx>>,
     conds: HashMap<usize, Option<Bool<'ctx>>>,
     pos: Vec<usize>,
@@ -872,6 +883,8 @@ impl<'ctx> Verifier<'ctx> {
                 let valid = self.ptr_valid(&d, l2, max_new)?;
                 self.check(&valid, &format!("Con trỏ slice tại %{} ra ngoài RAM", dst))?;
                 self.assume(&valid);
+                let root = self.slice_base.get(base).copied().unwrap_or(*base);
+                self.slice_base.insert(*dst, root);
             }
             Inst::Load {
                 dst,
@@ -958,6 +971,128 @@ impl<'ctx> Verifier<'ctx> {
                         ));
                     }
                 }
+            }
+            Inst::Spawn {
+                smp,
+                core,
+                fn_addr,
+                slice_ptr,
+                arg1,
+            } => {
+                let Type::Ptr {
+                    layout_id: smp_l,
+                    max_elems: smp_m,
+                } = self.reg_ty(*smp)?
+                else {
+                    return Err(format!("Lệnh spawn: %{} không phải con trỏ bảng SMP", smp));
+                };
+                if self.ptr_bytes(smp_l, smp_m)? < 512 {
+                    return Err(format!(
+                        "Lệnh spawn: bảng điều khiển SMP %{} phải có tối thiểu 512 bytes",
+                        smp
+                    ));
+                }
+                for &r in &[core, fn_addr, arg1] {
+                    if self.reg_ty(*r)? != Type::Bv64 {
+                        return Err(format!("Lệnh spawn: tham số %{} phải mang kiểu bv64", r));
+                    }
+                }
+                let core_bv = self.get_reg(*core)?.clone();
+                self.check(
+                    &Bool::and(
+                        self.ctx,
+                        &[&core_bv.bvuge(&self.bv(1)), &core_bv.bvule(&self.bv(15))],
+                    ),
+                    &format!("Lệnh spawn: chỉ số nhân AP %{} phải thuộc [1..15]", core),
+                )?;
+
+                let Type::Ptr {
+                    layout_id,
+                    max_elems,
+                } = self.reg_ty(*slice_ptr)?
+                else {
+                    return Err(format!(
+                        "Bảo mật Đa luồng: Vùng nhớ %{} truyền vào spawn phải là con trỏ lát cắt Ptr",
+                        slice_ptr
+                    ));
+                };
+                let slice_bytes = self.ptr_bytes(layout_id, max_elems)?;
+                let ptr_bv = self.get_reg(*slice_ptr)?.clone();
+
+                // 1. Kiểm chứng Z3 Disjoint Slice giữa các lệnh spawn cùng hoạt động
+                for (prev_core, prev_ptr, prev_bytes) in &self.active_spawns {
+                    let disjoint = Bool::or(
+                        self.ctx,
+                        &[
+                            &core_bv._eq(prev_core),
+                            &prev_ptr.bvadd(&self.bv(*prev_bytes)).bvule(&ptr_bv),
+                            &ptr_bv.bvadd(&self.bv(slice_bytes)).bvule(prev_ptr),
+                        ],
+                    );
+                    self.check(
+                        &disjoint,
+                        &format!(
+                            "Vi phạm Disjoint Slice (Data Race): lát cắt %{} chồng lấn với nhân khác",
+                            slice_ptr
+                        ),
+                    )?;
+                }
+
+                // 2. Kiểm chứng Z3 Partitioning: Lát cắt của nhân %core phải nằm trong phân vùng riêng [root + core*sz .. root + (core+1)*sz]
+                let root_reg = self.slice_base.get(slice_ptr).copied().ok_or_else(|| {
+                    format!(
+                        "Vi phạm Disjoint Slice: %{} truyền vào spawn phải được cắt bằng lệnh slice từ mảng gốc",
+                        slice_ptr
+                    )
+                })?;
+                let root_bv = self.get_reg(root_reg)?.clone();
+                let part_lo = root_bv.bvadd(&core_bv.bvmul(&self.bv(slice_bytes)));
+                let part_hi = root_bv.bvadd(
+                    &core_bv
+                        .bvadd(&self.bv(1))
+                        .bvmul(&self.bv(slice_bytes)),
+                );
+                self.check(
+                    &Bool::and(
+                        self.ctx,
+                        &[
+                            &ptr_bv.bvuge(&part_lo),
+                            &ptr_bv.bvadd(&self.bv(slice_bytes)).bvule(&part_hi),
+                        ],
+                    ),
+                    &format!(
+                        "Vi phạm Disjoint Slice (Data Race): lát cắt %{} không tách biệt theo chỉ số nhân %{}",
+                        slice_ptr, core
+                    ),
+                )?;
+
+                self.active_spawns.push((core_bv, ptr_bv, slice_bytes));
+            }
+            Inst::Sync { dst, smp, core } => {
+                let Type::Ptr {
+                    layout_id: smp_l,
+                    max_elems: smp_m,
+                } = self.reg_ty(*smp)?
+                else {
+                    return Err(format!("Lệnh sync: %{} không phải con trỏ bảng SMP", smp));
+                };
+                if self.ptr_bytes(smp_l, smp_m)? < 512 {
+                    return Err(format!(
+                        "Lệnh sync: bảng điều khiển SMP %{} phải có tối thiểu 512 bytes",
+                        smp
+                    ));
+                }
+                let core_bv = self.get_reg(*core)?.clone();
+                self.check(
+                    &Bool::and(
+                        self.ctx,
+                        &[&core_bv.bvuge(&self.bv(1)), &core_bv.bvule(&self.bv(15))],
+                    ),
+                    &format!("Lệnh sync: chỉ số nhân AP %{} phải thuộc [1..15]", core),
+                )?;
+                self.active_spawns.clear();
+                let d = self.decl_reg(*dst, Type::Bv64)?;
+                self.assume(&d.bvule(&self.bv(1)));
             }
             Inst::HwIo {
                 dst,
@@ -1178,6 +1313,8 @@ fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
         layouts: &module.layouts,
         regs: HashMap::new(),
         reg_tys: HashMap::new(),
+        slice_base: HashMap::new(),
+        active_spawns: Vec::new(),
         cur_cond: None,
         conds: HashMap::from([(0, None)]),
         pos: cfg.pos.clone(),

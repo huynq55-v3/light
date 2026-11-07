@@ -1,6 +1,6 @@
 # File: lit_program/lib/smp.lit
-# THƯ VIỆN ĐA NHÂN ĐỐI XỨNG TỔNG QUÁT (GENERIC DYNAMIC SMP LIBRARY)
-# Tự động nhận diện số nhân CPU thực tế từ phần cứng (QEMU -smp N), hoàn toàn độc lập với App
+# THƯ VIỆN ĐA NHÂN ĐỐI XỨNG KIỂM CHỨNG HÌNH THỨC (Z3-VERIFIED DISJOINT SLICE SMP LIBRARY)
+# Sử dụng trực tiếp chỉ thị `spawn` và `sync` với chứng minh tách biệt vùng nhớ Disjoint Slice
 
 include os_layout.lit
 include std_lib.lit
@@ -32,61 +32,20 @@ func smp_get_ap_count bv64 %0:ptr<DiskQword,64> {
         ret %1
 }
 
-# 2. Giao việc BẤT ĐỒNG BỘ cho Nhân Worker thứ %1 (1..15)
-#    - %0: Bảng điều khiển SMP (0x7e000)
-#    - %1: Chỉ số nhân AP (1..15)
-#    - %2: Địa chỉ hàm Worker cần chạy (worker_fn_addr)
-#    - %3: Tham số thứ 1 (arg0)
-#    - %4: Tham số thứ 2 (arg1)
-func smp_dispatch_worker void %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req uge %1 1
-    @req ule %1 15
-
-    @b0
-        %5 = const 2 bv64
-        %6 = shl %1 %5
-        %7 = const 1 bv64
-        %8 = const 2 bv64
-        %9 = const 3 bv64
-
-        %10 = add %6 %7
-        %11 = add %6 %8
-        %12 = add %6 %9
-
-        %13 = slice %0 %10 ptr<DiskQword,1>
-        %14 = slice %0 %11 ptr<DiskQword,1>
-        %15 = slice %0 %12 ptr<DiskQword,1>
-        %16 = slice %0 %6 ptr<DiskQword,1>
-
-        %17 = const 0 bv64
-        store %13 0 %3
-        store %14 0 %4
-        store %15 0 %17
-        store %16 0 %2
-        ret
-}
-
-# 3. Kiểm tra Nhân Worker thứ %1 (1..15) đã hoàn thành công việc chưa
+# 2. Kiểm tra Nhân Worker thứ %1 (1..15) đã hoàn thành công việc chưa bằng chỉ thị `sync`
 func smp_is_worker_done bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 1
     @req ule %1 15
-    @ens ule %7 1
+    @ens ule %2 1
 
     @b0
-        %2 = const 2 bv64
-        %3 = shl %1 %2
-        %4 = slice %0 %3 ptr<DiskQword,1>
-        %5 = load %4 0 bv64
-        %6 = const 0 bv64
-        %7 = cmp eq %5 %6
-        ret %7
+        %2 = sync %0 %1
+        ret %2
 }
 
-# 4. Đọc kết quả trả về (64-bit) của Nhân Worker thứ %1 (1..15)
+# 3. Đọc kết quả trả về (64-bit) của Nhân Worker thứ %1 (1..15)
 func smp_get_worker_result bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -103,7 +62,7 @@ func smp_get_worker_result bv64 %0:ptr<DiskQword,64> %1:bv64 {
         ret %7
 }
 
-# 5. Kiểm tra TẤT CẢ các Nhân Worker hiện có của máy ảo (1..worker_count) đã làm xong chưa
+# 4. Đồng bộ kiểm tra TẤT CẢ các Nhân Worker hiện có (1..worker_count) bằng chỉ thị `sync`
 func smp_poll_all_done bv64 %0:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -126,7 +85,7 @@ func smp_poll_all_done bv64 %0:ptr<DiskQword,64> {
         br %6 @b2 @b4
 
     @b2
-        %7 = call smp_is_worker_done %0 %5
+        %7 = sync %0 %5
         %8 = cmp eq %7 %2
         br %8 @b8 @b3
 
@@ -152,7 +111,7 @@ func smp_poll_all_done bv64 %0:ptr<DiskQword,64> {
         ret %10
 }
 
-# 6. Dừng và xóa sạch trạng thái của tất cả các Nhân Worker (Dùng khi đóng App bằng nút [X])
+# 5. Dừng và xóa sạch trạng thái của tất cả các Nhân Worker bằng chỉ thị `spawn` (fn_addr = 0)
 func smp_stop_all_workers void %0:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -170,10 +129,14 @@ func smp_stop_all_workers void %0:ptr<DiskQword,64> {
 
     @b2
         %5 = const 0 bv64
-        call smp_dispatch_worker %0 %3 %5 %5 %5
-        %6 = const 1 bv64
-        %7 = add %3 %6
-        jmp @b1 %7
+        %6 = const 2 bv64
+        %7 = shl %3 %6
+        %8 = slice %0 %7 ptr<DiskQword,4>
+        spawn %0 %3 %5 %8 %5
+
+        %9 = const 1 bv64
+        %10 = add %3 %9
+        jmp @b1 %10
 
     @b3
         ret

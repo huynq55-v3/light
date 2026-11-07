@@ -234,6 +234,22 @@ fn pick_hot_regs(func: &Func) -> [Reg; 5] {
                     *score.entry(*lhs).or_insert(0) += weight;
                     *score.entry(*rhs).or_insert(0) += weight;
                 }
+                Inst::Spawn {
+                    smp,
+                    core,
+                    fn_addr,
+                    slice_ptr,
+                    arg1,
+                } => {
+                    for &r in &[smp, core, fn_addr, slice_ptr, arg1] {
+                        *score.entry(*r).or_insert(0) += weight;
+                    }
+                }
+                Inst::Sync { dst, smp, core } => {
+                    *score.entry(*dst).or_insert(0) += weight;
+                    *score.entry(*smp).or_insert(0) += weight;
+                    *score.entry(*core).or_insert(0) += weight;
+                }
                 Inst::Br { cond, .. } => {
                     *score.entry(*cond).or_insert(0) += weight;
                 }
@@ -333,6 +349,7 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64, u64), String> {
                     Inst::Bin { dst, .. }
                     | Inst::HwIo { dst: Some(dst), .. }
                     | Inst::CallPtr { dst: Some(dst), .. }
+                    | Inst::Sync { dst, .. }
                     | Inst::Simd256 {
                         op: SimdOp::Dot,
                         dst,
@@ -522,6 +539,43 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64, u64), String> {
                             ]);
                         }
                     }
+                    Inst::Spawn {
+                        smp,
+                        core,
+                        fn_addr,
+                        slice_ptr,
+                        arg1,
+                    } => {
+                        // rdx = smp + (core << 5); rsi = core
+                        emit_load_rax(&mut code, *core, &hot);
+                        code.extend_from_slice(&[0x48, 0x89, 0xC6, 0x48, 0xC1, 0xE0, 0x05]);
+                        emit_load_rcx(&mut code, *smp, &hot);
+                        code.extend_from_slice(&[0x48, 0x01, 0xC8, 0x48, 0x89, 0xC2]);
+                        // [rdx + 8] = slice_ptr, [rdx + 16] = arg1, [rdx + 24] = 0, [rdx + 0] = fn_addr
+                        emit_load_rax(&mut code, *slice_ptr, &hot);
+                        code.extend_from_slice(&[0x48, 0x89, 0x42, 0x08]);
+                        emit_load_rax(&mut code, *arg1, &hot);
+                        code.extend_from_slice(&[
+                            0x48, 0x89, 0x42, 0x10, 0x48, 0xC7, 0x42, 0x18, 0x00, 0x00, 0x00, 0x00,
+                        ]);
+                        emit_load_rax(&mut code, *fn_addr, &hot);
+                        // Ghi fn_addr & bắn xung Local APIC IPI (INIT-SIPI-SIPI) nếu fn_addr != 0
+                        code.extend_from_slice(&[
+                            0x48, 0x89, 0x02, 0x48, 0x85, 0xC0, 0x74, 0x24, 0x89, 0xF0, 0xC1,
+                            0xE0, 0x18, 0xBA, 0x10, 0x03, 0xE0, 0xFE, 0x89, 0x02, 0xBA, 0x00,
+                            0x03, 0xE0, 0xFE, 0xC7, 0x02, 0x00, 0x45, 0x00, 0x00, 0xB9, 0x00,
+                            0x04, 0x00, 0x00, 0xE2, 0xFE, 0xC7, 0x02, 0x08, 0x46, 0x00, 0x00,
+                        ]);
+                    }
+                    Inst::Sync { dst, smp, core } => {
+                        emit_load_rax(&mut code, *core, &hot);
+                        emit_load_rcx(&mut code, *smp, &hot);
+                        code.extend_from_slice(&[
+                            0x48, 0xC1, 0xE0, 0x05, 0x48, 0x01, 0xC8, 0xF3, 0x90, 0x48, 0x83,
+                            0x38, 0x00, 0x0F, 0x94, 0xC0, 0x48, 0x0F, 0xB6, 0xC0,
+                        ]);
+                        emit_store_rax(&mut code, *dst, &hot);
+                    }
                     Inst::HwIo {
                         dst,
                         port_or_reg,
@@ -655,15 +709,6 @@ fn compile_raw(module: &Module) -> Result<(Vec<u8>, u64, u64, u64), String> {
                         }
                     }
                     Inst::Ret { val } => {
-                        if func.name == "smp_dispatch_worker" {
-                            emit_load_rax(&mut code, 1, &hot);
-                            code.extend_from_slice(&[
-                                0xC1, 0xE0, 0x18, 0xBA, 0x10, 0x03, 0xE0, 0xFE, 0x89, 0x02, 0xBA,
-                                0x00, 0x03, 0xE0, 0xFE, 0xC7, 0x02, 0x00, 0x45, 0x00, 0x00, 0xB9,
-                                0x00, 0x04, 0x00, 0x00, 0xE2, 0xFE, 0xC7, 0x02, 0x08, 0x46, 0x00,
-                                0x00,
-                            ]);
-                        }
                         if let Some(r) = val {
                             emit_load_rax(&mut code, *r, &hot);
                         }

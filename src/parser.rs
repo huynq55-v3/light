@@ -293,6 +293,13 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                         lhs: p_reg(toks[2])?,
                         rhs: p_reg(toks[3])?,
                     },
+                    "spawn" => Inst::Spawn {
+                        smp: p_reg(toks[1])?,
+                        core: p_reg(toks[2])?,
+                        fn_addr: p_reg(toks[3])?,
+                        slice_ptr: p_reg(toks[4])?,
+                        arg1: p_reg(toks[5])?,
+                    },
                     "br" => Inst::Br {
                         cond: p_reg(toks[1])?,
                         then_bb: p_blk(toks[2])?,
@@ -399,6 +406,11 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                                 dst: d,
                                 lhs: p_reg(toks[3])?,
                                 rhs: p_reg(toks[4])?,
+                            },
+                            "sync" => Inst::Sync {
+                                dst: d,
+                                smp: p_reg(toks[3])?,
+                                core: p_reg(toks[4])?,
                             },
                             op_str => Inst::Bin {
                                 dst: d,

@@ -149,6 +149,22 @@ pub enum Inst {
         rhs: Reg,
     },
 
+    /// Tập lệnh Đa nhân Kiểm chứng Hình thức (Z3-Verified Disjoint Slice SMP Concurrency)
+    /// spawn %smp_ctrl %core_id %fn_addr %slice_ptr %arg1
+    Spawn {
+        smp: Reg,
+        core: Reg,
+        fn_addr: Reg,
+        slice_ptr: Reg,
+        arg1: Reg,
+    },
+    /// %dst = sync %smp_ctrl %core_id (Trả về 1 nếu nhân %core_id đã hoàn tất, 0 nếu đang chạy)
+    Sync {
+        dst: Reg,
+        smp: Reg,
+        core: Reg,
+    },
+
     /// Lệnh đặc quyền cho OS Bare-metal (Đọc/ghi cổng I/O, thanh ghi CR3, MSR hoặc Syscall)
     HwIo {
         dst: Option<Reg>,

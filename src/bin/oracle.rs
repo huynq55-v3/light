@@ -807,6 +807,38 @@ impl<'a> Vm<'a> {
                             }
                         }
                     }
+                    Inst::Spawn {
+                        smp,
+                        core,
+                        fn_addr,
+                        slice_ptr,
+                        arg1,
+                    } => {
+                        let (sa, _) = get(&regs, *smp, cur)?;
+                        let (cv, _) = get(&regs, *core, cur)?;
+                        let (fv, _) = get(&regs, *fn_addr, cur)?;
+                        let (pa, _) = get(&regs, *slice_ptr, cur)?;
+                        let (av, _) = get(&regs, *arg1, cur)?;
+                        if !(1..=15).contains(&cv) {
+                            return Err(bad(cur, format!("spawn core {} ngoài [1..15]", cv)));
+                        }
+                        let box_addr = sa + cv * 32;
+                        self.write(box_addr + 8, 8, pa);
+                        self.write(box_addr + 16, 8, av);
+                        self.write(box_addr + 24, 8, 0);
+                        self.write(box_addr, 8, fv);
+                    }
+                    Inst::Sync { dst, smp, core } => {
+                        let (sa, _) = get(&regs, *smp, cur)?;
+                        let (cv, _) = get(&regs, *core, cur)?;
+                        if !(1..=15).contains(&cv) {
+                            return Err(bad(cur, format!("sync core {} ngoài [1..15]", cv)));
+                        }
+                        let v = sample(&mut self.env, 0, 1);
+                        let _ = sa;
+                        self.set_reg(&mut regs, *dst, v, Type::Bv64)
+                            .map_err(|w| bad(cur, w))?;
+                    }
                     Inst::HwIo {
                         dst,
                         cap,
