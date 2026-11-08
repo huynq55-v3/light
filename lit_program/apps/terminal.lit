@@ -1,5 +1,5 @@
 # File: lit_program/apps/terminal.lit
-# App: RETRO TERMINAL CLI SHELL (Lô 64GB riêng) - Hỗ trợ Cấu trúc Thư mục Ảo (VFS Drill-Down)
+# App: RETRO TERMINAL CLI SHELL (Lô 64GB riêng) - Hỗ trợ VFS Drill-Down & Thanh Cuộn (Scrollbar)
 
 include ../lib/ui_window.lit
 include ../lib/std_lib.lit
@@ -10,6 +10,20 @@ include ../lib/smp.lit
 include ../lib/vfs_api.lit
 include ../lib/ui_file_browser.lit
 include ../lib/ui_text_view.lit
+
+# Định danh Hằng số & Offset có tên (Named Constants)
+def COL_RETRO_BG 0x090d16
+def COL_RETRO_FG 0x4ade80
+def COL_SB_TRACK 0x0f172a
+def COL_SB_BTN 0x1e293b
+def COL_SB_DIM 0x1e3a2f
+def IPC_WIN_DRAWN 112
+def IPC_BG_MASK 152
+def STATE_SCROLL 61
+def STATE_INIT 62
+def STATE_CWD 63
+def TERM_VIS_LINES 17
+def TERM_MAX_Y 516
 
 # 1. Icon 52x52 Terminal Retro trên Thanh Dock
 func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
@@ -22,7 +36,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         %3 = const 52 bv64
         %4 = add %1 %3
         %5 = add %2 %3
-        %6 = const 0x090d16 bv32
+        %6 = const COL_RETRO_BG bv32
         call gfx_fill_rect %0 %1 %2 %4 %5 %6
 
         %7 = const 2 bv64
@@ -31,7 +45,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         %10 = const 50 bv64
         %11 = add %1 %10
         %12 = add %2 %10
-        %13 = const 0x4ade80 bv32
+        %13 = const COL_RETRO_FG bv32
         call gfx_fill_rect %0 %8 %9 %11 %12 %13
 
         %14 = const 4 bv64
@@ -66,158 +80,248 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
 
 # 2. Worker dummy cho SMP scheduler
 func app_smp_worker void %0:bv64 %1:bv64 %2:bv64 {
+
     @b0
         ret
 }
 
-# 3. Khởi tạo Banner khởi động: LIGHT OS CLI v1.0\nTYPE "HELP" FOR CMDS.\nlight>
+# 3. Khởi tạo Banner khởi động bằng Qword String Literal ("...")
 func term_init_banner void %0:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
 
     @b0
-        %1 = const 76 bv64
-        %2 = const 0 bv64
-        call std_mem_set_byte %0 %2 %1
-        %3 = const 73 bv64
-        %4 = const 1 bv64
-        call std_mem_set_byte %0 %4 %3
-        %5 = const 71 bv64
-        %6 = const 2 bv64
-        call std_mem_set_byte %0 %6 %5
-        %7 = const 72 bv64
-        %8 = const 3 bv64
-        call std_mem_set_byte %0 %8 %7
-        %9 = const 84 bv64
-        %10 = const 4 bv64
-        call std_mem_set_byte %0 %10 %9
-        %11 = const 32 bv64
-        %12 = const 5 bv64
-        call std_mem_set_byte %0 %12 %11
-        %13 = const 79 bv64
-        %14 = const 6 bv64
-        call std_mem_set_byte %0 %14 %13
-        %15 = const 83 bv64
-        %16 = const 7 bv64
-        call std_mem_set_byte %0 %16 %15
-        %17 = const 32 bv64
-        %18 = const 8 bv64
-        call std_mem_set_byte %0 %18 %17
-        %19 = const 67 bv64
-        %20 = const 9 bv64
-        call std_mem_set_byte %0 %20 %19
-        %21 = const 76 bv64
-        %22 = const 10 bv64
-        call std_mem_set_byte %0 %22 %21
-        %23 = const 73 bv64
-        %24 = const 11 bv64
-        call std_mem_set_byte %0 %24 %23
-        %25 = const 32 bv64
-        %26 = const 12 bv64
-        call std_mem_set_byte %0 %26 %25
-        %27 = const 118 bv64
-        %28 = const 13 bv64
-        call std_mem_set_byte %0 %28 %27
-        %29 = const 49 bv64
-        %30 = const 14 bv64
-        call std_mem_set_byte %0 %30 %29
-        %31 = const 46 bv64
-        %32 = const 15 bv64
-        call std_mem_set_byte %0 %32 %31
-        %33 = const 48 bv64
-        %34 = const 16 bv64
-        call std_mem_set_byte %0 %34 %33
-        %35 = const 10 bv64
-        %36 = const 17 bv64
-        call std_mem_set_byte %0 %36 %35
-        %37 = const 84 bv64
-        %38 = const 18 bv64
-        call std_mem_set_byte %0 %38 %37
-        %39 = const 89 bv64
-        %40 = const 19 bv64
-        call std_mem_set_byte %0 %40 %39
-        %41 = const 80 bv64
-        %42 = const 20 bv64
-        call std_mem_set_byte %0 %42 %41
-        %43 = const 69 bv64
-        %44 = const 21 bv64
-        call std_mem_set_byte %0 %44 %43
-        %45 = const 32 bv64
-        %46 = const 22 bv64
-        call std_mem_set_byte %0 %46 %45
-        %47 = const 34 bv64
-        %48 = const 23 bv64
-        call std_mem_set_byte %0 %48 %47
-        %49 = const 72 bv64
-        %50 = const 24 bv64
-        call std_mem_set_byte %0 %50 %49
-        %51 = const 69 bv64
-        %52 = const 25 bv64
-        call std_mem_set_byte %0 %52 %51
-        %53 = const 76 bv64
-        %54 = const 26 bv64
-        call std_mem_set_byte %0 %54 %53
-        %55 = const 80 bv64
-        %56 = const 27 bv64
-        call std_mem_set_byte %0 %56 %55
-        %57 = const 34 bv64
-        %58 = const 28 bv64
-        call std_mem_set_byte %0 %58 %57
-        %59 = const 32 bv64
-        %60 = const 29 bv64
-        call std_mem_set_byte %0 %60 %59
-        %61 = const 70 bv64
-        %62 = const 30 bv64
-        call std_mem_set_byte %0 %62 %61
-        %63 = const 79 bv64
-        %64 = const 31 bv64
-        call std_mem_set_byte %0 %64 %63
-        %65 = const 82 bv64
-        %66 = const 32 bv64
-        call std_mem_set_byte %0 %66 %65
-        %67 = const 32 bv64
-        %68 = const 33 bv64
-        call std_mem_set_byte %0 %68 %67
-        %69 = const 67 bv64
-        %70 = const 34 bv64
-        call std_mem_set_byte %0 %70 %69
-        %71 = const 77 bv64
-        %72 = const 35 bv64
-        call std_mem_set_byte %0 %72 %71
-        %73 = const 68 bv64
-        %74 = const 36 bv64
-        call std_mem_set_byte %0 %74 %73
-        %75 = const 83 bv64
-        %76 = const 37 bv64
-        call std_mem_set_byte %0 %76 %75
-        %77 = const 46 bv64
-        %78 = const 38 bv64
-        call std_mem_set_byte %0 %78 %77
-        %79 = const 10 bv64
-        %80 = const 39 bv64
-        call std_mem_set_byte %0 %80 %79
-        %81 = const 108 bv64
-        %82 = const 40 bv64
-        call std_mem_set_byte %0 %82 %81
-        %83 = const 105 bv64
-        %84 = const 41 bv64
-        call std_mem_set_byte %0 %84 %83
-        %85 = const 103 bv64
-        %86 = const 42 bv64
-        call std_mem_set_byte %0 %86 %85
-        %87 = const 104 bv64
-        %88 = const 43 bv64
-        call std_mem_set_byte %0 %88 %87
-        %89 = const 116 bv64
-        %90 = const 44 bv64
-        call std_mem_set_byte %0 %90 %89
-        %91 = const 62 bv64
-        %92 = const 45 bv64
-        call std_mem_set_byte %0 %92 %91
+        %1 = const 0 bv64
+        %2 = const "LIGHT OS" bv64
+        call cap_state_set %0 %1 %2
+
+        %3 = const 1 bv64
+        %4 = const " CLI v1." bv64
+        call cap_state_set %0 %3 %4
+
+        %5 = const 2 bv64
+        %6 = const "0\nTYPE \"" bv64
+        call cap_state_set %0 %5 %6
+
+        %7 = const 3 bv64
+        %8 = const "HELP\" FO" bv64
+        call cap_state_set %0 %7 %8
+
+        %9 = const 4 bv64
+        %10 = const "R CMDS.\n" bv64
+        call cap_state_set %0 %9 %10
+
+        %11 = const 5 bv64
+        %12 = const "light>" bv64
+        call cap_state_set %0 %11 %12
         ret
 }
 
-# 4. Thêm 1 ký tự vào cuối Screen Buffer (tự cuộn màn hình nếu gần đầy)
+# 4. Cuộn vùng Screen Buffer (chỉ dịch trong phạm vi 0..399, bảo toàn tuyệt đối Qwords 50..63)
+func term_shift_screen_up void %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+
+    @b0
+        %1 = const 0 bv64
+        jmp @b1 %1
+
+    @b1 %2:bv64
+        @inv ule %2 79
+        %3 = const 79 bv64
+        %4 = cmp ult %2 %3
+        br %4 @b2 @b3
+
+    @b2
+        %5 = call std_mem_get_byte %0 %2
+        %6 = const 10 bv64                  # '\n'
+        %7 = cmp eq %5 %6
+        br %7 @b21 @b22
+
+    @b21
+        %8 = const 1 bv64
+        %9 = add %2 %8
+        jmp @b4 %9
+
+    @b22
+        %10 = const 1 bv64
+        %11 = add %2 %10
+        jmp @b1 %11
+
+    @b3
+        %12 = const 40 bv64
+        jmp @b4 %12
+
+    @b4 %13:bv64
+        @inv uge %13 1
+        @inv ule %13 80
+        %14 = const 400 bv64
+        %15 = sub %14 %13                   # limit = 400 - shift (320..399)
+        %16 = const 0 bv64
+        jmp @b5 %16
+
+    @b5 %17:bv64
+        @inv ule %17 399
+        %18 = cmp ult %17 %15
+        br %18 @b6 @b7
+
+    @b6
+        %19 = add %17 %13                   # src = i + shift (< 400)
+        %20 = call std_mem_get_byte %0 %19
+        call std_mem_set_byte %0 %17 %20
+        %21 = const 1 bv64
+        %22 = add %17 %21
+        jmp @b5 %22
+
+    @b7
+        jmp @b8 %15
+
+    @b8 %23:bv64
+        @inv ule %23 400
+        %24 = cmp ult %23 %14
+        br %24 @b9 @b10
+
+    @b9
+        %25 = const 0 bv64
+        call std_mem_set_byte %0 %23 %25
+        %26 = const 1 bv64
+        %27 = add %23 %26
+        jmp @b8 %27
+
+    @b10
+        ret
+}
+
+# 5. Đếm tổng số dòng trong Screen Buffer (0..399) để tính phạm vi thanh cuộn
+func term_count_lines bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @ens uge %99 1
+    @ens ule %99 401
+
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        jmp @b1 %1 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 400
+        @inv uge %4 1
+        @inv ule %4 401
+        %5 = const 400 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b6
+
+    @b2
+        %7 = call std_mem_get_byte %0 %3
+        %8 = const 0 bv64
+        %9 = cmp eq %7 %8
+        br %9 @b6 @b3
+
+    @b3
+        %10 = const 10 bv64                 # '\n'
+        %11 = cmp eq %7 %10
+        br %11 @b4 @b5
+
+    @b4
+        %12 = const 1 bv64
+        %13 = const 401 bv64
+        %14 = call std_sat_add %4 %12 %13
+        jmp @b51 %14
+
+    @b5
+        jmp @b51 %4
+
+    @b51 %15:bv64
+        @inv uge %15 1
+        @inv ule %15 401
+        %16 = const 1 bv64
+        %17 = add %3 %16
+        jmp @b1 %17 %15
+
+    @b6
+        %99 = add %4 %1
+        ret %99
+}
+
+# 6. Tự động đồng bộ vị trí cuộn (State[61]) xuống dòng cuối cùng khi có dữ liệu mới
+func term_sync_scroll_bottom void %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+
+    @b0
+        %1 = call term_count_lines %0
+        %2 = const TERM_VIS_LINES bv64
+        %3 = call std_sat_sub %1 %2
+        %4 = const STATE_SCROLL bv64
+        call cap_state_set %0 %4 %3
+        ret
+}
+
+# 7. Tìm byte offset bắt đầu của dòng thứ %1 (scroll_line) trong Screen Buffer (0..399)
+func term_find_line_offset bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @ens ule %99 400
+
+    @b0
+        %2 = const 0 bv64
+        %3 = cmp eq %1 %2
+        br %3 @b11 @b10
+
+    @b11
+        jmp @b9 %2
+
+    @b10
+        jmp @b1 %2 %2
+
+    @b1 %4:bv64 %5:bv64
+        # %4: byte_idx (0..400), %5: lines_seen (0..400)
+        @inv ule %4 400
+        @inv ule %5 400
+        %6 = const 400 bv64
+        %7 = cmp ult %4 %6
+        br %7 @b2 @b7
+
+    @b2
+        %8 = call std_mem_get_byte %0 %4
+        %9 = const 0 bv64
+        %10 = cmp eq %8 %9
+        br %10 @b7 @b3
+
+    @b3
+        %11 = const 10 bv64                 # '\n'
+        %12 = cmp eq %8 %11
+        br %12 @b4 @b5
+
+    @b4
+        %13 = const 1 bv64
+        %14 = const 400 bv64
+        %15 = call std_sat_add %5 %13 %14
+        %16 = add %4 %13
+        %17 = cmp uge %15 %1
+        br %17 @b8 @b81
+
+    @b8
+        jmp @b9 %16
+
+    @b81
+        jmp @b1 %16 %15
+
+    @b5
+        %19 = const 1 bv64
+        %20 = add %4 %19
+        jmp @b1 %20 %5
+
+    @b7
+        jmp @b9 %4
+
+    @b9 %99:bv64
+        @inv ule %99 400
+        ret %99
+}
+
+# 8. Thêm 1 ký tự vào cuối Screen Buffer (0..399) và tự động cuộn xuống đáy
 func term_append_char void %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
@@ -225,15 +329,14 @@ func term_append_char void %0:ptr<DiskQword,64> %1:bv64 {
 
     @b0
         %2 = call std_str_len %0
-        %3 = const 350 bv64
+        %3 = const 390 bv64
         %4 = cmp uge %2 %3
         br %4 @b1 @b2
 
     @b1
-        %5 = const 80 bv64
-        call std_mem_shift_up %0 %5
+        call term_shift_screen_up %0
         %6 = call std_str_len %0
-        %7 = const 400 bv64
+        %7 = const 390 bv64
         %8 = call std_min %6 %7
         jmp @b3 %8
 
@@ -241,18 +344,52 @@ func term_append_char void %0:ptr<DiskQword,64> %1:bv64 {
         jmp @b3 %2
 
     @b3 %9:bv64
-        @inv ult %9 510
+        @inv ult %9 398
         call std_mem_set_byte %0 %9 %1
         %10 = const 1 bv64
         %11 = add %9 %10
         %12 = const 0 bv64
         call std_mem_set_byte %0 %11 %12
+        call term_sync_scroll_bottom %0
         ret
 }
 
-# 5. In chuỗi tên file/thư mục từ Path String Pool (%1) từ start_idx (%2) đến end_idx (%3)
+# 9. In tối đa 8 ký tự ASCII từ 1 hằng số Qword (Little-Endian) vào Screen Buffer
+func term_append_qword void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2 %1
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 8
+        %5 = const 8 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b4
+
+    @b2
+        %7 = const 0xff bv64
+        %8 = and %4 %7
+        %9 = const 0 bv64
+        %10 = cmp eq %8 %9
+        br %10 @b4 @b3
+
+    @b3
+        call term_append_char %0 %8
+        %11 = const 8 bv64
+        %12 = lshr %4 %11
+        %13 = const 1 bv64
+        %14 = add %3 %13
+        jmp @b1 %14 %12
+
+    @b4
+        ret
+}
+
+# 10. In chuỗi tên file/thư mục từ Path String Pool (%1) từ start_idx (%2) đến end_idx (%3)
 func term_print_pool_str void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 {
-    # %0: App State Arena, %1: Pool Buffer (0x7c000), %2: start, %3: end
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -283,39 +420,27 @@ func term_print_pool_str void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:bv64 
         ret
 }
 
-# 6. In dấu nhắc \nlight> hoặc \nlight:folder> kèm CWD từ State[63]
+# 11. In dấu nhắc \nlight> hoặc \nlight:folder> kèm CWD từ State[63]
 func term_append_prompt void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
-    # %0: App State Arena, %1: Pool Buffer (0x7c000)
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
     @req ult %1 0x80000000
 
     @b0
-        %2 = const 10 bv64
-        call term_append_char %0 %2
-        %3 = const 108 bv64
-        call term_append_char %0 %3
-        %4 = const 105 bv64
-        call term_append_char %0 %4
-        %5 = const 103 bv64
-        call term_append_char %0 %5
-        %6 = const 104 bv64
-        call term_append_char %0 %6
-        %7 = const 116 bv64
-        call term_append_char %0 %7
+        %2 = const "\nlight" bv64
+        call term_append_qword %0 %2
 
-        # Đọc CWD từ State[63]
-        %8 = const 63 bv64
+        # Đọc CWD từ State[STATE_CWD]
+        %8 = const STATE_CWD bv64
         %9 = call cap_state_get %0 %8
         %10 = const 0x7f bv64
-        %11 = and %9 %10                    # pref_len
+        %11 = and %9 %10                    # pref_len (0..127)
         %12 = const 0 bv64
         %13 = cmp eq %11 %12
         br %13 @b2 @b1
 
     @b1
-        # In ':' kèm CWD
         %14 = const 58 bv64                 # ':'
         call term_append_char %0 %14
         %15 = const 8 bv64
@@ -337,7 +462,7 @@ func term_append_prompt void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
         ret
 }
 
-# 7. In số nguyên u64 (dạng thập phân) vào Screen Buffer
+# 12. In số nguyên u64 (dạng thập phân) vào Screen Buffer
 func term_append_dec void %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
@@ -391,9 +516,8 @@ func term_append_dec void %0:ptr<DiskQword,64> %1:bv64 {
         ret
 }
 
-# 8. Thực thi lệnh 'ls': Duyệt danh sách tệp/thư mục ảo theo CWD từ State[63]
+# 13. Thực thi lệnh 'ls': Duyệt danh sách tệp/thư mục ảo theo CWD
 func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
-    # %0: App State Arena, %1: font_pool/string_pool (0x7c000), %2: vfs_dir (0x7b000)
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -402,8 +526,7 @@ func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
     @req ult %2 0x80000000
 
     @b0
-        # Đọc CWD từ State[63]
-        %3 = const 63 bv64
+        %3 = const STATE_CWD bv64
         %4 = call cap_state_get %0 %3
         %5 = const 0x7f bv64
         %6 = and %4 %5                      # pref_len (0..127)
@@ -416,7 +539,6 @@ func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         jmp @b1 %11 %11
 
     @b1 %12:bv64 %13:bv64
-        # %12: entry_idx (0..16), %13: prev_sig (để gộp thư mục con trùng tên)
         @inv ule %12 16
         %14 = const 16 bv64
         %15 = cmp ult %12 %14
@@ -426,26 +548,21 @@ func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         %16 = call vfs_entry_get_path_off %2 %12
         %17 = call vfs_entry_get_path_len %2 %12
         %18 = const 0 bv64
-
-        # Nếu path_len == 0 -> Slot trống
         %19 = cmp eq %17 %18
         br %19 @b10 @b3
 
     @b3
-        # Kiểm tra tiền tố CWD (pref_off, pref_len)
         %20 = call ui_fb_match_prefix %1 %16 %17 %10 %6
         %21 = cmp ne %20 %18
         br %21 @b4 @b10
 
     @b4
-        # Lấy tên mục con trực tiếp
         %22 = add %16 %6                    # seg_start (<= 384)
         %23 = add %16 %17                   # path_end (<= 384)
         %24 = call std_min %22 %23
         %25 = call ui_fb_find_seg_end %1 %24 %23
         %26 = sub %25 %24                   # seg_len
 
-        # Chữ ký sig = (first_char << 16) | seg_len
         %27 = call std_mem_get_byte %1 %24
         %28 = const 16 bv64
         %29 = shl %27 %28
@@ -454,17 +571,10 @@ func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         br %31 @b10 @b5
 
     @b5
-        # In mục này ra màn hình
-        %32 = const 10 bv64                 # \n
-        call term_append_char %0 %32
-        %33 = const 32 bv64                 # ' '
-        call term_append_char %0 %33
-        call term_append_char %0 %33
-
-        # In đầy đủ tên mục con từ String Pool
+        %32 = const "\n  " bv64
+        call term_append_qword %0 %32
         call term_print_pool_str %0 %1 %24 %25
 
-        # Kiểm tra ký tự cuối xem là THƯ MỤC hay TỆP
         %34 = const 1 bv64
         %35 = sub %25 %34
         %36 = const 511 bv64
@@ -475,25 +585,13 @@ func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         br %40 @b6 @b7
 
     @b6
-        # Là THƯ MỤC: In '<DIR>'
-        call term_append_char %0 %33
-        call term_append_char %0 %33
-        %41 = const 60 bv64                 # '<'
-        call term_append_char %0 %41
-        %42 = const 68 bv64                 # 'D'
-        call term_append_char %0 %42
-        %43 = const 73 bv64                 # 'I'
-        call term_append_char %0 %43
-        %44 = const 82 bv64                 # 'R'
-        call term_append_char %0 %44
-        %45 = const 62 bv64                 # '>'
-        call term_append_char %0 %45
+        %41 = const "  <DIR>" bv64
+        call term_append_qword %0 %41
         jmp @b8
 
     @b7
-        # Là TỆP: In dung lượng bytes
-        call term_append_char %0 %33
-        call term_append_char %0 %33
+        %42 = const "  " bv64
+        call term_append_qword %0 %42
         %46 = const 2 bv64
         %47 = shl %12 %46
         %48 = const 3 bv64
@@ -521,10 +619,8 @@ func term_cmd_ls void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         ret
 }
 
-# 9. So khớp chuỗi đối số từ Command Line (%0) với tên thư mục trong String Pool (%2)
+# 14. So khớp chuỗi đối số từ Command Line (%0) với tên thư mục trong String Pool (%2)
 func term_str_match_seg bv64 %0:ptr<DiskQword,64> %1:bv64 %2:ptr<DiskQword,64> %3:bv64 %4:bv64 {
-    # %0: App State (cmd line), %1: arg_off
-    # %2: Pool Buffer, %3: seg_start (0..384), %4: seg_name_len (0..64)
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req ule %1 511
@@ -552,39 +648,8 @@ func term_str_match_seg bv64 %0:ptr<DiskQword,64> %1:bv64 %2:ptr<DiskQword,64> %
         %13 = call std_min %12 %9
         %14 = call std_mem_get_byte %2 %13
 
-        # Chuyển chữ hoa thành chữ thường nếu cần để so khớp không phân biệt hoa thường
-        %15 = const 65 bv64
-        %16 = cmp uge %11 %15
-        %17 = const 90 bv64
-        %18 = cmp ule %11 %17
-        %19 = and %16 %18
-        br %19 @b21 @b22
-
-    @b21
-        %20 = const 32 bv64
-        %21 = add %11 %20
-        jmp @b23 %21
-
-    @b22
-        jmp @b23 %11
-
-    @b23 %22:bv64
-        @inv ult %22 256
-        %23 = cmp uge %14 %15
-        %24 = cmp ule %14 %17
-        %25 = and %23 %24
-        br %25 @b24 @b25
-
-    @b24
-        %26 = const 32 bv64
-        %27 = add %14 %26
-        jmp @b26 %27
-
-    @b25
-        jmp @b26 %14
-
-    @b26 %28:bv64
-        @inv ult %28 256
+        %22 = call std_char_to_lower %11
+        %28 = call std_char_to_lower %14
         %29 = cmp eq %22 %28
         br %29 @b3 @b4
 
@@ -598,13 +663,11 @@ func term_str_match_seg bv64 %0:ptr<DiskQword,64> %1:bv64 %2:ptr<DiskQword,64> %
         jmp @b100 %32
 
     @b5
-        # Đã khớp toàn bộ %4 ký tự của tên thư mục: Kiểm tra ký tự kết thúc đối số
         %33 = add %1 %4
         %34 = const 511 bv64
         %35 = call std_min %33 %34
         %36 = call std_mem_get_byte %0 %35
 
-        # Hợp lệ nếu kết thúc bằng \0, ' ', \n hoặc '/'
         %37 = const 0 bv64
         %38 = cmp eq %36 %37
         %39 = const 32 bv64
@@ -627,9 +690,8 @@ func term_str_match_seg bv64 %0:ptr<DiskQword,64> %1:bv64 %2:ptr<DiskQword,64> %
         ret %48
 }
 
-# 10. Thực thi lệnh 'cd': Điều hướng cây thư mục ảo trong VFS
+# 15. Thực thi lệnh 'cd': Điều hướng cây thư mục ảo trong VFS
 func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
-    # %0: App State Arena, %1: Pool Buffer (0x7c000), %2: VfsDir (0x7b000)
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -638,31 +700,27 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
     @req ult %2 0x80000000
 
     @b0
-        # Bỏ qua 'cd ' để lấy đối số bắt đầu từ offset 402
         %3 = const 402 bv64
         %4 = call std_str_skip_spaces %0 %3
         %5 = call std_mem_get_byte %0 %4
 
-        # Kiểm tra 'cd' không tham số hoặc 'cd /'
         %6 = const 0 bv64
         %7 = cmp eq %5 %6
         %8 = const 10 bv64
         %9 = cmp eq %5 %8
         %10 = or %7 %9
-        %11 = const 47 bv64                # '/'
+        %11 = const 47 bv64                 # '/'
         %12 = cmp eq %5 %11
         %13 = or %10 %12
         br %13 @b1 @b2
 
     @b1
-        # Về thư mục gốc: State[63] = 0
-        %14 = const 63 bv64
+        %14 = const STATE_CWD bv64
         call cap_state_set %0 %14 %6
         ret
 
     @b2
-        # Kiểm tra 'cd ..'
-        %15 = const 46 bv64                # '.'
+        %15 = const 46 bv64                 # '.'
         %16 = cmp eq %5 %15
         br %16 @b21 @b3
 
@@ -676,15 +734,14 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         br %22 @b22 @b3
 
     @b22
-        # 'cd ..': Gọi ui_fb_parent_pref_len để lùi về thư mục cha
-        %23 = const 63 bv64
+        %23 = const STATE_CWD bv64
         %24 = call cap_state_get %0 %23
         %25 = const 0x7f bv64
-        %26 = and %24 %25                  # pref_len
+        %26 = and %24 %25                   # pref_len
         %27 = const 8 bv64
         %28 = lshr %24 %27
         %29 = const 0xff bv64
-        %30 = and %28 %29                  # pref_off
+        %30 = and %28 %29                   # pref_off
         %31 = call ui_fb_parent_pref_len %1 %30 %26
         %32 = shl %30 %27
         %33 = or %32 %31
@@ -692,15 +749,14 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         ret
 
     @b3
-        # Vào thư mục con: Duyệt qua 16 entry VFS
-        %40 = const 63 bv64
+        %40 = const STATE_CWD bv64
         %41 = call cap_state_get %0 %40
         %42 = const 0x7f bv64
-        %43 = and %41 %42                  # pref_len
+        %43 = and %41 %42                   # pref_len
         %44 = const 8 bv64
         %45 = lshr %41 %44
         %46 = const 0xff bv64
-        %47 = and %45 %46                  # pref_off
+        %47 = and %45 %46                   # pref_off
 
         %48 = const 0 bv64
         jmp @b4 %48
@@ -724,8 +780,8 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         br %57 @b52 @b7
 
     @b52
-        %58 = add %52 %43                  # seg_start
-        %59 = add %52 %53                  # path_end
+        %58 = add %52 %43                   # seg_start
+        %59 = add %52 %53                   # path_end
         %60 = call std_min %58 %59
         %61 = call ui_fb_find_seg_end %1 %60 %59
         %62 = const 1 bv64
@@ -733,15 +789,14 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         %64 = const 511 bv64
         %65 = call std_min %63 %64
         %66 = call std_mem_get_byte %1 %65
-        %67 = const 47 bv64                # '/'
+        %67 = const 47 bv64                 # '/'
         %68 = cmp eq %66 %67
         %680 = cmp ugt %63 %60
         %681 = and %68 %680
         br %681 @b53 @b7
 
     @b53
-        # Đây là thư mục con! So khớp tên
-        %69 = sub %63 %60                  # seg_name_len
+        %69 = sub %63 %60                   # seg_name_len
         %70 = const 64 bv64
         %71 = call std_min %69 %70
         %72 = call term_str_match_seg %0 %4 %1 %60 %71
@@ -750,8 +805,7 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         br %74 @b6 @b7
 
     @b6
-        # Khớp thành công: Cập nhật CWD vào State[63]
-        %75 = sub %61 %52                  # new_pref_len
+        %75 = sub %61 %52                   # new_pref_len
         %76 = const 8 bv64
         %77 = shl %52 %76
         %78 = or %77 %75
@@ -764,36 +818,14 @@ func term_cmd_cd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword
         jmp @b4 %80
 
     @b8
-        # Không tìm thấy thư mục: Báo lỗi
-        %81 = const 10 bv64
-        call term_append_char %0 %81
-        %82 = const 32 bv64
-        call term_append_char %0 %82
-        call term_append_char %0 %82
-        %83 = const 78 bv64                # 'N'
-        call term_append_char %0 %83
-        %84 = const 79 bv64                # 'O'
-        call term_append_char %0 %84
-        call term_append_char %0 %82
-        %85 = const 83 bv64                # 'S'
-        call term_append_char %0 %85
-        %86 = const 85 bv64                # 'U'
-        call term_append_char %0 %86
-        %87 = const 67 bv64                # 'C'
-        call term_append_char %0 %87
-        %88 = const 72 bv64                # 'H'
-        call term_append_char %0 %88
-        call term_append_char %0 %82
-        %89 = const 68 bv64                # 'D'
-        call term_append_char %0 %89
-        %90 = const 73 bv64                # 'I'
-        call term_append_char %0 %90
-        %91 = const 82 bv64                # 'R'
-        call term_append_char %0 %91
+        %81 = const "\n  NO SU" bv64
+        call term_append_qword %0 %81
+        %82 = const "CH DIR" bv64
+        call term_append_qword %0 %82
         ret
 }
 
-# 11. Thực thi lệnh 'clear': Xóa màn hình và đưa prompt lên đầu
+# 16. Thực thi lệnh 'clear': Xóa màn hình, đặt lại scroll_line = 0 và đưa prompt lên đầu
 func term_cmd_clear void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
@@ -819,13 +851,15 @@ func term_cmd_clear void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
         jmp @b1 %9
 
     @b3
+        %10 = const STATE_SCROLL bv64
+        %11 = const 0 bv64
+        call cap_state_set %0 %10 %11
         call term_append_prompt %0 %1
         ret
 }
 
-# 12. Thực thi lệnh 'sys': Đọc smp_ctrl (%1) và ipc (%2) in số CPU online, worker threads, bg mask
+# 17. Thực thi lệnh 'sys': In số CPU worker, AP online, và trạng thái chạy ngầm
 func term_cmd_sys void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<IpcChannel,1> {
-    # %0: App State Arena, %1: smp_ctrl (0x7e000), %2: ipc (0x79000)
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -834,75 +868,48 @@ func term_cmd_sys void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<IpcChann
     @req ult %2 0x80000000
 
     @b0
-        %3 = const 10 bv64
-        call term_append_char %0 %3
-        %4 = const 32 bv64
-        call term_append_char %0 %4
-        call term_append_char %0 %4
-
-        # WORKERS:
-        %5 = const 87 bv64                 # 'W'
-        call term_append_char %0 %5
-        %6 = const 79 bv64                 # 'O'
-        call term_append_char %0 %6
-        %7 = const 82 bv64                 # 'R'
-        call term_append_char %0 %7
-        %8 = const 75 bv64                 # 'K'
-        call term_append_char %0 %8
-        %9 = const 69 bv64                 # 'E'
-        call term_append_char %0 %9
-        call term_append_char %0 %7
-        %10 = const 83 bv64                # 'S'
-        call term_append_char %0 %10
-        %11 = const 58 bv64                # ':'
-        call term_append_char %0 %11
-        call term_append_char %0 %4
+        %3 = const "\n  WORKE" bv64
+        call term_append_qword %0 %3
+        %4 = const "RS: " bv64
+        call term_append_qword %0 %4
         %12 = call smp_get_worker_count %1
         call term_append_dec %0 %12
 
-        # ONLINE AP:
-        call term_append_char %0 %4
-        call term_append_char %0 %4
-        %13 = const 79 bv64                # 'O'
-        call term_append_char %0 %13
-        %14 = const 78 bv64                # 'N'
-        call term_append_char %0 %14
-        %15 = const 76 bv64                # 'L'
-        call term_append_char %0 %15
-        %16 = const 73 bv64                # 'I'
-        call term_append_char %0 %16
-        call term_append_char %0 %14
-        call term_append_char %0 %9
-        call term_append_char %0 %11
-        call term_append_char %0 %4
+        %13 = const "  ONLINE" bv64
+        call term_append_qword %0 %13
+        %14 = const ": " bv64
+        call term_append_qword %0 %14
         %17 = call smp_get_ap_count %1
         call term_append_dec %0 %17
 
-        # BG_MASK:
-        call term_append_char %0 %4
-        call term_append_char %0 %4
-        %18 = const 66 bv64                # 'B'
-        call term_append_char %0 %18
-        %19 = const 71 bv64                # 'G'
-        call term_append_char %0 %19
-        %20 = const 95 bv64                # '_'
-        call term_append_char %0 %20
-        %21 = const 77 bv64                # 'M'
-        call term_append_char %0 %21
-        %22 = const 65 bv64                # 'A'
-        call term_append_char %0 %22
-        call term_append_char %0 %10
-        call term_append_char %0 %8
-        call term_append_char %0 %11
-        call term_append_char %0 %4
-        %23 = load %2 152 bv64             # ipc_bg_mask
+        %18 = const "  BG_MAS" bv64
+        call term_append_qword %0 %18
+        %19 = const "K: " bv64
+        call term_append_qword %0 %19
+        %23 = load %2 IPC_BG_MASK bv64
         call term_append_dec %0 %23
         ret
 }
 
-# 13. Dispatcher thông dịch lệnh từ Command Line (Qwords 50..61)
+# 18. Thực thi lệnh 'help': Liệt kê các lệnh hỗ trợ
+func term_cmd_help void %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+
+    @b0
+        %1 = const "\n  CMDS:" bv64
+        call term_append_qword %0 %1
+        %2 = const " LS CD S" bv64
+        call term_append_qword %0 %2
+        %3 = const "YS CLEAR" bv64
+        call term_append_qword %0 %3
+        %4 = const " HELP" bv64
+        call term_append_qword %0 %4
+        ret
+}
+
+# 19. Dispatcher thông dịch lệnh từ Command Line (Qwords 50..60)
 func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> {
-    # %0: App State, %1: Font/Pool Buffer (0x7c000), %2: VfsDir (0x7b000), %3: IPC, %4: SmpCtrl
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -915,83 +922,69 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
     @req ult %4 0x80000000
 
     @b0
-        # 1. Bỏ khoảng trắng đầu và lấy mã lệnh 64-bit từ Command Line
         %16 = const 400 bv64
         %17 = call std_str_skip_spaces %0 %16
         %18 = call std_str_read_cmd_qword %0 %17
 
-        # 2. So khớp 4 lệnh (Hỗ trợ cả chữ thường và chữ hoa): ls/LS, sys/SYS, clear/CLEAR, cd/CD
-        %19 = const 0x736c bv64
-        %190 = const 0x534c bv64
-        %20 = cmp eq %18 %19
-        %200 = cmp eq %18 %190
-        %201 = or %20 %200
-        br %201 @b10 @b11
+        # Kiểm tra dòng lệnh rỗng
+        %27 = const 0 bv64
+        %28 = cmp eq %18 %27
+        br %28 @b20 @b1
+
+    @b1
+        # Chuyển toàn bộ 8 byte lệnh sang chữ thường + khoảng trắng bằng mặt nạ 0x2020202020202020
+        %180 = const 0x2020202020202020 bv64
+        %181 = or %18 %180
+
+        %19 = const "ls      " bv64
+        %20 = cmp eq %181 %19
+        br %20 @b10 @b11
 
     @b10
         call term_cmd_ls %0 %1 %2
         jmp @b20
 
     @b11
-        %21 = const 0x737973 bv64
-        %210 = const 0x535953 bv64
-        %22 = cmp eq %18 %21
-        %220 = cmp eq %18 %210
-        %221 = or %22 %220
-        br %221 @b12 @b13
+        %21 = const "sys     " bv64
+        %22 = cmp eq %181 %21
+        br %22 @b12 @b13
 
     @b12
         call term_cmd_sys %0 %4 %3
         jmp @b20
 
     @b13
-        %23 = const 0x7261656c63 bv64
-        %230 = const 0x5241454c43 bv64
-        %24 = cmp eq %18 %23
-        %240 = cmp eq %18 %230
-        %241 = or %24 %240
-        br %241 @b14 @b15
+        %23 = const "clear   " bv64
+        %24 = cmp eq %181 %23
+        br %24 @b14 @b15
 
     @b14
         call term_cmd_clear %0 %1
         jmp @b21
 
     @b15
-        %25 = const 0x6463 bv64
-        %250 = const 0x4443 bv64
-        %26 = cmp eq %18 %25
-        %260 = cmp eq %18 %250
-        %261 = or %26 %260
-        br %261 @b16 @b17
+        %25 = const "cd      " bv64
+        %26 = cmp eq %181 %25
+        br %26 @b16 @b17
 
     @b16
         call term_cmd_cd %0 %1 %2
         jmp @b20
 
     @b17
-        %27 = const 0 bv64
-        %28 = cmp eq %18 %27
-        br %28 @b20 @b18
+        %250 = const "help    " bv64
+        %260 = cmp eq %181 %250
+        br %260 @b171 @b18
+
+    @b171
+        call term_cmd_help %0
+        jmp @b20
 
     @b18
-        # Lệnh không xác định
-        %29 = const 10 bv64
-        call term_append_char %0 %29
-        %30 = const 32 bv64
-        call term_append_char %0 %30
-        call term_append_char %0 %30
-        %31 = const 85 bv64                # 'U'
-        call term_append_char %0 %31
-        %32 = const 78 bv64                # 'N'
-        call term_append_char %0 %32
-        %33 = const 75 bv64                # 'K'
-        call term_append_char %0 %33
-        call term_append_char %0 %32
-        %35 = const 79 bv64                # 'O'
-        call term_append_char %0 %35
-        %36 = const 87 bv64                # 'W'
-        call term_append_char %0 %36
-        call term_append_char %0 %32
+        %29 = const "\n  UNKNO" bv64
+        call term_append_qword %0 %29
+        %30 = const "WN" bv64
+        call term_append_qword %0 %30
         jmp @b20
 
     @b20
@@ -999,14 +992,14 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         jmp @b21
 
     @b21
-        # Xóa sạch Qwords 50..61 về 0
+        # Xóa sạch Qwords 50..60 về 0 (giữ nguyên State[61] = scroll_line)
         %37 = const 50 bv64
         jmp @b22 %37
 
     @b22 %38:bv64
         @inv uge %38 50
-        @inv ule %38 62
-        %39 = const 62 bv64
+        @inv ule %38 61
+        %39 = const 61 bv64
         %40 = cmp ult %38 %39
         br %40 @b23 @b24
 
@@ -1022,7 +1015,7 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         ret
 }
 
-# 14. Xử lý gõ phím vào Command Line (Qwords 50..61, offset 400..495)
+# 20. Xử lý gõ phím vào Command Line (Qwords 50..60, offset 400..487)
 func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
@@ -1038,7 +1031,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         jmp @b10 %4
 
     @b10 %6:bv64
-        @inv ule %6 95
+        @inv ule %6 86
         %7 = const 400 bv64
         %8 = add %7 %6
         %9 = call std_mem_get_byte %0 %8
@@ -1047,7 +1040,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         br %11 @b13 @b11
 
     @b11
-        %12 = const 94 bv64
+        %12 = const 85 bv64
         %13 = cmp ult %6 %12
         br %13 @b12 @b13
 
@@ -1075,9 +1068,10 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
 
     @b15
         %82 = sub %80 %19
-        %83 = const 399 bv64
+        %83 = const 398 bv64
         %84 = call std_min %82 %83
         call std_mem_set_byte %0 %84 %17
+        call term_sync_scroll_bottom %0
         ret
 
     @b2
@@ -1086,7 +1080,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         jmp @b20 %30
 
     @b20 %31:bv64
-        @inv ule %31 90
+        @inv ule %31 85
         %32 = const 400 bv64
         %33 = add %32 %31
         %34 = call std_mem_get_byte %0 %33
@@ -1095,7 +1089,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         br %36 @b23 @b21
 
     @b21
-        %37 = const 89 bv64
+        %37 = const 84 bv64
         %38 = cmp ult %31 %37
         br %38 @b22 @b99
 
@@ -1105,29 +1099,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         jmp @b20 %40
 
     @b23
-        %50 = const 0 bv64
-        %51 = const 0 bv8
-        jmp @b30 %50 %51
-
-    @b30 %52:bv64 %53:bv8
-        @inv ule %52 127
-        @inv eq %52 %53
-        %54 = cmp eq %53 %1
-        br %54 @b32 @b31
-
-    @b31
-        %59 = const 127 bv64
-        %60 = cmp ult %52 %59
-        br %60 @b33 @b99
-
-    @b33
-        %55 = const 1 bv64
-        %56 = add %52 %55
-        %57 = const 1 bv8
-        %58 = add %53 %57
-        jmp @b30 %56 %58
-
-    @b32
+        %52 = call std_bv8_to_bv64 %1
         %61 = const 400 bv64
         %62 = add %61 %31
         call std_mem_set_byte %0 %62 %52
@@ -1144,9 +1116,173 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         ret
 }
 
-# 15. Render Terminal Retro UI lên Backbuffer (0x090d16 nền, 0x4ade80 chữ, cursor '_')
+# 21. Vẽ Thanh Cuộn Dọc (Scrollbar: Nút Lên [▲], Rãnh trượt Track, Con trượt Thumb, Nút Xuống [▼])
+func term_draw_scrollbar void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %2 = const 854 bv64
+        %3 = const 872 bv64
+        %4 = const COL_SB_BTN bv32
+        %5 = const COL_RETRO_FG bv32
+
+        # Nút cuộn Lên [▲] (rel_x = 854..872, rel_y = 38..62)
+        %6 = const 38 bv64
+        %7 = const 62 bv64
+        call canvas_fill_rect %0 %2 %6 %3 %7 %4
+        %8 = const 860 bv64
+        %9 = const 866 bv64
+        %10 = const 47 bv64
+        %11 = const 53 bv64
+        call canvas_fill_rect %0 %8 %10 %9 %11 %5
+
+        # Nút cuộn Xuống [▼] (rel_x = 854..872, rel_y = 506..530)
+        %12 = const 506 bv64
+        %13 = const 530 bv64
+        call canvas_fill_rect %0 %2 %12 %3 %13 %4
+        %14 = const 515 bv64
+        %15 = const 521 bv64
+        call canvas_fill_rect %0 %8 %14 %9 %15 %5
+
+        # Rãnh trượt Track (rel_x = 854..872, rel_y = 64..504, cao 440px)
+        %16 = const 64 bv64
+        %17 = const 504 bv64
+        %18 = const COL_SB_TRACK bv32
+        call canvas_fill_rect %0 %2 %16 %3 %17 %18
+
+        # Tính toán vị trí và kích thước Con trượt (Thumb)
+        %19 = call term_count_lines %1
+        %20 = const TERM_VIS_LINES bv64
+        %21 = call std_sat_sub %19 %20      # max_scroll (0..384)
+        %22 = const 0 bv64
+        %23 = cmp eq %21 %22
+        br %23 @b1 @b2
+
+    @b1
+        # Chưa đầy màn hình: Con trượt phủ toàn bộ rãnh màu xanh mờ
+        %24 = const 856 bv64
+        %25 = const 870 bv64
+        %26 = const 66 bv64
+        %27 = const 502 bv64
+        %28 = const COL_SB_DIM bv32
+        call canvas_fill_rect %0 %24 %26 %25 %27 %28
+        ret
+
+    @b2
+        # Đã đầy màn hình (max_scroll > 0): Tính chiều cao và tọa độ Y của Thumb
+        %30 = const 7412 bv64               # 436 * 17
+        %31 = udiv %30 %19
+        %32 = const 36 bv64
+        %33 = const 400 bv64
+        %34 = call std_clamp %31 %32 %33    # thumb_h (36..400)
+        %35 = const 436 bv64
+        %36 = sub %35 %34                   # avail_travel (36..400)
+
+        %37 = const STATE_SCROLL bv64
+        %38 = call cap_state_get %1 %37
+        %39 = call std_min %38 %21          # cur_scroll <= max_scroll (<= 384)
+
+        %40 = mul %39 %36                   # cur_scroll * avail_travel (<= 384 * 400 = 153600)
+        %41 = udiv %40 %21
+        %42 = call std_min %41 %36          # thumb_off (0..avail_travel)
+
+        %43 = const 66 bv64
+        %44 = add %43 %42                   # thumb_y1 (66..466)
+        %45 = add %44 %34                   # thumb_y2 (102..502)
+        %46 = const 856 bv64
+        %47 = const 870 bv64
+        call canvas_fill_rect %0 %46 %44 %47 %45 %5
+        ret
+}
+
+# 22. Bắt sự kiện Click chuột trên Thanh Cuộn (Nút Lên, Nút Xuống, hoặc Rãnh trượt)
+func term_poll_scrollbar bv64 %0:ptr<IpcChannel,1> %1:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+    @ens ule %99 1
+
+    @b0
+        %2 = call ipc_mouse_get_click %0
+        %3 = const 0 bv64
+        %4 = cmp eq %2 %3
+        br %4 @b9 @b1
+
+    @b1
+        %5 = call ipc_mouse_get_x %0
+        %6 = call ipc_mouse_get_y %0
+        %7 = const 1052 bv64
+        %8 = const 1078 bv64
+        %9 = call std_in_range %5 %7 %8
+        %10 = const 98 bv64
+        %11 = const 594 bv64
+        %12 = call std_in_range %6 %10 %11
+        %13 = and %9 %12
+        %14 = cmp ne %13 %3
+        br %14 @b2 @b9
+
+    @b2
+        call ipc_mouse_clear_click %0
+        %15 = call term_count_lines %1
+        %16 = const TERM_VIS_LINES bv64
+        %17 = call std_sat_sub %15 %16      # max_scroll (0..384)
+        %18 = const STATE_SCROLL bv64
+        %19 = call cap_state_get %1 %18
+        %20 = call std_min %19 %17          # cur_scroll
+
+        # Kiểm tra vùng Click: Nút Lên (< 126), Nút Xuống (>= 566), hay Rãnh Track (126..565)
+        %21 = const 126 bv64
+        %22 = cmp ult %6 %21
+        br %22 @b3 @b4
+
+    @b3
+        # Click Nút Lên [▲]: Cuộn lên 2 dòng
+        %23 = const 2 bv64
+        %24 = call std_sat_sub %20 %23
+        jmp @b8 %24
+
+    @b4
+        %25 = const 566 bv64
+        %26 = cmp uge %6 %25
+        br %26 @b5 @b6
+
+    @b5
+        # Click Nút Xuống [▼]: Cuộn xuống 2 dòng
+        %27 = const 2 bv64
+        %28 = call std_sat_add %20 %27 %17
+        jmp @b8 %28
+
+    @b6
+        # Click trực tiếp trên Rãnh Track (126..565): Nhảy tỷ lệ tới vị trí tương ứng
+        %29 = call std_sat_sub %6 %21
+        %30 = const 440 bv64
+        %31 = call std_min %29 %30          # rel_click (0..440)
+        %32 = const 1 bv64
+        %33 = add %17 %32                   # max_scroll + 1 (1..385)
+        %34 = mul %31 %33
+        %35 = udiv %34 %30
+        %36 = call std_min %35 %17
+        jmp @b8 %36
+
+    @b8 %40:bv64
+        call cap_state_set %1 %18 %40
+        %41 = const 1 bv64
+        jmp @b10 %41
+
+    @b9
+        jmp @b10 %3
+
+    @b10 %99:bv64
+        @inv ule %99 1
+        ret %99
+}
+
+# 23. Render Terminal Retro UI lên Backbuffer (Văn bản theo scroll_line + Cursor + Scrollbar)
 func term_render_retro_view void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
-    # %0: FB, %1: Font, %2: App State Arena
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -1155,20 +1291,28 @@ func term_render_retro_view void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:
     @req ult %2 0x10000000000
 
     @b0
-        %3 = const 220 bv64
-        %4 = const 100 bv64
-        %5 = const 1040 bv64
-        %6 = const 580 bv64
-        %7 = const 0x4ade80 bv32
-        %8 = const 1 bv64
-        call ui_text_view_render %0 %1 %2 %3 %4 %5 %6 %7 %8
+        %3 = call term_count_lines %2
+        %4 = const TERM_VIS_LINES bv64
+        %5 = call std_sat_sub %3 %4         # max_scroll (0..384)
+        %6 = const STATE_SCROLL bv64
+        %7 = call cap_state_get %2 %6
+        %8 = call std_min %7 %5             # scroll_line (0..max_scroll)
+        %9 = call term_find_line_offset %2 %8
+
+        # Chỉ hiển thị con trỏ '_' khi đang ở đáy màn hình (scroll_line >= max_scroll)
+        %10 = cmp uge %8 %5
+        %11 = const 220 bv64
+        %12 = const 100 bv64
+        %13 = const 1036 bv64
+        %14 = const TERM_MAX_Y bv64
+        %15 = const COL_RETRO_FG bv32
+        call ui_text_view_render_from %0 %1 %2 %11 %12 %13 %14 %15 %10 %9
+        call term_draw_scrollbar %0 %2
         ret
 }
 
-# 16. Vòng lặp chính của Shell App (app_terminal_main)
+# 24. Vòng lặp chính của Shell App (app_terminal_main)
 func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
-    # %0: FB (Backbuffer), %1: IPC Channel, %2: App Persistent State (64 Qwords),
-    # %3: Font/String Pool Buffer, %4: VFS Dir Buffer, %5: SMP Control Area
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -1189,7 +1333,7 @@ func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<D
         %9 = const 540 bv64
         %10 = const 0 bv64
         %11 = const 1 bv64
-        %12 = const 62 bv64
+        %12 = const STATE_INIT bv64
 
         # Kiểm tra cờ khởi tạo State[62]
         %13 = call cap_state_get %2 %12
@@ -1197,23 +1341,25 @@ func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<D
         br %14 @b1 @b2
 
     @b1
-        # Lần đầu mở App: Khởi tạo Banner, khởi tạo CWD (State[63] = 0) và bật State[62] = 1
+        # Lần đầu mở App: Khởi tạo Banner, scroll_line = 0, CWD = 0 và bật State[62] = 1
         call term_init_banner %2
-        %120 = const 63 bv64
+        %119 = const STATE_SCROLL bv64
+        call cap_state_set %2 %119 %10
+        %120 = const STATE_CWD bv64
         call cap_state_set %2 %120 %10
         call cap_state_set %2 %12 %11
         jmp @b2
 
     @b2
-        %15 = load %1 112 bv64
+        %15 = load %1 IPC_WIN_DRAWN bv64
         %16 = cmp eq %15 %10
         br %16 @b3 @b4
 
     @b3
         # Vẽ toàn bộ cửa sổ lần đầu (Window frame + Title 'TERMINAL' + Client background)
-        store %1 112 %11
-        %17 = const 0x4c414e494d524554 bv64
-        %18 = const 0x090d16 bv32
+        store %1 IPC_WIN_DRAWN %11
+        %17 = const "TERMINAL" bv64
+        %18 = const COL_RETRO_BG bv32
         call ui_win_draw %0 %3 %6 %7 %8 %9 %17 %18
         %19 = const 1086 bv64
         %20 = const 606 bv64
@@ -1224,7 +1370,13 @@ func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<D
         # Kiểm tra đóng cửa sổ nút [X]
         %21 = call ui_win_poll_close %1 %6 %7 %8
         %22 = cmp ne %21 %10
-        br %22 @b8 @b5
+        br %22 @b8 @b41
+
+    @b41
+        # Kiểm tra Click chuột trên Thanh Cuộn (Scrollbar)
+        %220 = call term_poll_scrollbar %1 %2
+        %221 = cmp ne %220 %10
+        br %221 @b7 @b5
 
     @b5
         # Đọc phím bấm từ IPC
@@ -1263,15 +1415,15 @@ func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<D
         jmp @b7
 
     @b7
-        # Tô lại nền Client 0x090d16
+        # Tô lại nền Client COL_RETRO_BG
         %67 = const 0 bv64
         %68 = const 876 bv64
         %69 = const 34 bv64
         %70 = const 536 bv64
-        %71 = const 0x090d16 bv32
+        %71 = const COL_RETRO_BG bv32
         call canvas_fill_rect %0 %67 %69 %68 %70 %71
 
-        # Render Screen Buffer + Cursor qua ui_text_view_render
+        # Render Screen Buffer (theo scroll_line) + Cursor + Thanh Cuộn
         call term_render_retro_view %0 %3 %2
         call canvas_invalidate_rect %1 %67 %69 %68 %70
         ret

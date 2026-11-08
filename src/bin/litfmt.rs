@@ -42,19 +42,58 @@ pub fn format_lit_source(src: &str) -> String {
             continue;
         }
 
-        // 3. Tách phần lệnh SSA và phần comment cuối dòng (inline comment)
-        let (code_part, comment_part) = match trimmed.split_once('#') {
-            Some((c, cmt)) => (c.trim(), Some(cmt.trim())),
-            None => (trimmed, None),
-        };
+        // 3. Tách phần lệnh SSA (bảo toàn chuỗi "...") và phần comment cuối dòng (inline comment)
+        let mut toks = Vec::new();
+        let mut cur = String::new();
+        let mut comment_part: Option<String> = None;
+        let mut chars = trimmed.chars().peekable();
+        let mut in_quotes = false;
 
-        // Chuẩn hóa khoảng trắng đơn giữa các token trong phần code
-        let toks: Vec<&str> = code_part.split_whitespace().collect();
+        while let Some(c) = chars.next() {
+            if in_quotes {
+                cur.push(c);
+                if c == '\\' {
+                    if let Some(nc) = chars.next() {
+                        cur.push(nc);
+                    }
+                } else if c == '"' {
+                    in_quotes = false;
+                    toks.push(std::mem::take(&mut cur));
+                }
+            } else {
+                match c {
+                    '#' => {
+                        if !cur.is_empty() {
+                            toks.push(std::mem::take(&mut cur));
+                        }
+                        let rest: String = chars.collect();
+                        comment_part = Some(rest.trim().to_string());
+                        break;
+                    }
+                    '"' => {
+                        if !cur.is_empty() {
+                            toks.push(std::mem::take(&mut cur));
+                        }
+                        cur.push('"');
+                        in_quotes = true;
+                    }
+                    w if w.is_whitespace() => {
+                        if !cur.is_empty() {
+                            toks.push(std::mem::take(&mut cur));
+                        }
+                    }
+                    _ => cur.push(c),
+                }
+            }
+        }
+        if !cur.is_empty() {
+            toks.push(cur);
+        }
         if toks.is_empty() {
             continue;
         }
         let norm_code = toks.join(" ");
-        let first = toks[0];
+        let first = toks[0].as_str();
 
         // 4. Xác định cấp độ thụt lề (Indent) và chuyển trạng thái Scope
         let indent = match first {
@@ -70,7 +109,7 @@ pub fn format_lit_source(src: &str) -> String {
                 scope = Scope::FuncHeader;
                 ""
             }
-            "include" => "",
+            "include" | "def" => "",
             "@req" | "@ens" => "    ",
             b if b.starts_with('@') && b != "@inv" => {
                 // Tự động chèn 1 dòng trống trước mỗi Basic Block (@b0, @b1...)
@@ -90,7 +129,7 @@ pub fn format_lit_source(src: &str) -> String {
         let mut line_out = format!("{}{}", indent, norm_code);
 
         // 5. Căn thẳng cột comment cuối dòng (cột 44)
-        if let Some(cmt) = comment_part {
+        if let Some(cmt) = &comment_part {
             let pad = if line_out.len() < 44 {
                 44 - line_out.len()
             } else {

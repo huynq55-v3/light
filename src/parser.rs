@@ -1,7 +1,88 @@
 // File: src/parser.rs (Ngân sách: < 150 dòng - Thực tế: 145 dòng)
 use crate::ir::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Tách token trên 1 dòng, bảo toàn chuỗi hằng `"..."` (có chứa khoảng trắng hoặc dấu #) và bỏ comment sau dấu #
+fn tokenize_line(raw_line: &str) -> Result<Vec<String>, String> {
+    let mut toks = Vec::new();
+    let mut cur = String::new();
+    let mut chars = raw_line.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            cur.push(c);
+            if c == '\\' {
+                if let Some(next_c) = chars.next() {
+                    cur.push(next_c);
+                }
+            } else if c == '"' {
+                in_quotes = false;
+                toks.push(std::mem::take(&mut cur));
+            }
+        } else {
+            match c {
+                '#' => break,
+                '"' => {
+                    if !cur.is_empty() {
+                        toks.push(std::mem::take(&mut cur));
+                    }
+                    cur.push('"');
+                    in_quotes = true;
+                }
+                w if w.is_whitespace() => {
+                    if !cur.is_empty() {
+                        toks.push(std::mem::take(&mut cur));
+                    }
+                }
+                _ => cur.push(c),
+            }
+        }
+    }
+    if in_quotes {
+        return Err(format!("Chuỗi hằng chưa đóng dấu ngoặc kép: {}", raw_line));
+    }
+    if !cur.is_empty() {
+        toks.push(cur);
+    }
+    Ok(toks)
+}
+
+/// Giải mã chuỗi hằng `"..."` (tối đa 8 byte ASCII) thành số u64 theo chuẩn Little-Endian
+fn p_str_qword(s: &str) -> Result<u64, String> {
+    let inner = &s[1..s.len() - 1];
+    let mut bytes = Vec::with_capacity(8);
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        let b = if c == '\\' {
+            match chars.next().ok_or_else(|| format!("Ký tự escape dở dang trong {}", s))? {
+                'n' => b'\n',
+                'r' => b'\r',
+                't' => b'\t',
+                '0' => 0,
+                '\\' => b'\\',
+                '"' => b'"',
+                other => other as u8,
+            }
+        } else {
+            c as u8
+        };
+        bytes.push(b);
+    }
+    if bytes.len() > 8 {
+        return Err(format!(
+            "Chuỗi hằng {} dài {} bytes (vượt quá giới hạn 8 bytes của Qword bv64)",
+            s,
+            bytes.len()
+        ));
+    }
+    let mut val = 0u64;
+    for (i, &b) in bytes.iter().enumerate() {
+        val |= (b as u64) << (i * 8);
+    }
+    Ok(val)
+}
 
 /// Đọc file .lit và đệ quy ghép các file `include <relative_path>` theo đúng thư mục của file hiện tại
 fn load_source_recursive(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<String, String> {
@@ -53,16 +134,23 @@ fn p_blk(s: &str) -> Result<BlockId, String> {
         .map_err(|_| format!("Lỗi cú pháp BlockId: {}", s))
 }
 
-fn p_u64(s: &str) -> Result<u64, String> {
+fn p_u64(s: &str, defs: &HashMap<String, u64>) -> Result<u64, String> {
     let s = s.trim_end_matches(',');
+    if let Some(&val) = defs.get(s) {
+        return Ok(val);
+    }
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        return p_str_qword(s);
+    }
     if let Some(hex) = s.strip_prefix("0x") {
         u64::from_str_radix(hex, 16).map_err(|_| format!("Lỗi số hex: {}", s))
     } else {
-        s.parse().map_err(|_| format!("Lỗi số nguyên: {}", s))
+        s.parse()
+            .map_err(|_| format!("Lỗi số nguyên hoặc hằng số chưa định nghĩa: {}", s))
     }
 }
 
-fn p_type(s: &str, layouts: &[Layout]) -> Result<Type, String> {
+fn p_type(s: &str, layouts: &[Layout], defs: &HashMap<String, u64>) -> Result<Type, String> {
     let s = s.trim_matches(|c| c == ',' || c == ')');
     match s {
         "bv8" => Ok(Type::Bv8),
@@ -70,7 +158,7 @@ fn p_type(s: &str, layouts: &[Layout]) -> Result<Type, String> {
         "bv32" => Ok(Type::Bv32),
         "bv64" => Ok(Type::Bv64),
         _ if s.starts_with("ptr<") && s.ends_with('>') => {
-            // Cú pháp: ptr<Process,1> (Tự động tìm tên Layout đổi thành layout_id)
+            // Cú pháp: ptr<Process,1> hoặc ptr<DiskQword,*> (Size-Polymorphic)
             let inner = &s[4..s.len() - 1];
             let (name, max) = inner.split_once(',').ok_or("Lỗi cú pháp ptr<Layout,Max>")?;
             let id = layouts
@@ -78,9 +166,14 @@ fn p_type(s: &str, layouts: &[Layout]) -> Result<Type, String> {
                 .position(|l| l.name == name)
                 .ok_or_else(|| format!("Không tìm thấy Layout '{}'", name))?
                 as u16;
+            let max_elems = if max.trim() == "*" {
+                1
+            } else {
+                p_u64(max.trim(), defs)?
+            };
             Ok(Type::Ptr {
                 layout_id: id,
-                max_elems: p_u64(max)?,
+                max_elems,
             })
         }
         _ if s.starts_with("io<") && s.ends_with('>') => {
@@ -88,8 +181,8 @@ fn p_type(s: &str, layouts: &[Layout]) -> Result<Type, String> {
             let inner = &s[3..s.len() - 1];
             let (min_s, max_s) = inner.split_once(',').ok_or("Lỗi cú pháp io<Min,Max>")?;
             Ok(Type::Io {
-                min: p_u64(min_s)? as u16,
-                max: p_u64(max_s)? as u16,
+                min: p_u64(min_s.trim(), defs)? as u16,
+                max: p_u64(max_s.trim(), defs)? as u16,
             })
         }
         _ => Err(format!("Kiểu dữ liệu không hợp lệ: {}", s)),
@@ -157,38 +250,59 @@ fn p_cmpop(s: &str) -> Option<CmpOp> {
 
 /// Phân tích biểu thức Z3 dạng tiền tố phẳng (Prefix Polish Notation) không cần dấu ngoặc
 /// Ví dụ: `ugt %0 0` -> (%0 > 0) | `and eq (and val 4095) 0 ugt val 0`
-fn p_z3(it: &mut std::str::SplitWhitespace) -> Result<Z3Expr, String> {
+fn p_z3<'a, I>(it: &mut I, defs: &HashMap<String, u64>) -> Result<Z3Expr, String>
+where
+    I: Iterator<Item = &'a str>,
+{
     let tok = it.next().ok_or("Thiếu token trong biểu thức Z3")?;
     if tok == "val" {
         return Ok(Z3Expr::FieldVal);
     }
     if tok == "not" {
-        return Ok(Z3Expr::Not(Box::new(p_z3(it)?)));
+        return Ok(Z3Expr::Not(Box::new(p_z3(it, defs)?)));
     }
     if tok == "and" {
-        return Ok(Z3Expr::And(Box::new(p_z3(it)?), Box::new(p_z3(it)?)));
+        return Ok(Z3Expr::And(
+            Box::new(p_z3(it, defs)?),
+            Box::new(p_z3(it, defs)?),
+        ));
     }
     if tok == "or" {
-        return Ok(Z3Expr::Or(Box::new(p_z3(it)?), Box::new(p_z3(it)?)));
+        return Ok(Z3Expr::Or(
+            Box::new(p_z3(it, defs)?),
+            Box::new(p_z3(it, defs)?),
+        ));
     }
     if let Some(op) = p_cmpop(tok) {
-        return Ok(Z3Expr::Cmp(op, Box::new(p_z3(it)?), Box::new(p_z3(it)?)));
+        return Ok(Z3Expr::Cmp(
+            op,
+            Box::new(p_z3(it, defs)?),
+            Box::new(p_z3(it, defs)?),
+        ));
     }
     if let Some(op) = p_binop(tok) {
-        return Ok(Z3Expr::Bin(op, Box::new(p_z3(it)?), Box::new(p_z3(it)?)));
+        return Ok(Z3Expr::Bin(
+            op,
+            Box::new(p_z3(it, defs)?),
+            Box::new(p_z3(it, defs)?),
+        ));
     }
     if tok.starts_with('%') {
         return Ok(Z3Expr::Reg(p_reg(tok)?));
     }
-    Ok(Z3Expr::Const(p_u64(tok)?))
+    Ok(Z3Expr::Const(p_u64(tok, defs)?))
 }
 
-fn p_params(toks: &[&str], layouts: &[Layout]) -> Result<Vec<(Reg, Type)>, String> {
+fn p_params(
+    toks: &[&str],
+    layouts: &[Layout],
+    defs: &HashMap<String, u64>,
+) -> Result<Vec<(Reg, Type)>, String> {
     // Cú pháp tham số: %0:bv64 %1:ptr<Process,1>
     let mut out = Vec::new();
     for t in toks {
         if let Some((r, ty)) = t.split_once(':') {
-            out.push((p_reg(r)?, p_type(ty, layouts)?));
+            out.push((p_reg(r)?, p_type(ty, layouts, defs)?));
         }
     }
     Ok(out)
@@ -196,23 +310,32 @@ fn p_params(toks: &[&str], layouts: &[Layout]) -> Result<Vec<(Reg, Type)>, Strin
 
 pub fn parse_module(src: &str) -> Result<Module, String> {
     let mut m = Module::default();
+    let mut defs: HashMap<String, u64> = HashMap::new();
     let mut in_layout = false;
 
     for (line_no, raw_line) in src.lines().enumerate() {
-        let line = raw_line.split('#').next().unwrap_or("").trim(); // Bỏ comment sau dấu #
-        if line.is_empty() {
+        let err = |msg: &str| format!("Dòng {}: {}", line_no + 1, msg);
+        let owned_toks = tokenize_line(raw_line).map_err(|e| err(&e))?;
+        if owned_toks.is_empty() {
             continue;
         }
-        let toks: Vec<&str> = line.split_whitespace().collect();
-        let err = |msg: &str| format!("Dòng {}: {}", line_no + 1, msg);
+        let toks: Vec<&str> = owned_toks.iter().map(|s| s.as_str()).collect();
 
         match toks[0] {
             "}" => in_layout = false,
+            "def" => {
+                // def IPC_WIN_DRAWN 112 | def TITLE_TERM "TERMINAL"
+                if toks.len() < 3 {
+                    return Err(err("Cú pháp: def <TÊN_HẰNG> <GIÁ_TRỊ>"));
+                }
+                let val = p_u64(toks[2], &defs).map_err(|e| err(&e))?;
+                defs.insert(toks[1].to_string(), val);
+            }
             "layout" => {
                 // layout Process 24 {
                 m.layouts.push(Layout {
                     name: toks[1].into(),
-                    size: p_u64(toks[2])? as u32,
+                    size: p_u64(toks[2], &defs).map_err(|e| err(&e))? as u32,
                     fields: Vec::new(),
                 });
                 in_layout = true;
@@ -222,12 +345,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                 let ret_ty = if toks[2] == "void" {
                     None
                 } else {
-                    Some(p_type(toks[2], &m.layouts)?)
+                    Some(p_type(toks[2], &m.layouts, &defs).map_err(|e| err(&e))?)
                 };
                 m.funcs.push(Func {
                     name: toks[1].into(),
                     ret_ty,
-                    params: p_params(&toks[3..], &m.layouts)?,
+                    params: p_params(&toks[3..], &m.layouts, &defs).map_err(|e| err(&e))?,
                     requires: Vec::new(),
                     ensures: Vec::new(),
                     blocks: Vec::new(),
@@ -238,38 +361,39 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                 .last_mut()
                 .ok_or_else(|| err("Lỗi @req"))?
                 .requires
-                .push(p_z3(&mut line[4..].split_whitespace())?),
+                .push(p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?),
             "@ens" => m
                 .funcs
                 .last_mut()
                 .ok_or_else(|| err("Lỗi @ens"))?
                 .ensures
-                .push(p_z3(&mut line[4..].split_whitespace())?),
+                .push(p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?),
             "@inv" => {
-                // <--- THÊM NHÁNH NÀY: Đọc bất biến vòng lặp @inv gắn ở đầu Block
                 let blk = m
                     .funcs
                     .last_mut()
                     .and_then(|f| f.blocks.last_mut())
                     .ok_or_else(|| err("@inv ngoài Block"))?;
-                blk.invs.push(p_z3(&mut line[4..].split_whitespace())?);
+                blk.invs
+                    .push(p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?);
             }
             b if b.starts_with('@') => {
                 // @b1 %1:bv64
                 let f = m.funcs.last_mut().ok_or_else(|| err("Block ngoài Func"))?;
                 f.blocks.push(Block {
                     id: p_blk(b)?,
-                    params: p_params(&toks[1..], &m.layouts)?,
-                    invs: Vec::new(), // <--- Khởi tạo rỗng
+                    params: p_params(&toks[1..], &m.layouts, &defs).map_err(|e| err(&e))?,
+                    invs: Vec::new(),
                     insts: Vec::new(),
                 });
             }
             _ if in_layout => {
                 // 0: bv64 @inv ugt val 0
-                let offset = p_u64(toks[0].trim_end_matches(':'))? as u32;
-                let ty = p_type(toks[1], &m.layouts)?;
+                let offset =
+                    p_u64(toks[0].trim_end_matches(':'), &defs).map_err(|e| err(&e))? as u32;
+                let ty = p_type(toks[1], &m.layouts, &defs).map_err(|e| err(&e))?;
                 let inv = if toks.get(2) == Some(&"@inv") {
-                    Some(p_z3(&mut toks[3..].join(" ").split_whitespace())?)
+                    Some(p_z3(&mut toks[3..].iter().copied(), &defs).map_err(|e| err(&e))?)
                 } else {
                     None
                 };
@@ -284,7 +408,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                 let inst = match toks[0] {
                     "store" => Inst::Store {
                         base: p_reg(toks[1])?,
-                        offset: p_u64(toks[2])? as u32,
+                        offset: p_u64(toks[2], &defs).map_err(|e| err(&e))? as u32,
                         val: p_reg(toks[3])?,
                     },
                     "vadd256" | "vsub256" | "vmul256" | "vxor256" => Inst::Simd256 {
@@ -315,8 +439,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     "ret" => Inst::Ret {
                         val: toks.get(1).map(|r| p_reg(r)).transpose()?,
                     },
-                    "assume" => Inst::Assume(p_z3(&mut toks[1..].join(" ").split_whitespace())?),
-                    "assert" => Inst::Assert(p_z3(&mut toks[1..].join(" ").split_whitespace())?),
+                    "assume" => Inst::Assume(
+                        p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?,
+                    ),
+                    "assert" => Inst::Assert(
+                        p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?,
+                    ),
                     "call" => {
                         let target_str = toks[1];
                         if target_str.starts_with('%') {
@@ -342,7 +470,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     "hwio_w" => Inst::HwIo {
                         dst: None,
                         cap: p_reg(toks[1])?,
-                        port_or_reg: p_u64(toks[2])? as u16,
+                        port_or_reg: p_u64(toks[2], &defs).map_err(|e| err(&e))? as u16,
                         val: Some(p_reg(toks[3])?),
                         is_write: true,
                     },
@@ -351,20 +479,20 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                         match toks[2] {
                             "const" => Inst::Const {
                                 dst: d,
-                                val: p_u64(toks[3])?,
-                                ty: p_type(toks[4], &m.layouts)?,
+                                val: p_u64(toks[3], &defs).map_err(|e| err(&e))?,
+                                ty: p_type(toks[4], &m.layouts, &defs).map_err(|e| err(&e))?,
                             },
                             "slice" => Inst::Slice {
                                 dst: d,
                                 base: p_reg(toks[3])?,
                                 idx: p_reg(toks[4])?,
-                                ty: p_type(toks[5], &m.layouts)?,
+                                ty: p_type(toks[5], &m.layouts, &defs).map_err(|e| err(&e))?,
                             },
                             "load" => Inst::Load {
                                 dst: d,
                                 base: p_reg(toks[3])?,
-                                offset: p_u64(toks[4])? as u32,
-                                ty: p_type(toks[5], &m.layouts)?,
+                                offset: p_u64(toks[4], &defs).map_err(|e| err(&e))? as u32,
+                                ty: p_type(toks[5], &m.layouts, &defs).map_err(|e| err(&e))?,
                             },
                             "cmp" => Inst::Cmp {
                                 dst: d,
@@ -397,7 +525,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                             "hwio_r" => Inst::HwIo {
                                 dst: Some(d),
                                 cap: p_reg(toks[3])?,
-                                port_or_reg: p_u64(toks[4])? as u16,
+                                port_or_reg: p_u64(toks[4], &defs).map_err(|e| err(&e))? as u16,
                                 val: None,
                                 is_write: false,
                             },

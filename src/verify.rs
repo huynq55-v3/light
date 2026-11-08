@@ -418,6 +418,10 @@ struct Verifier<'ctx> {
     ctx: &'ctx Context,
     solver: Solver<'ctx>,
     layouts: &'ctx [Layout],
+    func_name: &'ctx str,
+    cur_bb: BlockId,
+    cur_inst: String,
+    cur_regs: Vec<Reg>,
     regs: Env<'ctx>,
     reg_tys: HashMap<Reg, Type>,
     slice_base: HashMap<Reg, Reg>,
@@ -426,6 +430,64 @@ struct Verifier<'ctx> {
     conds: HashMap<usize, Option<Bool<'ctx>>>,
     pos: Vec<usize>,
     n_assume: usize,
+}
+
+fn fmt_inst(module: &Module, inst: &Inst) -> String {
+    match inst {
+        Inst::Const { dst, val, ty } => format!("%{} = const {:#x} {:?}", dst, val, ty),
+        Inst::Bin { dst, op, lhs, rhs } => {
+            format!("%{} = {} %{} %{}", dst, format!("{:?}", op).to_lowercase(), lhs, rhs)
+        }
+        Inst::Cmp { dst, op, lhs, rhs } => {
+            format!("%{} = cmp {} %{} %{}", dst, format!("{:?}", op).to_lowercase(), lhs, rhs)
+        }
+        Inst::Slice { dst, base, idx, .. } => format!("%{} = slice %{} %{}", dst, base, idx),
+        Inst::Load { dst, base, offset, .. } => format!("%{} = load %{} {}", dst, base, offset),
+        Inst::Store { base, offset, val } => format!("store %{} {} %{}", base, offset, val),
+        Inst::Simd256 { op, dst, lhs, rhs } => {
+            format!("{:?} %{} %{} %{}", op, dst, lhs, rhs)
+        }
+        Inst::Spawn { smp, core, fn_addr, slice_ptr, arg1 } => {
+            format!("spawn %{} %{} %{} %{} %{}", smp, core, fn_addr, slice_ptr, arg1)
+        }
+        Inst::Sync { dst, smp, core } => format!("%{} = sync %{} %{}", dst, smp, core),
+        Inst::HwIo { dst, cap, port_or_reg, val, is_write } => {
+            if *is_write {
+                format!("hwio_w %{} {:#x} %{:?}", cap, port_or_reg, val)
+            } else {
+                format!("%{:?} = hwio_r %{} {:#x}", dst, cap, port_or_reg)
+            }
+        }
+        Inst::Call { dst, func_id, args } => {
+            let fname = module
+                .funcs
+                .get(*func_id as usize)
+                .map(|f| f.name.as_str())
+                .unwrap_or("?");
+            let a_str = args.iter().map(|r| format!("%{}", r)).collect::<Vec<_>>().join(" ");
+            match dst {
+                Some(d) => format!("%{} = call {} {}", d, fname, a_str),
+                None => format!("call {} {}", fname, a_str),
+            }
+        }
+        Inst::CallPtr { dst, target, .. } => match dst {
+            Some(d) => format!("%{} = call %{}", d, target),
+            None => format!("call %{}", target),
+        },
+        Inst::Br { cond, then_bb, else_bb } => {
+            format!("br %{} @b{} @b{}", cond, then_bb, else_bb)
+        }
+        Inst::Jmp { target_bb, args } => {
+            let a_str = args.iter().map(|r| format!("%{}", r)).collect::<Vec<_>>().join(" ");
+            format!("jmp @b{} {}", target_bb, a_str)
+        }
+        Inst::Assume(_) => "assume ...".into(),
+        Inst::Assert(_) => "assert ...".into(),
+        Inst::Ret { val } => match val {
+            Some(r) => format!("ret %{}", r),
+            None => "ret".into(),
+        },
+    }
 }
 
 impl<'ctx> Verifier<'ctx> {
@@ -454,22 +516,47 @@ impl<'ctx> Verifier<'ctx> {
                     .solver
                     .get_model()
                     .map(|m| {
+                        let mut primary = Vec::new();
+                        let mut seen = HashSet::new();
+                        for &r in &self.cur_regs {
+                            if seen.insert(r) {
+                                if let Some(bv) = self.regs.get(&r) {
+                                    if let Some(v) = m.eval(bv, true).and_then(|b| b.as_u64()) {
+                                        primary.push(format!("%{} = {:#x}", r, v));
+                                    }
+                                }
+                            }
+                        }
                         let mut ids: Vec<&Reg> = self.regs.keys().collect();
                         ids.sort();
-                        ids.into_iter()
-                            .take(64)
+                        let others: Vec<String> = ids
+                            .into_iter()
+                            .filter(|&&r| !seen.contains(&r))
+                            .take(16)
                             .filter_map(|r| {
                                 m.eval(&self.regs[r], true)
                                     .and_then(|b| b.as_u64())
                                     .map(|v| format!("%{}={:#x}", r, v))
                             })
-                            .collect::<Vec<_>>()
-                            .join(" ")
+                            .collect();
+                        if primary.is_empty() {
+                            others.join(", ")
+                        } else if others.is_empty() {
+                            primary.join(", ")
+                        } else {
+                            format!("{} [ctx: {}]", primary.join(", "), others.join(" "))
+                        }
                     })
                     .unwrap_or_default();
-                Err(format!("[VERIFY FAILED] {} | Counter-example: {}", msg, ce))
+                Err(format!(
+                    "[Z3 FAIL] func {} @b{}: '{}' -> {} when {}",
+                    self.func_name, self.cur_bb, self.cur_inst, msg, ce
+                ))
             }
-            SatResult::Unknown => Err(format!("[VERIFY TIMEOUT] Không thể chứng minh: {}", msg)),
+            SatResult::Unknown => Err(format!(
+                "[Z3 TIMEOUT] func {} @b{}: '{}' -> Không thể chứng minh: {}",
+                self.func_name, self.cur_bb, self.cur_inst, msg
+            )),
         };
         self.solver.pop(1);
         out
@@ -1293,7 +1380,13 @@ impl<'ctx> Verifier<'ctx> {
 }
 
 pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
-    verify_inner(module, func).map_err(|e| format!("[func '{}'] {}", func.name, e))
+    verify_inner(module, func).map_err(|e| {
+        if e.starts_with("[Z3 ") {
+            e
+        } else {
+            format!("[func '{}'] {}", func.name, e)
+        }
+    })
 }
 
 fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
@@ -1311,6 +1404,10 @@ fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
         ctx: &ctx,
         solver,
         layouts: &module.layouts,
+        func_name: &func.name,
+        cur_bb: 0,
+        cur_inst: String::new(),
+        cur_regs: Vec::new(),
         regs: HashMap::new(),
         reg_tys: HashMap::new(),
         slice_base: HashMap::new(),
@@ -1341,6 +1438,9 @@ fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
             continue;
         }
         let block = &func.blocks[bi];
+        v.cur_bb = block.id;
+        v.cur_inst = format!("@b{} entry", block.id);
+        v.cur_regs = block.params.iter().map(|&(r, _)| r).collect();
         for &(r, ty) in &block.params {
             v.decl_reg(r, ty)?;
         }
@@ -1354,6 +1454,11 @@ fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
             ));
         }
         for inst in &block.insts {
+            v.cur_inst = fmt_inst(module, inst);
+            v.cur_regs = uses_of(inst);
+            if let Some(d) = dst_of(inst) {
+                v.cur_regs.push(d);
+            }
             v.step(module, func, &cfg, bi, inst)?;
         }
     }

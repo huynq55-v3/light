@@ -3,7 +3,7 @@
 
 include gfx.lit
 
-func ui_text_view_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 {
+func ui_text_view_render_from void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 %9:bv64 {
     # %0: Framebuffer (Backbuffer)
     # %1: Font Bitmap Buffer
     # %2: Buffer văn bản (64 Qwords = 512 bytes)
@@ -13,6 +13,7 @@ func ui_text_view_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr
     # %6: max_y (Đáy vùng hiển thị)
     # %7: fg_color (Màu chữ)
     # %8: draw_cursor (1 = vẽ con trỏ '_' tại cuối, 0 = không vẽ)
+    # %9: start_idx (Vị trí byte bắt đầu render để hỗ trợ Scroll)
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -28,9 +29,9 @@ func ui_text_view_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr
     @req uge %6 500
     @req ule %6 620
     @req ule %8 1
+    @req ule %9 512
 
     @b0
-        %9 = const 0 bv64                   # char_idx = 0
         jmp @b1 %9 %3 %4
 
     @b1 %10:bv64 %11:bv64 %12:bv64
@@ -126,5 +127,28 @@ func ui_text_view_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr
         ret
 
     @b21
+        ret
+}
+
+func ui_text_view_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @req uge %3 180
+    @req ule %3 300
+    @req uge %4 100
+    @req ule %4 200
+    @req uge %5 900
+    @req ule %5 1100
+    @req uge %6 500
+    @req ule %6 620
+    @req ule %8 1
+
+    @b0
+        %9 = const 0 bv64
+        call ui_text_view_render_from %0 %1 %2 %3 %4 %5 %6 %7 %8 %9
         ret
 }

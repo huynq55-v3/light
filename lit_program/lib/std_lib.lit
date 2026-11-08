@@ -454,3 +454,252 @@ func std_mem_shift_up void %0:ptr<DiskQword,64> %1:bv64 {
     @b6
         ret
 }
+
+# =============================================================================
+# PHẦN 5: TOÁN HỌC & KIỂM CHỨNG BIÊN NÂNG CAO (Z3 MODULAR CONTRACTS)
+# =============================================================================
+
+# 1. Kẹp giá trị %0 vào đoạn [%1 .. %2] - Đập tan Path Explosion của Z3!
+func std_clamp bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @req ule %1 %2
+    @ens uge %4 %1
+    @ens ule %4 %2
+
+    @b0
+        %3 = call std_max %0 %1
+        %4 = call std_min %3 %2
+        ret %4
+}
+
+# 2. Kiểm tra %0 có thuộc nửa khoảng [%1, %2) (Trả về 0 hoặc 1 dưới dạng bv64)
+func std_in_range bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @ens ule %5 1
+
+    @b0
+        %3 = cmp uge %0 %1
+        %4 = cmp ult %0 %2
+        %5 = and %3 %4
+        ret %5
+}
+
+# 3. Ép kiểu an toàn từ bv8 sang bv64 (Zero-cost Cast)
+func std_bv8_to_bv64 bv64 %0:bv8 {
+    @ens ult %0 256
+
+    @b0
+        ret %0
+}
+
+# 4. Cộng bão hòa (Saturating Add) chặn trên bởi %2 không bao giờ tràn số
+func std_sat_add bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @req ule %0 %2
+    @ens uge %8 %0
+    @ens ule %8 %2
+
+    @b0
+        %3 = sub %2 %0
+        %4 = cmp ule %1 %3
+        br %4 @b1 @b2
+
+    @b1
+        %5 = add %0 %1
+        jmp @b3 %5
+
+    @b2
+        jmp @b3 %2
+
+    @b3 %8:bv64
+        @inv uge %8 %0
+        @inv ule %8 %2
+        ret %8
+}
+
+# 5. Trừ bão hòa (Saturating Sub) chặn dưới bởi 0 không bao giờ underflow
+func std_sat_sub bv64 %0:bv64 %1:bv64 {
+    @ens ule %6 %0
+
+    @b0
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+
+    @b1
+        %3 = sub %0 %1
+        jmp @b3 %3
+
+    @b2
+        %4 = const 0 bv64
+        jmp @b3 %4
+
+    @b3 %6:bv64
+        @inv ule %6 %0
+        ret %6
+}
+
+# =============================================================================
+# PHẦN 6: THAO TÁC BIT & BITFIELD (BIT MANIPULATION)
+# =============================================================================
+
+# 1. Trích xuất %2 bit từ %0 tính từ vị trí %1
+func std_bit_extract bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @req ult %1 64
+    @req uge %2 1
+    @req ule %2 32
+
+    @b0
+        %3 = lshr %0 %1
+        %4 = const 1 bv64
+        %5 = shl %4 %2
+        %6 = sub %5 %4                      # mask = (1 << width) - 1
+        %7 = and %3 %6
+        ret %7
+}
+
+# 2. Đặt hoặc xóa bit thứ %1 trong %0 theo cờ %2
+func std_bit_set bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @req ult %1 64
+
+    @b0
+        %3 = const 1 bv64
+        %4 = shl %3 %1
+        %5 = const 0 bv64
+        %6 = cmp ne %2 %5
+        br %6 @b1 @b2
+
+    @b1
+        %7 = or %0 %4
+        jmp @b3 %7
+
+    @b2
+        %8 = const 0xffffffffffffffff bv64
+        %9 = xor %4 %8
+        %10 = and %0 %9
+        jmp @b3 %10
+
+    @b3 %11:bv64
+        ret %11
+}
+
+# =============================================================================
+# PHẦN 7: XỬ LÝ CHUỖI & KÝ TỰ NHANH (FAST STRING API)
+# =============================================================================
+
+# 1. Chuyển ký tự ASCII hoa thành thường
+func std_char_to_lower bv64 %0:bv64 {
+    @req ult %0 256
+    @ens ult %9 256
+
+    @b0
+        %1 = const 65 bv64                  # 'A'
+        %2 = const 90 bv64                  # 'Z'
+        %3 = cmp uge %0 %1
+        %4 = cmp ule %0 %2
+        %5 = and %3 %4
+        br %5 @b1 @b2
+
+    @b1
+        %6 = const 32 bv64
+        %7 = add %0 %6
+        jmp @b3 %7
+
+    @b2
+        jmp @b3 %0
+
+    @b3 %9:bv64
+        @inv ult %9 256
+        ret %9
+}
+
+# 2. Chuyển số u64 thành chuỗi 8 ký tự Hex (Big-Endian ASCII) đóng gói trong 1 Qword
+func std_u64_to_hex8 bv64 %0:bv64 {
+
+    @b0
+        %1 = const 0 bv64
+        %2 = const 0x3030303030303030 bv64
+        jmp @b1 %1 %0 %2
+
+    @b1 %3:bv64 %4:bv64 %5:bv64
+        @inv ule %3 8
+        %6 = const 8 bv64
+        %7 = cmp ult %3 %6
+        br %7 @b2 @b6
+
+    @b2
+        %8 = const 0x0f bv64
+        %9 = and %4 %8
+        %10 = const 4 bv64
+        %11 = lshr %4 %10
+        %12 = const 10 bv64
+        %13 = cmp ult %9 %12
+        br %13 @b3 @b4
+
+    @b3
+        %14 = const 48 bv64
+        %15 = add %9 %14
+        jmp @b5 %15
+
+    @b4
+        %16 = const 55 bv64
+        %17 = add %9 %16
+        jmp @b5 %17
+
+    @b5 %18:bv64
+        @inv ult %18 128
+        %19 = const 7 bv64
+        %20 = sub %19 %3
+        %21 = const 3 bv64
+        %22 = shl %20 %21
+
+        %23 = const 0xff bv64
+        %24 = shl %23 %22
+        %25 = const 0xffffffffffffffff bv64
+        %26 = xor %24 %25
+        %27 = and %5 %26
+        %28 = shl %18 %22
+        %29 = or %27 %28
+
+        %30 = const 1 bv64
+        %31 = add %3 %30
+        jmp @b1 %31 %11 %29
+
+    @b6
+        ret %5
+}
+
+# 3. Đọc 1 byte (0..7) từ bất kỳ con trỏ ptr<DiskQword,*> (Size-Polymorphic Slice Subtyping)
+func std_qword_get_byte bv64 %0:ptr<DiskQword,*> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 8
+    @ens ult %7 256
+
+    @b0
+        %2 = load %0 0 bv64
+        %3 = const 3 bv64
+        %4 = shl %1 %3
+        %5 = lshr %2 %4
+        %6 = const 0xff bv64
+        %7 = and %5 %6
+        ret %7
+}
+
+# 4. Ghi 1 byte (0..7) vào bất kỳ con trỏ ptr<DiskQword,*> (Size-Polymorphic Slice Subtyping)
+func std_qword_set_byte void %0:ptr<DiskQword,*> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 8
+    @req ult %2 256
+
+    @b0
+        %3 = load %0 0 bv64
+        %4 = const 3 bv64
+        %5 = shl %1 %4
+        %6 = const 0xff bv64
+        %7 = shl %6 %5
+        %8 = const 0xffffffffffffffff bv64
+        %9 = xor %7 %8
+        %10 = and %3 %9
+        %11 = shl %2 %5
+        %12 = or %10 %11
+        store %0 0 %12
+        ret
+}
