@@ -834,26 +834,10 @@ func term_cmd_clear void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
 
     @b0
         %2 = const 0 bv64
-        jmp @b1 %2
-
-    @b1 %3:bv64
-        @inv ule %3 50
         %4 = const 50 bv64
-        %5 = cmp ult %3 %4
-        br %5 @b2 @b3
-
-    @b2
-        %6 = slice %0 %3 ptr<DiskQword,1>
-        %7 = const 0 bv64
-        store %6 0 %7
-        %8 = const 1 bv64
-        %9 = add %3 %8
-        jmp @b1 %9
-
-    @b3
+        call cap_mem_zero_range %0 %2 %4
         %10 = const STATE_SCROLL bv64
-        %11 = const 0 bv64
-        call cap_state_set %0 %10 %11
+        call cap_state_set %0 %10 %2
         call term_append_prompt %0 %1
         ret
 }
@@ -932,12 +916,9 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         br %28 @b20 @b1
 
     @b1
-        # Chuyển toàn bộ 8 byte lệnh sang chữ thường + khoảng trắng bằng mặt nạ 0x2020202020202020
-        %180 = const 0x2020202020202020 bv64
-        %181 = or %18 %180
-
-        %19 = const "ls      " bv64
-        %20 = cmp eq %181 %19
+        # std_str_read_cmd_qword đã tự động hạ chữ hoa xuống chữ thường!
+        %19 = const "ls" bv64
+        %20 = cmp eq %18 %19
         br %20 @b10 @b11
 
     @b10
@@ -945,8 +926,8 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         jmp @b20
 
     @b11
-        %21 = const "sys     " bv64
-        %22 = cmp eq %181 %21
+        %21 = const "sys" bv64
+        %22 = cmp eq %18 %21
         br %22 @b12 @b13
 
     @b12
@@ -954,8 +935,8 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         jmp @b20
 
     @b13
-        %23 = const "clear   " bv64
-        %24 = cmp eq %181 %23
+        %23 = const "clear" bv64
+        %24 = cmp eq %18 %23
         br %24 @b14 @b15
 
     @b14
@@ -963,8 +944,8 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         jmp @b21
 
     @b15
-        %25 = const "cd      " bv64
-        %26 = cmp eq %181 %25
+        %25 = const "cd" bv64
+        %26 = cmp eq %18 %25
         br %26 @b16 @b17
 
     @b16
@@ -972,8 +953,8 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         jmp @b20
 
     @b17
-        %250 = const "help    " bv64
-        %260 = cmp eq %181 %250
+        %250 = const "help" bv64
+        %260 = cmp eq %18 %250
         br %260 @b171 @b18
 
     @b171
@@ -994,24 +975,8 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
     @b21
         # Xóa sạch Qwords 50..60 về 0 (giữ nguyên State[61] = scroll_line)
         %37 = const 50 bv64
-        jmp @b22 %37
-
-    @b22 %38:bv64
-        @inv uge %38 50
-        @inv ule %38 61
         %39 = const 61 bv64
-        %40 = cmp ult %38 %39
-        br %40 @b23 @b24
-
-    @b23
-        %41 = slice %0 %38 ptr<DiskQword,1>
-        %42 = const 0 bv64
-        store %41 0 %42
-        %43 = const 1 bv64
-        %44 = add %38 %43
-        jmp @b22 %44
-
-    @b24
+        call cap_mem_zero_range %0 %37 %39
         ret
 }
 

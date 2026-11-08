@@ -294,7 +294,33 @@ func std_str_skip_spaces bv64 %0:ptr<DiskQword,64> %1:bv64 {
         ret %99
 }
 
-# 2. Đọc từ đầu tiên từ vị trí %1 (tối đa 8 ký tự, dừng tại ' ', '\0', '\n') thành Qword
+# 1b. Chuyển ký tự ASCII hoa ('A'..'Z') thành chữ thường ('a'..'z')
+func std_char_to_lower bv64 %0:bv64 {
+    @req ult %0 256
+    @ens ult %9 256
+
+    @b0
+        %1 = const 65 bv64                  # 'A'
+        %2 = const 90 bv64                  # 'Z'
+        %3 = cmp uge %0 %1
+        %4 = cmp ule %0 %2
+        %5 = and %3 %4
+        br %5 @b1 @b2
+
+    @b1
+        %6 = const 32 bv64
+        %7 = add %0 %6
+        jmp @b3 %7
+
+    @b2
+        jmp @b3 %0
+
+    @b3 %9:bv64
+        @inv ult %9 256
+        ret %9
+}
+
+# 2. Đọc từ đầu tiên từ vị trí %1 (tối đa 8 ký tự, dừng tại ' ', '\0', '\n') thành Qword chữ thường
 func std_str_read_cmd_qword bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
@@ -328,9 +354,10 @@ func std_str_read_cmd_qword bv64 %0:ptr<DiskQword,64> %1:bv64 {
         br %20 @b5 @b3
 
     @b3
+        %200 = call std_char_to_lower %12
         %21 = const 3 bv64
         %22 = shl %5 %21                    # bit_shift = i * 8
-        %23 = shl %12 %22                   # char_shifted = byte << (i * 8)
+        %23 = shl %200 %22                  # char_shifted = lower_byte << (i * 8)
         %24 = or %6 %23                     # acc = acc | char_shifted
         %25 = const 1 bv64
         %26 = add %4 %25
@@ -482,9 +509,23 @@ func std_in_range bv64 %0:bv64 %1:bv64 %2:bv64 {
         ret %5
 }
 
-# 3. Ép kiểu an toàn từ bv8 sang bv64 (Zero-cost Cast)
+# 3. Bộ ép kiểu an toàn Zero-cost Casts từ bv8 / bv16 / bv32 sang bv64
 func std_bv8_to_bv64 bv64 %0:bv8 {
     @ens ult %0 256
+
+    @b0
+        ret %0
+}
+
+func std_bv16_to_bv64 bv64 %0:bv16 {
+    @ens ult %0 65536
+
+    @b0
+        ret %0
+}
+
+func std_bv32_to_bv64 bv64 %0:bv32 {
+    @ens ult %0 4294967296
 
     @b0
         ret %0
@@ -583,30 +624,38 @@ func std_bit_set bv64 %0:bv64 %1:bv64 %2:bv64 {
 # PHẦN 7: XỬ LÝ CHUỖI & KÝ TỰ NHANH (FAST STRING API)
 # =============================================================================
 
-# 1. Chuyển ký tự ASCII hoa thành thường
-func std_char_to_lower bv64 %0:bv64 {
-    @req ult %0 256
-    @ens ult %9 256
+# 1. Nối tối đa 8 ký tự ASCII (đóng gói Little-Endian trong %1) vào cuối chuỗi 512B (%0)
+func std_str_append_qword void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
 
     @b0
-        %1 = const 65 bv64                  # 'A'
-        %2 = const 90 bv64                  # 'Z'
-        %3 = cmp uge %0 %1
-        %4 = cmp ule %0 %2
-        %5 = and %3 %4
-        br %5 @b1 @b2
+        %2 = const 0 bv64
+        jmp @b1 %2 %1
 
-    @b1
-        %6 = const 32 bv64
-        %7 = add %0 %6
-        jmp @b3 %7
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 8
+        %5 = const 8 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b4
 
     @b2
-        jmp @b3 %0
+        %7 = const 0xff bv64
+        %8 = and %4 %7
+        %9 = const 0 bv64
+        %10 = cmp eq %8 %9
+        br %10 @b4 @b3
 
-    @b3 %9:bv64
-        @inv ult %9 256
-        ret %9
+    @b3
+        call std_str_push_or_bs %0 %8
+        %11 = const 8 bv64
+        %12 = lshr %4 %11
+        %13 = const 1 bv64
+        %14 = add %3 %13
+        jmp @b1 %14 %12
+
+    @b4
+        ret
 }
 
 # 2. Chuyển số u64 thành chuỗi 8 ký tự Hex (Big-Endian ASCII) đóng gói trong 1 Qword

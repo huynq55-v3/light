@@ -6,6 +6,7 @@
 
 include ../lib/ui_window.lit
 include ../lib/std_lib.lit
+include ../lib/std_hash.lit
 include ../lib/ipc_bus.lit
 include ../lib/ui_canvas.lit
 include ../lib/cap_mem.lit
@@ -34,16 +35,7 @@ func app_smp_worker bv64 %0:ptr<DiskQword,4> %1:bv64 {
 
     @b2
         %8 = add %1 %4
-        %9 = const 0x9e3779b9 bv64
-        %10 = add %8 %9
-        %11 = const 30 bv64
-        %12 = lshr %10 %11
-        %13 = xor %10 %12
-        %14 = const 0xbf58476d bv64
-        %15 = mul %13 %14
-        %16 = const 27 bv64
-        %17 = lshr %15 %16
-        %18 = xor %15 %17
+        %18 = call std_hash_u64 %8
         %19 = const 0xffff bv64
         %20 = and %18 %19
         %21 = xor %5 %20
@@ -51,8 +43,8 @@ func app_smp_worker bv64 %0:ptr<DiskQword,4> %1:bv64 {
         # Ghi và đọc thực tế trên lát cắt RAM 32-byte tách biệt (%0) của nhân này
         store %0 0 %21
         store %0 8 %18
-        store %0 16 %15
-        store %0 24 %13
+        store %0 16 %8
+        store %0 24 %20
         %22 = load %0 0 bv64
 
         %23 = const 1 bv64

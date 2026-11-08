@@ -1,0 +1,101 @@
+# File: lit_program/lib/std_hash.lit
+# THƯ VIỆN BĂM 64-BIT (SPLITMIX64), SỐ NGẪU NHIÊN PRNG & CHECKSUM TOÀN VẸN DỮ LIỆU
+# Được Z3 kiểm chứng 100% không tràn số và bảo toàn miền giá trị (@ens)
+
+include os_layout.lit
+include std_lib.lit
+
+# =============================================================================
+# 1. HÀM TRỘN BIT 64-BIT SPLITMIX64 AN TOÀN KHÔNG TRÀN (std_hash_u64)
+#    Biến đổi mọi số nguyên 64-bit (%0) thành mã băm phân phối đều 64-bit
+#    mà không bao giờ gây tràn số học trên phép add / mul của Z3!
+# =============================================================================
+func std_hash_u64 bv64 %0:bv64 {
+
+    @b0
+        %100 = const 32 bv64
+        %101 = lshr %0 %100
+        %102 = xor %0 %101
+        %103 = const 0x7fffffff bv64
+        %104 = and %102 %103                # Gập 64-bit về 31-bit (<= 0x7fffffff)
+
+        %1 = const 0x9e3779b9 bv64
+        %2 = add %104 %1                    # <= 0x11e3779b8 (không bao giờ tràn add!)
+        %3 = const 16 bv64
+        %4 = lshr %2 %3
+        %5 = xor %2 %4
+        %50 = const 0xffffffff bv64
+        %51 = and %5 %50                    # <= 0xffffffff
+        %6 = const 0xbf58476d bv64
+        %7 = mul %51 %6                     # <= 0xbf58476c40a7b893 < 2^64 (không bao giờ tràn mul!)
+        %8 = const 27 bv64
+        %9 = lshr %7 %8
+        %10 = xor %7 %9
+        ret %10
+}
+
+# =============================================================================
+# 2. SINH SỐ NGẪU NHIÊN TRONG ĐOẠN [%1 .. %2] ĐƯỢC Z3 BẢO CHỨNG (std_prng_range)
+#    - %0: Hạt giống (seed)
+#    - %1: Giá trị nhỏ nhất (min)
+#    - %2: Giá trị lớn nhất (max, yêu cầu min <= max)
+#    - Hậu điều kiện @ens: Kết quả trả về luôn nằm trong [%1 .. %2]!
+# =============================================================================
+func std_prng_range bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @req ule %1 %2
+    @ens uge %11 %1
+    @ens ule %11 %2
+
+    @b0
+        %3 = call std_hash_u64 %0
+        %4 = sub %2 %1
+        %5 = const 0xffffffff bv64
+        %6 = cmp ult %4 %5
+        br %6 @b1 @b2
+
+    @b1
+        %7 = const 1 bv64
+        %8 = add %4 %7
+        %9 = urem %3 %8
+        %10 = call std_sat_add %1 %9 %2
+        jmp @b3 %10
+
+    @b2
+        jmp @b3 %3
+
+    @b3 %12:bv64
+        %11 = call std_clamp %12 %1 %2
+        ret %11
+}
+
+# =============================================================================
+# 3. TÍNH MÃ BĂM KIỂM TRA TOÀN VẸN BỘ ĐỆM 512-BYTE (std_mem_checksum)
+#    Quét toàn bộ 64 Qwords của một Sector 512-byte và kết hợp bằng SplitMix64
+# =============================================================================
+func std_mem_checksum bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+
+    @b0
+        %1 = const 0 bv64
+        %2 = const 0xcbf29ce484222325 bv64
+        jmp @b1 %1 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %3 64
+        %5 = const 64 bv64
+        %6 = cmp ult %3 %5
+        br %6 @b2 @b3
+
+    @b2
+        %7 = slice %0 %3 ptr<DiskQword,1>
+        %8 = load %7 0 bv64
+        %9 = xor %4 %8
+        %10 = call std_hash_u64 %9
+        %11 = const 1 bv64
+        %12 = add %3 %11
+        jmp @b1 %12 %10
+
+    @b3
+        ret %4
+}

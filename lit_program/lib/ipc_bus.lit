@@ -2,6 +2,7 @@
 # THƯ VIỆN GIAO TIẾP LIÊN TIẾN TRÌNH ZERO-COPY (VERIFIED IPC BUS LIBRARY)
 
 include os_layout.lit
+include std_ring.lit
 
 func ipc_key_push void %0:ptr<IpcChannel,1> %1:bv8 {
     @req uge %0 0x10000

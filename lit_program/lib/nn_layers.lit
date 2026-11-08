@@ -1,0 +1,181 @@
+# File: lit_program/lib/nn_layers.lit
+# THƯ VIỆN TẦNG MẠNG NƠ-RON AI & HÀM KÍCH HOẠT KIỂM CHỨNG Z3 (VERIFIED NEURAL NETWORK LAYERS)
+# Tích hợp trực tiếp với `tensor.lit` (AVX2 256-bit SIMD & Số thực Điểm cố định Q16.16)
+
+include os_layout.lit
+include std_lib.lit
+include cap_mem.lit
+include tensor.lit
+
+# =============================================================================
+# 1. HÀM KÍCH HOẠT ReLU Q16.16 (nn_relu_q16)
+#    - Nếu %0 <= 0 (số âm bù 2 hoặc bằng 0) -> trả về 0
+#    - Nếu %0 > 0 -> trả về %0 (được kẹp an toàn <= 0xffffffff để nối chuỗi thẳng vào fx_q16_mul!)
+# =============================================================================
+func nn_relu_q16 bv64 %0:bv64 {
+    @ens sge %6 0
+    @ens ule %6 0xffffffff
+
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+
+    @b1
+        %3 = const 0xffffffff bv64
+        %4 = call std_min %0 %3
+        jmp @b3 %4
+
+    @b2
+        jmp @b3 %1
+
+    @b3 %6:bv64
+        @inv sge %6 0
+        @inv ule %6 0xffffffff
+        ret %6
+}
+
+# =============================================================================
+# 2. HÀM KÍCH HOẠT LeakyReLU Q16.16 (nn_leaky_relu_q16)
+#    - Nếu %0 >= 0 -> trả về %0
+#    - Nếu %0 < 0  -> trả về %0 >> 3 (hệ số dốc alpha = 0.125 bằng dịch phải số học ashr)
+# =============================================================================
+func nn_leaky_relu_q16 bv64 %0:bv64 {
+
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+
+    @b1
+        jmp @b3 %0
+
+    @b2
+        %3 = const 3 bv64
+        %4 = ashr %0 %3
+        jmp @b3 %4
+
+    @b3 %5:bv64
+        ret %5
+}
+
+# =============================================================================
+# 3. TẦNG QUYẾT ĐỊNH PHÂN LOẠI AI 4 LỚP (nn_argmax4)
+#    Trả về chỉ số nơ-ron (0..3) có giá trị kích hoạt lớn nhất
+#    Được Z3 chứng minh hậu điều kiện @ens ult %res 4!
+# =============================================================================
+func nn_argmax4 bv64 %0:bv64 %1:bv64 %2:bv64 %3:bv64 {
+    @ens ult %18 4
+
+    @b0
+        %4 = const 0 bv64
+        %5 = cmp ugt %1 %0
+        br %5 @b1 @b2
+
+    @b1
+        %6 = const 1 bv64
+        jmp @b3 %6 %1
+
+    @b2
+        jmp @b3 %4 %0
+
+    @b3 %7:bv64 %8:bv64
+        @inv ult %7 2
+        %9 = cmp ugt %2 %8
+        br %9 @b4 @b5
+
+    @b4
+        %10 = const 2 bv64
+        jmp @b6 %10 %2
+
+    @b5
+        jmp @b6 %7 %8
+
+    @b6 %11:bv64 %12:bv64
+        @inv ult %11 3
+        %13 = cmp ugt %3 %12
+        br %13 @b7 @b8
+
+    @b7
+        %14 = const 3 bv64
+        jmp @b9 %14
+
+    @b8
+        jmp @b9 %11
+
+    @b9 %18:bv64
+        @inv ult %18 4
+        ret %18
+}
+
+# =============================================================================
+# 4. ÁP DỤNG ReLU LÊN CẢ 4 LÀN CỦA VECTOR 256-BIT (nn_vec256_relu)
+#    Đọc 4 làn 64-bit tại %1 (<= 60), chạy nn_relu_q16 và ghi trả lại bộ đệm
+# =============================================================================
+func nn_vec256_relu void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+
+    @b0
+        %2 = slice %0 %1 ptr<DiskQword,4>
+        %3 = load %2 0 bv64
+        %4 = load %2 8 bv64
+        %5 = load %2 16 bv64
+        %6 = load %2 24 bv64
+
+        %7 = call nn_relu_q16 %3
+        %8 = call nn_relu_q16 %4
+        %9 = call nn_relu_q16 %5
+        %10 = call nn_relu_q16 %6
+
+        store %2 0 %7
+        store %2 8 %8
+        store %2 16 %9
+        store %2 24 %10
+        ret
+}
+
+# =============================================================================
+# 5. CHUẨN HÓA L1-NORM Q16.16 TRÊN VECTOR 256-BIT (nn_vec256_normalize_q16)
+#    Chuẩn hóa 4 làn kích hoạt tại %1 (<= 60) về phân phối xác suất Q16.16 (Tổng = 65536 = 1.0)
+#    Trả về chỉ số lớp chiến thắng (ArgMax 0..3)
+# =============================================================================
+func nn_vec256_normalize_q16 bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 60
+    @ens ult %25 4
+
+    @b0
+        %2 = slice %0 %1 ptr<DiskQword,4>
+        %3 = load %2 0 bv64
+        %4 = load %2 8 bv64
+        %5 = load %2 16 bv64
+        %6 = load %2 24 bv64
+
+        %7 = call nn_relu_q16 %3
+        %8 = call nn_relu_q16 %4
+        %9 = call nn_relu_q16 %5
+        %10 = call nn_relu_q16 %6
+
+        # Tổng 4 làn (mỗi làn <= 0xffffffff -> tổng <= 4 * 0xffffffff, không bao giờ tràn 64-bit!)
+        %11 = add %7 %8
+        %12 = add %9 %10
+        %13 = add %11 %12
+        %14 = const 1 bv64
+        %15 = call std_max %13 %14          # Chặn chia cho 0: denom >= 1
+
+        %16 = call fx_q16_div %7 %15
+        %17 = call fx_q16_div %8 %15
+        %18 = call fx_q16_div %9 %15
+        %19 = call fx_q16_div %10 %15
+
+        store %2 0 %16
+        store %2 8 %17
+        store %2 16 %18
+        store %2 24 %19
+
+        %25 = call nn_argmax4 %7 %8 %9 %10
+        ret %25
+}
