@@ -1,0 +1,10 @@
+# Kể cả hàm giữ thẻ gốc cũng không tạo ptr động bằng const (chỉ qua slice từ ptr đã có)
+# EXPECT: không thể tạo ptr động bằng const
+layout Q 8 {
+    0: bv64
+}
+func f void %0:io<0,0xffff> %1:bv64 {
+    @b0
+        %2 = const 0x100000 ptr<Q,%1>
+        ret
+}

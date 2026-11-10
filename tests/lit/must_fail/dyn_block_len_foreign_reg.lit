@@ -1,0 +1,12 @@
+# Độ dài của ptr ở tham số block chỉ được là tham số đứng trước của CÙNG block hoặc tham số hàm
+# EXPECT: tham số block
+layout Q 8 {
+    0: bv64
+}
+func f void %0:bv64 %1:ptr<Q,%0> {
+    @b0
+        %2 = const 4 bv64
+        jmp @b1 %1
+    @b1 %3:ptr<Q,%2>
+        ret
+}

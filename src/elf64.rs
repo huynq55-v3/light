@@ -649,10 +649,7 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                         emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Slice { dst, base, idx, ty } => {
-                        let layout_id = match ty {
-                            Type::Ptr { layout_id, .. } => *layout_id as usize,
-                            _ => return Err("Lỗi kiểu Slice".into()),
-                        };
+                        let layout_id = ty.ptr_layout().ok_or("Lỗi kiểu Slice")? as usize;
                         let elem_size = module.layouts[layout_id].size;
                         emit_load_rax(&mut code, *idx, &hot);
                         code.extend_from_slice(&[0x48, 0x69, 0xC0]);
@@ -729,7 +726,7 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                     }
                     Inst::Parallel { smp, n, func_id, base, arg } => {
                         // lt_parallel(rdi=smp, rsi=n, rdx=&worker, rcx=base, r8=stride, r9=arg)
-                        let Type::Ptr { layout_id, .. } = reg_tys[base] else {
+                        let Some(layout_id) = reg_tys[base].ptr_layout() else {
                             return Err("parallel: base không phải ptr".into());
                         };
                         let Some(&(_, Type::Ptr { max_elems: k, .. })) = module.funcs[*func_id as usize].params.first() else {

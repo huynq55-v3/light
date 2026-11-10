@@ -1,0 +1,8 @@
+# EXPECT: phải là số nguyên
+layout Q 8 {
+    0: bv64
+}
+func f void %0:smp %1:ptr<Q,%0> {
+    @b0
+        ret
+}

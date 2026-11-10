@@ -15,6 +15,16 @@ pub enum Type {
         layout_id: u16,
         max_elems: u64,
     },
+    /// Con trỏ có độ dài ĐỘNG: `ptr<L,%n>` — trỏ tới `len` phần tử Layout `layout_id`, với `len` là một biến SSA
+    /// số nguyên (bất biến nên độ dài không thể đổi sau khi tạo). Quy tắc phạm vi (verify.rs):
+    /// tham số hàm -> %n là tham số đứng trước; kiểu trả về -> %n là tham số hàm; tham số block -> %n là tham số
+    /// đứng trước của cùng block hoặc tham số hàm; đích của slice -> %n bất kỳ đã định nghĩa và chi phối.
+    /// Không được nằm trong Layout (không lưu vào bộ nhớ), không tạo được bằng const.
+    /// Ngầm định: len * kích_thước_layout <= RAM, nên phép tính địa chỉ không tràn.
+    DPtr {
+        layout_id: u16,
+        len: Reg,
+    },
     /// Thẻ quyền Phần cứng: chỉ cho phép gọi lệnh HwIo trong dải cổng [min..=max]
     Io {
         min: u16,
@@ -238,4 +248,14 @@ pub struct Func {
 pub struct Module {
     pub layouts: Vec<Layout>, // Danh sách các cấu trúc dữ liệu phẳng
     pub funcs: Vec<Func>,     // Danh sách các hàm SSA
+}
+
+impl Type {
+    /// Layout của một con trỏ (tĩnh hoặc động)
+    pub fn ptr_layout(&self) -> Option<u16> {
+        match *self {
+            Type::Ptr { layout_id, .. } | Type::DPtr { layout_id, .. } => Some(layout_id),
+            _ => None,
+        }
+    }
 }

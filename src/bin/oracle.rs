@@ -99,6 +99,22 @@ fn can_delegate(from: Type, to: Type) -> bool {
         _ => is_int(from) && is_int(to),
     }
 }
+/// Lúc chạy, độ dài của ptr<L,%n> là một số cụ thể: đổi thành ptr<L,giá_trị> để mọi kiểm tra tĩnh dùng lại được.
+fn conc(ty: Type, regs: &Regs) -> Result<Type, String> {
+    match ty {
+        Type::DPtr { layout_id, len } => {
+            let &(v, lt) = regs
+                .get(&len)
+                .ok_or_else(|| format!("độ dài %{} của ptr động chưa có giá trị", len))?;
+            if !is_int(lt) {
+                return Err(format!("độ dài %{} của ptr động không phải số nguyên", len));
+            }
+            Ok(Type::Ptr { layout_id, max_elems: v })
+        }
+        t => Ok(t),
+    }
+}
+
 fn cmp(op: CmpOp, l: u64, r: u64) -> bool {
     match op {
         CmpOp::Eq => l == r,
@@ -617,7 +633,8 @@ impl<'a> Vm<'a> {
         }
         let mut regs: Regs = HashMap::new();
         for (&(p, pty), &(v, _)) in func.params.iter().zip(args) {
-            self.set_reg(&mut regs, p, v, pty)
+            let t = conc(pty, &regs).map_err(|w| bad(entry, w))?;
+            self.set_reg(&mut regs, p, v, t)
                 .map_err(|w| bad(entry, w))?;
         }
         if top {
@@ -711,11 +728,13 @@ impl<'a> Vm<'a> {
                             } => (layout_id, max_elems),
                             _ => return Err(bad(cur, "slice trên biến không phải Ptr".into())),
                         };
-                        let (l2, m_new) = match *ty {
+                        let cty = conc(*ty, &regs).map_err(|w| bad(cur, w))?;
+                        let dyn_ok = matches!(ty, Type::DPtr { .. });
+                        let (l2, m_new) = match cty {
                             Type::Ptr {
                                 layout_id,
                                 max_elems,
-                            } if layout_id == l1 && max_elems > 0 => (layout_id, max_elems),
+                            } if layout_id == l1 && (max_elems > 0 || dyn_ok) => (layout_id, max_elems),
                             _ => return Err(bad(cur, "slice sai kiểu đích".into())),
                         };
                         let end = iv
@@ -729,7 +748,7 @@ impl<'a> Vm<'a> {
                         }
                         let sz = m.layouts[l2 as usize].size as u64;
                         let addr = ba + iv * sz;
-                        self.set_reg(&mut regs, *dst, addr, *ty)
+                        self.set_reg(&mut regs, *dst, addr, cty)
                             .map_err(|w| bad(cur, format!("slice %{}: {}", dst, w)))?;
                     }
                     Inst::Load {
@@ -933,6 +952,7 @@ impl<'a> Vm<'a> {
                         let mut cregs: Regs = HashMap::new();
                         for (&a, &(p, pty)) in ca.iter().zip(&callee.params) {
                             let (v, aty) = get(&regs, a, cur)?;
+                            let pty = conc(pty, &cregs).map_err(|w| bad(cur, w))?;
                             self.assign(aty, pty, v).map_err(|w| {
                                 bad(cur, format!("đối số %{} của '{}': {}", a, callee.name, w))
                             })?;
@@ -1066,6 +1086,7 @@ impl<'a> Vm<'a> {
                             // mã máy elf64.rs: đọc arg rồi ghi param NGAY, lần lượt
                             for (&a, &(p, pty)) in ja.iter().zip(&tb.params) {
                                 let (v, aty) = get(&regs, a, cur)?;
+                                let pty = conc(pty, &regs).map_err(|w| bad(cur, w))?;
                                 self.assign(aty, pty, v)
                                     .map_err(|w| bad(cur, format!("tham số %{}: {}", p, w)))?;
                                 self.set_reg(&mut regs, p, v, pty)
@@ -1073,10 +1094,13 @@ impl<'a> Vm<'a> {
                             }
                         } else {
                             let mut tmp: Vec<(Reg, u64, Type)> = Vec::new();
+                            let mut tenv = regs.clone();
                             for (&a, &(p, pty)) in ja.iter().zip(&tb.params) {
                                 let (v, aty) = get(&regs, a, cur)?;
+                                let pty = conc(pty, &tenv).map_err(|w| bad(cur, w))?;
                                 self.assign(aty, pty, v)
                                     .map_err(|w| bad(cur, format!("tham số %{}: {}", p, w)))?;
+                                tenv.insert(p, (v, pty));
                                 tmp.push((p, v, pty));
                             }
                             for (p, v, pty) in tmp {
@@ -1103,6 +1127,7 @@ impl<'a> Vm<'a> {
                         }
                         let out = if let (Some(r), Some(rt)) = (val, func.ret_ty) {
                             let (v, t) = get(&regs, *r, cur)?;
+                            let rt = conc(rt, &regs).map_err(|w| bad(cur, w))?;
                             self.assign(t, rt, v)
                                 .map_err(|w| bad(cur, format!("giá trị trả về: {}", w)))?;
                             Some((v, rt))
@@ -1150,6 +1175,14 @@ fn gen_args(m: &Module, f: &Func, rng: &mut Rng, small: bool) -> Option<Vec<Val>
         let mut args: Vec<Val> = Vec::new();
         let mut ok = true;
         for &(p, ty) in &f.params {
+            let sofar: Regs = f.params.iter().map(|&(q, _)| q).zip(args.iter().copied()).collect();
+            let ty = match conc(ty, &sofar) {
+                Ok(t) => t,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            };
             let v = match ty {
                 Type::Ptr {
                     layout_id,

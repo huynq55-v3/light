@@ -1,0 +1,11 @@
+# Chỉ số chỉ được chứng minh < 100, không phải < %0
+# EXPECT: Tràn biên mảng khi slice
+layout Q 8 {
+    0: bv64
+}
+func f void %0:bv64 %1:ptr<Q,%0> %2:bv64 {
+    @req ult %2 100
+    @b0
+        %3 = slice %1 %2 ptr<Q,1>
+        ret
+}

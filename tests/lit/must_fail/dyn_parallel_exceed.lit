@@ -1,0 +1,17 @@
+# parallel trên ptr động: n*K phải <= độ dài động
+# EXPECT: vượt kích thước
+layout Q 8 {
+    0: bv64
+}
+func wk void %0:ptr<Q,4> %1:bv64 %2:bv64 {
+    @b0
+        ret
+}
+func f void %0:smp %1:bv64 %2:ptr<Q,%1> {
+    @req uge %1 12
+    @b0
+        %3 = const 4 bv64
+        %4 = const 0 bv64
+        parallel %0 %3 wk %2 %4
+        ret
+}

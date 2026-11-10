@@ -1,0 +1,11 @@
+# ptr<Q,%0> có thể có độ dài 0: store vào offset 0 mà chưa chứng minh %0 >= 1 phải bị chặn
+# EXPECT: vượt độ dài động
+layout Q 8 {
+    0: bv64
+}
+func f void %0:bv64 %1:ptr<Q,%0> {
+    @b0
+        %2 = const 7 bv64
+        store %1 0 %2
+        ret
+}

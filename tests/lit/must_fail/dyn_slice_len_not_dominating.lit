@@ -1,0 +1,18 @@
+# Độ dài trong kiểu đích của slice là một lần DÙNG biến: phải bị chi phối bởi điểm định nghĩa
+# EXPECT: không bị chi phối
+layout Q 8 {
+    0: bv64
+}
+func f void %0:ptr<Q,16> %1:bv8 {
+    @b0
+        br %1 @b1 @b2
+    @b1
+        %2 = const 4 bv64
+        jmp @b3
+    @b2
+        jmp @b3
+    @b3
+        %3 = const 0 bv64
+        %4 = slice %0 %3 ptr<Q,%2>
+        ret
+}

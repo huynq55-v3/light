@@ -1,0 +1,15 @@
+# ptr<Q,%0> dùng làm ptr<Q,8> mà chưa chứng minh %0 >= 8
+# EXPECT: độ dài thật
+layout Q 8 {
+    0: bv64
+}
+func g void %0:ptr<Q,8> {
+    @b0
+        ret
+}
+func f void %0:bv64 %1:ptr<Q,%0> {
+    @req uge %0 7
+    @b0
+        call g %1
+        ret
+}

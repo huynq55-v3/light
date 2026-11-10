@@ -33,6 +33,13 @@ Các ngôn ngữ lập trình truyền thống (C, C++, Python, hay thậm chí 
 - **`bv8`, `bv16`, `bv32`, `bv64`**: Các thanh ghi BitVector kích thước cố định. Loại bỏ hoàn toàn sự nhập nhằng giữa số có dấu (`signed`) và không dấu (`unsigned`) ở cấp độ kiểu; tính chất dấu nằm ở phép toán (`udiv` vs `sdiv`, `ult` vs `slt`), ánh xạ 1:1 với thanh ghi CPU `x86_64` và `Z3 BV`.
 - **`ptr<Layout, MaxElems>`**: Con trỏ có miền giới hạn tĩnh. Luôn gắn chặt với một cấu trúc `Layout` và số phần tử tối đa `MaxElems`.
 - **`io<MinPort, MaxPort>`**: Thẻ quyền năng truy cập cổng phần cứng I/O hoặc thanh ghi điều khiển trong dải `[MinPort..=MaxPort]`. Là kiểu "Ghost" (kiểm chứng ở Z3, tốn 0 byte ở mã máy).
+- **`ptr<Layout, %n>`**: Con trỏ có độ dài **động** — `%n` là một biến SSA số nguyên (bất biến, nên độ dài không đổi sau khi tạo). Mọi `load/store/slice/vxxx256/ata_read/parallel` vẫn được Z3 chứng minh trong biên `%n`. Quy tắc:
+  - Tham số hàm: `%n` phải là tham số số nguyên **đứng trước** (`func f void %0:bv64 %1:ptr<Q,%0>`). Kiểu trả về `ptr<L,%k>`: `%k` là tham số của hàm; người gọi nhận `ptr<L,%đối_số>`.
+  - Tham số block: `%n` là tham số đứng trước của **cùng block** hoặc tham số hàm — vòng lặp mang cặp `(độ dài, ptr)` qua `jmp`.
+  - Đích của `slice`: `%n` bất kỳ đã định nghĩa và chi phối (`%p = slice %arena %off ptr<Q,%n>`, chứng minh `off + n <= độ dài arena`).
+  - Chuyển đổi tĩnh ↔ động, động ↔ động (gọi hàm, `jmp`, `ret`): Z3 chứng minh độ dài đích `<=` độ dài thật.
+  - Không tạo được bằng `const`, không nằm trong Layout (không lưu vào bộ nhớ). Ngầm định `n * kích_thước <= RAM` nên tính địa chỉ không tràn.
+  - Cấp phát: bộ cấp phát viết bằng Light trả về **offset** kèm `@ens`, người gọi `slice` ra `ptr<L,%n>` (xem `tests/lit/must_pass/dyn_ok.lit`, hàm `region_try`). Chưa có `free` riêng lẻ (bước 3b).
 - **`smp`**: Thẻ quyền điều phối đa nhân (mờ: không load/store được). Chỉ hàm giữ `io<0,0xffff>` tạo được bằng `const 0x7e000 smp`; Kernel truyền cho App làm tham số thứ 6.
 
 ### 2.2. Bố cục Bộ nhớ Phẳng (`Layout`) & Bất biến Kiểu (`@inv`)

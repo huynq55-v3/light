@@ -1,0 +1,11 @@
+# vxor256 ghi 32 byte: ptr động phải được chứng minh dài >= 32 byte
+# EXPECT: SIMD
+layout Q 8 {
+    0: bv64
+}
+func f void %0:bv64 %1:ptr<Q,%0> %2:ptr<Q,4> {
+    @req uge %0 3
+    @b0
+        vxor256 %1 %2 %2
+        ret
+}

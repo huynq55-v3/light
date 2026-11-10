@@ -1,0 +1,14 @@
+# Hứa trả về ptr dài %0 nhưng thực tế trả lát cắt dài %0 - 1
+# EXPECT: độ dài thật
+layout Q 8 {
+    0: bv64
+}
+func f ptr<Q,%0> %0:bv64 %1:ptr<Q,%0> {
+    @req uge %0 1
+    @b0
+        %2 = const 1 bv64
+        %3 = sub %0 %2
+        %4 = const 0 bv64
+        %5 = slice %1 %4 ptr<Q,%3>
+        ret %5
+}

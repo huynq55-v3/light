@@ -1,0 +1,15 @@
+# ptr<Q,4> dùng làm ptr<Q,%n> với n tùy ý
+# EXPECT: độ dài thật
+layout Q 8 {
+    0: bv64
+}
+func g void %0:bv64 %1:ptr<Q,%0> {
+    @b0
+        ret
+}
+func f void %0:ptr<Q,4> %1:bv64 {
+    @req ule %1 5
+    @b0
+        call g %1 %0
+        ret
+}

@@ -43,8 +43,54 @@ fn can_delegate(from: Type, to: Type) -> bool {
             },
         ) => l1 == l2 && m2 <= m1,
         (Type::Smp, Type::Smp) => true,
+        (Type::Ptr { .. } | Type::DPtr { .. }, Type::Ptr { .. } | Type::DPtr { .. }) => {
+            from.ptr_layout() == to.ptr_layout()
+        }
         _ => int_bits(from).is_some() && int_bits(to).is_some(),
     }
+}
+
+/// Quy tắc phạm vi của độ dài trong ptr<L,%n> (xem ir.rs). Chạy trước Z3, cùng check_ssa.
+fn check_dyn_scopes(func: &Func) -> Result<(), String> {
+    let is_int_param = |ps: &[(Reg, Type)], r: Reg| ps.iter().any(|&(p, t)| p == r && int_bits(t).is_some());
+    let not_int = |ps: &[(Reg, Type)], r: Reg| ps.iter().any(|&(p, t)| p == r && int_bits(t).is_none());
+    for (i, &(p, t)) in func.params.iter().enumerate() {
+        if let Type::DPtr { len, .. } = t {
+            if not_int(&func.params[..i], len) {
+                return Err(format!("độ dài %{} của ptr động %{} phải là số nguyên", len, p));
+            }
+            if !is_int_param(&func.params[..i], len) {
+                return Err(format!(
+                    "độ dài %{} của ptr động %{} phải là tham số đứng trước của hàm",
+                    len, p
+                ));
+            }
+        }
+    }
+    if let Some(Type::DPtr { len, .. }) = func.ret_ty {
+        if !is_int_param(&func.params, len) {
+            return Err(format!(
+                "kiểu trả về ptr<_,%{}>: độ dài phải là tham số số nguyên của hàm",
+                len
+            ));
+        }
+    }
+    for b in &func.blocks {
+        for (i, &(p, t)) in b.params.iter().enumerate() {
+            if let Type::DPtr { len, .. } = t {
+                if not_int(&b.params[..i], len) || not_int(&func.params, len) {
+                    return Err(format!("độ dài %{} của ptr động %{} phải là số nguyên", len, p));
+                }
+                if !is_int_param(&b.params[..i], len) && !is_int_param(&func.params, len) {
+                    return Err(format!(
+                        "@b{}: độ dài %{} của ptr động %{} phải là tham số block đứng trước (cùng block) hoặc tham số hàm",
+                        b.id, len, p
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_term(i: &Inst) -> bool {
@@ -85,7 +131,10 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
     match i {
         Inst::Const { .. } => vec![],
         Inst::Bin { lhs, rhs, .. } | Inst::Cmp { lhs, rhs, .. } => vec![*lhs, *rhs],
-        Inst::Slice { base, idx, .. } => vec![*base, *idx],
+        Inst::Slice { base, idx, ty, .. } => match ty {
+            Type::DPtr { len, .. } => vec![*base, *idx, *len],
+            _ => vec![*base, *idx],
+        },
         Inst::Load { base, .. } => vec![*base],
         Inst::Store { base, val, .. } => vec![*base, *val],
         Inst::Simd256 { op, dst, lhs, rhs } => {
@@ -645,6 +694,74 @@ impl<'ctx> Verifier<'ctx> {
         ))
     }
 
+    /// (layout, độ dài BV) của một kiểu ptr; độ dài động tra trong `env`
+    fn ptr_len(&self, ty: Type, env: &Env<'ctx>) -> Result<Option<(u16, BV<'ctx>)>, String> {
+        match ty {
+            Type::Ptr { layout_id, max_elems } => Ok(Some((layout_id, self.bv(max_elems)))),
+            Type::DPtr { layout_id, len } => {
+                let l = env
+                    .get(&len)
+                    .cloned()
+                    .ok_or_else(|| format!("độ dài %{} của ptr động chưa được định nghĩa", len))?;
+                Ok(Some((layout_id, l)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn elem_size(&self, layout_id: u16) -> Result<u64, String> {
+        Ok(self.layouts.get(layout_id as usize).ok_or("layout_id không tồn tại")?.size as u64)
+    }
+
+    /// Bất biến của ptr động: len * size <= RAM (nên mọi phép tính địa chỉ không tràn) và vùng nằm trong RAM
+    fn dptr_valid(&self, bv: &BV<'ctx>, layout_id: u16, len: &BV<'ctx>) -> Result<Bool<'ctx>, String> {
+        let sz = self.elem_size(layout_id)?;
+        let lim = (RAM_TOP - RAM_MIN) / sz;
+        Ok(Bool::and(
+            self.ctx,
+            &[
+                &len.bvule(&self.bv(lim)),
+                &bv.bvuge(&self.bv(RAM_MIN)),
+                &bv.bvule(&self.bv(RAM_TOP).bvsub(&len.bvmul(&self.bv(sz)))),
+            ],
+        ))
+    }
+
+    /// Bất biến kiểu của con trỏ (tĩnh hoặc động) có giá trị `bv`
+    fn any_ptr_valid(&self, bv: &BV<'ctx>, ty: Type) -> Result<Bool<'ctx>, String> {
+        match ty {
+            Type::Ptr { layout_id, max_elems } => self.ptr_valid(bv, layout_id, max_elems),
+            Type::DPtr { layout_id, len } => {
+                if int_bits(self.reg_ty(len)?).is_none() {
+                    return Err(format!("độ dài %{} của ptr động phải là số nguyên", len));
+                }
+                self.dptr_valid(bv, layout_id, self.get_reg(len)?)
+            }
+            _ => Ok(Bool::from_bool(self.ctx, true)),
+        }
+    }
+
+    /// Vùng của con trỏ %r phải dài ít nhất `n` byte (SIMD)
+    fn ptr_min_bytes(&self, r: Reg, n: u64, what: &str) -> Result<(), String> {
+        match self.reg_ty(r)? {
+            Type::Ptr { layout_id, max_elems } => {
+                let bytes = self.ptr_bytes(layout_id, max_elems)?;
+                if bytes < n {
+                    return Err(format!("{}: %{} chỉ có {} bytes (< {} bytes)", what, r, bytes, n));
+                }
+                Ok(())
+            }
+            Type::DPtr { layout_id, len } => {
+                let sz = self.elem_size(layout_id)?;
+                self.check(
+                    &self.get_reg(len)?.bvuge(&self.bv(n.div_ceil(sz))),
+                    &format!("{}: ptr động %{} có thể ngắn hơn {} bytes", what, r, n),
+                )
+            }
+            _ => Err(format!("{}: Toán hạng %{} không phải kiểu con trỏ Ptr", what, r)),
+        }
+    }
+
     fn decl_raw(&mut self, r: Reg, ty: Type) -> Result<BV<'ctx>, String> {
         if self.regs.contains_key(&r) {
             return Err(format!("Biến SSA %{} bị định nghĩa lại", r));
@@ -660,13 +777,8 @@ impl<'ctx> Verifier<'ctx> {
 
     fn decl_reg(&mut self, r: Reg, ty: Type) -> Result<BV<'ctx>, String> {
         let bv = self.decl_raw(r, ty)?;
-        if let Type::Ptr {
-            layout_id,
-            max_elems,
-        } = ty
-        {
-            self.solver
-                .assert(&self.ptr_valid(&bv, layout_id, max_elems)?);
+        if matches!(ty, Type::Ptr { .. } | Type::DPtr { .. }) {
+            self.solver.assert(&self.any_ptr_valid(&bv, ty)?);
         }
         Ok(bv)
     }
@@ -684,12 +796,28 @@ impl<'ctx> Verifier<'ctx> {
             .ok_or_else(|| format!("Biến SSA %{} chưa có kiểu", r))
     }
 
-    fn assign_check(&self, val: &BV<'ctx>, from: Type, to: Type, what: &str) -> Result<(), String> {
+    /// Gán giá trị kiểu `from` (độ dài động tra trong self.regs) vào vị trí kiểu `to` (độ dài động tra trong `to_env`)
+    fn assign_check(
+        &self,
+        val: &BV<'ctx>,
+        from: Type,
+        to: Type,
+        to_env: &Env<'ctx>,
+        what: &str,
+    ) -> Result<(), String> {
         if !can_delegate(from, to) {
             return Err(format!(
                 "Lỗi kiểu/bảo mật: không thể dùng {:?} làm {:?} ({})",
                 from, to, what
             ));
+        }
+        if matches!(from, Type::DPtr { .. }) || matches!(to, Type::DPtr { .. }) {
+            let (_, lf) = self.ptr_len(from, &self.regs)?.ok_or("assign: không phải ptr")?;
+            let (_, lt) = self.ptr_len(to, to_env)?.ok_or("assign: không phải ptr")?;
+            self.check(
+                &lt.bvule(&lf),
+                &format!("độ dài ptr đích có thể vượt độ dài thật ({})", what),
+            )?;
         }
         if let Some(bits) = int_bits(to).filter(|&b| b < 64) {
             self.check(
@@ -788,23 +916,32 @@ impl<'ctx> Verifier<'ctx> {
     }
 
     fn check_ptr_access(&self, base: Reg, offset: u32) -> Result<&'ctx FieldDef, String> {
-        let Type::Ptr {
-            layout_id,
-            max_elems,
-        } = self.reg_ty(base)?
-        else {
+        let bty = self.reg_ty(base)?;
+        let Some(layout_id) = bty.ptr_layout() else {
             return Err(format!("Biến %{} không phải kiểu con trỏ Ptr", base));
         };
         let layout = self
             .layouts
             .get(layout_id as usize)
             .ok_or("layout_id không tồn tại")?;
-        let max_bytes = max_elems.saturating_mul(layout.size as u64);
-        if (offset as u64) >= max_bytes {
-            return Err(format!(
-                "Tràn vùng nhớ Ptr: offset {} >= max_bytes {}",
-                offset, max_bytes
-            ));
+        match bty {
+            Type::Ptr { max_elems, .. } => {
+                let max_bytes = max_elems.saturating_mul(layout.size as u64);
+                if (offset as u64) >= max_bytes {
+                    return Err(format!(
+                        "Tràn vùng nhớ Ptr: offset {} >= max_bytes {}",
+                        offset, max_bytes
+                    ));
+                }
+            }
+            _ => {
+                // offset / size < len  <=>  offset < len * size (len * size không tràn nhờ dptr_valid)
+                let (_, len) = self.ptr_len(bty, &self.regs)?.ok_or("không phải ptr")?;
+                self.check(
+                    &self.bv(offset as u64 / layout.size as u64).bvult(&len),
+                    &format!("Truy cập offset {} vượt độ dài động của %{}", offset, base),
+                )?;
+            }
         }
         layout
             .fields
@@ -869,6 +1006,12 @@ impl<'ctx> Verifier<'ctx> {
                                 SMP_TABLE, dst
                             ));
                         }
+                    }
+                    Type::DPtr { .. } => {
+                        return Err(format!(
+                            "Bảo mật: không thể tạo ptr động bằng const tại %{} (chỉ qua slice từ ptr có sẵn)",
+                            dst
+                        ));
                     }
                     Type::Io { .. } => {
                         return Err(format!(
@@ -971,44 +1114,37 @@ impl<'ctx> Verifier<'ctx> {
                     .assert(&d._eq(&cond.ite(&self.bv(1), &self.bv(0))));
             }
             Inst::Slice { dst, base, idx, ty } => {
-                let Type::Ptr {
-                    layout_id: l1,
-                    max_elems: max_old,
-                } = self.reg_ty(*base)?
-                else {
+                let Some((l1, m_old)) = self.ptr_len(self.reg_ty(*base)?, &self.regs)? else {
                     return Err(format!("Biến %{} trong slice không phải kiểu Ptr", base));
                 };
-                let Type::Ptr {
-                    layout_id: l2,
-                    max_elems: max_new,
-                } = *ty
-                else {
+                if let Type::DPtr { len, .. } = *ty {
+                    if int_bits(self.reg_ty(len)?).is_none() {
+                        return Err(format!("độ dài %{} của ptr động phải là số nguyên", len));
+                    }
+                }
+                let Some((l2, m_new)) = self.ptr_len(*ty, &self.regs)? else {
                     return Err(format!("Kiểu đích của slice tại %{} phải là ptr", dst));
                 };
-                if l1 != l2 || max_new == 0 {
+                if l1 != l2 || matches!(ty, Type::Ptr { max_elems: 0, .. }) {
                     return Err(format!(
                         "Kiểu đích của slice tại %{} phải cùng Layout với base và max_elems > 0",
                         dst
                     ));
                 }
-                let (base_bv, idx_bv, m_new) = (
-                    self.get_reg(*base)?.clone(),
-                    self.get_reg(*idx)?.clone(),
-                    self.bv(max_new),
-                );
+                let (base_bv, idx_bv) = (self.get_reg(*base)?.clone(), self.get_reg(*idx)?.clone());
                 self.check(
                     &idx_bv.bvadd_no_overflow(&m_new, false),
                     &format!("Tràn số cộng index khi slice tại %{}", dst),
                 )?;
                 self.check(
-                    &idx_bv.bvadd(&m_new).bvule(&self.bv(max_old)),
+                    &idx_bv.bvadd(&m_new).bvule(&m_old),
                     &format!("Tràn biên mảng khi slice tại %{}", dst),
                 )?;
                 let elem = self.bv(self.layouts[l2 as usize].size as u64);
                 let d = self.decl_raw(*dst, *ty)?;
                 self.solver
                     .assert(&d._eq(&base_bv.bvadd(&idx_bv.bvmul(&elem))));
-                let valid = self.ptr_valid(&d, l2, max_new)?;
+                let valid = self.any_ptr_valid(&d, *ty)?;
                 self.check(&valid, &format!("Con trỏ slice tại %{} ra ngoài RAM", dst))?;
                 self.assume(&valid);
             }
@@ -1051,44 +1187,13 @@ impl<'ctx> Verifier<'ctx> {
             }
             Inst::Simd256 { op, dst, lhs, rhs } => {
                 for &ptr_reg in &[*lhs, *rhs] {
-                    let Type::Ptr {
-                        layout_id,
-                        max_elems,
-                    } = self.reg_ty(ptr_reg)?
-                    else {
-                        return Err(format!(
-                            "SIMD 256-bit: Toán hạng %{} không phải kiểu con trỏ Ptr",
-                            ptr_reg
-                        ));
-                    };
-                    let bytes = self.ptr_bytes(layout_id, max_elems)?;
-                    if bytes < 32 {
-                        return Err(format!(
-                            "Tràn vùng nhớ SIMD 256-bit: %{} chỉ có {} bytes (< 32 bytes / 256 bits)",
-                            ptr_reg, bytes
-                        ));
-                    }
+                    self.ptr_min_bytes(ptr_reg, 32, "Tràn vùng nhớ SIMD 256-bit")?;
                 }
                 if *op == SimdOp::Dot {
                     self.decl_reg(*dst, Type::Bv64)?;
                 } else {
-                    let Type::Ptr {
-                        layout_id,
-                        max_elems,
-                    } = self.reg_ty(*dst)?
-                    else {
-                        return Err(format!(
-                            "SIMD 256-bit: Đích %{} không phải kiểu con trỏ Ptr",
-                            dst
-                        ));
-                    };
-                    let bytes = self.ptr_bytes(layout_id, max_elems)?;
-                    if bytes < 32 {
-                        return Err(format!(
-                            "Tràn vùng nhớ SIMD 256-bit: Đích %{} chỉ có {} bytes (< 32 bytes / 256 bits)",
-                            dst, bytes
-                        ));
-                    }
+                    self.ptr_min_bytes(*dst, 32, "Tràn vùng nhớ SIMD 256-bit (đích)")?;
+                    let layout_id = self.reg_ty(*dst)?.ptr_layout().ok_or("SIMD: đích không phải ptr")?;
                     let layout = &self.layouts[layout_id as usize];
                     if layout.fields.iter().any(|f| f.inv.is_some()) {
                         return Err(format!(
@@ -1103,7 +1208,7 @@ impl<'ctx> Verifier<'ctx> {
                     return Err(format!("parallel: %{} phải là thẻ smp", smp));
                 }
                 let worker = module.funcs.get(*func_id as usize).ok_or("parallel: hàm không tồn tại")?;
-                let Type::Ptr { layout_id: lb, max_elems: mb } = self.reg_ty(*base)? else {
+                let Some((lb, mb)) = self.ptr_len(self.reg_ty(*base)?, &self.regs)? else {
                     return Err(format!("parallel: %{} phải là ptr", base));
                 };
                 let (wp, wt) = match worker.params.as_slice() {
@@ -1129,8 +1234,8 @@ impl<'ctx> Verifier<'ctx> {
                 )?;
                 // n phần, mỗi phần K phần tử, phải nằm trọn trong %base (M phần tử). n <= 16 nên n*K không tràn.
                 self.check(
-                    &n_bv.bvmul(&self.bv(wt)).bvule(&self.bv(mb)),
-                    &format!("parallel: %{} phần x {} phần tử vượt kích thước %{} ({} phần tử)", n, wt, base, mb),
+                    &n_bv.bvmul(&self.bv(wt)).bvule(&mb),
+                    &format!("parallel: %{} phần x {} phần tử vượt kích thước %{}", n, wt, base),
                 )?;
                 // @req của worker phải đúng với MỌI chỉ số i < n
                 let i = BV::fresh_const(self.ctx, "par_i", 64);
@@ -1162,7 +1267,7 @@ impl<'ctx> Verifier<'ctx> {
                 if 0x1F0 < min || 0x1F0 > max {
                     return Err("ata_read: cổng 0x1F0 nằm ngoài thẻ io".into());
                 }
-                let Type::Ptr { layout_id, max_elems } = self.reg_ty(*ptr)? else {
+                let Some((layout_id, plen)) = self.ptr_len(self.reg_ty(*ptr)?, &self.regs)? else {
                     return Err(format!("ata_read: %{} phải là con trỏ", ptr));
                 };
                 let lay = &self.layouts[layout_id as usize];
@@ -1178,7 +1283,7 @@ impl<'ctx> Verifier<'ctx> {
                 self.check(&n_bv.bvule(&self.bv(256)), "ata_read: nsec phải <= 256")?;
                 self.check(&i_bv.bvule(&self.bv(1 << 20)), "ata_read: idx quá lớn")?;
                 self.check(
-                    &i_bv.bvadd(&n_bv).bvmul(&self.bv(512)).bvule(&self.bv(max_elems * esz)),
+                    &i_bv.bvadd(&n_bv).bvmul(&self.bv(512)).bvule(&plen.bvmul(&self.bv(esz))),
                     "ata_read: ghi vượt biên vùng nhớ đích",
                 )?;
             }
@@ -1244,15 +1349,17 @@ impl<'ctx> Verifier<'ctx> {
                     return Err(format!("Gọi hàm '{}' sai số lượng tham số", callee.name));
                 }
                 let mut env = HashMap::new();
+                for (&a, &(p, _)) in args.iter().zip(&callee.params) {
+                    env.insert(p, self.get_reg(a)?.clone());
+                }
                 for (&a, &(p, pty)) in args.iter().zip(&callee.params) {
-                    let abv = self.get_reg(a)?.clone();
                     self.assign_check(
-                        &abv,
+                        &env[&p],
                         self.reg_ty(a)?,
                         pty,
+                        &env,
                         &format!("đối số %{} của '{}'", a, callee.name),
                     )?;
-                    env.insert(p, abv);
                 }
                 for (i, req) in callee.requires.iter().enumerate() {
                     self.check(
@@ -1261,9 +1368,18 @@ impl<'ctx> Verifier<'ctx> {
                     )?;
                 }
                 if let Some(d) = dst {
-                    let rty = callee.ret_ty.ok_or_else(|| {
+                    let mut rty = callee.ret_ty.ok_or_else(|| {
                         format!("'{}' là hàm void nhưng gán vào %{}", callee.name, d)
                     })?;
+                    // ptr<L,%tham_số> của callee -> ptr<L,%đối_số> của người gọi
+                    if let Type::DPtr { layout_id, len } = rty {
+                        let j = callee
+                            .params
+                            .iter()
+                            .position(|&(p, _)| p == len)
+                            .ok_or("kiểu trả về ptr động tham chiếu biến không phải tham số")?;
+                        rty = Type::DPtr { layout_id, len: args[j] };
+                    }
                     let dbv = self.decl_reg(*d, rty)?;
                     if !callee.ensures.is_empty() {
                         if let Some(r) = callee.blocks.iter().flat_map(|b| &b.insts).find_map(|i| {
@@ -1335,15 +1451,17 @@ impl<'ctx> Verifier<'ctx> {
                     }
                 }
                 let mut env = self.regs.clone();
+                for (&a, &(p, _)) in args.iter().zip(&tb.params) {
+                    env.insert(p, self.get_reg(a)?.clone());
+                }
                 for (&a, &(p, pty)) in args.iter().zip(&tb.params) {
-                    let abv = self.get_reg(a)?.clone();
                     self.assign_check(
-                        &abv,
+                        &env[&p],
                         self.reg_ty(a)?,
                         pty,
+                        &env,
                         &format!("tham số %{} của jmp @b{}", p, tb.id),
                     )?;
-                    env.insert(p, abv);
                 }
                 self.check_target_invs(func, ti, &env, None)?;
                 self.add_pred(bi, ti, self.cur_cond.clone());
@@ -1368,6 +1486,7 @@ impl<'ctx> Verifier<'ctx> {
                         self.get_reg(*r)?,
                         self.reg_ty(*r)?,
                         rty,
+                        &self.regs,
                         &format!("giá trị trả về %{}", r),
                     )?;
                 }
@@ -1399,6 +1518,7 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
 fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
     let cfg = build_cfg(func)?;
     check_ssa(func, &cfg)?;
+    check_dyn_scopes(func)?;
     check_contract(func)?;
 
     let ctx = Context::new(&Config::new());

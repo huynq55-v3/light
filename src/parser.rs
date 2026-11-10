@@ -175,6 +175,10 @@ fn p_type(s: &str, layouts: &[Layout], defs: &HashMap<String, u64>) -> Result<Ty
                 .position(|l| l.name == name)
                 .ok_or_else(|| format!("Không tìm thấy Layout '{}'", name))?
                 as u16;
+            if let Some(r) = max.trim().strip_prefix('%') {
+                let len = r.parse().map_err(|_| format!("Lỗi độ dài động ptr<{},{}>", name, max))?;
+                return Ok(Type::DPtr { layout_id: id, len });
+            }
             let max_elems = if max.trim() == "*" {
                 1
             } else {

@@ -1,0 +1,12 @@
+# Lưu ptr động vào bộ nhớ làm mất liên kết ptr–độ dài: cấm trong Layout
+# EXPECT: mang kiểu capability
+layout Q 8 {
+    0: bv64
+}
+layout Box 8 {
+    0: ptr<Q,%0>
+}
+func f void {
+    @b0
+        ret
+}
