@@ -131,7 +131,7 @@ func mmio_map_2m void %0:io<0,0xffff> %1:bv64 %2:bv64 {
 }
 
 # Tìm framebuffer: Multiboot Info bit 12 (GRUB EFI = GOP thật) -> nếu không có thì Bochs VGA của QEMU (PCI 1234:1111,
-# chế độ 1280x720 bật qua cổng VBE). Ánh xạ vào ảo 0x80_0000_0000 bằng trang 2MB Write-Combining.
+# chế độ 1920x1080 bật qua cổng VBE). Ánh xạ vào ảo 0x80_0000_0000 bằng trang 2MB Write-Combining.
 func fb_init void %0:io<0,0xffff> {
     @b0
         %1 = const 0x7d000 ptr<DiskQword,512>
@@ -185,8 +185,8 @@ func fb_init void %0:io<0,0xffff> {
         %37 = const 0xfffffff0 bv64
         %38 = and %36 %37
         call drv_vga_init %0
-        %39 = const 1280 bv64
-        %40 = const 720 bv64
+        %39 = const 1920 bv64
+        %40 = const 1080 bv64
         jmp @b3 %38 %39 %39 %40
 
     @b3 %41:bv64 %42:bv64 %43:bv64 %44:bv64
@@ -225,8 +225,8 @@ func fb_init void %0:io<0,0xffff> {
         %70 = add %69 %62
         %71 = const 21 bv64
         %72 = lshr %70 %71                  # số trang 2MB cần ánh xạ (<= 34)
-        %73 = const 1280 bv64
-        %74 = const 720 bv64
+        %73 = const 1920 bv64
+        %74 = const 1080 bv64
         %75 = call std_min %43 %73          # vis_w
         %76 = call std_min %44 %74          # vis_h
         %77 = sub %43 %75
@@ -283,13 +283,13 @@ func fb_init void %0:io<0,0xffff> {
         ret
 }
 
-# Chép hình chữ nhật [x1,x2) x [y1,y2) của VRAM logic 1280x720 (%1, nằm trong RAM) ra framebuffer thật
+# Chép hình chữ nhật [x1,x2) x [y1,y2) của VRAM logic 1920x1080 (%1, nằm trong RAM) ra framebuffer thật
 # (pitch bất kỳ, căn giữa; vùng ngoài màn hình thật bị cắt). Mọi chỉ số đều kiểm tra lúc chạy với fb_len.
-func fb_present_rect void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
-    @req ule %2 1280
-    @req ule %3 720
-    @req ule %4 1280
-    @req ule %5 720
+func fb_present_rect void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    @req ule %2 1920
+    @req ule %3 1080
+    @req ule %4 1920
+    @req ule %5 1080
 
     @b0
         %6 = const 0x96000 ptr<DiskQword,512>
@@ -312,8 +312,8 @@ func fb_present_rect void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:bv64 %3:bv64
         %20 = const 16384 bv64
         %21 = const 0x1000000 bv64
         %22 = const 25165824 bv64
-        %23 = const 1280 bv64
-        %24 = const 720 bv64
+        %23 = const 1920 bv64
+        %24 = const 1080 bv64
         %25 = call std_min %15 %20          # pitch_px
         %26 = call std_min %16 %21          # origin
         %27 = call std_min %17 %22          # len

@@ -27,7 +27,7 @@ def TERM_VIS_LINES 17
 def TERM_MAX_Y 516
 
 # 1. Icon 52x52 Terminal Retro trên Thanh Dock
-func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+func app_draw_icon void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req ule %1 1200
@@ -1236,7 +1236,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
 }
 
 # 21. Vẽ Thanh Cuộn Dọc (Scrollbar: Nút Lên [▲], Rãnh trượt Track, Con trượt Thumb, Nút Xuống [▼])
-func term_draw_scrollbar void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> {
+func term_draw_scrollbar void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -1401,7 +1401,7 @@ func term_poll_scrollbar bv64 %0:ptr<IpcChannel,1> %1:ptr<DiskQword,64> {
 }
 
 # 23. Render Terminal Retro UI lên Backbuffer (Văn bản theo scroll_line + Cursor + Scrollbar)
-func term_render_retro_view void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
+func term_render_retro_view void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -1431,7 +1431,7 @@ func term_render_retro_view void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:
 }
 
 # 24. Vòng lặp chính của Shell App (app_terminal_main)
-func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp %900:bv64 %901:ptr<DiskQword,%900> {
+func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp %900:bv64 %901:ptr<DiskQword,%900> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000

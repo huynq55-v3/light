@@ -1,6 +1,6 @@
 # 🗺️ Lộ trình Light & Light OS
 
-Cập nhật: 2026-11-10 · nhánh `cleanup-verifier-step1`
+Cập nhật: 2026-11-11 · nhánh `cleanup-verifier-step1`
 
 Mục tiêu gần: **Light OS chạy trên máy thật** (HP Pavilion 15-eg0xxx: i7-1165G7, 32GB, UEFI, NVMe Samsung 980 sau
 Intel VMD, Iris Xe 1920×1080), đọc/ghi được ổ NVMe, có hệ thống tệp riêng (LightFS). Sau đó mới tới tối ưu mã máy
@@ -34,9 +34,20 @@ và vòng lặp AI tự sửa lỗi.
 - [x] F1..F7 mở App, F12 khởi động lại; dòng trạng thái BLK/PART/PLEN trên màn hình.
 - [x] `tools/install_lightos.sh` (dùng lại phân vùng rustos → lightos), `tools/qemu_uefi_nvme.sh` (môi trường giống máy thật).
 - [x] Sửa SAVE của Editor (LBA file bị chính lệnh đọc file ghi đè → không bao giờ lưu).
-- [ ] **Thử trên laptop thật** (tắt Secure Boot, chạy installer). Đường VMD chưa thể test trên QEMU.
-- [ ] Nếu NVMe báo lỗi (dòng BLK, mã ở `nvme_init_ctrl`): có thể do firmware còn bật VT-d PMR chặn DMA vùng nhớ thấp,
-      hoặc BAR của NVMe sau VMD chưa được firmware gán (hiện chỉ đọc BAR có sẵn, chưa tự gán bus/BAR).
+- [x] **Boot trên laptop thật** (2026-11-11): `BLK 0002010007800438` = NVMe qua Intel VMD, thấy phân vùng `lightos`,
+      khởi tạo OK, framebuffer GOP 1920×1080. (HP: tắt Secure Boot phải nhập mã 4 số khi khởi động lại mới có hiệu lực.)
+- [x] Màn hình logic 1920×1080: desktop phủ kín, Dock giữa đáy, App vẽ qua khung nhìn `slice` căn giữa (App không phải sửa).
+- [x] Installer: BootOrder của HP chứa số mục không tồn tại → lọc trước khi `efibootmgr -o`.
+- [x] ATA: chờ trạng thái dừng ngay khi có ERR (trước đây đọc quá cuối đĩa mất > 4 phút trên `qemu -kernel`, giờ ~4 giây).
+
+### Bước 5b — Chuột trên máy thật (chưa làm)
+Laptop không có chuột PS/2: touchpad Synaptics `SYNA32A9` (06CB:CE17) nằm trên I2C (Intel Serial IO I2C #1, PCI 00:15.1,
+DesignWare), chuột ngoài PixArt + bàn phím SINO WEALTH cắm USB (xHCI 8086:a0ed, PCI 00:14.0).
+- [ ] Phương án A — touchpad: driver I2C DesignWare (MMIO BAR0, chế độ master, polling) + giao thức HID-over-I2C
+      (đọc HID descriptor, reset, đọc input report; chế độ chuột mặc định trước khi bật PTP). Cần địa chỉ slave và
+      thanh ghi HID descriptor (lấy từ ACPI `_CRS`/`_DSM`, hoặc ghi cứng sau khi đọc từ Linux).
+- [ ] Phương án B — USB: driver xHCI (ring lệnh/sự kiện/truyền, context thiết bị, enumerate cổng gốc, HID boot protocol
+      cho chuột + bàn phím). Lớn hơn nhưng dùng được mọi chuột/bàn phím USB.
 
 ## 📋 Tiếp theo
 
@@ -55,11 +66,11 @@ và vòng lặp AI tự sửa lỗi.
 - [ ] `smp_selftest` đếm worker khi AP còn đang boot (có lúc in `WORKERS=5` thay vì 7).
 - [ ] Chưa có IST/TSS cho double fault; exception trên AP làm BSP treo chờ.
 - [ ] Header App còn jmp thứ 3 (worker_offset) không dùng.
-- [ ] `drv_ata_load_app` luôn đọc 2048 sector, đọc quá cuối đĩa nhỏ (mỗi sector thiếu chờ timeout). Với NVMe: phần vượt
-      phân vùng bị từ chối và trả 0, không chờ.
+- [ ] `drv_ata_load_app` luôn đọc 2048 sector, kể cả phần quá cuối đĩa (nay ATA báo ERR và bỏ qua ngay; NVMe từ chối
+      phần vượt phân vùng). Nên đọc đúng kích thước file App.
 - [ ] NVMe: chưa dùng ngắt (MSI-X), mỗi lệnh chờ đồng bộ; chỉ 1 hàng đợi I/O; ghi không gọi Flush (dữ liệu có thể nằm
       trong cache của SSD nếu mất điện ngay sau khi lưu).
-- [ ] Giao diện cố định 1280×720 (màn 1920×1080 có viền đen); chưa có driver touchpad I2C / USB HID.
+- [ ] Cửa sổ App vẫn cố định 880×540 (chỉ được dời ra giữa màn 1920×1080); App chưa biết kích thước màn hình.
 - [ ] Cửa sổ ảo 32GB/App; tối đa 7 App.
 - [ ] Không có ngắt (mọi thiết bị đều thăm dò); không có bộ đếm thời gian thật (timeout tính bằng số vòng lặp).
 - [ ] USB (bàn phím/chuột ngoài) chưa hỗ trợ; touchpad I2C chưa hỗ trợ.

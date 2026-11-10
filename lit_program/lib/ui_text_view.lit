@@ -3,7 +3,7 @@
 
 include gfx.lit
 
-func ui_text_view_render_from void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 %9:bv64 {
+func ui_text_view_render_from void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 %9:bv64 {
     # %0: Framebuffer (Backbuffer)
     # %1: Font Bitmap Buffer
     # %2: Buffer văn bản (64 Qwords = 512 bytes)
@@ -130,7 +130,7 @@ func ui_text_view_render_from void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %
         ret
 }
 
-func ui_text_view_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 {
+func ui_text_view_render void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 %8:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000

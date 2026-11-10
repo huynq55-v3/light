@@ -7,7 +7,7 @@ include std_lib.lit
 
 # 1. Tô màu Hình chữ nhật theo tọa độ CỤC BỘ bên trong Cửa sổ (win_x=200, win_y=60, win_w=880, win_h=540)
 #    Z3 chứng minh: Dù App truyền %1..%4 lớn bao nhiêu, vùng vẽ thực tế KHÔNG BAO GIỜ tràn ra ngoài cửa sổ!
-func canvas_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+func canvas_fill_rect void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     # %0: Backbuffer, %1: rel_x1, %2: rel_y1, %3: rel_x2, %4: rel_y2, %5: color
     @req uge %0 0x10000
     @req ult %0 0x80000000

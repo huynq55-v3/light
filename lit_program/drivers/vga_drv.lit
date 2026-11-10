@@ -1,11 +1,15 @@
 # File: lit_program/drivers/vga_drv.lit
-# Driver Đồ họa Pixel HD 1280x720 32-bit TrueColor (921.600 pixels, mỗi pixel 4 byte RGB)
+# Driver Đồ họa Pixel 32-bit TrueColor. Màn hình logic 1920x1080 (2.073.600 ô, bước dòng 1920).
+# Hai kiểu con trỏ VRAM:
+#   ptr<VgaCell,2073600> = cả màn hình (kernel: nền desktop, con trỏ chuột, blit, present)
+#   ptr<VgaCell,1382400> = "khung nhìn" 1280x720 với bước dòng 1920 (= 720 dòng * 1920). Kernel cắt (slice) VRAM tại
+#                          một gốc (ox, oy) rồi đưa cho App/thư viện UI -> tọa độ cũ của App tự dời ra giữa màn hình.
 
 layout VgaCell 4 {
     0: bv32                                 # Mã màu 32-bit TrueColor (0x00RRGGBB)
 }
 
-# 1. Bật chế độ đồ họa HD 1280x720x32bpp qua cổng Bochs VBE (0x1ce, 0x1cf)
+# 1. Bật chế độ đồ họa 1920x1080x32bpp qua cổng Bochs VBE (0x1ce, 0x1cf)
 func drv_vga_init void %0:io<0x1ce,0x1cf> {
 
     @b0
@@ -15,15 +19,15 @@ func drv_vga_init void %0:io<0x1ce,0x1cf> {
         hwio_w %0 0x1ce %1
         hwio_w %0 0x1cf %2
 
-        # Đặt chiều rộng XRES = 1280 (Index 1 = 1280)
+        # Đặt chiều rộng XRES = 1920 (Index 1)
         %3 = const 1 bv16
-        %4 = const 1280 bv16
+        %4 = const 1920 bv16
         hwio_w %0 0x1ce %3
         hwio_w %0 0x1cf %4
 
-        # Đặt chiều cao YRES = 720 (Index 2 = 720)
+        # Đặt chiều cao YRES = 1080 (Index 2)
         %5 = const 2 bv16
-        %6 = const 720 bv16
+        %6 = const 1080 bv16
         hwio_w %0 0x1ce %5
         hwio_w %0 0x1cf %6
 
@@ -40,11 +44,11 @@ func drv_vga_init void %0:io<0x1ce,0x1cf> {
         ret
 }
 
-# 2. Vẽ 1 điểm ảnh 32-bit RGB vào vị trí phẳng %1 (0..921599)
-func drv_vga_set_cell void %0:ptr<VgaCell,921600> %1:bv64 %2:bv32 {
+# 2. Vẽ 1 điểm ảnh 32-bit RGB vào vị trí phẳng %1 của khung nhìn (0..1382399)
+func drv_vga_set_cell void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
-    @req ult %1 921600                      # Z3 chứng minh: Không bao giờ vượt quá 1280x720!
+    @req ult %1 1382400                     # Z3 chứng minh: không bao giờ ra ngoài khung nhìn
 
     @b0
         %3 = slice %0 %1 ptr<VgaCell,1>
@@ -53,10 +57,33 @@ func drv_vga_set_cell void %0:ptr<VgaCell,921600> %1:bv64 %2:bv32 {
 }
 
 # 3. Đọc 1 điểm ảnh 32-bit RGB từ vị trí phẳng %1 (Dùng cho Save-Under Cursor)
-func drv_vga_get_cell bv32 %0:ptr<VgaCell,921600> %1:bv64 {
+func drv_vga_get_cell bv32 %0:ptr<VgaCell,1382400> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
-    @req ult %1 921600
+    @req ult %1 1382400
+
+    @b0
+        %2 = slice %0 %1 ptr<VgaCell,1>
+        %3 = load %2 0 bv32
+        ret %3
+}
+
+# 4. Bản cho cả màn hình 1920x1080
+func drv_vga_set_cell_scr void %0:ptr<VgaCell,2073600> %1:bv64 %2:bv32 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 2073600
+
+    @b0
+        %3 = slice %0 %1 ptr<VgaCell,1>
+        store %3 0 %2
+        ret
+}
+
+func drv_vga_get_cell_scr bv32 %0:ptr<VgaCell,2073600> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 2073600
 
     @b0
         %2 = slice %0 %1 ptr<VgaCell,1>

@@ -10,11 +10,11 @@ layout IpcChannel 8 {
 layout DiskQword 8 {
     0: bv64
 }
-func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+func app_draw_icon void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 {
     @b0
         ret
 }
-func app_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+func app_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
     @b0
         ret
 }

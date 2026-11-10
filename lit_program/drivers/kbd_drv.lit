@@ -104,7 +104,7 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
     @b4
         # Byte 1: Quãng đường ngang dx thực tế (%1 = 0..255)
         %12 = load %0 48 bv64
-        %13 = load %0 16 bv64
+        %13 = load %0 184 bv64
         %14 = const 2 bv64
         store %0 40 %14
         %15 = const 0xff bv64
@@ -117,16 +117,16 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
     @b6
         %20 = shl %16 %10
         %21 = add %13 %20
-        %22 = const 1259 bv64
+        %22 = const 1899 bv64
         %23 = cmp ult %21 %22
         br %23 @b8 @b9
 
     @b8
-        store %0 16 %21
+        store %0 184 %21
         jmp @b12
 
     @b9
-        store %0 16 %22
+        store %0 184 %22
         jmp @b12
 
     @b7
@@ -138,17 +138,17 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
 
     @b10
         %28 = sub %13 %26
-        store %0 16 %28
+        store %0 184 %28
         jmp @b12
 
     @b11
-        store %0 16 %3
+        store %0 184 %3
         jmp @b12
 
     @b5
         # Byte 2: Quãng đường dọc dy thực tế (%1 = 0..255)
         %29 = load %0 48 bv64
-        %30 = load %0 24 bv64
+        %30 = load %0 192 bv64
         store %0 40 %3
         %31 = const 0xff bv64
         %32 = and %1 %31
@@ -164,11 +164,11 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
 
     @b15
         %38 = sub %30 %36
-        store %0 24 %38
+        store %0 192 %38
         jmp @b12
 
     @b16
-        store %0 24 %3
+        store %0 192 %3
         jmp @b12
 
     @b14
@@ -176,16 +176,16 @@ func drv_mouse_handle_byte void %0:ptr<IpcChannel,1> %1:bv64 {
         %40 = sub %39 %32
         %41 = shl %40 %10
         %42 = add %30 %41
-        %43 = const 699 bv64
+        %43 = const 1059 bv64
         %44 = cmp ult %42 %43
         br %44 @b17 @b18
 
     @b17
-        store %0 24 %42
+        store %0 192 %42
         jmp @b12
 
     @b18
-        store %0 24 %43
+        store %0 192 %43
         jmp @b12
 
     @b12
@@ -473,12 +473,12 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         %325 = sub %12 %320
         %326 = const 70 bv64
         %327 = mul %325 %326
-        %328 = const 425 bv64
-        %329 = add %327 %328                # x = 390 + 70 * ô + 35
-        %330 = const 660 bv64
+        %328 = const 745 bv64
+        %329 = add %327 %328                # x màn hình = 710 + 70 * ô + 35 (Dock căn giữa đáy màn 1920x1080)
+        %330 = const 1019 bv64
         %331 = const 1 bv64
-        store %2 16 %329
-        store %2 24 %330
+        store %2 184 %329
+        store %2 192 %330
         store %2 32 %331
         jmp @b8
 

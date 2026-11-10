@@ -3,7 +3,7 @@
 layout VgaCell 4 {
     0: bv32
 }
-func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+func app_draw_icon void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 {
     @b0
         ret
 }

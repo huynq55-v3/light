@@ -5,7 +5,7 @@ include ui_button.lit
 include os_layout.lit
 
 # 1. Vẽ khung Cửa sổ Chuẩn (Bóng đổ, Thanh Tiêu đề Title Bar, Nút Đóng [X], Vùng nội dung Client)
-func ui_win_draw void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 {
+func ui_win_draw void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv32 {
     # %0: fb, %1: font_buf, %2: win_x, %3: win_y, %4: win_w, %5: win_h, %6: title_qword, %7: client_bg
     @req uge %0 0x10000
     @req ult %0 0x80000000

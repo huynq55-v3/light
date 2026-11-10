@@ -44,10 +44,15 @@ func drv_ata_read_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
 
     @b2
         %22 = hwio_r %0 0x1f7
-        %23 = const 0x88 bv64
-        %24 = and %22 %23
-        %25 = const 0x08 bv64
-        %26 = cmp eq %24 %25
+        # Xong khi hết BSY và (DRQ hoặc ERR): sector ngoài đĩa báo ERR ngay, không chờ hết 10000 lần đọc
+        %9001 = const 0x80 bv64
+        %9002 = and %22 %9001
+        %9003 = const 0 bv64
+        %9004 = cmp eq %9002 %9003
+        %9005 = const 0x09 bv64
+        %9006 = and %22 %9005
+        %9007 = cmp ne %9006 %9003
+        %26 = and %9004 %9007
         br %26 @b4 @b3
 
     @b3
@@ -139,10 +144,15 @@ func drv_ata_write_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
 
     @b2
         %22 = hwio_r %0 0x1f7
-        %23 = const 0x88 bv64
-        %24 = and %22 %23
-        %25 = const 0x08 bv64
-        %26 = cmp eq %24 %25
+        # Xong khi hết BSY và (DRQ hoặc ERR): sector ngoài đĩa báo ERR ngay, không chờ hết 10000 lần đọc
+        %9011 = const 0x80 bv64
+        %9012 = and %22 %9011
+        %9013 = const 0 bv64
+        %9014 = cmp eq %9012 %9013
+        %9015 = const 0x09 bv64
+        %9016 = and %22 %9015
+        %9017 = cmp ne %9016 %9013
+        %26 = and %9014 %9017
         br %26 @b4 @b3
 
     @b3
@@ -310,10 +320,15 @@ func drv_ata_read_sectors_batch void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> 
 
     @b4
         %26 = hwio_r %0 0x1f7
-        %27 = const 0x88 bv64
-        %28 = and %26 %27
-        %29 = const 0x08 bv64
-        %30 = cmp eq %28 %29
+        # Xong khi hết BSY và (DRQ hoặc ERR): sector ngoài đĩa báo ERR ngay, không chờ hết 10000 lần đọc
+        %9021 = const 0x80 bv64
+        %9022 = and %26 %9021
+        %9023 = const 0 bv64
+        %9024 = cmp eq %9022 %9023
+        %9025 = const 0x09 bv64
+        %9026 = and %26 %9025
+        %9027 = cmp ne %9026 %9023
+        %30 = and %9024 %9027
         br %30 @b6 @b5
 
     @b5

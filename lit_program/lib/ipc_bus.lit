@@ -131,8 +131,10 @@ func ipc_channel_init void %0:ptr<IpcChannel,1> {
     @b0
         %1 = const 0 bv64
         %2 = const 0 bv8
-        %3 = const 640 bv64                 # Tâm màn hình X = 640
-        %4 = const 360 bv64                 # Tâm màn hình Y = 360
+        %3 = const 640 bv64                 # chuột trong khung nhìn App = (960 - 320, 540 - 160)
+        %4 = const 380 bv64
+        %5 = const 960 bv64                 # tâm màn hình 1920x1080
+        %6 = const 540 bv64
 
         store %0 0 %1
         store %0 8 %2
@@ -142,8 +144,8 @@ func ipc_channel_init void %0:ptr<IpcChannel,1> {
         store %0 40 %1
         store %0 48 %1
         store %0 56 %1
-        store %0 64 %3
-        store %0 72 %4
+        store %0 64 %5
+        store %0 72 %6
         store %0 80 %1
         store %0 88 %1
         store %0 96 %1
@@ -155,6 +157,10 @@ func ipc_channel_init void %0:ptr<IpcChannel,1> {
         store %0 144 %1
         store %0 152 %1
         store %0 160 %1
+        store %0 168 %1
+        store %0 176 %1
+        store %0 184 %5
+        store %0 192 %6
         ret
 }
 

@@ -31,7 +31,7 @@ func ui_btn_hit bv64 %0:bv64 %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv64 {
 }
 
 # 2. Vẽ nút bấm dạng phẳng / 3D kèm hiệu ứng Hover
-func ui_btn_draw void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 %6:bv64 {
+func ui_btn_draw void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 %6:bv64 {
     # %0: fb, %1: btn_x, %2: btn_y, %3: btn_w, %4: btn_h, %5: bg_color, %6: is_hover
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -77,7 +77,7 @@ func ui_btn_draw void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:
 }
 
 # 3. Vẽ nút bấm hoàn chỉnh có chữ căn lề chính giữa tuyệt đối (Font 8x16, rộng 9px/chữ)
-func ui_btn_draw_text void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv32 %7:bv32 %8:bv64 %9:bv64 %10:bv64 {
+func ui_btn_draw_text void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv32 %7:bv32 %8:bv64 %9:bv64 %10:bv64 {
     # %0: fb, %1: font_buf, %2: btn_x, %3: btn_y, %4: btn_w, %5: btn_h
     # %6: bg_color, %7: text_color, %8: title_qword, %9: char_count, %10: is_hover
     @req uge %0 0x10000

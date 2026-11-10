@@ -34,7 +34,7 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
     elf.extend_from_slice(&0x1000u32.to_le_bytes());
 
     // 2. Multiboot1 Header tại offset 0x54 (48B) + GDT 64-bit tại 0x88 (24B) + GDTR tại 0xA0 (8B), entry tại 0xA8
-    // flags = bit 1 (Memory Map) | bit 2 (xin chế độ đồ họa: linear 1280x720x32; GRUB EFI trả framebuffer GOP thật,
+    // flags = bit 1 (Memory Map) | bit 2 (xin chế độ đồ họa: linear 1920x1080x32; GRUB EFI trả framebuffer GOP thật,
     // có thể khác kích thước — kernel đọc lại từ Multiboot Info). Cờ 0x40 cũ là bit không định nghĩa: QEMU bỏ qua
     // nhưng GRUB từ chối ("unsupported flag"). checksum = -(magic + flags)
     let mb_flags: u32 = 0x0000_0006;
@@ -42,7 +42,7 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
     elf.extend_from_slice(&mb_flags.to_le_bytes());
     elf.extend_from_slice(&0u32.wrapping_sub(0x1BADB002u32.wrapping_add(mb_flags)).to_le_bytes());
     elf.extend_from_slice(&[0u8; 20]); // header_addr..entry_addr (bit 16 tắt: dùng ELF header)
-    for v in [0u32, 1280, 720, 32] {
+    for v in [0u32, 1920, 1080, 32] {
         elf.extend_from_slice(&v.to_le_bytes()); // mode_type = 0 (linear), width, height, depth
     }
     elf.extend_from_slice(&[0u8; 4]);
@@ -58,7 +58,7 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
     // 3. Trampoline 32-bit -> 64-bit Long Mode (Đặt Page Table tại 0x10000 để Kernel .lit tự cấp phát Lô động!):
     //    - 0x10000: PML4 (CR3 = 0x10000)
     //    - 0x11000: PDPT (Kernel .lit sẽ tự gắn các Lô 64GB vào đây lúc chạy!)
-    //    - 0x12000: PD_0 (0..10MB cho Kernel, VRAM, Backbuffer)
+    //    - 0x12000: PD_0 (0..20MB cho Kernel, VRAM, PD_Pool, Backbuffer)
     //    - 0x20000: PD_Pool (Bể chứa bảng trang động cho N Apps)
     elf.extend_from_slice(&[
         0xFA, // cli
@@ -111,9 +111,14 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         // thanh ghi GPU, không phải framebuffer.
         0xC7, 0x05, 0x08, 0x20, 0x01, 0x00, 0x83, 0x00, 0x20, 0x00, // PD_0[1] = 0x200000 | 0x83
         0xC7, 0x05, 0x10, 0x20, 0x01, 0x00, 0x83, 0x00, 0x40, 0x00, // PD_0[2] = 0x400000 | 0x83
-        // Ánh xạ 4MB Backbuffer RAM tại Virtual 0x600000..0xA00000 + 2MB PD_Pool tại 0xA00000..0xC00000
+        // VRAM logic 1920x1080 (8MB) = 0x200000..0xA00000 (PD_0[1..4]) + 2MB PD_Pool tại 0xA00000..0xC00000
+        // + 8MB Backbuffer tại 0xC00000..0x1400000 (PD_0[6..9])
         0xC7, 0x05, 0x18, 0x20, 0x01, 0x00, 0x83, 0x00, 0x60, 0x00, 0xC7, 0x05, 0x20, 0x20, 0x01,
         0x00, 0x83, 0x00, 0x80, 0x00, 0xC7, 0x05, 0x28, 0x20, 0x01, 0x00, 0x83, 0x00, 0xA0, 0x00,
+        0xC7, 0x05, 0x30, 0x20, 0x01, 0x00, 0x83, 0x00, 0xC0, 0x00, // PD_0[6] = 0xC00000 | 0x83
+        0xC7, 0x05, 0x38, 0x20, 0x01, 0x00, 0x83, 0x00, 0xE0, 0x00, // PD_0[7] = 0xE00000 | 0x83
+        0xC7, 0x05, 0x40, 0x20, 0x01, 0x00, 0x83, 0x00, 0x00, 0x01, // PD_0[8] = 0x1000000 | 0x83
+        0xC7, 0x05, 0x48, 0x20, 0x01, 0x00, 0x83, 0x00, 0x20, 0x01, // PD_0[9] = 0x1200000 | 0x83
         0xBF, 0x00, 0x00, 0xA0, 0x00, 0xB9, 0x00, 0x00, 0x08, 0x00, 0x31, 0xC0, 0xFC, 0xF3, 0xAB,
         // Bật PAE + SSE/FXSR (CR4 = 0x620) + Long Mode + Paging (CR3 = 0x10000)
         0xB8, 0x00, 0x00, 0x01, 0x00, 0x0F, 0x22, 0xD8, 0x0F, 0x20, 0xE0, 0x0D, 0x20, 0x06, 0x00,
@@ -1058,7 +1063,7 @@ pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
         module,
         &main_name,
         &[
-            Prov::Ptr("VgaCell", 921600),
+            Prov::Ptr("VgaCell", 1382400),
             Prov::Ptr("IpcChannel", 1),
             Prov::Ptr("DiskQword", 3932160),
             Prov::Ptr("DiskQword", 64),
@@ -1068,7 +1073,7 @@ pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
             Prov::DPtr("DiskQword", 6),
         ],
     )?;
-    check_app_abi(module, "app_draw_icon", &[Prov::Ptr("VgaCell", 921600), Prov::Int, Prov::Int])?;
+    check_app_abi(module, "app_draw_icon", &[Prov::Ptr("VgaCell", 1382400), Prov::Int, Prov::Int])?;
     let (code, entry_offset, icon_offset, worker_offset, _) = compile_raw(module, false)?;
     let mut bin = Vec::with_capacity(24 + code.len());
 

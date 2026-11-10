@@ -97,7 +97,7 @@ func ui_fb_find_seg_end bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
 }
 
 # 3. Vẽ chuỗi tên dài tùy ý (tối đa 32 ký tự) trực tiếp từ Path String Pool (%1) từ vị trí %4 đến %5
-func ui_fb_draw_pool_str void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv32 {
+func ui_fb_draw_pool_str void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -186,7 +186,7 @@ func ui_fb_parent_pref_len bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
 }
 
 # 5. Hiển thị các mục con trực tiếp của thư mục hiện tại (Lấy từ Path String Pool %1 và Directory Table %2)
-func ui_fb_render void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 {
+func ui_fb_render void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 {
     # %0: fb, %1: pool_buf (0x7c000), %2: vfs_dir_buf (0x7b000), %3: start_x, %4: start_y, %5: pref_off, %6: pref_len
     @req uge %0 0x10000
     @req ult %0 0x80000000

@@ -6,17 +6,17 @@ layout DiskQword 8 {
     0: bv64
 }
 
-layout IpcChannel 184 {
+layout IpcChannel 200 {
     0: bv64
     8: bv8 @inv ult val 128
-    16: bv64 @inv ult val 1260
-    24: bv64 @inv ult val 700
+    16: bv64 @inv ult val 1260              # chuột X trong khung nhìn App (kernel quy đổi từ 184 mỗi nhịp)
+    24: bv64 @inv ult val 700               # chuột Y trong khung nhìn App (từ 192)
     32: bv64
     40: bv64 @inv ult val 4
     48: bv64
     56: bv64 @inv ult val 8
-    64: bv64 @inv ult val 1260
-    72: bv64 @inv ult val 700
+    64: bv64 @inv ult val 1900              # vị trí con trỏ đã vẽ (tọa độ màn hình, kernel)
+    72: bv64 @inv ult val 1060
     80: bv64
     88: bv64                                # ipc_win_cmd: 0 = Normal, 1 = App requested Shell to close & reset
     96: bv64 @inv ule val 0xffffffffffffffff   # disk_read_req: lba[0..23]|n[24..39]|dst[40..55] (xem app_dispatch_disk_io_old)
@@ -30,6 +30,8 @@ layout IpcChannel 184 {
     160: bv64                               # Trạng thái giữ phím Shift (1 = đang giữ Shift, 0 = nhả)
     168: bv64 @inv ule val 16383             # dự trữ (chunk_req của allocator cũ đã gỡ; sẽ thay bằng sys_mem_commit)
     176: bv64 @inv ule val 0xffffffff       # dự trữ (chunk_state của allocator cũ đã gỡ)
+    184: bv64 @inv ult val 1900             # chuột X trên màn hình 1920x1080 (driver chuột / phím F ghi)
+    192: bv64 @inv ult val 1060             # chuột Y trên màn hình
 }
 
 layout VfsEntry 32 {

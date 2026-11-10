@@ -1,27 +1,42 @@
 # File: lit_program/lib/gfx.lit
-# Thư viện Đồ họa 2D HD 1280x720 (Gọn nhẹ cho cả Kernel và App Binary)
+# Thư viện Đồ họa 2D. Hàm thường vẽ trong khung nhìn 1280x720 (ptr<VgaCell,1382400>, bước dòng 1920);
+# hàm *_scr vẽ trên cả màn hình 1920x1080 (ptr<VgaCell,2073600>, chỉ kernel dùng).
 
 include ../drivers/vga_drv.lit
 include font.lit
 include os_layout.lit
 
 # 1. Chấm 1 điểm ảnh RGB tại tọa độ (x = %1, y = %2)
-func gfx_put_pixel void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv32 {
+func gfx_put_pixel void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 %3:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req ult %1 1280
     @req ult %2 720
 
     @b0
-        %4 = const 1280 bv64
+        %4 = const 1920 bv64
         %5 = mul %2 %4
         %6 = add %5 %1
         call drv_vga_set_cell %0 %6 %3
         ret
 }
 
+func gfx_put_pixel_scr void %0:ptr<VgaCell,2073600> %1:bv64 %2:bv64 %3:bv32 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 1920
+    @req ult %2 1080
+
+    @b0
+        %4 = const 1920 bv64
+        %5 = mul %2 %4
+        %6 = add %5 %1
+        call drv_vga_set_cell_scr %0 %6 %3
+        ret
+}
+
 # 2. Tô màu Hình chữ nhật đặc từ cột x1 (%1)..x2 (%3), dòng y1 (%2)..y2 (%4)
-func gfx_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+func gfx_fill_rect void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req ule %1 1280
@@ -61,9 +76,49 @@ func gfx_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %
         ret
 }
 
+func gfx_fill_rect_scr void %0:ptr<VgaCell,2073600> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ule %1 1920
+    @req ule %2 1080
+    @req ule %3 1920
+    @req ule %4 1080
+
+    @b0
+        jmp @b1 %2
+
+    @b1 %6:bv64
+        @inv ule %6 1080
+        %7 = cmp ult %6 %4
+        br %7 @b2 @b6
+
+    @b2
+        jmp @b3 %1
+
+    @b3 %8:bv64
+        @inv ult %6 1080
+        @inv ule %8 1920
+        %9 = cmp ult %8 %3
+        br %9 @b4 @b5
+
+    @b4
+        call gfx_put_pixel_scr %0 %8 %6 %5
+        %10 = const 1 bv64
+        %11 = add %8 %10
+        jmp @b3 %11
+
+    @b5
+        %12 = const 1 bv64
+        %13 = add %6 %12
+        jmp @b1 %13
+
+    @b6
+        ret
+}
+
 # Thay thế hàm gfx_draw_char16 trong lit_program/lib/gfx.lit:
 # Vẽ 1 ký tự Font Roboto 8x16 độ phân giải thực (16 dòng dọc thực sự thay vì phóng đại 2x2 bị răng cưa)
-func gfx_draw_char16 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+func gfx_draw_char16 void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -144,7 +199,7 @@ func gfx_draw_char16 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3
 }
 
 # 5. In chuỗi 8 ký tự (nén trong 1 Qword) bằng Font 8x16 (mỗi ký tự cách nhau 9px)
-func gfx_draw_str8 void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
+func gfx_draw_str8 void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -246,22 +301,22 @@ func ui_invalidate_rect void %0:ptr<IpcChannel,1> %1:bv64 %2:bv64 %3:bv64 %4:bv6
         ret
 }
 
-# Chép đúng hình chữ nhật (x1=%2, y1=%3, x2=%4, y2=%5) từ Backbuffer (%1) ra VRAM màn hình thật (%0)
-func gfx_blit_rect void %0:ptr<VgaCell,921600> %1:ptr<VgaCell,921600> %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+# Chép đúng hình chữ nhật (x1=%2, y1=%3, x2=%4, y2=%5, tọa độ màn hình 1920x1080) từ Backbuffer (%1) ra VRAM (%0)
+func gfx_blit_rect void %0:ptr<VgaCell,2073600> %1:ptr<VgaCell,2073600> %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
     @req ult %1 0x80000000
-    @req ule %2 1280
-    @req ule %3 720
-    @req ule %4 1280
-    @req ule %5 720
+    @req ule %2 1920
+    @req ule %3 1080
+    @req ule %4 1920
+    @req ule %5 1080
 
     @b0
         jmp @b1 %3
 
     @b1 %6:bv64
-        @inv ule %6 720
+        @inv ule %6 1080
         %7 = cmp ult %6 %5
         br %7 @b2 @b6
 
@@ -269,17 +324,17 @@ func gfx_blit_rect void %0:ptr<VgaCell,921600> %1:ptr<VgaCell,921600> %2:bv64 %3
         jmp @b3 %2
 
     @b3 %8:bv64
-        @inv ult %6 720
-        @inv ule %8 1280
+        @inv ult %6 1080
+        @inv ule %8 1920
         %9 = cmp ult %8 %4
         br %9 @b4 @b5
 
     @b4
-        %10 = const 1280 bv64
+        %10 = const 1920 bv64
         %11 = mul %6 %10
         %12 = add %11 %8
-        %13 = call drv_vga_get_cell %1 %12
-        call drv_vga_set_cell %0 %12 %13
+        %13 = call drv_vga_get_cell_scr %1 %12
+        call drv_vga_set_cell_scr %0 %12 %13
         %14 = const 1 bv64
         %15 = add %8 %14
         jmp @b3 %15

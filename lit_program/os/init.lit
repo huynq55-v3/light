@@ -38,11 +38,11 @@ func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64>
         ret
 }
 
-func sys_init_desktop void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> {
+func sys_init_desktop void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,2073600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> {
     @req uge %1 0x10000
-    @req ult %1 0x80000000
+    @req ult %1 0x40000000
     @req uge %2 0x10000
-    @req ult %2 0x80000000
+    @req ult %2 0x40000000
     @req uge %3 0x10000
     @req ult %3 0x80000000
     @req uge %4 0x10000
@@ -52,21 +52,24 @@ func sys_init_desktop void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell
         call ipc_channel_init %3
 
         %7 = const 0 bv64
-        %8 = const 1280 bv64
-        %9 = const 720 bv64
+        %8 = const 1920 bv64
+        %9 = const 1080 bv64
         %10 = const 0x161b26 bv32
 
-        call gfx_fill_rect %2 %7 %7 %8 %9 %10
-        call dock_render_bar %0 %2 %3 %4
+        call gfx_fill_rect_scr %2 %7 %7 %8 %9 %10
+        # Dock vẽ trong khung nhìn có gốc (320, 359) = 359 * 1920 + 320 -> nằm giữa đáy màn hình
+        %15 = const 689600 bv64
+        %16 = slice %2 %15 ptr<VgaCell,1382400>
+        call dock_render_bar %0 %16 %3 %4
         store %3 80 %7
         call gfx_blit_rect %1 %2 %7 %7 %8 %9
         call fb_present_rect %0 %1 %7 %7 %8 %9
 
-        %11 = const 640 bv64
-        %12 = const 360 bv64
+        %11 = const 960 bv64
+        %12 = const 540 bv64
         call gfx_draw_cursor %1 %11 %12
-        %13 = const 652 bv64
-        %14 = const 378 bv64
+        %13 = const 972 bv64
+        %14 = const 558 bv64
         call fb_present_rect %0 %1 %11 %12 %13 %14
         ret
 }
