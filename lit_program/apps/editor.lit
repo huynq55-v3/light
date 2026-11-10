@@ -79,7 +79,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
 #    - Qword 0..61 (496 bytes): Nội dung văn bản
 #    - Qword 62: Trạng thái Browser (0 = Edit, >0 = Browser prefix)
 #    - Qword 63: LBA của file đang mở
-func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -90,8 +90,6 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
-    @req uge %5 0x10000
-    @req ult %5 0x80000000
 
     @b0
         %500 = call ipc_mouse_get_x %1

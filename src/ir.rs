@@ -20,6 +20,9 @@ pub enum Type {
         min: u16,
         max: u16,
     },
+    /// Thẻ quyền điều phối đa nhân (bảng SMP 0x7e000). Mờ: không load/store được, chỉ dùng cho
+    /// `parallel` và `smp_workers`. Chỉ hàm giữ io<0,0xffff> mới tạo được bằng `const 0x7e000 smp`.
+    Smp,
 }
 
 /// 2. KHAI BÁO CẤU TRÚC DỮ LIỆU PHẲNG (Thay thế hoàn toàn Struct/Class phức tạp)
@@ -149,20 +152,21 @@ pub enum Inst {
         rhs: Reg,
     },
 
-    /// Tập lệnh Đa nhân Kiểm chứng Hình thức (Z3-Verified Disjoint Slice SMP Concurrency)
-    /// spawn %smp_ctrl %core_id %fn_addr %slice_ptr %arg1
-    Spawn {
+    /// Fork-join đa nhân CHẶN: `parallel %smp %n <hàm> %base %arg`
+    /// Chia %base (ptr<L,M>) thành n phần liên tiếp, phần i = ptr<L,K> (K = kiểu tham số đầu của hàm), gọi
+    /// hàm(phần_i, %arg, i) cho i = 0..n-1 trên các nhân AP (phần 0 và các phần không có AP online chạy trên nhân
+    /// gọi), và CHỈ trả về khi mọi phần xong -> hàm cha không thể đụng vùng nhớ worker đang dùng.
+    Parallel {
         smp: Reg,
-        core: Reg,
-        fn_addr: Reg,
-        slice_ptr: Reg,
-        arg1: Reg,
+        n: Reg,
+        func_id: u32,
+        base: Reg,
+        arg: Reg,
     },
-    /// %dst = sync %smp_ctrl %core_id (Trả về 1 nếu nhân %core_id đã hoàn tất, 0 nếu đang chạy)
-    Sync {
+    /// %dst = smp_workers %smp: số nhân AP đang online (0..15)
+    SmpWorkers {
         dst: Reg,
         smp: Reg,
-        core: Reg,
     },
 
     /// Lệnh đặc quyền cho OS Bare-metal (Đọc/ghi cổng I/O, thanh ghi CR3, MSR hoặc Syscall)

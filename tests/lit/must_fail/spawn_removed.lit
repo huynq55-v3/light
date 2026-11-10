@@ -1,0 +1,10 @@
+# Trước đây: spawn nhận fn_addr là bv64 bất kỳ -> nhân AP nhảy tới địa chỉ tùy ý. Lệnh đã bị bỏ.
+# EXPECT: Không nhận diện được lệnh SSA
+layout Q 8 {
+    0: bv64
+}
+func evil void %0:ptr<Q,64> %1:ptr<Q,128> %2:bv64 {
+    @b0
+        spawn %0 %2 %2 %1 %2
+        ret
+}

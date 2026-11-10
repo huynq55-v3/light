@@ -27,13 +27,16 @@ fn light(args: &[&str]) -> (bool, String) {
 
 fn lit_files(dir: &str) -> Vec<PathBuf> {
     let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lit").join(dir);
-    let mut v: Vec<PathBuf> = std::fs::read_dir(&d)
-        .unwrap_or_else(|e| panic!("thiếu thư mục {}: {}", d.display(), e))
+    let Ok(rd) = std::fs::read_dir(&d) else {
+        assert!(dir == "known_holes", "thiếu thư mục {}", d.display());
+        return vec![];
+    };
+    let mut v: Vec<PathBuf> = rd
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|x| x == "lit"))
         .collect();
     v.sort();
-    assert!(!v.is_empty(), "thư mục {} không có file .lit", d.display());
+    assert!(!v.is_empty() || dir == "known_holes", "thư mục {} không có file .lit", d.display());
     v
 }
 

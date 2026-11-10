@@ -1,0 +1,17 @@
+# Worker chạy trên stack 32KB của nhân AP
+# EXPECT: stack nhân AP
+layout Q 8 {
+    0: bv64
+}
+func big void %0:ptr<Q,4> %1:bv64 %2:bv64 {
+    @b0
+        %9000 = const 0 bv64
+        ret
+}
+func f void %0:smp %1:ptr<Q,16> {
+    @b0
+        %2 = const 2 bv64
+        %3 = const 0 bv64
+        parallel %0 %2 big %1 %3
+        ret
+}

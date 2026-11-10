@@ -1,0 +1,17 @@
+# @req của worker phải đúng với MỌI chỉ số phần, không chỉ phần 0
+# EXPECT: parallel: vi phạm @req #0 của worker 'wk2'
+layout Q 8 {
+    0: bv64
+}
+func wk2 void %0:ptr<Q,4> %1:bv64 %2:bv64 {
+    @req ult %2 2
+    @b0
+        ret
+}
+func f void %0:smp %1:ptr<Q,16> {
+    @b0
+        %2 = const 4 bv64
+        %3 = const 0 bv64
+        parallel %0 %2 wk2 %1 %3
+        ret
+}

@@ -85,6 +85,7 @@ fn is_int(ty: Type) -> bool {
 fn can_delegate(from: Type, to: Type) -> bool {
     match (from, to) {
         (Type::Io { min: a, max: b }, Type::Io { min: c, max: d }) => a <= c && d <= b,
+        (Type::Smp, Type::Smp) => true,
         (
             Type::Ptr {
                 layout_id: l1,
@@ -673,6 +674,9 @@ impl<'a> Vm<'a> {
                             Type::Io { .. } => {
                                 return Err(bad(cur, "tạo thẻ Io bằng const".into()));
                             }
+                            Type::Smp if !has_root || *val != 0x7e000 => {
+                                return Err(bad(cur, "tạo thẻ smp sai (cần thẻ gốc và địa chỉ 0x7e000)".into()));
+                            }
                             Type::Ptr { .. } if !has_root => {
                                 return Err(bad(
                                     cur,
@@ -807,37 +811,52 @@ impl<'a> Vm<'a> {
                             }
                         }
                     }
-                    Inst::Spawn {
-                        smp,
-                        core,
-                        fn_addr,
-                        slice_ptr,
-                        arg1,
-                    } => {
-                        let (sa, _) = get(&regs, *smp, cur)?;
-                        let (cv, _) = get(&regs, *core, cur)?;
-                        let (fv, _) = get(&regs, *fn_addr, cur)?;
-                        let (pa, _) = get(&regs, *slice_ptr, cur)?;
-                        let (av, _) = get(&regs, *arg1, cur)?;
-                        if !(1..=15).contains(&cv) {
-                            return Err(bad(cur, format!("spawn core {} ngoài [1..15]", cv)));
+                    Inst::Parallel { smp, n, func_id, base, arg } => {
+                        // Ngữ nghĩa tham chiếu: chạy tuần tự worker(base + i*K*size, arg, i) cho i = 0..n-1.
+                        // Nghĩa vụ: thẻ smp, 1 <= n <= 16, n*K <= M, @req của worker với từng i.
+                        let (_, sty) = get(&regs, *smp, cur)?;
+                        if sty != Type::Smp {
+                            return Err(bad(cur, "parallel: không phải thẻ smp".into()));
                         }
-                        let box_addr = sa + cv * 32;
-                        self.write(box_addr + 8, 8, pa);
-                        self.write(box_addr + 16, 8, av);
-                        self.write(box_addr + 24, 8, 0);
-                        self.write(box_addr, 8, fv);
+                        let (nv, _) = get(&regs, *n, cur)?;
+                        let (bv, bty) = get(&regs, *base, cur)?;
+                        let (av, _) = get(&regs, *arg, cur)?;
+                        let w = &m.funcs[*func_id as usize];
+                        let (Type::Ptr { max_elems: mb, .. }, Some(&(p0, pty @ Type::Ptr { layout_id, max_elems: k }))) =
+                            (bty, w.params.first())
+                        else {
+                            return Err(bad(cur, "parallel: sai kiểu".into()));
+                        };
+                        if !(1..=16).contains(&nv) {
+                            return Err(bad(cur, format!("parallel: n = {} ngoài [1..16]", nv)));
+                        }
+                        if nv * k > mb {
+                            return Err(bad(cur, format!("parallel: {} phần x {} > {}", nv, k, mb)));
+                        }
+                        let sz = m.layouts[layout_id as usize].size as u64;
+                        for i in 0..nv {
+                            let part = (bv + i * k * sz, pty);
+                            let vals = vec![part, (av, Type::Bv64), (i, Type::Bv64)];
+                            let mut cregs: Regs = HashMap::new();
+                            for (&(p, t), &(v, _)) in w.params.iter().zip(&vals) {
+                                cregs.insert(p, (v, t));
+                            }
+                            let _ = p0;
+                            for (q, req) in w.requires.iter().enumerate() {
+                                if evb(req, &cregs, None) != Ok(true) {
+                                    return Err(bad(cur, format!("parallel: vi phạm @req #{} của '{}' tại phần {}", q, w.name, i)));
+                                }
+                            }
+                            self.exec(*func_id as usize, &vals, false)?;
+                        }
                     }
-                    Inst::Sync { dst, smp, core } => {
-                        let (sa, _) = get(&regs, *smp, cur)?;
-                        let (cv, _) = get(&regs, *core, cur)?;
-                        if !(1..=15).contains(&cv) {
-                            return Err(bad(cur, format!("sync core {} ngoài [1..15]", cv)));
+                    Inst::SmpWorkers { dst, smp } => {
+                        let (_, sty) = get(&regs, *smp, cur)?;
+                        if sty != Type::Smp {
+                            return Err(bad(cur, "smp_workers: không phải thẻ smp".into()));
                         }
-                        let v = sample(&mut self.env, 0, 1);
-                        let _ = sa;
-                        self.set_reg(&mut regs, *dst, v, Type::Bv64)
-                            .map_err(|w| bad(cur, w))?;
+                        let v = sample(&mut self.env, 0, 15);
+                        self.set_reg(&mut regs, *dst, v, Type::Bv64).map_err(|w| bad(cur, w))?;
                     }
                     Inst::AtaRead { cap, .. } => {
                         let _ = get(&regs, *cap, cur)?; // oracle: bỏ qua tác dụng phụ phần cứng
@@ -1150,6 +1169,7 @@ fn gen_args(m: &Module, f: &Func, rng: &mut Rng, small: bool) -> Option<Vec<Val>
                     }
                 }
                 Type::Io { .. } => 0,
+                Type::Smp => 0x7e000,
                 _ => {
                     let (mut lo, mut hi) = (0u64, ty_max(ty));
                     for r in &f.requires {
@@ -1196,6 +1216,7 @@ fn show_args(f: &Func, args: &[Val]) -> String {
         .map(|(&(p, _), &(v, t))| match t {
             Type::Ptr { .. } => format!("%{}=ptr@{:#x}", p, v),
             Type::Io { .. } => format!("%{}=io", p),
+            Type::Smp => format!("%{}=smp", p),
             _ => format!("%{}={:#x}", p, v),
         })
         .collect::<Vec<_>>()

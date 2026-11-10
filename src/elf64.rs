@@ -2,7 +2,10 @@
 use crate::ir::*;
 use std::collections::HashMap;
 
-fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
+const RT_PARALLEL: &[u8] = include_bytes!("rt/rt_parallel.bin");
+const RT_EXC: &[u8] = include_bytes!("rt/rt_exc.bin");
+
+fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Result<Vec<u8>, String> {
     let base: u32 = 0x100000;
     let mut elf = Vec::new();
 
@@ -134,11 +137,17 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
         0x31, 0xD2, 0x0F, 0x01, 0xD1,
         0xB8, 0x01, 0x00, 0x00, 0x00,
         0x0F, 0xA2, // cpuid (eax=1)
-        0x89, 0xD8, 0xC1, 0xE8, 0x18, 0x83, 0xE0, 0x07, // eax = apic_id (1..7)
-        // Nạp IDT & Cấp Stack 64KB riêng biệt cho từng AP: RSP = 0x150000 + (apic_id << 16)
+        0x89, 0xD8, 0xC1, 0xE8, 0x18,       // eax = apic_id
+        // Chỉ APIC ID 1..15 làm worker (slot 1..15 của bảng SMP); ID khác dừng hẳn. Trước đây `and eax, 7`
+        // làm ID 8..15 trùng slot 0..7 -> hai AP chạy cùng một việc.
+        0x8D, 0x50, 0xFF,                   // lea edx, [rax-1]
+        0x83, 0xFA, 0x0E,                   // cmp edx, 14
+        0x76, 0x04,                         // jbe +4
+        0xFA, 0xF4, 0xEB, 0xFC,             // cli; hlt; jmp hlt
+        // Nạp IDT & Cấp Stack 32KB riêng biệt cho từng AP: RSP = 0x150000 + (apic_id << 15) (<= 0x1C8000, dưới VRAM 0x200000)
         0x0F, 0x01, 0x1C, 0x25, 0x00, 0x98, 0x00, 0x00, // lidt [0x9800]
         0x89, 0xC1,                         // mov ecx, eax
-        0xC1, 0xE1, 0x10,                   // shl ecx, 16
+        0xC1, 0xE1, 0x0F,                   // shl ecx, 15
         0xBC, 0x00, 0x00, 0x15, 0x00,       // mov esp, 0x150000
         0x48, 0x01, 0xCC,                   // add rsp, rcx
         // rbp = 0x7e000 + (apic_id << 5)
@@ -148,6 +157,8 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
         // Bật Local APIC trên AP (SVR = 0x1FF):
         0xBA, 0xF0, 0x00, 0xE0, 0xFE,       // mov edx, 0xFEE000F0
         0xC7, 0x02, 0xFF, 0x01, 0x00, 0x00, // mov dword [rdx], 0x000001FF
+        // Báo đã online: bật bit apic_id trong bitmask tại 0x7e010 (slot 0 [2]); `parallel` chỉ giao việc cho AP online
+        0xF0, 0x48, 0x0F, 0xAB, 0x04, 0x25, 0x10, 0xE0, 0x07, 0x00, // lock bts [0x7e010], rax
     // worker_idle (Atomic STI + HLT, ngủ 0% CPU cho tới khi nhận Fixed IPI từ spawn):
         0xFA,                               // cli
         0x48, 0x8B, 0x45, 0x00,             // mov rax, [rbp + 0]
@@ -160,7 +171,8 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
         0x55,                               // push rbp
         0x48, 0x8B, 0x7D, 0x08,             // mov rdi, [rbp + 8]  (slice_ptr)
         0x48, 0x8B, 0x75, 0x10,             // mov rsi, [rbp + 16] (arg1)
-        0x48, 0x8B, 0x14, 0x25, 0x18, 0xE0, 0x07, 0x00, // mov rdx, [0x7e018] (Arena base pointer)
+        0x48, 0x8B, 0x55, 0x18,             // mov rdx, [rbp + 24] (chỉ số phần i)
+        0x0F, 0x1F, 0x40, 0x00,             // nop (giữ nguyên độ dài để các bước nhảy tương đối không đổi)
         0xFF, 0xD0,                         // call rax
         0x5D,                               // pop rbp
         0x48, 0x89, 0x45, 0x18,             // mov [rbp + 24], rax
@@ -193,7 +205,7 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
     }
 
     elf.extend_from_slice(&[
-        0x48, 0xC7, 0xC7, 0x00, 0xE0, 0x07, 0x00, 0xB9, 0x20, 0x00, 0x00, 0x00, 0x31, 0xC0, 0xF3,
+        0x48, 0xC7, 0xC7, 0x00, 0xE0, 0x07, 0x00, 0xB9, 0x40, 0x00, 0x00, 0x00, 0x31, 0xC0, 0xF3,
         0x48, 0xAB, 0x66, 0xC7, 0x04, 0x25, 0x00, 0x82, 0x00, 0x00, 0x1F, 0x00, 0xC7, 0x04, 0x25,
         0x02, 0x82, 0x00, 0x00, 0x10, 0x82, 0x00, 0x00, 0xB8, 0xF0, 0x00, 0xE0, 0xFE, 0xC7, 0x00,
         0xFF, 0x01, 0x00, 0x00,
@@ -232,6 +244,23 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
         0x48, 0x83, 0xC7, 0x10,
         0xFF, 0xC9,
         0x75, 0xED,
+    ]);
+    // 2b. Vector 0..31 (exception CPU) trỏ về stub trong rt_exc.bin (đặt cuối ảnh ELF, địa chỉ vá sau),
+    //     các vector còn lại vẫn là IPI handler 0x8300. [0x8FF0] = cờ đang panic, [0x8FF8] = địa chỉ kernel_panic.
+    let mut gate_patches = Vec::new();
+    for i in 0..32u32 {
+        elf.extend_from_slice(&[0x48, 0xB8]);
+        gate_patches.push(elf.len());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&[0x48, 0x89, 0x04, 0x25]);
+        elf.extend_from_slice(&(0x9000 + 16 * i).to_le_bytes());
+    }
+    elf.extend_from_slice(&[0x48, 0xC7, 0x04, 0x25, 0xF0, 0x8F, 0x00, 0x00, 0, 0, 0, 0]);
+    elf.extend_from_slice(&[0x48, 0xB8]);
+    let panic_patch = elf.len();
+    elf.extend_from_slice(&0u64.to_le_bytes());
+    elf.extend_from_slice(&[0x48, 0x89, 0x04, 0x25, 0xF8, 0x8F, 0x00, 0x00]);
+    elf.extend_from_slice(&[
         // 3. Ghi IDT Pointer tại 0x9800 (limit=0x07FF, base=0x9000) và nạp IDT trên BSP:
         0x66, 0xC7, 0x04, 0x25, 0x00, 0x98, 0x00, 0x00, 0xFF, 0x07,
         0x48, 0xC7, 0x04, 0x25, 0x02, 0x98, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00,
@@ -259,11 +288,28 @@ fn pack_elf64(code: &[u8], entry_offset: u64) -> Vec<u8> {
     elf.extend_from_slice(&call_rel.to_le_bytes());
     elf.extend_from_slice(&[0xFA, 0xF4]);
 
+    let code_start = elf.len() as u64;
     elf.extend_from_slice(code);
+    while elf.len() % 16 != 0 {
+        elf.push(0xCC);
+    }
+    let exc_addr = base as u64 + elf.len() as u64;
+    elf.extend_from_slice(RT_EXC);
+    for (i, &pos) in gate_patches.iter().enumerate() {
+        let a = exc_addr + 16 * i as u64; // mỗi stub 16 byte
+        let gate = (a & 0xFFFF) | (0x08 << 16) | (0x8E << 40) | (((a >> 16) & 0xFFFF) << 48);
+        elf[pos..pos + 8].copy_from_slice(&gate.to_le_bytes());
+    }
+    let panic_addr = panic_offset.map_or(0, |o| base as u64 + code_start + o);
+    elf[panic_patch..panic_patch + 8].copy_from_slice(&panic_addr.to_le_bytes());
+    // Ảnh kernel nạp tại 0x100000 và phải kết thúc trước vùng stack AP (0x150000)
+    if elf.len() > 0x50000 {
+        return Err(format!("Ảnh kernel {} byte vượt 0x50000 (đè lên stack nhân AP tại 0x150000)", elf.len()));
+    }
     let fsz = (elf.len() as u32).to_le_bytes();
     elf[68..72].copy_from_slice(&fsz);
     elf[72..76].copy_from_slice(&fsz);
-    elf
+    Ok(elf)
 }
 
 fn slot(r: Reg) -> i32 {
@@ -305,21 +351,10 @@ fn pick_hot_regs(func: &Func) -> [Reg; 5] {
                     *score.entry(*lhs).or_insert(0) += weight;
                     *score.entry(*rhs).or_insert(0) += weight;
                 }
-                Inst::Spawn {
-                    smp,
-                    core,
-                    fn_addr,
-                    slice_ptr,
-                    arg1,
-                } => {
-                    for &r in &[smp, core, fn_addr, slice_ptr, arg1] {
+                Inst::Parallel { smp, n, base, arg, .. } => {
+                    for r in [smp, n, base, arg] {
                         *score.entry(*r).or_insert(0) += weight;
                     }
-                }
-                Inst::Sync { dst, smp, core } => {
-                    *score.entry(*dst).or_insert(0) += weight;
-                    *score.entry(*smp).or_insert(0) += weight;
-                    *score.entry(*core).or_insert(0) += weight;
                 }
                 Inst::AtaRead { ptr, idx, nsec, .. } => {
                     for r in [ptr, idx, nsec] {
@@ -419,7 +454,17 @@ fn ata_blob_allowed(module: &Module, func: &Func, is_kernel: bool) -> bool {
 /// Kiểm tra chữ ký hàm App khớp đúng những gì Kernel truyền vào qua `call %ptr` (CallPtr không kiểm tra kiểu).
 /// `provided`: (tên Layout, max_elems) cho con trỏ, hoặc None cho số nguyên bv64. App được nhận ÍT tham số hơn hoặc
 /// thu hẹp max_elems, nhưng không được nới rộng, đổi Layout hay tự khai báo thẻ io (nếu không App sẽ tự cấp quyền gốc).
-fn check_app_abi(module: &Module, fname: &str, provided: &[Option<(&str, u64)>]) -> Result<(), String> {
+const ROOT_IO_TY: Type = Type::Io { min: 0, max: 0xFFFF };
+
+/// Giá trị Kernel truyền cho App qua `call %ptr`
+#[derive(Debug)]
+enum Prov {
+    Int,
+    Ptr(&'static str, u64),
+    Smp,
+}
+
+fn check_app_abi(module: &Module, fname: &str, provided: &[Prov]) -> Result<(), String> {
     let Some(f) = module.funcs.iter().find(|f| f.name == fname) else {
         return Ok(());
     };
@@ -428,8 +473,8 @@ fn check_app_abi(module: &Module, fname: &str, provided: &[Option<(&str, u64)>])
     }
     for (i, (&(r, ty), want)) in f.params.iter().zip(provided).enumerate() {
         let ok = match (ty, want) {
-            (Type::Bv64, None) => true,
-            (Type::Ptr { layout_id, max_elems }, Some((lname, kmax))) => {
+            (Type::Bv64, Prov::Int) | (Type::Smp, Prov::Smp) => true,
+            (Type::Ptr { layout_id, max_elems }, Prov::Ptr(lname, kmax)) => {
                 let l = &module.layouts[layout_id as usize];
                 l.name == *lname && max_elems <= *kmax
             }
@@ -445,10 +490,12 @@ fn check_app_abi(module: &Module, fname: &str, provided: &[Option<(&str, u64)>])
     Ok(())
 }
 
-fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u64), String> {
+/// Trả về (mã máy, offset hàm cuối = entry, offset app_draw_icon, offset app_smp_worker, offset kernel_panic)
+fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u64, Option<u64>), String> {
     let mut code: Vec<u8> = Vec::new();
     let mut func_addrs: HashMap<u32, usize> = HashMap::new();
     let mut call_patches: Vec<(usize, u32)> = Vec::new();
+    let mut rt_patches: Vec<usize> = Vec::new();
 
     for (f_idx, func) in module.funcs.iter().enumerate() {
         func_addrs.insert(f_idx as u32, code.len());
@@ -490,7 +537,7 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                     Inst::Bin { dst, .. }
                     | Inst::HwIo { dst: Some(dst), .. }
                     | Inst::CallPtr { dst: Some(dst), .. }
-                    | Inst::Sync { dst, .. }
+                    | Inst::SmpWorkers { dst, .. }
                     | Inst::Simd256 {
                         op: SimdOp::Dot,
                         dst,
@@ -680,50 +727,40 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                             ]);
                         }
                     }
-                    Inst::Spawn {
-                        smp,
-                        core,
-                        fn_addr,
-                        slice_ptr,
-                        arg1,
-                    } => {
-                        // rdx = smp + (core << 5); rsi = core
-                        emit_load_rax(&mut code, *core, &hot);
-                        code.extend_from_slice(&[0x48, 0x89, 0xC6, 0x48, 0xC1, 0xE0, 0x05]);
-                        emit_load_rcx(&mut code, *smp, &hot);
-                        code.extend_from_slice(&[0x48, 0x01, 0xC8, 0x48, 0x89, 0xC2]);
-                        // [rdx + 8] = slice_ptr, [rdx + 16] = arg1, [rdx + 24] = 0, [rdx + 0] = fn_addr
-                        emit_load_rax(&mut code, *slice_ptr, &hot);
-                        code.extend_from_slice(&[0x48, 0x89, 0x42, 0x08]);
-                        emit_load_rax(&mut code, *arg1, &hot);
-                        code.extend_from_slice(&[
-                            0x48, 0x89, 0x42, 0x10, 0x48, 0xC7, 0x42, 0x18, 0x00, 0x00, 0x00, 0x00,
-                        ]);
-                        emit_load_rax(&mut code, *fn_addr, &hot);
-                        // 1. Ghi fn_addr vào [rdx + 0]
-                        code.extend_from_slice(&[0x48, 0x89, 0x02]);
-                        // 2. Bắn xung Fixed IPI vector 0x40 tới core (rsi = core) để đánh thức AP dậy khỏi HLT!
-                        code.extend_from_slice(&[
-                            0x89, 0xF0,                         // mov eax, esi
-                            0xC1, 0xE0, 0x18,                   // shl eax, 24
-                            0xBA, 0x10, 0x03, 0xE0, 0xFE,       // mov edx, 0xFEE00310
-                            0x89, 0x02,                         // mov [rdx], eax
-                            0xBA, 0x00, 0x03, 0xE0, 0xFE,       // mov edx, 0xFEE00300
-                            0xC7, 0x02, 0x40, 0x40, 0x00, 0x00, // mov dword [rdx], 0x00004040
-                        ]);
+                    Inst::Parallel { smp, n, func_id, base, arg } => {
+                        // lt_parallel(rdi=smp, rsi=n, rdx=&worker, rcx=base, r8=stride, r9=arg)
+                        let Type::Ptr { layout_id, .. } = reg_tys[base] else {
+                            return Err("parallel: base không phải ptr".into());
+                        };
+                        let Some(&(_, Type::Ptr { max_elems: k, .. })) = module.funcs[*func_id as usize].params.first() else {
+                            return Err("parallel: worker sai chữ ký".into());
+                        };
+                        let stride = k * module.layouts[layout_id as usize].size as u64;
+                        emit_load_rax(&mut code, *smp, &hot);
+                        code.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax
+                        emit_load_rax(&mut code, *n, &hot);
+                        code.extend_from_slice(&[0x48, 0x89, 0xC6]); // mov rsi, rax
+                        emit_load_rax(&mut code, *base, &hot);
+                        code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+                        emit_load_rax(&mut code, *arg, &hot);
+                        code.extend_from_slice(&[0x49, 0x89, 0xC1]); // mov r9, rax
+                        code.extend_from_slice(&[0x49, 0xB8]); // movabs r8, stride
+                        code.extend_from_slice(&stride.to_le_bytes());
+                        code.extend_from_slice(&[0x48, 0x8D, 0x15, 0, 0, 0, 0]); // lea rdx, [rip + worker]
+                        call_patches.push((code.len() - 4, *func_id));
+                        code.extend_from_slice(&[0xE8, 0, 0, 0, 0]); // call lt_parallel
+                        rt_patches.push(code.len() - 4);
                     }
-                    Inst::Sync { dst, smp, core } => {
-                        emit_load_rax(&mut code, *core, &hot);
+                    Inst::SmpWorkers { dst, smp } => {
+                        // popcount(bitmask online tại [smp+16], bỏ bit 0)
                         emit_load_rcx(&mut code, *smp, &hot);
                         code.extend_from_slice(&[
-                            0x48, 0xC1, 0xE0, 0x05, // shl rax, 5
-                            0x48, 0x01, 0xC8,       // add rax, rcx
-                            0xF3, 0x90,             // pause
-                            0x48, 0x83, 0x38, 0x00, // cmp qword [rax], 0
-                            0x74, 0x02,             // jz +2 (done)
-                            0xE6, 0x80,             // out 0x80, al (bàn giao quantum vCPU cho worker trên QEMU TCG/KVM!)
-                            0x0F, 0x94, 0xC0,       // sete al
-                            0x48, 0x0F, 0xB6, 0xC0, // movzx rax, al
+                            0x48, 0x8B, 0x51, 0x10, // mov rdx, [rcx+16]
+                            0x81, 0xE2, 0xFE, 0xFF, 0x00, 0x00, // and edx, 0xfffe
+                            0x31, 0xC0, // xor eax, eax
+                            0x48, 0x85, 0xD2, 0x74, 0x0B, // test rdx, rdx; jz +11
+                            0x48, 0x8D, 0x4A, 0xFF, 0x48, 0x21, 0xCA, // lea rcx,[rdx-1]; and rdx,rcx
+                            0xFF, 0xC0, 0xEB, 0xF0, // inc eax; jmp test
                         ]);
                         emit_store_rax(&mut code, *dst, &hot);
                     }
@@ -898,6 +935,17 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
         }
     }
 
+    if !rt_patches.is_empty() {
+        while code.len() % 16 != 0 {
+            code.push(0xCC);
+        }
+        let rt = code.len();
+        code.extend_from_slice(RT_PARALLEL);
+        for p in rt_patches {
+            let rel = (rt as i32) - ((p + 4) as i32);
+            code[p..p + 4].copy_from_slice(&rel.to_le_bytes());
+        }
+    }
     for (patch_pos, f_id) in call_patches {
         let target_addr = *func_addrs.get(&f_id).ok_or("Không tìm thấy func_id")?;
         let rel = (target_addr as i32) - ((patch_pos + 4) as i32);
@@ -918,35 +966,47 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
         .position(|f| f.name == "app_smp_worker")
         .and_then(|i| func_addrs.get(&(i as u32)).copied())
         .unwrap_or(0) as u64;
-    Ok((code, entry_offset, icon_offset, worker_offset))
+    let panic_offset = module
+        .funcs
+        .iter()
+        .position(|f| f.name == "kernel_panic")
+        .and_then(|i| func_addrs.get(&(i as u32)).map(|&a| a as u64));
+    Ok((code, entry_offset, icon_offset, worker_offset, panic_offset))
 }
 
 pub fn compile_elf64(module: &Module) -> Result<Vec<u8>, String> {
-    let (code, entry_offset, _, _) = compile_raw(module, true)?;
-    Ok(pack_elf64(&code, entry_offset))
+    // kernel_panic được gọi từ stub exception (rt_exc.s) với rdi=0 (thẻ io ghost), rsi=vector, rdx=mã lỗi,
+    // rcx=RIP, r8=CR2, r9=APIC ID — không ai chứng minh được @req tại đó nên cấm @req.
+    if let Some(f) = module.funcs.iter().find(|f| f.name == "kernel_panic") {
+        let want = [ROOT_IO_TY, Type::Bv64, Type::Bv64, Type::Bv64, Type::Bv64, Type::Bv64];
+        if f.params.iter().map(|p| p.1).collect::<Vec<_>>() != want || !f.requires.is_empty() {
+            return Err("kernel_panic phải có chữ ký (io<0,0xffff>, bv64 vec, bv64 err, bv64 rip, bv64 cr2, bv64 apic) và không có @req".into());
+        }
+    }
+    let (code, entry_offset, _, _, panic_offset) = compile_raw(module, true)?;
+    pack_elf64(&code, entry_offset, panic_offset)
 }
 
 pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
     if !module.funcs.iter().any(|f| f.name == "app_draw_icon") {
         return Err("Mỗi App bắt buộc phải implement hàm 'func app_draw_icon'!".into());
     }
-    // Khớp với app_dispatch_entry: call %code VgaCell* Ipc* Arena* Q64 Q64 SmpTbl; app_dispatch_draw_icon; AP trampoline
+    // Khớp với app_dispatch_entry: call %code VgaCell* Ipc* Arena* Q64 Q64 smp; app_dispatch_draw_icon
     let main_name = module.funcs.last().map(|f| f.name.clone()).unwrap_or_default();
     check_app_abi(
         module,
         &main_name,
         &[
-            Some(("VgaCell", 921600)),
-            Some(("IpcChannel", 1)),
-            Some(("DiskQword", 4294705152)),
-            Some(("DiskQword", 64)),
-            Some(("DiskQword", 64)),
-            Some(("DiskQword", 64)),
+            Prov::Ptr("VgaCell", 921600),
+            Prov::Ptr("IpcChannel", 1),
+            Prov::Ptr("DiskQword", 4294705152),
+            Prov::Ptr("DiskQword", 64),
+            Prov::Ptr("DiskQword", 64),
+            Prov::Smp,
         ],
     )?;
-    check_app_abi(module, "app_draw_icon", &[Some(("VgaCell", 921600)), None, None])?;
-    check_app_abi(module, "app_smp_worker", &[None, None, None])?;
-    let (code, entry_offset, icon_offset, worker_offset) = compile_raw(module, false)?;
+    check_app_abi(module, "app_draw_icon", &[Prov::Ptr("VgaCell", 921600), Prov::Int, Prov::Int])?;
+    let (code, entry_offset, icon_offset, worker_offset, _) = compile_raw(module, false)?;
     let mut bin = Vec::with_capacity(24 + code.len());
 
     let rel_main = (entry_offset as i32) + 19;

@@ -7,7 +7,6 @@ include ../drivers/kbd_drv.lit
 include ../lib/vfs_api.lit
 include ../lib/cap_mem.lit
 include ../lib/ipc_bus.lit
-include ../lib/smp.lit
 include ../lib/std_lib.lit
 include app_loader.lit
 
@@ -160,14 +159,12 @@ func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
 # 3. Xóa bit chạy ngầm của App trong ipc_bg_mask (offset 152)
 # 4. Reset các cờ cửa sổ trên IpcChannel
 # 5. Xóa cửa sổ trên Backbuffer & đưa IpcChannel về trạng thái rảnh
-func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:bv64 {
-    # %1: backbuffer, %2: ipc, %3: smp_ctrl (0x7e000), %4: app_slot (0..6)
+func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:smp %4:bv64 {
+    # %1: backbuffer, %2: ipc, %3: thẻ smp (không dùng: `parallel` luôn chờ worker xong nên không còn worker treo), %4: app_slot (0..6)
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
     @req ult %2 0x80000000
-    @req uge %3 0x10000
-    @req ult %3 0x80000000
     @req ult %4 7
 
     @b0
@@ -178,9 +175,6 @@ func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:pt
         %60 = const 0xa00000 ptr<DiskQword,131072>
         %61 = call sys_get_vmm_table %0
         call vmm_free_app_chunks %0 %60 %61 %4
-
-        # 2. Dừng toàn bộ các nhân Worker SMP
-        call smp_stop_all_workers %3
 
         # 3. Xóa bit chạy ngầm của slot %4 trong ipc_bg_mask (offset 152)
         %5 = const 1 bv64
@@ -213,7 +207,7 @@ func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:pt
 }
 
 # Điều phối nhịp chạy ngầm tổng quát dựa trên Bitmask (offset 152) — Không phụ thuộc vào bất kỳ App cụ thể nào
-func shell_bg_tick_apps void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+func shell_bg_tick_apps void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -222,8 +216,6 @@ func shell_bg_tick_apps void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcCh
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
-    @req uge %5 0x10000
-    @req ult %5 0x80000000
 
     @b0
         %6 = load %2 152 bv64               # ipc_bg_mask
@@ -365,7 +357,7 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         %15 = const 2 bv64
         %44 = load %3 64 bv64
         %45 = load %3 72 bv64
-        %95 = const 0x7e000 ptr<DiskQword,64>
+        %95 = const 0x7e000 smp
 
         %16 = cmp ne %12 %13
         br %16 @b1 @b20

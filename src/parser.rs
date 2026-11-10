@@ -165,6 +165,7 @@ fn p_type(s: &str, layouts: &[Layout], defs: &HashMap<String, u64>) -> Result<Ty
         "bv16" => Ok(Type::Bv16),
         "bv32" => Ok(Type::Bv32),
         "bv64" => Ok(Type::Bv64),
+        "smp" => Ok(Type::Smp),
         _ if s.starts_with("ptr<") && s.ends_with('>') => {
             // Cú pháp: ptr<Process,1> hoặc ptr<DiskQword,*> (Size-Polymorphic)
             let inner = &s[4..s.len() - 1];
@@ -318,13 +319,14 @@ fn inst_arity(toks: &[&str]) -> Option<(usize, usize)> {
     const ANY: usize = usize::MAX;
     Some(match toks[0] {
         "store" | "vadd256" | "vsub256" | "vmul256" | "vxor256" | "br" | "hwio_w" => (4, 4),
-        "spawn" => (6, 6),
+        "parallel" => (6, 6),
         "ata_read" => (5, 5),
         "jmp" | "call" => (2, ANY),
         "ret" => (1, 2),
         "assume" | "assert" => (2, ANY),
         d if d.starts_with('%') && toks.get(1) == Some(&"=") => match toks.get(2).copied()? {
-            "const" | "hwio_r" | "vdot256" | "sync" => (5, 5),
+            "const" | "hwio_r" | "vdot256" => (5, 5),
+            "smp_workers" => (4, 4),
             "slice" | "load" | "cmp" => (6, 6),
             "call" => (4, ANY),
             _ => (5, 5),
@@ -494,12 +496,12 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                         lhs: p_reg(toks[2])?,
                         rhs: p_reg(toks[3])?,
                     },
-                    "spawn" => Inst::Spawn {
+                    "parallel" => Inst::Parallel {
                         smp: p_reg(toks[1])?,
-                        core: p_reg(toks[2])?,
-                        fn_addr: p_reg(toks[3])?,
-                        slice_ptr: p_reg(toks[4])?,
-                        arg1: p_reg(toks[5])?,
+                        n: p_reg(toks[2])?,
+                        func_id: p_func_id(toks[3], &m.funcs)?,
+                        base: p_reg(toks[4])?,
+                        arg: p_reg(toks[5])?,
                     },
                     "br" => Inst::Br {
                         cond: p_reg(toks[1])?,
@@ -619,10 +621,9 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                                 lhs: p_reg(toks[3])?,
                                 rhs: p_reg(toks[4])?,
                             },
-                            "sync" => Inst::Sync {
+                            "smp_workers" => Inst::SmpWorkers {
                                 dst: d,
                                 smp: p_reg(toks[3])?,
-                                core: p_reg(toks[4])?,
                             },
                             op_str => Inst::Bin {
                                 dst: d,

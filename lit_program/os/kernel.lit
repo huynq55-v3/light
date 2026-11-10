@@ -2,6 +2,7 @@
 # LIGHT OS MICRO-EXOKERNEL: Cấp Lô 64GB Động qua Bảng Quản trị Shell
 
 include init.lit
+include diag.lit
 
 layout KernelState 16 {
     0: bv64 @inv ule val 64
@@ -59,6 +60,10 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         %6 = const 0x7c000 ptr<DiskQword,64>
         %9 = const 0x200000 ptr<VgaCell,921600>
         %10 = const 0x600000 ptr<VgaCell,921600>
+
+        # Tự kiểm tra fork-join đa nhân (in kết quả ra serial)
+        %30 = const 0x7e000 smp
+        call smp_selftest %0 %30
 
         %11 = call kregister_task %1 %2
         %12 = call kregister_task %1 %11

@@ -6,7 +6,6 @@ include ../lib/std_lib.lit
 include ../lib/ipc_bus.lit
 include ../lib/ui_canvas.lit
 include ../lib/cap_mem.lit
-include ../lib/smp.lit
 include ../lib/vfs_api.lit
 include ../lib/ui_file_browser.lit
 include ../lib/ui_text_view.lit
@@ -78,12 +77,6 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
         ret
 }
 
-# 2. Worker dummy cho SMP scheduler
-func app_smp_worker void %0:bv64 %1:bv64 %2:bv64 {
-
-    @b0
-        ret
-}
 
 # 3. Khởi tạo Banner khởi động bằng Qword String Literal ("...")
 func term_init_banner void %0:ptr<DiskQword,64> {
@@ -843,11 +836,9 @@ func term_cmd_clear void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> {
 }
 
 # 17. Thực thi lệnh 'sys': In số CPU worker, AP online, và trạng thái chạy ngầm
-func term_cmd_sys void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<IpcChannel,1> {
+func term_cmd_sys void %0:ptr<DiskQword,64> %1:smp %2:ptr<IpcChannel,1> {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
     @req uge %2 0x10000
     @req ult %2 0x80000000
 
@@ -856,15 +847,8 @@ func term_cmd_sys void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<IpcChann
         call term_append_qword %0 %3
         %4 = const "RS: " bv64
         call term_append_qword %0 %4
-        %12 = call smp_get_worker_count %1
+        %12 = smp_workers %1
         call term_append_dec %0 %12
-
-        %13 = const "  ONLINE" bv64
-        call term_append_qword %0 %13
-        %14 = const ": " bv64
-        call term_append_qword %0 %14
-        %17 = call smp_get_ap_count %1
-        call term_append_dec %0 %17
 
         %18 = const "  BG_MAS" bv64
         call term_append_qword %0 %18
@@ -893,7 +877,7 @@ func term_cmd_help void %0:ptr<DiskQword,64> {
 }
 
 # 19. Dispatcher thông dịch lệnh từ Command Line (Qwords 50..60)
-func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> {
+func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:ptr<IpcChannel,1> %4:smp {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -902,8 +886,6 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
     @req ult %2 0x80000000
     @req uge %3 0x10000
     @req ult %3 0x80000000
-    @req uge %4 0x10000
-    @req ult %4 0x80000000
 
     @b0
         %16 = const 400 bv64
@@ -1277,7 +1259,7 @@ func term_render_retro_view void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:
 }
 
 # 24. Vòng lặp chính của Shell App (app_terminal_main)
-func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:ptr<DiskQword,64> {
+func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -1288,8 +1270,6 @@ func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<D
     @req ult %3 0x80000000
     @req uge %4 0x10000
     @req ult %4 0x80000000
-    @req uge %5 0x10000
-    @req ult %5 0x80000000
 
     @b0
         %6 = const 200 bv64

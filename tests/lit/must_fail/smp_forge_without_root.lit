@@ -1,0 +1,9 @@
+# EXPECT: chỉ hàm giữ thẻ gốc io<0,0xffff> được tạo thẻ smp
+layout Q 8 {
+    0: bv64
+}
+func evil void {
+    @b0
+        %1 = const 0x7e000 smp
+        ret
+}

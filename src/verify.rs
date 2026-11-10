@@ -7,6 +7,10 @@ use z3::{Config, Context, Params, SatResult, Solver};
 pub const RAM_MIN: u64 = 0x1_0000;
 pub const RAM_TOP: u64 = 0x100_0000_0000;
 pub const STACK_BUDGET: u64 = 0x6_0000;
+/// Stack mỗi nhân AP = 32KB (0x150000 + apic_id * 32KB, xem elf64.rs). Hàm worker của `parallel` phải vừa.
+pub const AP_STACK_BUDGET: u64 = 0x7000;
+/// Địa chỉ cố định duy nhất của bảng SMP
+pub const SMP_TABLE: u64 = 0x7e000;
 const TIMEOUT_MS: u32 = 10_000;
 const ROOT_IO: Type = Type::Io {
     min: 0,
@@ -38,6 +42,7 @@ fn can_delegate(from: Type, to: Type) -> bool {
                 max_elems: m2,
             },
         ) => l1 == l2 && m2 <= m1,
+        (Type::Smp, Type::Smp) => true,
         _ => int_bits(from).is_some() && int_bits(to).is_some(),
     }
 }
@@ -53,7 +58,7 @@ fn dst_of(i: &Inst) -> Option<Reg> {
         | Inst::Cmp { dst, .. }
         | Inst::Slice { dst, .. }
         | Inst::Load { dst, .. }
-        | Inst::Sync { dst, .. }
+        | Inst::SmpWorkers { dst, .. }
         | Inst::Simd256 {
             op: SimdOp::Dot,
             dst,
@@ -90,14 +95,8 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
                 vec![*dst, *lhs, *rhs]
             }
         }
-        Inst::Spawn {
-            smp,
-            core,
-            fn_addr,
-            slice_ptr,
-            arg1,
-        } => vec![*smp, *core, *fn_addr, *slice_ptr, *arg1],
-        Inst::Sync { smp, core, .. } => vec![*smp, *core],
+        Inst::Parallel { smp, n, base, arg, .. } => vec![*smp, *n, *base, *arg],
+        Inst::SmpWorkers { smp, .. } => vec![*smp],
         Inst::AtaRead { cap, ptr, idx, nsec } => vec![*cap, *ptr, *idx, *nsec],
         Inst::HwIo { cap, val, .. } => std::iter::once(*cap).chain(val.iter().copied()).collect(),
         Inst::Br { cond, .. } => vec![*cond],
@@ -376,7 +375,7 @@ pub fn check_module(module: &Module) -> Result<(), String> {
         st[f] = 1;
         let mut deepest = 0;
         for i in m.funcs[f].blocks.iter().flat_map(|b| &b.insts) {
-            if let Inst::Call { func_id, .. } = i {
+            if let Inst::Call { func_id, .. } | Inst::Parallel { func_id, .. } = i {
                 let id = *func_id as usize;
                 if id >= m.funcs.len() {
                     return Err(format!(
@@ -412,6 +411,37 @@ pub fn check_module(module: &Module) -> Result<(), String> {
             ));
         }
     }
+    // Hàm worker của `parallel`: chạy trên stack 32KB của nhân AP, và không được (bắc cầu) gọi `parallel`
+    // (một AP chờ chính slot của nó -> deadlock).
+    fn has_parallel(m: &Module, f: usize, seen: &mut Vec<bool>) -> bool {
+        if std::mem::replace(&mut seen[f], true) {
+            return false;
+        }
+        m.funcs[f].blocks.iter().flat_map(|b| &b.insts).any(|i| match i {
+            Inst::Parallel { .. } => true,
+            Inst::Call { func_id, .. } => has_parallel(m, *func_id as usize, seen),
+            _ => false,
+        })
+    }
+    for f in &module.funcs {
+        for i in f.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::Parallel { func_id, .. } = i {
+                let w = *func_id as usize;
+                if memo[w] > AP_STACK_BUDGET {
+                    return Err(format!(
+                        "parallel trong '{}': worker '{}' cần {} byte stack > stack nhân AP {}",
+                        f.name, module.funcs[w].name, memo[w], AP_STACK_BUDGET
+                    ));
+                }
+                if has_parallel(module, w, &mut vec![false; n]) {
+                    return Err(format!(
+                        "parallel trong '{}': worker '{}' (bắc cầu) dùng parallel lồng nhau — không cho phép",
+                        f.name, module.funcs[w].name
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -425,8 +455,6 @@ struct Verifier<'ctx> {
     cur_regs: Vec<Reg>,
     regs: Env<'ctx>,
     reg_tys: HashMap<Reg, Type>,
-    slice_base: HashMap<Reg, Reg>,
-    active_spawns: Vec<(BV<'ctx>, BV<'ctx>, u64)>,
     cur_cond: Option<Bool<'ctx>>,
     conds: HashMap<usize, Option<Bool<'ctx>>>,
     pos: Vec<usize>,
@@ -448,10 +476,11 @@ fn fmt_inst(module: &Module, inst: &Inst) -> String {
         Inst::Simd256 { op, dst, lhs, rhs } => {
             format!("{:?} %{} %{} %{}", op, dst, lhs, rhs)
         }
-        Inst::Spawn { smp, core, fn_addr, slice_ptr, arg1 } => {
-            format!("spawn %{} %{} %{} %{} %{}", smp, core, fn_addr, slice_ptr, arg1)
+        Inst::Parallel { smp, n, func_id, base, arg } => {
+            let fname = module.funcs.get(*func_id as usize).map(|f| f.name.as_str()).unwrap_or("?");
+            format!("parallel %{} %{} {} %{} %{}", smp, n, fname, base, arg)
         }
-        Inst::Sync { dst, smp, core } => format!("%{} = sync %{} %{}", dst, smp, core),
+        Inst::SmpWorkers { dst, smp } => format!("%{} = smp_workers %{}", dst, smp),
         Inst::AtaRead { cap, ptr, idx, nsec } => format!("ata_read %{} %{} %{} %{}", cap, ptr, idx, nsec),
         Inst::HwIo { dst, cap, port_or_reg, val, is_write } => {
             if *is_write {
@@ -833,6 +862,14 @@ impl<'ctx> Verifier<'ctx> {
         match inst {
             Inst::Const { dst, ty, val } => {
                 match ty {
+                    Type::Smp => {
+                        if *val != SMP_TABLE || !func.params.iter().any(|&(_, t)| t == ROOT_IO) {
+                            return Err(format!(
+                                "Bảo mật: chỉ hàm giữ thẻ gốc io<0,0xffff> được tạo thẻ smp, và chỉ tại {:#x} (%{})",
+                                SMP_TABLE, dst
+                            ));
+                        }
+                    }
                     Type::Io { .. } => {
                         return Err(format!(
                             "Bảo mật: Không thể tạo thẻ quyền năng Io bằng const tại %{}",
@@ -974,8 +1011,6 @@ impl<'ctx> Verifier<'ctx> {
                 let valid = self.ptr_valid(&d, l2, max_new)?;
                 self.check(&valid, &format!("Con trỏ slice tại %{} ra ngoài RAM", dst))?;
                 self.assume(&valid);
-                let root = self.slice_base.get(base).copied().unwrap_or(*base);
-                self.slice_base.insert(*dst, root);
             }
             Inst::Load {
                 dst,
@@ -1063,101 +1098,62 @@ impl<'ctx> Verifier<'ctx> {
                     }
                 }
             }
-            Inst::Spawn {
-                smp,
-                core,
-                fn_addr,
-                slice_ptr,
-                arg1,
-            } => {
-                let Type::Ptr {
-                    layout_id: smp_l,
-                    max_elems: smp_m,
-                } = self.reg_ty(*smp)?
-                else {
-                    return Err(format!("Lệnh spawn: %{} không phải con trỏ bảng SMP", smp));
-                };
-                if self.ptr_bytes(smp_l, smp_m)? < 512 {
-                    return Err(format!(
-                        "Lệnh spawn: bảng điều khiển SMP %{} phải có tối thiểu 512 bytes",
-                        smp
-                    ));
+            Inst::Parallel { smp, n, func_id, base, arg } => {
+                if self.reg_ty(*smp)? != Type::Smp {
+                    return Err(format!("parallel: %{} phải là thẻ smp", smp));
                 }
-                for &r in &[core, fn_addr, arg1] {
-                    if self.reg_ty(*r)? != Type::Bv64 {
-                        return Err(format!("Lệnh spawn: tham số %{} phải mang kiểu bv64", r));
+                let worker = module.funcs.get(*func_id as usize).ok_or("parallel: hàm không tồn tại")?;
+                let Type::Ptr { layout_id: lb, max_elems: mb } = self.reg_ty(*base)? else {
+                    return Err(format!("parallel: %{} phải là ptr", base));
+                };
+                let (wp, wt) = match worker.params.as_slice() {
+                    [(p0, Type::Ptr { layout_id, max_elems }), (p1, Type::Bv64), (p2, Type::Bv64)]
+                        if *layout_id == lb =>
+                    {
+                        ([*p0, *p1, *p2], *max_elems)
                     }
-                }
-                let core_bv = self.get_reg(*core)?.clone();
-                self.check(
-                    &Bool::and(
-                        self.ctx,
-                        &[&core_bv.bvuge(&self.bv(1)), &core_bv.bvule(&self.bv(15))],
-                    ),
-                    &format!("Lệnh spawn: chỉ số nhân AP %{} phải thuộc [1..15]", core),
-                )?;
-
-                let Type::Ptr {
-                    layout_id,
-                    max_elems,
-                } = self.reg_ty(*slice_ptr)?
-                else {
-                    return Err(format!(
-                        "Bảo mật Đa luồng: Vùng nhớ %{} truyền vào spawn phải là con trỏ lát cắt Ptr",
-                        slice_ptr
-                    ));
+                    _ => {
+                        return Err(format!(
+                            "parallel: worker '{}' phải có chữ ký (ptr<{},K>, bv64 arg, bv64 chỉ_số)",
+                            worker.name, self.layouts[lb as usize].name
+                        ));
+                    }
                 };
-                let slice_bytes = self.ptr_bytes(layout_id, max_elems)?;
-                let ptr_bv = self.get_reg(*slice_ptr)?.clone();
-
-                // 1. Kiểm chứng Z3 Disjoint Slice giữa các lệnh spawn cùng hoạt động
-                for (prev_core, prev_ptr, prev_bytes) in &self.active_spawns {
-                    let disjoint = Bool::or(
-                        self.ctx,
-                        &[
-                            &core_bv._eq(prev_core),
-                            &prev_ptr.bvadd(&self.bv(*prev_bytes)).bvule(&ptr_bv),
-                            &ptr_bv.bvadd(&self.bv(slice_bytes)).bvule(prev_ptr),
-                        ],
-                    );
-                    self.check(
-                        &disjoint,
-                        &format!(
-                            "Vi phạm Disjoint Slice (Data Race): lát cắt %{} chồng lấn với nhân khác",
-                            slice_ptr
-                        ),
+                if int_bits(self.reg_ty(*n)?).is_none() || int_bits(self.reg_ty(*arg)?).is_none() {
+                    return Err("parallel: %n và %arg phải là số nguyên".into());
+                }
+                let n_bv = self.get_reg(*n)?.clone();
+                self.check(
+                    &Bool::and(self.ctx, &[&n_bv.bvuge(&self.bv(1)), &n_bv.bvule(&self.bv(16))]),
+                    &format!("parallel: số phần %{} phải thuộc [1..16]", n),
+                )?;
+                // n phần, mỗi phần K phần tử, phải nằm trọn trong %base (M phần tử). n <= 16 nên n*K không tràn.
+                self.check(
+                    &n_bv.bvmul(&self.bv(wt)).bvule(&self.bv(mb)),
+                    &format!("parallel: %{} phần x {} phần tử vượt kích thước %{} ({} phần tử)", n, wt, base, mb),
+                )?;
+                // @req của worker phải đúng với MỌI chỉ số i < n
+                let i = BV::fresh_const(self.ctx, "par_i", 64);
+                let in_range = i.bvult(&n_bv);
+                let elem = self.layouts[lb as usize].size as u64;
+                let mut env = HashMap::new();
+                env.insert(wp[0], self.get_reg(*base)?.bvadd(&i.bvmul(&self.bv(wt * elem))));
+                env.insert(wp[1], self.get_reg(*arg)?.clone());
+                env.insert(wp[2], i.clone());
+                for (k, req) in worker.requires.iter().enumerate() {
+                    self.check_with(
+                        Some(&in_range),
+                        &self.eval_bool(req, &env, None)?,
+                        &format!("parallel: vi phạm @req #{} của worker '{}' với một chỉ số phần", k, worker.name),
                     )?;
                 }
-
-                // 2. Kiểm chứng Z3 Partitioning: Lát cắt của nhân %core phải nằm trong phân vùng riêng [root + core*sz .. root + (core+1)*sz]
-                let root_reg = self.slice_base.get(slice_ptr).copied().ok_or_else(|| {
-                    format!(
-                        "Vi phạm Disjoint Slice: %{} truyền vào spawn phải được cắt bằng lệnh slice từ mảng gốc",
-                        slice_ptr
-                    )
-                })?;
-                let root_bv = self.get_reg(root_reg)?.clone();
-                let part_lo = root_bv.bvadd(&core_bv.bvmul(&self.bv(slice_bytes)));
-                let part_hi = root_bv.bvadd(
-                    &core_bv
-                        .bvadd(&self.bv(1))
-                        .bvmul(&self.bv(slice_bytes)),
-                );
-                self.check(
-                    &Bool::and(
-                        self.ctx,
-                        &[
-                            &ptr_bv.bvuge(&part_lo),
-                            &ptr_bv.bvadd(&self.bv(slice_bytes)).bvule(&part_hi),
-                        ],
-                    ),
-                    &format!(
-                        "Vi phạm Disjoint Slice (Data Race): lát cắt %{} không tách biệt theo chỉ số nhân %{}",
-                        slice_ptr, core
-                    ),
-                )?;
-
-                self.active_spawns.push((core_bv, ptr_bv, slice_bytes));
+            }
+            Inst::SmpWorkers { dst, smp } => {
+                if self.reg_ty(*smp)? != Type::Smp {
+                    return Err(format!("smp_workers: %{} phải là thẻ smp", smp));
+                }
+                let d = self.decl_reg(*dst, Type::Bv64)?;
+                self.solver.assert(&d.bvule(&self.bv(15)));
             }
             Inst::AtaRead { cap, ptr, idx, nsec } => {
                 let Type::Io { min, max } = self.reg_ty(*cap)? else {
@@ -1185,32 +1181,6 @@ impl<'ctx> Verifier<'ctx> {
                     &i_bv.bvadd(&n_bv).bvmul(&self.bv(512)).bvule(&self.bv(max_elems * esz)),
                     "ata_read: ghi vượt biên vùng nhớ đích",
                 )?;
-            }
-            Inst::Sync { dst, smp, core } => {
-                let Type::Ptr {
-                    layout_id: smp_l,
-                    max_elems: smp_m,
-                } = self.reg_ty(*smp)?
-                else {
-                    return Err(format!("Lệnh sync: %{} không phải con trỏ bảng SMP", smp));
-                };
-                if self.ptr_bytes(smp_l, smp_m)? < 512 {
-                    return Err(format!(
-                        "Lệnh sync: bảng điều khiển SMP %{} phải có tối thiểu 512 bytes",
-                        smp
-                    ));
-                }
-                let core_bv = self.get_reg(*core)?.clone();
-                self.check(
-                    &Bool::and(
-                        self.ctx,
-                        &[&core_bv.bvuge(&self.bv(1)), &core_bv.bvule(&self.bv(15))],
-                    ),
-                    &format!("Lệnh sync: chỉ số nhân AP %{} phải thuộc [1..15]", core),
-                )?;
-                self.active_spawns.clear();
-                let d = self.decl_reg(*dst, Type::Bv64)?;
-                self.assume(&d.bvule(&self.bv(1)));
             }
             Inst::HwIo {
                 dst,
@@ -1447,8 +1417,6 @@ fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
         cur_regs: Vec::new(),
         regs: HashMap::new(),
         reg_tys: HashMap::new(),
-        slice_base: HashMap::new(),
-        active_spawns: Vec::new(),
         cur_cond: None,
         conds: HashMap::from([(0, None)]),
         pos: cfg.pos.clone(),
