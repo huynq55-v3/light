@@ -107,10 +107,19 @@ if [ $MODE = full ]; then
         run efibootmgr -q -b "$n" -B
     done
     if ! efibootmgr | grep -q 'Light OS'; then
-        ORDER=$(efibootmgr | sed -n 's/^BootOrder: //p')
         run efibootmgr -q -c -d $DISK -p $ESPNUM -L "Light OS" -l '\EFI\lightos\lightos.efi'
-        NEW=$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\* Light OS.*/\1/p' | head -1)
-        [ -n "${NEW:-}" ] && run efibootmgr -q -o "$ORDER,$NEW"
+    fi
+    # efibootmgr -c đặt mục mới lên ĐẦU BootOrder -> chuyển xuống cuối. BootOrder của HP có thể chứa số không tồn tại
+    # (vd 2002, 2004) mà efibootmgr -o từ chối -> chỉ giữ các mục có thật.
+    NEW=$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\* Light OS.*/\1/p' | head -1)
+    if [ -n "${NEW:-}" ]; then
+        EXIST=$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} .*/\1/p')
+        ORDER=""
+        for e in $(efibootmgr | sed -n 's/^BootOrder: //p' | tr ',' ' '); do
+            [ "$e" = "$NEW" ] && continue
+            echo "$EXIST" | grep -qx "$e" && ORDER="$ORDER${ORDER:+,}$e"
+        done
+        run efibootmgr -q -o "$ORDER${ORDER:+,}$NEW"
     fi
     if grep -q 'Rust-only OS' /etc/grub.d/40_custom || ! grep -q 'Light OS' /etc/grub.d/40_custom; then
         NEWC=$(mktemp)
