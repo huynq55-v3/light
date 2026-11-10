@@ -40,14 +40,16 @@ và vòng lặp AI tự sửa lỗi.
 - [x] Installer: BootOrder của HP chứa số mục không tồn tại → lọc trước khi `efibootmgr -o`.
 - [x] ATA: chờ trạng thái dừng ngay khi có ERR (trước đây đọc quá cuối đĩa mất > 4 phút trên `qemu -kernel`, giờ ~4 giây).
 
-### Bước 5b — Chuột trên máy thật (chưa làm)
-Laptop không có chuột PS/2: touchpad Synaptics `SYNA32A9` (06CB:CE17) nằm trên I2C (Intel Serial IO I2C #1, PCI 00:15.1,
-DesignWare), chuột ngoài PixArt + bàn phím SINO WEALTH cắm USB (xHCI 8086:a0ed, PCI 00:14.0).
-- [ ] Phương án A — touchpad: driver I2C DesignWare (MMIO BAR0, chế độ master, polling) + giao thức HID-over-I2C
-      (đọc HID descriptor, reset, đọc input report; chế độ chuột mặc định trước khi bật PTP). Cần địa chỉ slave và
-      thanh ghi HID descriptor (lấy từ ACPI `_CRS`/`_DSM`, hoặc ghi cứng sau khi đọc từ Linux).
-- [ ] Phương án B — USB: driver xHCI (ring lệnh/sự kiện/truyền, context thiết bị, enumerate cổng gốc, HID boot protocol
-      cho chuột + bàn phím). Lớn hơn nhưng dùng được mọi chuột/bàn phím USB.
+### Bước 5b — Bàn phím/chuột USB (code xong, đã test QEMU; chờ thử trên laptop)
+Laptop không có chuột PS/2. Chuột PixArt (low-speed) + bàn phím SINO WEALTH (full-speed) cắm USB, nối thẳng vào cổng gốc
+của xHCI PCH 00:14.0 (8086:a0ed). Touchpad Synaptics trên I2C (00:15.1) chưa hỗ trợ.
+- [x] Driver xHCI bằng Light (`drivers/usb_xhci.lit`): BIOS handoff, reset, scratchpad, ring lệnh/sự kiện/EP0/interrupt,
+      reset cổng USB2, Address Device, Evaluate Context (MPS EP0), descriptor, HID boot, Configure Endpoint.
+- [x] Báo cáo HID → gói PS/2 / scancode set 1, dùng chung `kbd_handle_scancode`. Thử nhiều controller lần lượt.
+- [x] QEMU (`qemu-xhci` + `usb-kbd` + `usb-mouse`, tắt i8042): gõ phím, Shift, F2, click đóng cửa sổ, click Dock; cả đường
+      `-kernel` lẫn OVMF/GRUB/NVMe (firmware đã dùng xHCI trước → phải giành lại).
+- [ ] Thử trên laptop (dòng `USB` trên màn hình). Chưa hỗ trợ: hub USB, thiết bị không có boot protocol, bàn phím tự lặp
+      phím khi giữ, đèn Caps Lock, phím mũi tên. Touchpad I2C: để sau.
 
 ## 📋 Tiếp theo
 
@@ -73,7 +75,7 @@ DesignWare), chuột ngoài PixArt + bàn phím SINO WEALTH cắm USB (xHCI 8086
 - [ ] Cửa sổ App vẫn cố định 880×540 (chỉ được dời ra giữa màn 1920×1080); App chưa biết kích thước màn hình.
 - [ ] Cửa sổ ảo 32GB/App; tối đa 7 App.
 - [ ] Không có ngắt (mọi thiết bị đều thăm dò); không có bộ đếm thời gian thật (timeout tính bằng số vòng lặp).
-- [ ] USB (bàn phím/chuột ngoài) chưa hỗ trợ; touchpad I2C chưa hỗ trợ.
+- [ ] Touchpad I2C chưa hỗ trợ; USB chưa có hub, chưa có ngắt (thăm dò mỗi nhịp scheduler).
 
 ---
 

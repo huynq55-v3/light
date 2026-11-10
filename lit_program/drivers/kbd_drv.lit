@@ -379,40 +379,17 @@ func kbd_apply_shift bv8 %0:bv64 %1:bv64 {
 }
 
 # 3. Lắng nghe và đọc gói tin Bàn phím (Hỗ trợ giữ/nhả Shift) & Chuột
-func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
+# Xử lý 1 scancode PS/2 (set 1): Shift/Caps, F1..F7 = bấm ô Dock, F12 = khởi động lại, phím thường -> hàng đợi phím.
+# Dùng chung cho bàn phím PS/2 và bàn phím USB (driver USB đổi mã HID sang scancode set 1).
+func kbd_handle_scancode void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %12:bv64 {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
     @req ult %2 0x80000000
 
     @b0
-        %3 = const 0 bv64
-        jmp @b1 %3
-
-    @b1 %4:bv64
-        @inv ule %4 24
-        %5 = const 24 bv64
-        %6 = cmp ult %4 %5
-        br %6 @b2 @b9
-
-    @b2
-        %7 = hwio_r %0 0x64
-        %8 = const 1 bv64
-        %9 = and %7 %8
         %10 = const 0 bv64
-        %11 = cmp ne %9 %10
-        br %11 @b3 @b9
-
-    @b3
-        %12 = hwio_r %0 0x60
-        %13 = const 32 bv64
-        %14 = and %7 %13
-        %15 = cmp ne %14 %10
-        br %15 @b4 @b5
-
-    @b4
-        call drv_mouse_handle_byte %2 %12
-        jmp @b8
+        jmp @b5
 
     @b5
         # Kiểm tra Nhấn phím Shift: Left Shift (42) hoặc Right Shift (54)
@@ -428,7 +405,7 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         %301 = const 1 bv64
         %302 = or %300 %301
         store %2 160 %302                   # shift_bit = 1
-        jmp @b8
+        ret
 
     @b52
         # Kiểm tra Nhả phím Shift: Left Shift Release (170) hoặc Right Shift Release (182)
@@ -444,7 +421,7 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         %304 = const 0xfffffffffffffffe bv64
         %305 = and %303 %304
         store %2 160 %305                   # shift_bit = 0
-        jmp @b8
+        ret
 
     @b520
         # Kiểm tra Phím Caps Lock (58)
@@ -457,7 +434,7 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         %313 = const 2 bv64
         %314 = xor %312 %313
         store %2 160 %314                   # đảo trạng thái caps_lock
-        jmp @b8
+        ret
 
     @b54
         # F1..F7 (scancode 59..65) = bấm ô Dock 0..6: máy không có chuột PS/2 (touchpad I2C) vẫn mở được App.
@@ -480,7 +457,7 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         store %2 184 %329
         store %2 192 %330
         store %2 32 %331
-        jmp @b8
+        ret
 
     @b56
         # F12 (scancode 0x58) = khởi động lại: lệnh 0xFE của bộ điều khiển i8042 kéo chân RESET của CPU
@@ -491,7 +468,7 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
     @b57
         %334 = const 0xfe bv8
         hwio_w %0 0x64 %334
-        jmp @b8
+        ret
 
     @b58
         %16 = const 64 bv64
@@ -518,6 +495,52 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         %40 = load %2 160 bv64              # Đọc trạng thái shift_down
         %41 = call kbd_apply_shift %27 %40
         call ipc_key_push %2 %41
+        ret
+
+    @b8
+        ret
+}
+
+func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+
+    @b0
+        %3 = const 0 bv64
+        jmp @b1 %3
+
+    @b1 %4:bv64
+        @inv ule %4 24
+        %5 = const 24 bv64
+        %6 = cmp ult %4 %5
+        br %6 @b2 @b9
+
+    @b2
+        %7 = hwio_r %0 0x64
+        %8 = const 1 bv64
+        %9 = and %7 %8
+        %10 = const 0 bv64
+        %11 = cmp ne %9 %10
+        %90 = const 0xff bv64
+        %91 = cmp ne %7 %90                 # không có i8042 (bus trôi) -> trạng thái 0xff: bỏ qua
+        %92 = and %11 %91
+        br %92 @b3 @b9
+
+    @b3
+        %12 = hwio_r %0 0x60
+        %13 = const 32 bv64
+        %14 = and %7 %13
+        %15 = cmp ne %14 %10
+        br %15 @b4 @b5
+
+    @b4
+        call drv_mouse_handle_byte %2 %12
+        jmp @b8
+
+    @b5
+        call kbd_handle_scancode %0 %1 %2 %12
         jmp @b8
 
     @b8

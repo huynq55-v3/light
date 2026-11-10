@@ -47,24 +47,12 @@ pub fn compile_all_apps(src_dir: &str, out_dir: &str) -> Result<usize, String> {
 
 pub fn build_disk_img() -> Result<(), String> {
     fs::create_dir_all("storage/apps").map_err(|e| e.to_string())?;
-    fs::create_dir_all("storage/data/proj").map_err(|e| e.to_string())?;
+    fs::create_dir_all("storage/data").map_err(|e| e.to_string())?;
 
     // Khởi tạo 2 file dữ liệu mẫu nếu chưa tồn tại (do revert git)
     let note_path = Path::new("storage/data/note.txt");
     if !note_path.exists() {
-        fs::write(
-            note_path,
-            b"NOTE.TXT: HELLO LIGHT OS! ZERO FLICKER VFS.\nMOUNTED DIRECTLY FROM LINUX STORAGE/DATA!\0",
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    let demo_path = Path::new("storage/data/proj/demo.lit");
-    if !demo_path.exists() {
-        fs::write(
-            demo_path,
-            b"# FILE: STORAGE/DATA/PROJ/DEMO.LIT\nFUNC DEEP_TEST VOID {\n  RET\n}\0",
-        )
-        .map_err(|e| e.to_string())?;
+        fs::write(note_path, b"Hello world from light os!").map_err(|e| e.to_string())?;
     }
 
     // 1. Tự động duyệt và biên dịch toàn bộ apps

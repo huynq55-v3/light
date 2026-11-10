@@ -1,0 +1,2165 @@
+# File: lit_program/drivers/usb_xhci.lit
+# Driver USB xHCI (thăm dò, không ngắt) + bàn phím/chuột HID kiểu boot protocol.
+#
+# - Quét PCI bus 0 tìm controller class 0C:03:30. Laptop Intel có 2 controller (Thunderbolt 00:0d.0 và PCH 00:14.0):
+#   thử lần lượt, controller nào không có thiết bị HID thì dừng hẳn (halt + reset) rồi thử cái sau.
+# - Chỉ thiết bị cắm thẳng vào cổng gốc (không hỗ trợ hub). Tối đa 8 slot.
+# - Báo cáo chuột (nút, dx, dy) đổi thành gói PS/2 3 byte; mã phím HID đổi thành scancode set 1 rồi đi qua đúng
+#   code xử lý của driver PS/2 (kbd_drv.lit) -> Shift/Caps/F1..F12/click giữ nguyên hành vi.
+#
+# Vùng DMA 2MB tại vật lý = ảo 0x1400000 (PD_0[10], ánh xạ đồng nhất trong boot stub), xem như ptr<DiskQword,262144>.
+# Trang 4KB:
+#   0 DCBAA   1 ring lệnh   2 ring sự kiện (256 TRB)   3 ERST   4 mảng scratchpad   5 input context
+#   6 bảng trạng thái XS (512 qword)   7 bộ đệm dữ liệu control (0x1407000, 2KB) + bộ đệm báo cáo (0x1407800, 64B/slot)
+#   8..15 output context slot 1..8   16..23 ring EP0 slot 1..8   24..31 ring interrupt IN slot 1..8
+#   32..287 trang scratchpad (tối đa 256)
+# Ring lệnh/EP0/interrupt: 64 ô, ô 63 là Link TRB (đảo cycle).
+#
+# Bảng XS:
+#   0 sẵn sàng (1 = có ít nhất 1 thiết bị HID đang chạy)   1 chỉ số Mmio32 của BAR trong cửa sổ   2 CAPLENGTH
+#   3 RTSOFF   4 DBOFF   5 kích thước context (32/64)   6 số cổng   7/8 ring lệnh (enq, cycle)   9/10 ring sự kiện (deq, cycle)
+#   16 + (slot-1)*8: +0 loại (0 không, 1 bàn phím, 2 chuột) +1 DCI endpoint +2 MPS (EP0, sau đó endpoint IN)
+#                    +3 báo cáo trước (bàn phím) +4 cổng +5 interface +6 tốc độ
+#   30..35 kết quả phân tích descriptor   80 + 2*slot: ring EP0 (enq, cycle)   100 + 2*slot: ring interrupt
+#   400..408 bảng mã HID usage (0..71) -> scancode set 1
+# MMIO: BAR0 ánh xạ UC vào PD_MMIO[2..3] = ảo 0x80_4040_0000.
+# Chẩn đoán: HW[40] = giai đoạn << 56 | dev PCI << 48 | số cổng << 40 | số slot << 32 | mã hoàn thành cuối << 24
+#             | bàn phím << 16 | chuột << 8 | bước cuối của xh_probe (1 desc thiết bị, 2 desc cấu hình 9B, 3 desc đầy đủ,
+#             4 phân tích, 5 Configure Endpoint, 6 SET_CONFIGURATION)
+
+include ../os/hw.lit
+include kbd_drv.lit
+
+# ---------------------------------------------------------------------------------------------------------------
+# Bộ nhớ DMA + bảng trạng thái
+# ---------------------------------------------------------------------------------------------------------------
+func xm_get bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 262144
+
+    @b0
+        %2 = const 0x1400000 ptr<DiskQword,262144>
+        %3 = slice %2 %1 ptr<DiskQword,1>
+        %4 = load %3 0 bv64
+        ret %4
+}
+
+func xm_set void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 262144
+
+    @b0
+        %3 = const 0x1400000 ptr<DiskQword,262144>
+        %4 = slice %3 %1 ptr<DiskQword,1>
+        store %4 0 %2
+        ret
+}
+
+func xm_zero_page void %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 512
+
+    @b0
+        %2 = const 512 bv64
+        %3 = mul %1 %2
+        %4 = const 0x1400000 ptr<DiskQword,262144>
+        %5 = slice %4 %3 ptr<DiskQword,512>
+        call page_zero %5
+        ret
+}
+
+func xs_get bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 512
+
+    @b0
+        %2 = const 3072 bv64
+        %3 = add %2 %1
+        %4 = call xm_get %0 %3
+        ret %4
+}
+
+func xs_set void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 512
+
+    @b0
+        %3 = const 3072 bv64
+        %4 = add %3 %1
+        call xm_set %0 %4 %2
+        ret
+}
+
+# Byte %1 của bộ đệm dữ liệu control (0x1407000)
+func xh_bb bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 512
+    @ens ule %10 0xff
+
+    @b0
+        %2 = const 3 bv64
+        %3 = lshr %1 %2
+        %4 = const 3584 bv64
+        %5 = add %4 %3
+        %6 = call xm_get %0 %5
+        %7 = const 7 bv64
+        %8 = and %1 %7
+        %9 = shl %8 %2
+        %11 = lshr %6 %9
+        %12 = const 0xff bv64
+        %10 = and %11 %12
+        ret %10
+}
+
+# Ghi qword %2 của context %1 trong input context (trang 5). Context 0 = Input Control, 1 = Slot, 1 + DCI = endpoint.
+func xh_ictx void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
+    @req ult %1 33
+    @req ult %2 4
+
+    @b0
+        %4 = const 5 bv64
+        %5 = call xs_get %0 %4
+        %6 = const 3 bv64
+        %7 = lshr %5 %6
+        %8 = const 8 bv64
+        %9 = call std_min %7 %8             # qword mỗi context: 4 (32B) hoặc 8 (64B)
+        %10 = mul %1 %9
+        %11 = const 2560 bv64
+        %12 = add %11 %10
+        %13 = add %12 %2
+        call xm_set %0 %13 %3
+        ret
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Thanh ghi (BAR0 trong cửa sổ ảo 0x80_4040_0000)
+# ---------------------------------------------------------------------------------------------------------------
+func xh_reg ptr<Mmio32,1> %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 0x10000
+
+    @b0
+        %2 = const 1 bv64
+        %3 = call xs_get %0 %2
+        %4 = const 524288 bv64
+        %5 = call std_min %3 %4
+        %6 = const 2 bv64
+        %7 = lshr %1 %6
+        %8 = add %5 %7
+        %9 = const 0x8040400000 ptr<Mmio32,1048576>
+        %10 = slice %9 %8 ptr<Mmio32,1>
+        ret %10
+}
+
+func xh_rd bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 0x10000
+    @ens ule %5 0xffffffff
+
+    @b0
+        %2 = call xh_reg %0 %1
+        %3 = load %2 0 bv32
+        %4 = const 0 bv64
+        %5 = or %3 %4
+        ret %5
+}
+
+func xh_wr void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 0x10000
+    @req ule %2 0xffffffff
+
+    @b0
+        %3 = call xh_reg %0 %1
+        %4 = narrow %2 bv32
+        store %3 0 %4
+        ret
+}
+
+# Thanh ghi Operational (gốc = CAPLENGTH)
+func xh_op_rd bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 0x1000
+    @ens ule %6 0xffffffff
+
+    @b0
+        %2 = const 2 bv64
+        %3 = call xs_get %0 %2
+        %4 = const 0xff bv64
+        %5 = call std_min %3 %4
+        %7 = add %5 %1
+        %6 = call xh_rd %0 %7
+        ret %6
+}
+
+func xh_op_wr void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 0x1000
+    @req ule %2 0xffffffff
+
+    @b0
+        %3 = const 2 bv64
+        %4 = call xs_get %0 %3
+        %5 = const 0xff bv64
+        %6 = call std_min %4 %5
+        %7 = add %6 %1
+        call xh_wr %0 %7 %2
+        ret
+}
+
+func xh_op_wr64 void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 0xff0
+
+    @b0
+        %3 = const 0xffffffff bv64
+        %4 = and %2 %3
+        %5 = const 32 bv64
+        %6 = lshr %2 %5
+        %7 = const 4 bv64
+        %8 = add %1 %7
+        call xh_op_wr %0 %1 %4
+        call xh_op_wr %0 %8 %6
+        ret
+}
+
+# Thanh ghi Runtime (gốc = RTSOFF); interrupter 0 ở +0x20
+func xh_rt_wr void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 0x100
+    @req ule %2 0xffffffff
+
+    @b0
+        %3 = const 3 bv64
+        %4 = call xs_get %0 %3
+        %5 = const 0xfe00 bv64
+        %6 = call std_min %4 %5
+        %7 = add %6 %1
+        call xh_wr %0 %7 %2
+        ret
+}
+
+# Chuông cửa: %1 = slot (0 = controller/ring lệnh), %2 = giá trị (DCI đích)
+func xh_db void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 64
+    @req ule %2 0xffffffff
+
+    @b0
+        %3 = const 4 bv64
+        %4 = call xs_get %0 %3
+        %5 = const 0xfe00 bv64
+        %6 = call std_min %4 %5
+        %7 = mul %1 %3
+        %8 = add %6 %7
+        call xh_wr %0 %8 %2
+        ret
+}
+
+# Chờ (op[%1] & %2) == %3, tối đa %4 lần đọc. Trả 1 nếu được, 0 nếu hết giờ hoặc controller biến mất.
+func xh_op_wait bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
+    @req ult %1 0x1000
+    @req ule %4 100000000
+
+    @b0
+        %5 = const 0 bv64
+        jmp @b1 %5
+
+    @b1 %6:bv64
+        @inv ule %6 100000000
+        %7 = cmp ult %6 %4
+        br %7 @b2 @b9
+
+    @b2
+        %8 = call xh_op_rd %0 %1
+        %9 = const 0xffffffff bv64
+        %10 = cmp eq %8 %9
+        br %10 @b9 @b3
+
+    @b3
+        %11 = and %8 %2
+        %12 = cmp eq %11 %3
+        br %12 @b8 @b4
+
+    @b4
+        %13 = const 1 bv64
+        %14 = add %6 %13
+        jmp @b1 %14
+
+    @b8
+        %15 = const 1 bv64
+        ret %15
+
+    @b9
+        ret %5
+}
+
+# Trễ ~%1 lần đọc thanh ghi USBSTS (~0.3..2 µs mỗi lần)
+func xh_delay void %0:io<0,0xffff> %1:bv64 {
+    @req ule %1 100000000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 100000000
+        %4 = cmp ult %3 %1
+        br %4 @b2 @b9
+
+    @b2
+        %5 = const 4 bv64
+        %6 = call xh_op_rd %0 %5
+        %7 = const 1 bv64
+        %8 = add %3 %7
+        jmp @b1 %8
+
+    @b9
+        ret
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Ring TRB + ring sự kiện
+# ---------------------------------------------------------------------------------------------------------------
+
+# Đẩy 1 TRB (%3 = qword tham số, %4 = trạng thái | điều khiển << 32, bit cycle để 0) vào ring ở trang %1.
+# %2 = chỉ số XS lưu (enq, cycle). Ô 63 = Link TRB về đầu ring, đảo cycle.
+func xh_ring_push void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
+    @req ult %1 512
+    @req ult %2 510
+
+    @b0
+        %5 = call xs_get %0 %2
+        %6 = const 62 bv64
+        %7 = call std_min %5 %6
+        %8 = const 1 bv64
+        %9 = add %2 %8
+        %10 = call xs_get %0 %9
+        %11 = and %10 %8
+        %12 = const 512 bv64
+        %13 = mul %1 %12
+        %14 = const 2 bv64
+        %15 = mul %7 %14
+        %16 = add %13 %15
+        call xm_set %0 %16 %3
+        %17 = add %16 %8
+        %18 = const 0xfffffffeffffffff bv64
+        %19 = and %4 %18
+        %20 = const 32 bv64
+        %21 = shl %11 %20
+        %22 = or %19 %21
+        call xm_set %0 %17 %22               # qword chứa bit cycle ghi SAU CÙNG
+        %23 = add %7 %8
+        %24 = const 63 bv64
+        %25 = cmp ult %23 %24
+        br %25 @b1 @b2
+
+    @b1
+        call xs_set %0 %2 %23
+        ret
+
+    @b2
+        %26 = const 126 bv64
+        %27 = add %13 %26
+        %28 = const 4096 bv64
+        %29 = mul %1 %28
+        %30 = const 0x1400000 bv64
+        %31 = add %30 %29
+        call xm_set %0 %27 %31
+        %32 = add %27 %8
+        %33 = const 0x1802 bv64             # Link TRB (loại 6) | Toggle Cycle
+        %34 = or %33 %11
+        %35 = shl %34 %20
+        call xm_set %0 %32 %35
+        %36 = const 0 bv64
+        call xs_set %0 %2 %36
+        %37 = xor %11 %8
+        call xs_set %0 %9 %37
+        ret
+}
+
+# Lấy 1 sự kiện (nếu có): trả qword điều khiển của TRB sự kiện | bit 32, hoặc 0 nếu ring trống. Cập nhật ERDP.
+func xh_evt_next bv64 %0:io<0,0xffff> {
+    @b0
+        %1 = const 9 bv64
+        %2 = const 10 bv64
+        %3 = call xs_get %0 %1
+        %4 = const 255 bv64
+        %5 = and %3 %4
+        %6 = call xs_get %0 %2
+        %7 = const 1 bv64
+        %8 = and %6 %7
+        %9 = const 1024 bv64
+        %10 = const 2 bv64
+        %11 = mul %5 %10
+        %12 = add %9 %11
+        %13 = add %12 %7
+        %14 = call xm_get %0 %13
+        %15 = const 32 bv64
+        %16 = lshr %14 %15
+        %17 = and %16 %7
+        %18 = cmp eq %17 %8
+        br %18 @b1 @b9
+
+    @b1
+        %19 = add %5 %7
+        %20 = and %19 %4
+        %21 = const 0 bv64
+        %22 = cmp eq %20 %21
+        %23 = xor %8 %7
+        br %22 @b2 @b3
+
+    @b2
+        jmp @b4 %23
+
+    @b3
+        jmp @b4 %8
+
+    @b4 %24:bv64
+        call xs_set %0 %1 %20
+        call xs_set %0 %2 %24
+        %25 = const 16 bv64
+        %26 = mul %20 %25
+        %27 = const 0x1402008 bv64          # gốc ring sự kiện | EHB (ghi 1 để xóa)
+        %28 = add %27 %26
+        %29 = const 0x38 bv64
+        call xh_rt_wr %0 %29 %28
+        %30 = const 0x3c bv64
+        call xh_rt_wr %0 %30 %21
+        %31 = const 0x100000000 bv64
+        %32 = or %14 %31
+        ret %32
+
+    @b9
+        %33 = const 0 bv64
+        ret %33
+}
+
+# Chờ sự kiện loại %1 (32 = Transfer, 33 = Command Completion), bỏ qua loại khác. Trả như xh_evt_next, 0 = hết giờ.
+func xh_wait bv64 %0:io<0,0xffff> %1:bv64 {
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 3000000
+        %4 = const 3000000 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b9
+
+    @b2
+        %6 = call xh_evt_next %0
+        %7 = cmp ne %6 %2
+        br %7 @b3 @b4
+
+    @b3
+        %8 = const 42 bv64
+        %9 = lshr %6 %8
+        %10 = const 0x3f bv64
+        %11 = and %9 %10
+        %12 = cmp eq %11 %1
+        br %12 @b8 @b4
+
+    @b4
+        %13 = const 4 bv64
+        %14 = call xh_op_rd %0 %13
+        %15 = const 0xffffffff bv64
+        %16 = cmp eq %14 %15
+        br %16 @b9 @b5
+
+    @b5
+        %17 = const 1 bv64
+        %18 = add %3 %17
+        jmp @b1 %18
+
+    @b8
+        ret %6
+
+    @b9
+        ret %2
+}
+
+# Mã hoàn thành (1 = thành công, 13 = gói ngắn) của 1 sự kiện; 0 nếu không có sự kiện
+func xh_cc bv64 %0:bv64 {
+    @ens ule %4 0xff
+
+    @b0
+        %1 = const 24 bv64
+        %2 = lshr %0 %1
+        %3 = const 0xff bv64
+        %4 = and %2 %3
+        ret %4
+}
+
+# Mã hoàn thành %0 là thành công (1) hoặc gói ngắn (13)?
+func xh_ok bv64 %0:bv64 {
+    @b0
+        %2 = const 1 bv64
+        %3 = const 13 bv64
+        %4 = cmp eq %0 %2
+        %5 = cmp eq %0 %3
+        %6 = or %4 %5
+        br %6 @b1 @b2
+
+    @b1
+        %7 = const 1 bv64
+        ret %7
+
+    @b2
+        %8 = const 0 bv64
+        ret %8
+}
+
+func xh_cc_ok bv64 %0:bv64 {
+    @b0
+        %1 = call xh_cc %0
+        %9 = call xh_ok %1
+        ret %9
+}
+
+
+# Gửi 1 lệnh lên ring lệnh, chờ Command Completion. Trả sự kiện (0 = hết giờ).
+func xh_cmd bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @b0
+        %3 = const 1 bv64
+        %4 = const 7 bv64
+        call xh_ring_push %0 %3 %4 %1 %2
+        %5 = const 0 bv64
+        call xh_db %0 %5 %5
+        %6 = const 33 bv64
+        %7 = call xh_wait %0 %6
+        ret %7
+}
+
+# Control transfer trên EP0 của slot %1: %2 = gói SETUP 8 byte, %3 = wLength (dữ liệu ở 0x1407000).
+# Hướng dữ liệu theo bit 7 của bmRequestType. Trả mã hoàn thành (0 = hết giờ).
+func xh_ctrl bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
+    @req uge %1 1
+    @req ule %1 8
+    @req ule %3 512
+
+    @b0
+        %4 = const 15 bv64
+        %5 = add %4 %1                       # trang ring EP0
+        %6 = const 2 bv64
+        %7 = mul %1 %6
+        %8 = const 80 bv64
+        %9 = add %8 %7
+        %10 = const 0x80 bv64
+        %11 = and %2 %10
+        %12 = const 0 bv64
+        %13 = cmp ne %11 %12                 # IN?
+        %14 = cmp eq %3 %12                  # không có giai đoạn dữ liệu?
+        br %14 @b1 @b2
+
+    @b1
+        jmp @b4 %12
+
+    @b2
+        br %13 @b3 @b5
+
+    @b3
+        %15 = const 0x30000 bv64             # TRT = 3 (IN)
+        jmp @b4 %15
+
+    @b5
+        %16 = const 0x20000 bv64             # TRT = 2 (OUT)
+        jmp @b4 %16
+
+    @b4 %17:bv64
+        %18 = const 0x840 bv64               # Setup Stage (loại 2) | IDT
+        %19 = or %18 %17
+        %20 = const 32 bv64
+        %21 = shl %19 %20
+        %22 = const 8 bv64
+        %23 = or %21 %22
+        call xh_ring_push %0 %5 %9 %2 %23
+        br %14 @b10 @b6
+
+    @b6
+        br %13 @b7 @b8
+
+    @b7
+        %24 = const 0x10000 bv64
+        jmp @b9 %24
+
+    @b8
+        jmp @b9 %12
+
+    @b9 %25:bv64
+        %26 = const 0xC00 bv64               # Data Stage (loại 3)
+        %27 = or %26 %25
+        %28 = shl %27 %20
+        %29 = or %28 %3
+        %30 = const 0x1407000 bv64
+        call xh_ring_push %0 %5 %9 %30 %29
+        jmp @b10
+
+    @b10
+        # Status Stage: hướng ngược với dữ liệu (IN nếu không có dữ liệu hoặc dữ liệu OUT)
+        br %14 @b11 @b12
+
+    @b12
+        br %13 @b13 @b11
+
+    @b11
+        %31 = const 0x10000 bv64
+        jmp @b14 %31
+
+    @b13
+        jmp @b14 %12
+
+    @b14 %32:bv64
+        %33 = const 0x1020 bv64              # Status Stage (loại 4) | IOC
+        %34 = or %33 %32
+        %35 = shl %34 %20
+        call xh_ring_push %0 %5 %9 %12 %35
+        %36 = const 1 bv64
+        call xh_db %0 %1 %36
+        %37 = const 32 bv64
+        %38 = call xh_wait %0 %37
+        %39 = call xh_cc %38
+        ret %39
+}
+
+# Đặt 1 Normal TRB lên ring interrupt IN của slot %1 (nhận 1 báo cáo vào 0x1407800 + (slot-1)*64) và rung chuông
+func xh_int_queue void %0:io<0,0xffff> %1:bv64 {
+    @req uge %1 1
+    @req ule %1 8
+
+    @b0
+        %2 = const 1 bv64
+        %3 = sub %1 %2
+        %4 = const 8 bv64
+        %5 = mul %3 %4
+        %6 = const 16 bv64
+        %7 = add %6 %5                       # bản ghi thiết bị
+        %8 = add %7 %2
+        %9 = call xs_get %0 %8               # DCI
+        %10 = const 2 bv64
+        %11 = add %7 %10
+        %12 = call xs_get %0 %11             # MPS
+        %13 = const 64 bv64
+        %14 = call std_min %12 %13
+        %15 = call std_max %14 %2            # độ dài 1..64
+        %16 = const 23 bv64
+        %17 = add %16 %1                     # trang ring interrupt
+        %18 = const 2 bv64
+        %19 = mul %1 %18
+        %20 = const 100 bv64
+        %21 = add %20 %19
+        %22 = const 64 bv64
+        %23 = mul %3 %22
+        %24 = const 0x1407800 bv64
+        %25 = add %24 %23
+        %26 = const 0x424 bv64               # Normal (loại 1) | IOC | ISP
+        %27 = const 32 bv64
+        %28 = shl %26 %27
+        %29 = or %28 %15
+        call xh_ring_push %0 %17 %21 %25 %29
+        %30 = const 31 bv64
+        %31 = and %9 %30
+        call xh_db %0 %1 %31
+        ret
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Liệt kê thiết bị
+# ---------------------------------------------------------------------------------------------------------------
+
+# Enable Slot + Address Device cho thiết bị ở cổng %1 (1..64), tốc độ %2 (1 FS, 2 LS, 3 HS, 4+ SS). Trả slot hoặc 0.
+func xh_address bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req uge %1 1
+    @req ule %1 64
+    @req ule %2 15
+    @ens ule %90 8
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 0x0000240000000000 bv64  # Enable Slot (loại 9)
+        %5 = call xh_cmd %0 %3 %4
+        %6 = call xh_cc %5
+        %7 = const 56 bv64
+        %8 = lshr %5 %7                      # slot ID
+        %9 = const 1 bv64
+        %10 = const 8 bv64
+        %11 = cmp eq %6 %9
+        %12 = cmp uge %8 %9
+        %13 = cmp ule %8 %10
+        %14 = and %11 %12
+        %15 = and %14 %13
+        br %15 @b1 @b9
+
+    @b1
+        # MPS mặc định của EP0 theo tốc độ: LS/FS 8, HS 64, SS 512
+        %16 = const 3 bv64
+        %17 = const 4 bv64
+        %18 = cmp ult %2 %16
+        br %18 @b2 @b3
+
+    @b2
+        jmp @b5 %10
+
+    @b3
+        %19 = cmp eq %2 %16
+        br %19 @b4 @b6
+
+    @b4
+        %20 = const 64 bv64
+        jmp @b5 %20
+
+    @b6
+        %21 = const 512 bv64
+        jmp @b5 %21
+
+    @b5 %22:bv64
+        @inv ule %22 512
+        %23 = const 5 bv64
+        call xm_zero_page %0 %23
+        %24 = const 7 bv64
+        %25 = add %24 %8
+        call xm_zero_page %0 %25             # output context
+        %26 = const 15 bv64
+        %27 = add %26 %8
+        call xm_zero_page %0 %27             # ring EP0
+        %28 = const 2 bv64
+        %29 = mul %8 %28
+        %30 = const 80 bv64
+        %31 = add %30 %29
+        %32 = add %31 %9
+        call xs_set %0 %31 %3
+        call xs_set %0 %32 %9
+        %33 = const 4096 bv64
+        %34 = mul %25 %33
+        %35 = const 0x1400000 bv64
+        %36 = add %35 %34
+        call xm_set %0 %8 %36                # DCBAA[slot] = output context
+
+        %37 = const 0x300000000 bv64         # Input Control: thêm A0 (slot) | A1 (EP0)
+        call xh_ictx %0 %3 %3 %37
+        %38 = const 20 bv64
+        %39 = shl %2 %38
+        %40 = const 0x8000000 bv64           # Context Entries = 1
+        %41 = or %39 %40
+        %42 = const 48 bv64
+        %43 = shl %1 %42                     # Root Hub Port Number (DW1 bit 16..23)
+        %44 = or %41 %43
+        call xh_ictx %0 %9 %3 %44
+        %45 = const 16 bv64
+        %46 = shl %22 %45
+        %47 = const 0x26 bv64                # CErr = 3 | EP Type = 4 (control)
+        %48 = or %46 %47
+        %49 = const 32 bv64
+        %50 = shl %48 %49
+        call xh_ictx %0 %28 %3 %50
+        %51 = mul %27 %33
+        %52 = add %35 %51
+        %53 = or %52 %9                      # TR Dequeue | DCS
+        call xh_ictx %0 %28 %9 %53
+        call xh_ictx %0 %28 %28 %10          # Average TRB Length = 8
+
+        %54 = const 1 bv64
+        %55 = sub %8 %54
+        %56 = const 8 bv64
+        %57 = mul %55 %56
+        %58 = const 16 bv64
+        %59 = add %58 %57
+        %60 = const 2 bv64
+        %61 = add %59 %60
+        call xs_set %0 %61 %22               # MPS EP0
+        %62 = const 4 bv64
+        %63 = add %59 %62
+        call xs_set %0 %63 %1                # cổng
+        %64 = const 6 bv64
+        %65 = add %59 %64
+        call xs_set %0 %65 %2                # tốc độ
+        call xs_set %0 %59 %3                # loại = chưa có
+
+        %66 = const 0x1405000 bv64
+        %67 = const 0x00002C0000000000 bv64 # Address Device (loại 11)
+        %68 = shl %8 %7
+        %69 = or %67 %68
+        %70 = call xh_cmd %0 %66 %69
+        %71 = call xh_cc %70
+        %72 = cmp eq %71 %9
+        br %72 @b7 @b9
+
+    @b7
+        jmp @b8 %8
+
+    @b9
+        jmp @b8 %3
+
+    @b8 %90:bv64
+        @inv ule %90 8
+        ret %90
+}
+
+# Số mũ khoảng thăm dò cho xHCI (chu kỳ = 2^e * 125µs) từ bInterval %2, tốc độ %1
+func xh_intv bv64 %0:bv64 %1:bv64 {
+    @ens ule %30 15
+
+    @b0
+        %2 = const 3 bv64
+        %3 = cmp uge %0 %2
+        br %3 @b1 @b2
+
+    @b1
+        # HS/SS: e = bInterval - 1 (kẹp 0..15)
+        %4 = const 1 bv64
+        %5 = call std_max %1 %4
+        %6 = sub %5 %4
+        %7 = const 15 bv64
+        %8 = call std_min %6 %7
+        jmp @b9 %8
+
+    @b2
+        # LS/FS: bInterval tính bằng ms -> e = floor(log2(bInterval * 8)), kẹp 3..10
+        %9 = const 255 bv64
+        %10 = call std_min %1 %9
+        %11 = const 1 bv64
+        %12 = call std_max %10 %11
+        %13 = const 3 bv64
+        %14 = shl %12 %13                    # 8..2040
+        %15 = const 0 bv64
+        jmp @b3 %15
+
+    @b3 %16:bv64
+        @inv ule %16 11
+        %17 = const 11 bv64
+        %18 = cmp ult %16 %17
+        br %18 @b4 @b6
+
+    @b4
+        %19 = const 1 bv64
+        %20 = add %16 %19
+        %21 = shl %19 %20
+        %22 = cmp ule %21 %14
+        br %22 @b5 @b6
+
+    @b5
+        jmp @b3 %20
+
+    @b6
+        %23 = const 3 bv64
+        %24 = call std_max %16 %23
+        %25 = const 10 bv64
+        %26 = call std_min %24 %25
+        jmp @b9 %26
+
+    @b9 %30:bv64
+        @inv ule %30 15
+        ret %30
+}
+
+# Duyệt %1 byte descriptor cấu hình trong bộ đệm: tìm interface HID boot (class 3, subclass 1, protocol 1/2) và
+# endpoint interrupt IN đầu tiên của nó. Kết quả: XS[30] = protocol (0 = không thấy), 31 interface, 32 địa chỉ
+# endpoint, 33 MPS, 34 bInterval.
+func xh_parse_cfg void %0:io<0,0xffff> %1:bv64 {
+    @req ule %1 256
+
+    @b0
+        %2 = const 0 bv64
+        %3 = const 30 bv64
+        call xs_set %0 %3 %2
+        jmp @b1 %2 %2 %2
+
+    @b1 %4:bv64 %5:bv64 %6:bv64
+        # %4 = vị trí, %5 = protocol của interface đang xét (0 = không phải HID boot), %6 = số interface
+        @inv ule %4 256
+        %7 = const 2 bv64
+        %8 = add %4 %7
+        %9 = cmp ule %8 %1
+        br %9 @b2 @b9
+
+    @b2
+        %10 = call xh_bb %0 %4               # bLength
+        %11 = const 1 bv64
+        %12 = add %4 %11
+        %13 = call xh_bb %0 %12              # bDescriptorType
+        %14 = cmp ult %10 %7
+        br %14 @b9 @b3
+
+    @b3
+        %15 = const 4 bv64
+        %16 = cmp eq %13 %15
+        br %16 @b4 @b5
+
+    @b4
+        # Interface
+        %17 = add %4 %7
+        %18 = call xh_bb %0 %17              # bInterfaceNumber
+        %19 = const 5 bv64
+        %20 = add %4 %19
+        %21 = call xh_bb %0 %20              # class
+        %22 = const 6 bv64
+        %23 = add %4 %22
+        %24 = call xh_bb %0 %23              # subclass
+        %25 = const 7 bv64
+        %26 = add %4 %25
+        %27 = call xh_bb %0 %26              # protocol
+        %28 = const 3 bv64
+        %29 = cmp eq %21 %28
+        %30 = cmp eq %24 %11
+        %31 = cmp uge %27 %11
+        %32 = cmp ule %27 %7
+        %33 = and %29 %30
+        %34 = and %33 %31
+        %35 = and %34 %32
+        br %35 @b40 @b41
+
+    @b40
+        jmp @b8 %27 %18
+
+    @b41
+        jmp @b8 %2 %18
+
+    @b5
+        %36 = const 5 bv64
+        %37 = cmp eq %13 %36
+        %38 = cmp ne %5 %2
+        %39 = and %37 %38
+        br %39 @b6 @b7
+
+    @b6
+        # Endpoint của interface HID boot: lấy endpoint interrupt IN đầu tiên
+        %40 = call xs_get %0 %3
+        %41 = cmp eq %40 %2
+        %42 = add %4 %7
+        %43 = call xh_bb %0 %42              # bEndpointAddress
+        %44 = const 3 bv64
+        %45 = add %4 %44
+        %46 = call xh_bb %0 %45              # bmAttributes
+        %47 = const 0x80 bv64
+        %48 = and %43 %47
+        %49 = cmp ne %48 %2
+        %50 = and %46 %44
+        %51 = cmp eq %50 %44
+        %52 = and %41 %49
+        %53 = and %52 %51
+        br %53 @b60 @b7
+
+    @b60
+        %54 = const 4 bv64
+        %55 = add %4 %54
+        %56 = call xh_bb %0 %55
+        %57 = const 5 bv64
+        %58 = add %4 %57
+        %59 = call xh_bb %0 %58
+        %60 = const 8 bv64
+        %61 = shl %59 %60
+        %62 = or %56 %61
+        %63 = const 0x7ff bv64
+        %64 = and %62 %63                    # wMaxPacketSize
+        %65 = const 6 bv64
+        %66 = add %4 %65
+        %67 = call xh_bb %0 %66              # bInterval
+        call xs_set %0 %3 %5
+        %68 = const 31 bv64
+        call xs_set %0 %68 %6
+        %69 = const 32 bv64
+        call xs_set %0 %69 %43
+        %70 = const 33 bv64
+        call xs_set %0 %70 %64
+        %71 = const 34 bv64
+        call xs_set %0 %71 %67
+        jmp @b7
+
+    @b7
+        jmp @b8 %5 %6
+
+    @b8 %72:bv64 %73:bv64
+        %74 = add %4 %10
+        %75 = const 256 bv64
+        %76 = call std_min %74 %75
+        jmp @b1 %76 %72 %73
+
+    @b9
+        ret
+}
+
+# Đọc descriptor, cấu hình HID boot cho slot %1. Trả loại thiết bị (0 không dùng, 1 bàn phím, 2 chuột).
+func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
+    @req uge %1 1
+    @req ule %1 8
+    @ens ule %99 2
+
+    @b0
+        %2 = const 0 bv64
+        %3 = const 1 bv64
+        %4 = const 30000 bv64
+        call xh_delay %0 %4                  # thời gian hồi phục sau SET_ADDRESS
+        %5 = sub %1 %3
+        %6 = const 8 bv64
+        %7 = mul %5 %6
+        %8 = const 16 bv64
+        %9 = add %8 %7                       # bản ghi thiết bị
+        %10 = const 0x0008000001000680 bv64  # GET_DESCRIPTOR(Device), 8 byte
+        %11 = call xh_ctrl %0 %1 %10 %6
+        %901 = const 1 bv64
+        %921 = const 12 bv64
+        call xs_set %0 %921 %901
+        %941 = const 13 bv64
+        call xs_set %0 %941 %11
+        %12 = const 13 bv64
+        %13 = cmp eq %11 %3
+        %14 = cmp eq %11 %12
+        %15 = or %13 %14
+        br %15 @b1 @b90
+
+    @b1
+        # bMaxPacketSize0 khác giá trị đoán (thiết bị FS có EP0 64 byte...) -> Evaluate Context
+        %16 = const 7 bv64
+        %17 = call xh_bb %0 %16
+        %18 = const 2 bv64
+        %19 = add %9 %18
+        %20 = call xs_get %0 %19
+        %21 = const 6 bv64
+        %22 = add %9 %21
+        %23 = call xs_get %0 %22             # tốc độ
+        %24 = const 4 bv64
+        %25 = cmp ult %23 %24
+        %26 = cmp ne %17 %20
+        %27 = cmp uge %17 %6
+        %28 = const 64 bv64
+        %29 = cmp ule %17 %28
+        %30 = and %25 %26
+        %31 = and %30 %27
+        %32 = and %31 %29
+        br %32 @b2 @b3
+
+    @b2
+        %33 = const 5 bv64
+        call xm_zero_page %0 %33
+        %34 = const 0x200000000 bv64         # thêm A1
+        call xh_ictx %0 %2 %2 %34
+        %35 = const 16 bv64
+        %36 = shl %17 %35
+        %37 = const 0x26 bv64
+        %38 = or %36 %37
+        %39 = const 32 bv64
+        %40 = shl %38 %39
+        call xh_ictx %0 %18 %2 %40
+        %41 = const 0x1405000 bv64
+        %42 = const 0x0000340000000000 bv64 # Evaluate Context (loại 13)
+        %43 = const 56 bv64
+        %44 = shl %1 %43
+        %45 = or %42 %44
+        %46 = call xh_cmd %0 %41 %45
+        call xs_set %0 %19 %17
+        jmp @b3
+
+    @b3
+        %47 = const 0x0009000002000680 bv64  # GET_DESCRIPTOR(Configuration), 9 byte
+        %48 = const 9 bv64
+        %49 = call xh_ctrl %0 %1 %47 %48
+        %902 = const 2 bv64
+        %922 = const 12 bv64
+        call xs_set %0 %922 %902
+        %942 = const 13 bv64
+        call xs_set %0 %942 %49
+        %50 = call xh_ok %49
+        %51 = cmp ne %50 %2
+        br %51 @b4 @b90
+
+    @b4
+        %52 = const 2 bv64
+        %53 = call xh_bb %0 %52
+        %54 = const 3 bv64
+        %55 = call xh_bb %0 %54
+        %56 = const 8 bv64
+        %57 = shl %55 %56
+        %58 = or %53 %57                     # wTotalLength
+        %59 = const 256 bv64
+        %60 = call std_min %58 %59
+        %61 = const 9 bv64
+        %62 = call std_max %60 %61
+        %63 = const 0x0000000002000680 bv64
+        %64 = const 48 bv64
+        %65 = shl %62 %64
+        %66 = or %63 %65
+        %67 = call xh_ctrl %0 %1 %66 %62
+        %903 = const 3 bv64
+        %923 = const 12 bv64
+        call xs_set %0 %923 %903
+        %943 = const 13 bv64
+        call xs_set %0 %943 %67
+        %68 = call xh_ok %67
+        %69 = cmp ne %68 %2
+        br %69 @b5 @b90
+
+    @b5
+        %70 = const 5 bv64
+        %71 = call xh_bb %0 %70              # bConfigurationValue
+        call xh_parse_cfg %0 %62
+        %904 = const 4 bv64
+        %924 = const 12 bv64
+        call xs_set %0 %924 %904
+        %944 = const 13 bv64
+        call xs_set %0 %944 %62
+        %72 = const 30 bv64
+        %73 = call xs_get %0 %72
+        %74 = const 2 bv64
+        %75 = cmp uge %73 %3
+        %76 = cmp ule %73 %74
+        %77 = and %75 %76
+        br %77 @b6 @b90
+
+    @b6
+        # Configure Endpoint cho endpoint interrupt IN
+        %78 = const 31 bv64
+        %79 = call xs_get %0 %78             # interface
+        %80 = const 32 bv64
+        %81 = call xs_get %0 %80             # địa chỉ endpoint
+        %82 = const 33 bv64
+        %83 = call xs_get %0 %82
+        %84 = const 1024 bv64
+        %85 = call std_min %83 %84
+        %86 = call std_max %85 %3            # MPS 1..1024
+        %87 = const 34 bv64
+        %88 = call xs_get %0 %87
+        %89 = const 6 bv64
+        %90 = add %9 %89
+        %91 = call xs_get %0 %90
+        %92 = const 15 bv64
+        %93 = call std_min %91 %92           # tốc độ
+        %94 = call xh_intv %93 %88
+        %95 = const 15 bv64
+        %96 = and %81 %95
+        %97 = const 2 bv64
+        %98 = mul %96 %97
+        %100 = add %98 %3                    # DCI = ep * 2 + 1 (IN)
+        %101 = const 4 bv64
+        %102 = add %9 %101
+        %103 = call xs_get %0 %102
+        %104 = const 64 bv64
+        %105 = call std_min %103 %104        # cổng
+
+        %106 = const 23 bv64
+        %107 = add %106 %1
+        call xm_zero_page %0 %107            # ring interrupt
+        %108 = const 2 bv64
+        %109 = mul %1 %108
+        %110 = const 100 bv64
+        %111 = add %110 %109
+        %112 = add %111 %3
+        call xs_set %0 %111 %2
+        call xs_set %0 %112 %3
+        %113 = const 5 bv64
+        call xm_zero_page %0 %113
+        %114 = shl %3 %100
+        %115 = or %114 %3                    # A0 | A(DCI)
+        %116 = const 32 bv64
+        %117 = shl %115 %116
+        call xh_ictx %0 %2 %2 %117
+        %118 = const 20 bv64
+        %119 = shl %93 %118
+        %120 = const 27 bv64
+        %121 = shl %100 %120                 # Context Entries = DCI
+        %122 = or %119 %121
+        %123 = const 48 bv64
+        %124 = shl %105 %123
+        %125 = or %122 %124
+        call xh_ictx %0 %3 %2 %125
+        %126 = add %100 %3                   # chỉ số context của endpoint trong input context
+        %127 = const 16 bv64
+        %128 = shl %94 %127                  # Interval (DW0)
+        %129 = shl %86 %127
+        %130 = const 0x3E bv64               # CErr = 3 | EP Type = 7 (interrupt IN)
+        %131 = or %129 %130
+        %132 = shl %131 %116
+        %133 = or %128 %132
+        call xh_ictx %0 %126 %2 %133
+        %134 = const 4096 bv64
+        %135 = mul %107 %134
+        %136 = const 0x1400000 bv64
+        %137 = add %136 %135
+        %138 = or %137 %3
+        call xh_ictx %0 %126 %3 %138         # TR Dequeue | DCS
+        %139 = shl %86 %127
+        %140 = or %86 %139                   # Average TRB Length | Max ESIT Payload
+        %141 = const 2 bv64
+        call xh_ictx %0 %126 %141 %140
+        %142 = const 0x1405000 bv64
+        %143 = const 0x0000300000000000 bv64 # Configure Endpoint (loại 12)
+        %144 = const 56 bv64
+        %145 = shl %1 %144
+        %146 = or %143 %145
+        %147 = call xh_cmd %0 %142 %146
+        %148 = call xh_cc %147
+        %905 = const 5 bv64
+        %925 = const 12 bv64
+        call xs_set %0 %925 %905
+        %945 = const 13 bv64
+        call xs_set %0 %945 %148
+        %149 = cmp eq %148 %3
+        br %149 @b7 @b90
+
+    @b7
+        # SET_CONFIGURATION rồi SET_PROTOCOL(boot) cho interface
+        %150 = const 16 bv64
+        %151 = shl %71 %150
+        %152 = const 0x0900 bv64
+        %153 = or %152 %151
+        %154 = call xh_ctrl %0 %1 %153 %2
+        %906 = const 6 bv64
+        %926 = const 12 bv64
+        call xs_set %0 %926 %906
+        %946 = const 13 bv64
+        call xs_set %0 %946 %154
+        %155 = cmp eq %154 %3
+        br %155 @b8 @b90
+
+    @b8
+        %156 = const 0xff bv64
+        %157 = and %79 %156
+        %158 = const 32 bv64
+        %159 = shl %157 %158
+        %160 = const 0x0B21 bv64
+        %161 = or %160 %159
+        %162 = call xh_ctrl %0 %1 %161 %2
+        %163 = const 1 bv64
+        %164 = add %9 %163
+        call xs_set %0 %164 %100             # DCI
+        %165 = const 2 bv64
+        %166 = add %9 %165
+        call xs_set %0 %166 %86              # MPS endpoint
+        %167 = const 3 bv64
+        %168 = add %9 %167
+        call xs_set %0 %168 %2               # báo cáo trước = rỗng
+        %169 = const 5 bv64
+        %170 = add %9 %169
+        call xs_set %0 %170 %79
+        call xs_set %0 %9 %73                # loại: 1 bàn phím, 2 chuột
+        call xh_int_queue %0 %1
+        jmp @b99 %73
+
+    @b90
+        jmp @b99 %2
+
+    @b99 %99:bv64
+        @inv ule %99 2
+        ret %99
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Khởi tạo controller
+# ---------------------------------------------------------------------------------------------------------------
+
+# Giành quyền điều khiển từ BIOS (Extended Capability "USB Legacy Support", ID 1). %1 = offset byte cap đầu tiên.
+func xh_handoff void %0:io<0,0xffff> %1:bv64 {
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %1 %2
+
+    @b1 %3:bv64 %4:bv64
+        @inv ule %4 64
+        %5 = const 64 bv64
+        %6 = cmp ult %4 %5
+        %7 = const 0x100 bv64
+        %8 = cmp uge %3 %7
+        %9 = const 0xfff0 bv64
+        %10 = cmp ult %3 %9
+        %11 = and %6 %8
+        %12 = and %11 %10
+        br %12 @b2 @b9
+
+    @b2
+        %13 = call xh_rd %0 %3
+        %14 = const 0xffffffff bv64
+        %15 = cmp eq %13 %14
+        br %15 @b9 @b3
+
+    @b3
+        %16 = const 0xff bv64
+        %17 = and %13 %16
+        %18 = const 1 bv64
+        %19 = cmp eq %17 %18
+        br %19 @b5 @b4
+
+    @b4
+        %20 = const 8 bv64
+        %21 = lshr %13 %20
+        %22 = and %21 %16
+        %23 = cmp eq %22 %2
+        br %23 @b9 @b40
+
+    @b40
+        %24 = const 4 bv64
+        %25 = mul %22 %24
+        %26 = add %3 %25
+        %27 = add %4 %18
+        jmp @b1 %26 %27
+
+    @b5
+        # Đặt cờ OS Owned, chờ BIOS Owned về 0 (~1s); hết giờ thì tự xóa cờ BIOS như Linux
+        %28 = const 0x1000000 bv64
+        %29 = or %13 %28
+        call xh_wr %0 %3 %29
+        jmp @b6 %2
+
+    @b6 %30:bv64
+        @inv ule %30 2000000
+        %31 = const 2000000 bv64
+        %32 = cmp ult %30 %31
+        br %32 @b7 @b8
+
+    @b7
+        %33 = call xh_rd %0 %3
+        %34 = const 0x10000 bv64
+        %35 = and %33 %34
+        %36 = cmp eq %35 %2
+        br %36 @b10 @b70
+
+    @b70
+        %37 = add %30 %18
+        jmp @b6 %37
+
+    @b8
+        %38 = call xh_rd %0 %3
+        %39 = const 0xfffeffff bv64
+        %40 = and %38 %39
+        call xh_wr %0 %3 %40
+        jmp @b10
+
+    @b10
+        # Tắt mọi SMI của BIOS, xóa cờ sự kiện SMI (RW1C)
+        %41 = const 4 bv64
+        %42 = add %3 %41
+        %43 = call xh_rd %0 %42
+        %44 = const 0x000E1FEE bv64
+        %45 = and %43 %44
+        %46 = const 0xE0000000 bv64
+        %47 = or %45 %46
+        call xh_wr %0 %42 %47
+        ret
+
+    @b9
+        ret
+}
+
+# Dừng + reset controller (bỏ controller không dùng, để nó không còn DMA vào vùng nhớ của driver)
+func xh_stop void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 4 bv64
+        %3 = const 1 bv64
+        %4 = const 2 bv64
+        %5 = const 200000 bv64
+        call xh_op_wr %0 %1 %1
+        %6 = call xh_op_wait %0 %2 %3 %3 %5
+        call xh_op_wr %0 %1 %4
+        %7 = call xh_op_wait %0 %1 %4 %1 %5
+        ret
+}
+
+# Bật MEM + Bus Master, ánh xạ BAR0, đọc thanh ghi Capability, giành quyền từ BIOS, reset và dựng ring, chạy.
+# Trả 0 nếu xong, ngược lại mã giai đoạn: 2 BAR/thanh ghi không hợp lệ, 4 không dừng được, 5 không reset được,
+# 6 cần quá 256 trang scratchpad, 7 không chạy được.
+func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 32
+    @req ult %2 8
+    @ens ule %200 7
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 4 bv64
+        %5 = call pci_cfg_rd %0 %3 %1 %2 %4
+        %6 = const 0xffff bv64
+        %7 = and %5 %6
+        %8 = const 6 bv64
+        %9 = or %7 %8
+        call pci_cfg_wr %0 %3 %1 %2 %4 %9
+        %10 = const 0x10 bv64
+        %11 = call pci_cfg_rd %0 %3 %1 %2 %10
+        %12 = const 0x14 bv64
+        %13 = call pci_cfg_rd %0 %3 %1 %2 %12
+        %14 = const 0xfffffff0 bv64
+        %15 = and %11 %14
+        %16 = and %11 %8
+        %17 = cmp eq %16 %4                  # BAR 64-bit?
+        br %17 @b1 @b2
+
+    @b1
+        %18 = const 32 bv64
+        %19 = shl %13 %18
+        %20 = or %15 %19
+        jmp @b3 %20
+
+    @b2
+        jmp @b3 %15
+
+    @b3 %21:bv64
+        %22 = const 0x400000000000 bv64
+        %23 = cmp ult %21 %22
+        %24 = cmp ne %21 %3
+        %25 = and %23 %24
+        br %25 @b4 @b90
+
+    @b4
+        %26 = const 2 bv64
+        %27 = const 3 bv64
+        %28 = const 0x200000 bv64
+        %29 = add %21 %28
+        call mmio_map_2m %0 %26 %21
+        call mmio_map_2m %0 %27 %29
+        call mmu_flush %0
+        %30 = const 0x1fffff bv64
+        %31 = and %21 %30
+        %32 = lshr %31 %26
+        %33 = const 1 bv64
+        call xs_set %0 %33 %32
+        call xs_set %0 %26 %3
+        call xs_set %0 %27 %3
+        call xs_set %0 %4 %3
+        %34 = call xh_rd %0 %3
+        %35 = const 0xff bv64
+        %36 = and %34 %35                    # CAPLENGTH
+        %37 = call xh_rd %0 %4               # HCSPARAMS1
+        %38 = const 8 bv64
+        %39 = call xh_rd %0 %38              # HCSPARAMS2
+        %40 = call xh_rd %0 %10              # HCCPARAMS1
+        %41 = call xh_rd %0 %12              # DBOFF
+        %42 = const 0x18 bv64
+        %43 = call xh_rd %0 %42              # RTSOFF
+        %44 = const 0xfffc bv64
+        %45 = and %41 %44
+        %46 = const 0xffe0 bv64
+        %47 = and %43 %46
+        %48 = const 0x20 bv64
+        %49 = cmp uge %36 %48
+        %50 = const 0xffffffff bv64
+        %51 = cmp ne %37 %50
+        %52 = const 0x100 bv64
+        %53 = cmp uge %45 %52
+        %54 = cmp uge %47 %52
+        %55 = cmp ule %41 %6
+        %56 = cmp ule %43 %6
+        %57 = and %49 %51
+        %58 = and %57 %53
+        %59 = and %58 %54
+        %60 = and %59 %55
+        %61 = and %60 %56
+        br %61 @b5 @b90
+
+    @b5
+        call xs_set %0 %26 %36
+        call xs_set %0 %27 %47
+        call xs_set %0 %4 %45
+        %62 = and %40 %4                     # CSZ
+        %63 = cmp ne %62 %3
+        br %63 @b6 @b7
+
+    @b6
+        %64 = const 64 bv64
+        jmp @b8 %64
+
+    @b7
+        %65 = const 32 bv64
+        jmp @b8 %65
+
+    @b8 %66:bv64
+        %67 = const 5 bv64
+        call xs_set %0 %67 %66
+        %68 = const 24 bv64
+        %69 = lshr %37 %68
+        %70 = const 64 bv64
+        %71 = call std_min %69 %70
+        %72 = const 6 bv64
+        call xs_set %0 %72 %71               # số cổng
+
+        %73 = const 16 bv64
+        %74 = lshr %40 %73
+        %75 = mul %74 %4
+        call xh_handoff %0 %75
+
+        # Dừng (RS = 0), chờ HCHalted
+        call xh_op_wr %0 %3 %3
+        %76 = const 2000000 bv64
+        %77 = call xh_op_wait %0 %4 %33 %33 %76
+        %78 = cmp ne %77 %3
+        br %78 @b9 @b91
+
+    @b9
+        # Reset (HCRST), chờ HCRST = 0 và CNR = 0
+        call xh_op_wr %0 %3 %26
+        %79 = const 10000 bv64
+        call xh_delay %0 %79
+        %80 = call xh_op_wait %0 %3 %26 %3 %76
+        %81 = const 0x800 bv64
+        %82 = call xh_op_wait %0 %4 %81 %3 %76
+        %83 = and %80 %82
+        %84 = cmp ne %83 %3
+        br %84 @b10 @b92
+
+    @b10
+        # Scratchpad: số trang = HCSPARAMS2[31:27] | HCSPARAMS2[25:21] << 5
+        %85 = const 27 bv64
+        %86 = lshr %39 %85
+        %87 = const 0x1f bv64
+        %88 = and %86 %87
+        %89 = const 16 bv64
+        %90 = lshr %39 %89
+        %91 = const 0x3e0 bv64
+        %92 = and %90 %91
+        %93 = or %88 %92
+        %94 = const 256 bv64
+        %95 = cmp ule %93 %94
+        br %95 @b11 @b93
+
+    @b11
+        jmp @b12 %3
+
+    @b12 %96:bv64
+        @inv ule %96 256
+        %97 = cmp ult %96 %93
+        br %97 @b13 @b14
+
+    @b13
+        %98 = const 32 bv64
+        %99 = add %98 %96
+        call xm_zero_page %0 %99
+        %100 = const 4096 bv64
+        %101 = mul %99 %100
+        %102 = const 0x1400000 bv64
+        %103 = add %102 %101
+        %104 = const 2048 bv64
+        %105 = add %104 %96
+        call xm_set %0 %105 %103
+        %106 = add %96 %33
+        jmp @b12 %106
+
+    @b14
+        %107 = cmp ne %93 %3
+        br %107 @b15 @b16
+
+    @b15
+        %108 = const 0x1404000 bv64
+        call xm_set %0 %3 %108               # DCBAA[0] = mảng scratchpad
+        jmp @b16
+
+    @b16
+        %109 = const 0x38 bv64
+        call xh_op_wr %0 %109 %38            # CONFIG: MaxSlotsEn = 8
+        %110 = const 0x30 bv64
+        %111 = const 0x1400000 bv64
+        call xh_op_wr64 %0 %110 %111         # DCBAAP
+        %112 = const 0x18 bv64
+        %113 = const 0x1401001 bv64
+        call xh_op_wr64 %0 %112 %113         # CRCR = ring lệnh | RCS
+        %114 = const 7 bv64
+        %115 = const 9 bv64
+        %116 = const 10 bv64
+        call xs_set %0 %114 %3
+        call xs_set %0 %38 %33
+        call xs_set %0 %115 %3
+        call xs_set %0 %116 %33
+        %117 = const 1536 bv64
+        %118 = const 1537 bv64
+        %119 = const 0x1402000 bv64
+        call xm_set %0 %117 %119             # ERST[0] = ring sự kiện, 256 TRB
+        call xm_set %0 %118 %94
+        %120 = const 0x20 bv64
+        call xh_rt_wr %0 %120 %33            # IMAN: xóa IP, IE = 0
+        %121 = const 0x28 bv64
+        call xh_rt_wr %0 %121 %33            # ERSTSZ = 1
+        %122 = const 0x38 bv64
+        call xh_rt_wr %0 %122 %119           # ERDP
+        %123 = const 0x3c bv64
+        call xh_rt_wr %0 %123 %3
+        %124 = const 0x1403000 bv64          # ERSTBA ghi sau cùng (theo đặc tả)
+        %125 = const 0x30 bv64
+        call xh_rt_wr %0 %125 %124
+        %126 = const 0x34 bv64
+        call xh_rt_wr %0 %126 %3
+        call xh_op_wr %0 %3 %33              # RS = 1
+        %127 = call xh_op_wait %0 %4 %33 %3 %76
+        %128 = cmp ne %127 %3
+        br %128 @b18 @b94
+
+    @b18
+        jmp @b99 %3
+
+    @b90
+        %130 = const 2 bv64
+        jmp @b99 %130
+
+    @b91
+        %131 = const 4 bv64
+        jmp @b99 %131
+
+    @b92
+        %132 = const 5 bv64
+        jmp @b99 %132
+
+    @b93
+        %133 = const 6 bv64
+        jmp @b99 %133
+
+    @b94
+        %134 = const 7 bv64
+        jmp @b99 %134
+
+    @b99 %200:bv64
+        @inv ule %200 7
+        ret %200
+}
+
+# Duyệt cổng gốc: reset cổng USB2 có thiết bị, gán địa chỉ, dò HID. Trả slot << 32 | bàn phím << 16 | chuột << 8.
+func xh_scan_ports bv64 %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        %3 = const 300000 bv64
+        call xh_delay %0 %3                  # chờ thiết bị kết nối lại sau reset controller
+        %4 = const 6 bv64
+        %5 = call xs_get %0 %4
+        %6 = const 64 bv64
+        %7 = call std_min %5 %6
+        jmp @b1 %2 %1 %1 %1
+
+    @b1 %8:bv64 %9:bv64 %10:bv64 %11:bv64
+        # %8 cổng (1-based), %9 số slot, %10 bàn phím, %11 chuột
+        @inv uge %8 1
+        @inv ule %8 65
+        @inv ule %9 8
+        @inv ule %10 %9
+        @inv ule %11 %9
+        %12 = cmp ule %8 %7
+        %13 = const 8 bv64
+        %14 = cmp ult %9 %13
+        %15 = and %12 %14
+        br %15 @b2 @b9
+
+    @b2
+        %16 = sub %8 %2
+        %17 = const 16 bv64
+        %18 = mul %16 %17
+        %19 = const 0x400 bv64
+        %20 = add %19 %18                    # PORTSC
+        %21 = call xh_op_rd %0 %20
+        %22 = and %21 %2                     # CCS
+        %23 = cmp ne %22 %1
+        br %23 @b3 @b8
+
+    @b3
+        %24 = const 2 bv64
+        %25 = and %21 %24                    # PED
+        %26 = cmp ne %25 %1
+        br %26 @b5 @b4
+
+    @b4
+        # Cổng USB2: reset (PR), chờ PRC, xóa các cờ thay đổi (RW1C)
+        %27 = const 0x0E00C3E0 bv64
+        %28 = and %21 %27
+        %29 = const 0x10 bv64
+        %30 = or %28 %29
+        call xh_op_wr %0 %20 %30
+        %31 = const 0x200000 bv64
+        %32 = const 1000000 bv64
+        %33 = call xh_op_wait %0 %20 %31 %31 %32
+        %34 = call xh_op_rd %0 %20
+        %35 = and %34 %27
+        %36 = const 0x00FE0000 bv64
+        %37 = or %35 %36
+        call xh_op_wr %0 %20 %37
+        %38 = const 30000 bv64
+        call xh_delay %0 %38
+        jmp @b5
+
+    @b5
+        %39 = call xh_op_rd %0 %20
+        %40 = const 2 bv64
+        %41 = and %39 %40
+        %42 = cmp ne %41 %1
+        br %42 @b6 @b8
+
+    @b6
+        %43 = const 10 bv64
+        %44 = lshr %39 %43
+        %45 = const 15 bv64
+        %46 = and %44 %45                    # tốc độ
+        %47 = call xh_address %0 %8 %46
+        %48 = cmp ne %47 %1
+        br %48 @b7 @b8
+
+    @b7
+        %49 = add %9 %2
+        %50 = call xh_probe %0 %47
+        %51 = cmp eq %50 %2
+        %52 = const 2 bv64
+        %53 = cmp eq %50 %52
+        br %51 @b70 @b71
+
+    @b70
+        %54 = add %10 %2
+        jmp @b80 %49 %54 %11
+
+    @b71
+        br %53 @b72 @b73
+
+    @b72
+        %55 = add %11 %2
+        jmp @b80 %49 %10 %55
+
+    @b73
+        jmp @b80 %49 %10 %11
+
+    @b8
+        jmp @b80 %9 %10 %11
+
+    @b80 %56:bv64 %57:bv64 %58:bv64
+        @inv ule %56 8
+        @inv ule %57 %56
+        @inv ule %58 %56
+        %59 = add %8 %2
+        jmp @b1 %59 %56 %57 %58
+
+    @b9
+        %60 = const 32 bv64
+        %61 = shl %9 %60
+        %62 = const 16 bv64
+        %63 = shl %10 %62
+        %64 = const 8 bv64
+        %65 = shl %11 %64
+        %66 = or %61 %63
+        %67 = or %66 %65
+        ret %67
+}
+
+# Thử 1 controller (bus 0, dev %1, fn %2). Trả số thiết bị HID đang chạy (0 = controller đã bị dừng lại).
+func xh_try bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 32
+    @req ult %2 8
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 56 bv64
+        %5 = const 48 bv64
+        %6 = const 40 bv64
+        %7 = shl %1 %5
+        %8 = const 40 bv64                   # HW[40]: chẩn đoán USB
+        %9 = call xh_setup %0 %1 %2
+        %10 = cmp eq %9 %3
+        br %10 @b1 @b8
+
+    @b1
+        %11 = call xh_scan_ports %0
+        %12 = const 0xffff00 bv64
+        %13 = and %11 %12                    # bàn phím << 16 | chuột << 8
+        %14 = const 6 bv64
+        %15 = call xs_get %0 %14
+        %16 = const 0xff bv64
+        %17 = and %15 %16
+        %18 = shl %17 %6
+        %19 = or %7 %18
+        %200 = const 12 bv64
+        %201 = call xs_get %0 %200
+        %202 = const 0xff bv64
+        %203 = and %201 %202
+        %204 = const 13 bv64
+        %205 = call xs_get %0 %204
+        %206 = and %205 %202
+        %207 = const 24 bv64
+        %208 = shl %206 %207
+        %209 = or %11 %203
+        %210 = or %209 %208
+        %20 = or %19 %210
+        %21 = cmp ne %13 %3
+        br %21 @b2 @b3
+
+    @b2
+        call hw_set %0 %8 %20
+        %22 = const 1 bv64
+        call xs_set %0 %3 %22
+        ret %22
+
+    @b3
+        # Không có thiết bị HID: giai đoạn 8, dừng controller
+        %23 = const 8 bv64
+        %24 = shl %23 %4
+        %25 = or %20 %24
+        call hw_set %0 %8 %25
+        call xh_stop %0
+        ret %3
+
+    @b8
+        %26 = shl %9 %4
+        %27 = or %26 %7
+        call hw_set %0 %8 %27
+        %28 = const 2 bv64
+        %29 = cmp eq %9 %28
+        br %29 @b9 @b10
+
+    @b10
+        call xh_stop %0
+        jmp @b9
+
+    @b9
+        ret %3
+}
+
+# Khởi tạo USB: quét PCI bus 0 tìm xHCI, thử lần lượt tới khi có controller chạy được thiết bị HID.
+func usb_init void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        jmp @b1 %1
+
+    @b1 %3:bv64
+        @inv ule %3 32
+        %4 = const 32 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b3
+
+    @b2
+        call xm_zero_page %0 %3
+        %6 = add %3 %2
+        jmp @b1 %6
+
+    @b3
+        # Bảng HID usage -> scancode set 1 (xem tools: a..z, 1..0, Enter Esc Backspace Tab Space - = [ ] \ ; ' ` , . /
+        # Caps, F1..F12)
+        %7 = const 400 bv64
+        %8 = const 0x202e301e00000000 bv64
+        call xs_set %0 %7 %8
+        %9 = const 401 bv64
+        %10 = const 0x2625241723222112 bv64
+        call xs_set %0 %9 %10
+        %11 = const 402 bv64
+        %12 = const 0x141f131019183132 bv64
+        call xs_set %0 %11 %12
+        %13 = const 403 bv64
+        %14 = const 0x03022c152d112f16 bv64
+        call xs_set %0 %13 %14
+        %15 = const 404 bv64
+        %16 = const 0x0b0a090807060504 bv64
+        call xs_set %0 %15 %16
+        %17 = const 405 bv64
+        %18 = const 0x1a0d0c390f0e011c bv64
+        call xs_set %0 %17 %18
+        %19 = const 406 bv64
+        %20 = const 0x34332928272b2b1b bv64
+        call xs_set %0 %19 %20
+        %21 = const 407 bv64
+        %22 = const 0x403f3e3d3c3b3a35 bv64
+        call xs_set %0 %21 %22
+        %23 = const 408 bv64
+        %24 = const 0x0000585744434241 bv64
+        call xs_set %0 %23 %24
+        %25 = const 40 bv64
+        %26 = const 0x0100000000000000 bv64  # giai đoạn 1: không thấy xHCI
+        call hw_set %0 %25 %26
+        jmp @b4 %1 %1
+
+    @b4 %27:bv64 %28:bv64
+        @inv ule %27 32
+        @inv ult %28 8
+        %29 = const 32 bv64
+        %30 = cmp ult %27 %29
+        br %30 @b5 @b9
+
+    @b5
+        %31 = call pci_cfg_rd %0 %1 %27 %28 %1
+        %32 = const 0xffff bv64
+        %33 = and %31 %32
+        %34 = cmp eq %33 %32
+        br %34 @b8 @b6
+
+    @b6
+        %35 = const 8 bv64
+        %36 = call pci_cfg_rd %0 %1 %27 %28 %35
+        %37 = lshr %36 %35
+        %38 = const 0x0C0330 bv64
+        %39 = cmp eq %37 %38
+        br %39 @b7 @b8
+
+    @b7
+        %40 = call xh_try %0 %27 %28
+        %41 = cmp ne %40 %1
+        br %41 @b9 @b8
+
+    @b8
+        %42 = add %28 %2
+        %43 = const 8 bv64
+        %44 = cmp ult %42 %43
+        br %44 @b80 @b81
+
+    @b80
+        jmp @b4 %27 %42
+
+    @b81
+        %45 = add %27 %2
+        jmp @b4 %45 %1
+
+    @b9
+        ret
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Thăm dò báo cáo (gọi mỗi nhịp của scheduler)
+# ---------------------------------------------------------------------------------------------------------------
+
+# Mã phím HID %1 có trong báo cáo trước %2 (byte 2..7)?
+func usb_kbd_had bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = const 2 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 8
+        %4 = const 8 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b9
+
+    @b2
+        %6 = const 3 bv64
+        %7 = shl %3 %6
+        %8 = lshr %1 %7
+        %9 = const 0xff bv64
+        %10 = and %8 %9
+        %11 = cmp eq %10 %0
+        br %11 @b8 @b3
+
+    @b3
+        %12 = const 1 bv64
+        %13 = add %3 %12
+        jmp @b1 %13
+
+    @b8
+        %14 = const 1 bv64
+        ret %14
+
+    @b9
+        %15 = const 0 bv64
+        ret %15
+}
+
+# Báo cáo bàn phím boot (modifier, 0, 6 mã phím) -> scancode set 1: Shift nhấn/nhả + phím mới nhấn
+func usb_kbd_report void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> %3:bv64 %4:bv64 {
+    # %3 = báo cáo mới, %4 = báo cáo trước
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+
+    @b0
+        %5 = const 0 bv64
+        %6 = const 0x22 bv64                 # Left Shift | Right Shift
+        %7 = and %3 %6
+        %8 = and %4 %6
+        %9 = cmp ne %7 %5
+        %10 = cmp ne %8 %5
+        %11 = cmp eq %9 %10
+        br %11 @b4 @b1
+
+    @b1
+        br %9 @b2 @b3
+
+    @b2
+        %12 = const 42 bv64
+        call kbd_handle_scancode %0 %1 %2 %12
+        jmp @b4
+
+    @b3
+        %13 = const 170 bv64
+        call kbd_handle_scancode %0 %1 %2 %13
+        jmp @b4
+
+    @b4
+        %14 = const 2 bv64
+        jmp @b5 %14
+
+    @b5 %15:bv64
+        @inv ule %15 8
+        %16 = const 8 bv64
+        %17 = cmp ult %15 %16
+        br %17 @b6 @b9
+
+    @b6
+        %18 = const 3 bv64
+        %19 = shl %15 %18
+        %20 = lshr %3 %19
+        %21 = const 0xff bv64
+        %22 = and %20 %21                    # mã HID
+        %23 = const 4 bv64
+        %24 = const 72 bv64
+        %25 = cmp uge %22 %23
+        %26 = cmp ult %22 %24
+        %27 = and %25 %26
+        br %27 @b7 @b8
+
+    @b7
+        %28 = call usb_kbd_had %22 %4
+        %29 = cmp eq %28 %5
+        br %29 @b10 @b8
+
+    @b10
+        %30 = lshr %22 %18
+        %31 = const 400 bv64
+        %32 = add %31 %30
+        %33 = call xs_get %0 %32
+        %34 = const 7 bv64
+        %35 = and %22 %34
+        %36 = shl %35 %18
+        %37 = lshr %33 %36
+        %38 = and %37 %21                    # scancode set 1
+        %39 = cmp ne %38 %5
+        br %39 @b11 @b8
+
+    @b11
+        call kbd_handle_scancode %0 %1 %2 %38
+        jmp @b8
+
+    @b8
+        %40 = const 1 bv64
+        %41 = add %15 %40
+        jmp @b5 %41
+
+    @b9
+        ret
+}
+
+# Báo cáo chuột boot (nút, dx, dy) -> gói PS/2 3 byte (trục Y của PS/2 hướng lên, của HID hướng xuống)
+func usb_mouse_report void %0:ptr<IpcChannel,1> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %2 = const 0xff bv64
+        %3 = const 8 bv64
+        %4 = const 16 bv64
+        %5 = and %1 %2
+        %6 = const 7 bv64
+        %7 = and %5 %6                       # nút
+        %8 = lshr %1 %3
+        %9 = and %8 %2                       # dx (int8)
+        %10 = lshr %1 %4
+        %11 = and %10 %2                     # dy (int8)
+        %12 = const 0x80 bv64
+        %13 = cmp eq %11 %12
+        br %13 @b1 @b2
+
+    @b1
+        %14 = const 0x81 bv64                # -128 không đổi dấu được trong int8 -> -127
+        jmp @b3 %14
+
+    @b2
+        jmp @b3 %11
+
+    @b3 %15:bv64
+        @inv ule %15 0xff
+        %16 = const 256 bv64
+        %17 = sub %16 %15
+        %18 = and %17 %2                     # dy PS/2 = -dy
+        %19 = cmp uge %9 %12
+        %20 = cmp uge %18 %12
+        %21 = or %7 %3                       # bit 3 luôn bật
+        br %19 @b4 @b5
+
+    @b4
+        %22 = const 0x10 bv64
+        %23 = or %21 %22
+        jmp @b6 %23
+
+    @b5
+        jmp @b6 %21
+
+    @b6 %24:bv64
+        br %20 @b7 @b8
+
+    @b7
+        %25 = const 0x20 bv64
+        %26 = or %24 %25
+        jmp @b9 %26
+
+    @b8
+        jmp @b9 %24
+
+    @b9 %27:bv64
+        call drv_mouse_handle_byte %0 %27
+        call drv_mouse_handle_byte %0 %9
+        call drv_mouse_handle_byte %0 %18
+        ret
+}
+
+func usb_poll void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 1 bv64
+        %5 = call xs_get %0 %3
+        %6 = cmp eq %5 %4
+        br %6 @b1 @b9
+
+    @b1
+        jmp @b2 %3
+
+    @b2 %7:bv64
+        @inv ule %7 16
+        %8 = const 16 bv64
+        %9 = cmp ult %7 %8
+        br %9 @b3 @b9
+
+    @b3
+        %10 = call xh_evt_next %0
+        %11 = cmp eq %10 %3
+        br %11 @b9 @b4
+
+    @b4
+        %12 = const 42 bv64
+        %13 = lshr %10 %12
+        %14 = const 0x3f bv64
+        %15 = and %13 %14
+        %16 = const 32 bv64
+        %17 = cmp eq %15 %16
+        %18 = const 56 bv64
+        %19 = lshr %10 %18                   # slot
+        %20 = const 8 bv64
+        %21 = cmp uge %19 %4
+        %22 = cmp ule %19 %20
+        %23 = and %17 %21
+        %24 = and %23 %22
+        br %24 @b5 @b8
+
+    @b5
+        %25 = sub %19 %4
+        %26 = mul %25 %20
+        %27 = const 16 bv64
+        %28 = add %27 %26
+        %29 = call xs_get %0 %28             # loại
+        %30 = add %28 %4
+        %31 = call xs_get %0 %30             # DCI
+        %32 = const 48 bv64
+        %33 = lshr %10 %32
+        %34 = const 0x1f bv64
+        %35 = and %33 %34                    # endpoint ID của sự kiện
+        %36 = cmp ne %29 %3
+        %37 = cmp eq %35 %31
+        %38 = and %36 %37
+        %39 = call xh_cc_ok %10
+        %40 = cmp ne %39 %3
+        %41 = and %38 %40
+        br %41 @b6 @b8
+
+    @b6
+        %42 = const 3840 bv64                # bộ đệm báo cáo 0x1407800
+        %43 = add %42 %26
+        %44 = call xm_get %0 %43
+        %45 = const 2 bv64
+        %46 = cmp eq %29 %45
+        br %46 @b60 @b61
+
+    @b60
+        call usb_mouse_report %2 %44
+        jmp @b7
+
+    @b61
+        %47 = const 3 bv64
+        %48 = add %28 %47
+        %49 = call xs_get %0 %48
+        call usb_kbd_report %0 %1 %2 %44 %49
+        call xs_set %0 %48 %44
+        jmp @b7
+
+    @b7
+        call xh_int_queue %0 %19
+        jmp @b8
+
+    @b8
+        %50 = add %7 %4
+        jmp @b2 %50
+
+    @b9
+        ret
+}

@@ -1,6 +1,7 @@
 # File: lit_program/os/init.lit
 include wm.lit
 include ../drivers/serial.lit
+include ../drivers/usb_xhci.lit
 
 func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> {
     @req uge %1 0x10000
@@ -13,6 +14,7 @@ func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64>
     @b0
         call blk_init %0
         call drv_kbd_init %0 %1
+        call usb_init %0
 
         %6 = const 0 bv64
         call blk_read_sector %0 %2 %6
