@@ -2,12 +2,13 @@
 # LIGHT OS: Window Manager, Desktop Dock & Taskbar Compositor
 
 include ../lib/gfx.lit
-include ../drivers/ata_disk.lit
+include ../drivers/blk.lit
 include ../drivers/kbd_drv.lit
 include ../lib/vfs_api.lit
 include ../lib/cap_mem.lit
 include ../lib/ipc_bus.lit
 include ../lib/std_lib.lit
+include hw.lit
 include app_loader.lit
 
 func gfx_draw_cursor void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
@@ -500,14 +501,19 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         %82 = add %44 %80
         %83 = add %45 %81
         call gfx_blit_rect %1 %2 %44 %45 %82 %83
+        call fb_present_rect %0 %1 %44 %45 %82 %83
 
         %84 = load %3 120 bv64
         %85 = load %3 128 bv64
         %86 = load %3 136 bv64
         %87 = load %3 144 bv64
         call gfx_blit_rect %1 %2 %84 %85 %86 %87
+        call fb_present_rect %0 %1 %84 %85 %86 %87
 
         call gfx_draw_cursor %1 %10 %11
+        %800 = add %10 %80
+        %801 = add %11 %81
+        call fb_present_rect %0 %1 %10 %11 %800 %801
         store %3 64 %10
         store %3 72 %11
         jmp @b12
@@ -524,7 +530,11 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<Vga
         %90 = add %44 %88
         %91 = add %45 %89
         call gfx_blit_rect %1 %2 %44 %45 %90 %91
+        call fb_present_rect %0 %1 %44 %45 %90 %91
         call gfx_draw_cursor %1 %10 %11
+        %802 = add %10 %88
+        %803 = add %11 %89
+        call fb_present_rect %0 %1 %10 %11 %802 %803
         store %3 64 %10
         store %3 72 %11
         jmp @b12

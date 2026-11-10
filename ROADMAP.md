@@ -1,49 +1,77 @@
-# 🗺️ Lộ trình Phát triển Tiếp theo (Light & Light OS Roadmap)
+# 🗺️ Lộ trình Light & Light OS
 
-Dự án đã hoàn thành **Giai đoạn 1 (Foundation)**: Xây dựng thành công trình biên dịch `light v2` (~650 dòng Rust) tích hợp Z3 BitVector Verifier và khởi chạy `Light OS` trên QEMU với Bộ cấp phát Heap, Bảng Task, Bộ lập lịch Sự kiện, Hộp thư Zero-Copy IPC, Driver Serial, Driver VGA, Thư viện Đồ họa 2D và Driver Bàn phím PS/2 tương tác thời gian thực.
+Cập nhật: 2026-11-10 · nhánh `cleanup-verifier-step1`
 
-Dưới đây là 5 giai đoạn phát triển tiếp theo:
-
----
-
-## Giai đoạn 2: Lưu trữ Bền vững & Hệ thống Tệp Phẳng (Storage & Flat Object Store)
-**Mục tiêu:** Cho phép `Light OS` đọc/ghi dữ liệu và nạp thêm các chương trình mới trực tiếp từ ổ đĩa cứng ảo của QEMU.
-- [ ] **Driver Đĩa cứng ATA PIO (`drivers/ata_disk.lit`):**
-  - Sử dụng thẻ quyền năng `io<0x1f0, 0x1f7>` (tận dụng lệnh I/O 16-bit `in ax, dx` / `out dx, ax` tại cổng `0x1F0` đã được hỗ trợ sẵn trong `elf64.rs`).
-  - Viết hàm đọc/ghi Sector 512-byte (`ptr<DiskWord, 256>`) có vòng lặp quy nạp `@inv ule %i 256` được Z3 chứng minh không tràn bộ đệm DMA.
-- [ ] **Hệ thống Lưu trữ Khối Phẳng (`lib/kv_store.lit`):**
-  - Thay vì cây thư mục POSIX phức tạp dành cho con người, thiết kế hệ thống lưu trữ dạng **Bảng Chỉ mục Cố định (Flat Tensor/Block Store)** nơi mỗi tệp/mô hình là một dải Sector liên tục có gắn mã định danh 64-bit và chữ ký kiểm chứng.
+Mục tiêu gần: **Light OS chạy trên máy thật** (HP Pavilion 15-eg0xxx: i7-1165G7, 32GB, UEFI, NVMe Samsung 980 sau
+Intel VMD, Iris Xe 1920×1080), đọc/ghi được ổ NVMe, có hệ thống tệp riêng (LightFS). Sau đó mới tới tối ưu mã máy
+và vòng lặp AI tự sửa lỗi.
 
 ---
 
-## Giai đoạn 3: Giao diện Tương tác & Shell dành cho Tác nhân (Interactive Shell & Command Parser)
-**Mục tiêu:** Biến `apps/desktop_app.lit` thành một môi trường điều khiển hoàn chỉnh.
-- [ ] **Hỗ trợ Phím chức năng trong `kbd_drv.lit` & `desktop_app.lit`:**
-  - Xử lý phím `Backspace` (Scancode `14` — lùi con trỏ `cursor_x` và xóa ký tự trên màn hình VGA), phím `Enter` (Scancode `28` — xuống dòng và thực thi lệnh vừa gõ).
-- [ ] **Bộ Thông dịch Lệnh Tối giản (`apps/shell_app.lit`):**
-  - Lưu các ký tự gõ từ `IpcChannel` vào bộ đệm dòng lệnh `ptr<CmdBuf, 64>`.
-  - Khi nhấn `Enter`, thực thi các lệnh kiểm tra trạng thái Kernel: xem dung lượng Heap đã dùng (`heap_used`), số lượng Task đang chạy (`task_count`), hoặc đọc/ghi thử nghiệm lên Sector ổ đĩa.
+## ✅ Đã xong
+
+| Bước | Nội dung | Commit |
+|---|---|---|
+| 1 | Dọn code `.lit` chết (~2.2k dòng), parser chặt, bộ test hồi quy `cargo test` (`tests/lit/{must_fail,must_pass,known_holes}`), lệnh `light check-app`, oracle vi sai (`src/bin/oracle.rs`) | f7eeadf, 2f5f424 |
+| 2 | Vá verifier: bỏ `spawn/sync` → `parallel` fork-join + kiểu mờ `smp`; IDT 0..31 → `kernel_panic` (màn hình đỏ + serial); AP chỉ nhận APIC 1..15 | 69f35ef |
+| 3a | Con trỏ độ dài động `ptr<L,%n>` (Z3 chứng minh mọi truy cập trong biên `%n`) | 8216702 |
+| 4 | Cấp/thu hồi RAM tường minh cho App: heap `ptr<DiskQword,%n>` = đúng phần đã map; bể khung đọc từ Memory Map thật (≤ 48GB); xóa trắng chunk trước khi giao; AP xả TLB trước mỗi job; oracle dùng chung `RAM_TOP` với verifier | 792c06e |
 
 ---
 
-## Giai đoạn 4: Vòng lặp Tự Sửa lỗi cho AI (Counter-Example Guided AI Synthesis Loop)
-**Mục tiêu:** Kết nối trực tiếp trình biên dịch `light` với một Mô hình Ngôn ngữ Lớn (LLM API hoặc Local LLM) để AI tự viết các mô-đun mới cho `Light OS`.
-- [ ] **Chuẩn hóa Đầu ra Phản ví dụ JSON (`verify.rs`):**
-  - Khi một hàm `.lit` do AI sinh ra bị trượt kiểm chứng Z3 (`SatResult::Sat`), đóng gói tên hàm, vị trí lệnh lỗi và bộ giá trị `Counter-example` của Z3 thành chuỗi JSON siêu gọn.
-- [ ] **Pipeline Tự động Sửa lỗi (Guided Repair CLI):**
-  - Tự động bắn ngược `Counter-example` lại cho AI trong vòng lặp suy luận. Thực nghiệm cho thấy với phản ví dụ cụ thể của Z3 (ví dụ: `r2 = 0` gây chia cho 0, hoặc `r1 = 2000` gây tràn `slice`), AI chỉ mất 1-2 lượt để bổ sung đúng `@req` / `@inv` và sinh ra mô-đun `.lit` đạt chuẩn 100%.
+## 🔨 Đang làm
+
+### Bước 5 — NVMe + boot trên máy thật (code xong, đã test QEMU; chờ thử trên laptop)
+- [x] Boot qua GRUB EFI (multiboot1): header xin framebuffer, cờ header đúng chuẩn (cờ 0x40 cũ bị GRUB từ chối),
+      bảng section header tối thiểu (GRUB 2.14 bắt buộc). `qemu -kernel` vẫn chạy.
+- [x] Màn hình: VRAM logic 1280×720 trong RAM, `fb_present_rect` chép ra framebuffer GOP thật (pitch bất kỳ, căn giữa).
+      Bỏ việc đọc mò BAR0 của PCI 00:02.0 (trên Iris Xe đó là thanh ghi GPU).
+- [x] x2APIC → xAPIC trong boot stub; PAT PA1 = WC; INIT chờ ~10ms + 2 SIPI.
+- [x] Ngôn ngữ: lệnh `narrow` (thu hẹp có chứng minh), I/O 32-bit (ghi bv32, đọc 0xCFC).
+- [x] PCI config (0xCF8/0xCFC), cửa sổ MMIO cố định qua PML4[1] (fb WC, BAR UC).
+- [x] Driver NVMe bằng Light + Intel VMD + GPT `lightos` + kiểm tra biên phân vùng trong driver. Tầng `blk_*` thay mọi
+      lời gọi ATA của kernel (ATA vẫn là dự phòng).
+- [x] F1..F7 mở App, F12 khởi động lại; dòng trạng thái BLK/PART/PLEN trên màn hình.
+- [x] `tools/install_lightos.sh` (dùng lại phân vùng rustos → lightos), `tools/qemu_uefi_nvme.sh` (môi trường giống máy thật).
+- [x] Sửa SAVE của Editor (LBA file bị chính lệnh đọc file ghi đè → không bao giờ lưu).
+- [ ] **Thử trên laptop thật** (tắt Secure Boot, chạy installer). Đường VMD chưa thể test trên QEMU.
+- [ ] Nếu NVMe báo lỗi (dòng BLK, mã ở `nvme_init_ctrl`): có thể do firmware còn bật VT-d PMR chặn DMA vùng nhớ thấp,
+      hoặc BAR của NVMe sau VMD chưa được firmware gán (hiện chỉ đọc BAR có sẵn, chưa tự gán bus/BAR).
+
+## 📋 Tiếp theo
+
+### Bước 3b — Giải phóng riêng lẻ (`free`)
+- Kiểu tuyến tính cho `ptr<L,%n>` do allocator cấp: sau `release` không dùng lại được (verifier theo dõi trạng thái).
+- Allocator trong heap App (bitmap/free-list viết bằng Light) thay cho co/giãn cả heap.
+
+### Bước 6 — LightFS
+- Thay VFS phẳng hiện tại (superblock + thư mục + string pool, file liên tục, không xóa/không mở rộng được) bằng hệ
+  tệp có cấp phát extent, ghi an toàn khi mất điện (journal hoặc copy-on-write), checksum.
+- Công cụ host: `light sync` đọc trực tiếp từ phân vùng/ảnh đĩa; fsck.
+- Bộ test: ảnh đĩa hỏng, đầy đĩa, mất điện giữa chừng.
+
+### Các lỗi/thiếu sót còn mở
+- [ ] IPC dùng chung cho mọi App: yêu cầu đĩa của App chạy ngầm có thể bị tính cho App foreground.
+- [ ] `smp_selftest` đếm worker khi AP còn đang boot (có lúc in `WORKERS=5` thay vì 7).
+- [ ] Chưa có IST/TSS cho double fault; exception trên AP làm BSP treo chờ.
+- [ ] Header App còn jmp thứ 3 (worker_offset) không dùng.
+- [ ] `drv_ata_load_app` luôn đọc 2048 sector, đọc quá cuối đĩa nhỏ (mỗi sector thiếu chờ timeout). Với NVMe: phần vượt
+      phân vùng bị từ chối và trả 0, không chờ.
+- [ ] NVMe: chưa dùng ngắt (MSI-X), mỗi lệnh chờ đồng bộ; chỉ 1 hàng đợi I/O; ghi không gọi Flush (dữ liệu có thể nằm
+      trong cache của SSD nếu mất điện ngay sau khi lưu).
+- [ ] Giao diện cố định 1280×720 (màn 1920×1080 có viền đen); chưa có driver touchpad I2C / USB HID.
+- [ ] Cửa sổ ảo 32GB/App; tối đa 7 App.
+- [ ] Không có ngắt (mọi thiết bị đều thăm dò); không có bộ đếm thời gian thật (timeout tính bằng số vòng lặp).
+- [ ] USB (bàn phím/chuột ngoài) chưa hỗ trợ; touchpad I2C chưa hỗ trợ.
 
 ---
 
-## Giai đoạn 5: Tối ưu hóa Mã máy & Tập lệnh Ma trận/Tensor cho AI (Performance & Tensor Primitives)
-**Mục tiêu:** Nâng cấp tốc độ thực thi của mã máy `x86_64` do `elf64.rs` sinh ra để chạy các tác vụ tính toán nặng của AI.
-- [ ] **Cấp phát Thanh ghi Đơn giản (Linear-Scan Register Allocation trong `elf64.rs`):**
-  - Hiện tại các biến SSA `%0, %1...` đang lưu trên Stack (`[rbp - offset]`). Ánh xạ trực tiếp 8 biến SSA đầu tiên của mỗi hàm vào các thanh ghi phần cứng (`r12..r15`, `rbx`, `r8..r10`) để tăng tốc độ vòng lặp lên gấp 5-10 lần.
-- [ ] **Thư viện Toán học Điểm cố định & Ma trận (`lib/tensor.lit`):**
-  - Xây dựng các hàm nhân ma trận (GEMM), tích vô hướng (Dot Product) và hàm kích hoạt (ReLU / Integer Softmax) trên kiểu `bv64`/`bv32` dùng `slice` và vòng lặp quy nạp Z3, cho phép chạy trực tiếp một mạng nơ-ron nhỏ (như nhận diện chữ số hoặc TinyLLM) ngay bên trong `Light OS` ở chế độ Bare-metal!
+## 🔭 Xa hơn (giữ từ lộ trình cũ, đã chỉnh lại)
 
----
-
-## Giai đoạn 6: Nhúng Trình biên dịch `Light` vào trong `Light OS` (Self-Hosting / JIT Kernel)
-**Mục tiêu tối thượng:** Đưa bộ kiểm chứng `verify.rs` và bộ sinh mã `elf64.rs` vào chạy ngay bên trong nhân hệ điều hành.
-- [ ] Cho phép `Light OS` nhận mã nguồn `.lit` mới qua cổng Serial hoặc mạng, tự kiểm chứng Z3 và dịch ra mã máy nạp thẳng vào vùng Heap để chạy nóng (Hot-swappable Verified Modules) mà không cần khởi động lại máy ảo!
+- **Vòng lặp AI tự sửa lỗi**: verifier xuất phản ví dụ Z3 dạng JSON (hàm, lệnh, giá trị các biến); CLI đẩy ngược cho
+  LLM để bổ sung `@req/@inv` và sinh lại.
+- **Tối ưu mã máy**: hiện ≈ `gcc -O0` (chậm ~4.6× so với `-O2`). Cấp phát thanh ghi linear-scan cho biến SSA nóng,
+  bỏ load/store thừa qua stack.
+- **Thư viện tensor** (`lib/tensor.lit`): GEMM/dot/ReLU trên `vxxx256` + `parallel`, chạy một mạng nhỏ bare-metal.
+- **Self-hosting**: đưa verifier + codegen vào Light OS, nạp module `.lit` đã kiểm chứng lúc chạy.
+- **Mạng**: driver NIC (Wi-Fi AX201 rất khó; ưu tiên USB-Ethernet hoặc virtio-net trên QEMU).

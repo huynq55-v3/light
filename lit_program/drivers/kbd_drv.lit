@@ -460,6 +460,40 @@ func drv_kbd_poll_task void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,
         jmp @b8
 
     @b54
+        # F1..F7 (scancode 59..65) = bấm ô Dock 0..6: máy không có chuột PS/2 (touchpad I2C) vẫn mở được App.
+        # Giả lập một cú click: đặt chuột vào giữa ô Dock rồi bật cờ click (WM xử lý như click thật).
+        %320 = const 59 bv64
+        %321 = const 65 bv64
+        %322 = cmp uge %12 %320
+        %323 = cmp ule %12 %321
+        %324 = and %322 %323
+        br %324 @b55 @b56
+
+    @b55
+        %325 = sub %12 %320
+        %326 = const 70 bv64
+        %327 = mul %325 %326
+        %328 = const 425 bv64
+        %329 = add %327 %328                # x = 390 + 70 * ô + 35
+        %330 = const 660 bv64
+        %331 = const 1 bv64
+        store %2 16 %329
+        store %2 24 %330
+        store %2 32 %331
+        jmp @b8
+
+    @b56
+        # F12 (scancode 0x58) = khởi động lại: lệnh 0xFE của bộ điều khiển i8042 kéo chân RESET của CPU
+        %332 = const 0x58 bv64
+        %333 = cmp eq %12 %332
+        br %333 @b57 @b58
+
+    @b57
+        %334 = const 0xfe bv8
+        hwio_w %0 0x64 %334
+        jmp @b8
+
+    @b58
         %16 = const 64 bv64
         %17 = cmp ult %12 %16
         br %17 @b6 @b8

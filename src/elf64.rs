@@ -13,7 +13,7 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
     elf.extend_from_slice(&[
         0x7F, b'E', b'L', b'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 3, 0, 1, 0, 0, 0,
     ]);
-    let entry_vaddr = base + 0x80;
+    let entry_vaddr = base + 0xA8;
     elf.extend_from_slice(&entry_vaddr.to_le_bytes());
     elf.extend_from_slice(&52u32.to_le_bytes());
     elf.extend_from_slice(&0u32.to_le_bytes());
@@ -33,17 +33,27 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
     elf.extend_from_slice(&7u32.to_le_bytes());
     elf.extend_from_slice(&0x1000u32.to_le_bytes());
 
-    // 2. Multiboot1 Header tại offset 0x54 (12B) + GDT 64-bit tại 0x60 (24B) + GDTR tại 0x78 (8B)
-    // flags = 0x40 (bit 6): yêu cầu Bootloader/QEMU cung cấp Memory Map (mmap_length/mmap_addr). checksum = -(magic + flags)
+    // 2. Multiboot1 Header tại offset 0x54 (48B) + GDT 64-bit tại 0x88 (24B) + GDTR tại 0xA0 (8B), entry tại 0xA8
+    // flags = bit 1 (Memory Map) | bit 2 (xin chế độ đồ họa: linear 1280x720x32; GRUB EFI trả framebuffer GOP thật,
+    // có thể khác kích thước — kernel đọc lại từ Multiboot Info). Cờ 0x40 cũ là bit không định nghĩa: QEMU bỏ qua
+    // nhưng GRUB từ chối ("unsupported flag"). checksum = -(magic + flags)
+    let mb_flags: u32 = 0x0000_0006;
     elf.extend_from_slice(&0x1BADB002u32.to_le_bytes());
-    elf.extend_from_slice(&0x00000040u32.to_le_bytes());
-    elf.extend_from_slice(&0xE4524FBEu32.to_le_bytes());
+    elf.extend_from_slice(&mb_flags.to_le_bytes());
+    elf.extend_from_slice(&0u32.wrapping_sub(0x1BADB002u32.wrapping_add(mb_flags)).to_le_bytes());
+    elf.extend_from_slice(&[0u8; 20]); // header_addr..entry_addr (bit 16 tắt: dùng ELF header)
+    for v in [0u32, 1280, 720, 32] {
+        elf.extend_from_slice(&v.to_le_bytes()); // mode_type = 0 (linear), width, height, depth
+    }
+    elf.extend_from_slice(&[0u8; 4]);
+    assert_eq!(elf.len(), 0x88);
     elf.extend_from_slice(&0x0000000000000000u64.to_le_bytes());
     elf.extend_from_slice(&0x00AF9A000000FFFFu64.to_le_bytes());
     elf.extend_from_slice(&0x00CF92000000FFFFu64.to_le_bytes());
     elf.extend_from_slice(&23u16.to_le_bytes());
-    elf.extend_from_slice(&(base + 0x60).to_le_bytes());
+    elf.extend_from_slice(&(base + 0x88).to_le_bytes());
     elf.extend_from_slice(&0u16.to_le_bytes());
+    assert_eq!(elf.len(), 0xA8);
 
     // 3. Trampoline 32-bit -> 64-bit Long Mode (Đặt Page Table tại 0x10000 để Kernel .lit tự cấp phát Lô động!):
     //    - 0x10000: PML4 (CR3 = 0x10000)
@@ -54,10 +64,10 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         0xFA, // cli
         0xB0, 0xFF, 0xE6, 0x21, 0xE6, 0xA1, // mov al, 0xff; out 0x21, al; out 0xa1, al (Mask 8259 PIC)
         0xBC, 0x00, 0x00, 0x07, 0x00, // mov esp, 0x70000
-        // Sao chép Multiboot Info (96B) -> 0x7d000 và Memory Map (tối đa 0xF00B) -> 0x7d100 (EBX còn nguyên từ Bootloader)
-        // để Kernel .lit đọc được bằng con trỏ hằng (vùng này nằm ngoài 0x10000..0x30000 bị xóa bên dưới)
-        0x89, 0xDE, 0xBF, 0x00, 0xD0, 0x07, 0x00, 0xB9, 0x18, 0x00, 0x00, 0x00, 0xFC, 0xF3,
-        0xA5, // mov esi, ebx; mov edi, 0x7d000; mov ecx, 24; cld; rep movsd
+        // Sao chép Multiboot Info (128B, gồm cả trường framebuffer 88..115) -> 0x7d000 và Memory Map (tối đa 0xF00B)
+        // -> 0x7d100 (EBX còn nguyên từ Bootloader) để Kernel .lit đọc được bằng con trỏ hằng
+        0x89, 0xDE, 0xBF, 0x00, 0xD0, 0x07, 0x00, 0xB9, 0x20, 0x00, 0x00, 0x00, 0xFC, 0xF3,
+        0xA5, // mov esi, ebx; mov edi, 0x7d000; mov ecx, 32; cld; rep movsd
         0xF6, 0x05, 0x00, 0xD0, 0x07, 0x00, 0x40, // test byte [0x7d000], 0x40 (cờ mmap hợp lệ?)
         0x74, 0x23, // jz skip_mmap
         0x8B, 0x35, 0x30, 0xD0, 0x07, 0x00, // mov esi, [0x7d030] (mmap_addr)
@@ -68,6 +78,22 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         0xC1, 0xE9, 0x02, // shr ecx, 2
         0xBF, 0x00, 0xD1, 0x07, 0x00, // mov edi, 0x7d100
         0xF3, 0xA5, // rep movsd
+        // skip_mmap: Firmware UEFI có thể để Local APIC ở chế độ x2APIC (MMIO 0xFEE00000 khi đó vô hiệu) ->
+        // x2APIC -> tắt hẳn -> xAPIC (chuyển thẳng x2APIC -> xAPIC là #GP theo Intel SDM)
+        0xB9, 0x1B, 0x00, 0x00, 0x00, // mov ecx, 0x1B (IA32_APIC_BASE)
+        0x0F, 0x32,                   // rdmsr
+        0xA9, 0x00, 0x04, 0x00, 0x00, // test eax, 0x400 (EXTD)
+        0x74, 0x0E,                   // jz +14
+        0x25, 0xFF, 0xF3, 0xFF, 0xFF, // and eax, ~0xC00 (EN = EXTD = 0)
+        0x0F, 0x30,                   // wrmsr
+        0x0D, 0x00, 0x08, 0x00, 0x00, // or eax, 0x800 (EN = 1, xAPIC)
+        0x0F, 0x30,                   // wrmsr
+        // PAT: PA1 (PWT=1, PCD=0) = Write-Combining thay cho Write-Through -> ánh xạ framebuffer dùng WC;
+        // PA0 = WB (mọi ánh xạ RAM hiện có), PA3 = UC (MMIO: PCD|PWT) giữ như mặc định
+        0xB9, 0x77, 0x02, 0x00, 0x00, // mov ecx, 0x277 (IA32_PAT)
+        0xB8, 0x06, 0x01, 0x07, 0x00, // mov eax, 0x00070106
+        0xBA, 0x06, 0x04, 0x07, 0x00, // mov edx, 0x00070406
+        0x0F, 0x30,                   // wrmsr
         0xBF, 0x00, 0x00, 0x01, 0x00, 0xB9, 0x00, 0x80, 0x00, 0x00, 0x31, 0xC0, 0xFC, 0xF3,
         0xAB, // Clear 0x10000..0x30000
         0xC7, 0x05, 0x00, 0x00, 0x01, 0x00, 0x03, 0x10, 0x01, 0x00, // PML4[0] (0x10000) = 0x11003
@@ -80,10 +106,11 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         0x89, 0x04, 0xCD, 0x04, 0x10, 0x01, 0x00, // mov [ecx*8 + 0x11004], eax
         0x41, 0x83, 0xF9, 0x40, 0x7C, 0xDD, // inc ecx; cmp ecx, 64; jl -35
         0xC7, 0x05, 0x00, 0x20, 0x01, 0x00, 0x83, 0x00, 0x00, 0x00, // PD_0[0] (0x12000) = 0..2MB RAM
-        // Đọc địa chỉ vật lý Linear Framebuffer từ PCI VGA BAR0
-        0xB8, 0x10, 0x10, 0x00, 0x80, 0x66, 0xBA, 0xF8, 0x0C, 0xEF, 0x66, 0xBA, 0xFC, 0x0C, 0xED,
-        0x25, 0x00, 0x00, 0xE0, 0xFF, 0x0D, 0x83, 0x00, 0x00, 0x00, 0xA3, 0x08, 0x20, 0x01, 0x00,
-        0x05, 0x00, 0x00, 0x20, 0x00, 0xA3, 0x10, 0x20, 0x01, 0x00,
+        // VRAM logic 0x200000..0x600000 = RAM (identity). Framebuffer thật do kernel .lit ánh xạ (fb_init) và
+        // chép ra bằng fb_present_rect. Trước đây chỗ này đọc mò BAR0 của PCI 00:02.0 — trên Intel iGPU đó là
+        // thanh ghi GPU, không phải framebuffer.
+        0xC7, 0x05, 0x08, 0x20, 0x01, 0x00, 0x83, 0x00, 0x20, 0x00, // PD_0[1] = 0x200000 | 0x83
+        0xC7, 0x05, 0x10, 0x20, 0x01, 0x00, 0x83, 0x00, 0x40, 0x00, // PD_0[2] = 0x400000 | 0x83
         // Ánh xạ 4MB Backbuffer RAM tại Virtual 0x600000..0xA00000 + 2MB PD_Pool tại 0xA00000..0xC00000
         0xC7, 0x05, 0x18, 0x20, 0x01, 0x00, 0x83, 0x00, 0x60, 0x00, 0xC7, 0x05, 0x20, 0x20, 0x01,
         0x00, 0x83, 0x00, 0x80, 0x00, 0xC7, 0x05, 0x28, 0x20, 0x01, 0x00, 0x83, 0x00, 0xA0, 0x00,
@@ -92,7 +119,7 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         0xB8, 0x00, 0x00, 0x01, 0x00, 0x0F, 0x22, 0xD8, 0x0F, 0x20, 0xE0, 0x0D, 0x20, 0x06, 0x00,
         0x00, 0x0F, 0x22, 0xE0, 0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32, 0x0D, 0x00, 0x01, 0x00,
         0x00, 0x0F, 0x30, 0x0F, 0x20, 0xC0, 0x0D, 0x00, 0x00, 0x00, 0x80, 0x0F, 0x22, 0xC0, 0x0F,
-        0x01, 0x15, 0x78, 0x00, 0x10, 0x00,
+        0x01, 0x15, 0xA0, 0x00, 0x10, 0x00, // lgdt [0x1000A0]
     ]);
     let start64 = base + (elf.len() as u32) + 7;
     elf.push(0xEA);
@@ -273,14 +300,18 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         // Đánh thức tất cả các nhân AP 1..N vào Long Mode & Worker Loop lúc boot:
         // Nếu số worker ([0x7e000]) > 0:
         0x48, 0x83, 0x3C, 0x25, 0x00, 0xE0, 0x07, 0x00, 0x00, // cmp qword [0x7e000], 0
-        0x74, 0x1F,                                           // jz skip_ap_boot (+31 bytes)
+        0x74, 0x2C,                                           // jz skip_ap_boot (+44 bytes)
         // rax = 0xFEE00300 (Local APIC ICR low)
         0xB8, 0x00, 0x03, 0xE0, 0xFE,                         // mov eax, 0xFEE00300
         // Gửi INIT IPI broadcast tới All Excluding Self (0x000C4500)
         0xC7, 0x00, 0x00, 0x45, 0x0C, 0x00,                   // mov dword [rax], 0x000C4500
+        0xB9, 0x40, 0x4B, 0x4C, 0x00,                         // mov ecx, 5000000 (~10ms chờ INIT trên máy thật)
+        0xE2, 0xFE,                                           // loop $
+        // Gửi SIPI broadcast tới All Excluding Self với vector 0x08 (0x000C4608), 2 lần như Intel MP spec
+        // (máy thật có thể bỏ lỡ SIPI đầu; AP đã chạy thì bỏ qua SIPI thứ hai)
+        0xC7, 0x00, 0x08, 0x46, 0x0C, 0x00,                   // mov dword [rax], 0x000C4608
         0xB9, 0xA0, 0x86, 0x01, 0x00,                         // mov ecx, 100000
         0xE2, 0xFE,                                           // loop $
-        // Gửi SIPI broadcast tới All Excluding Self với vector 0x08 (0x000C4608)
         0xC7, 0x00, 0x08, 0x46, 0x0C, 0x00,                   // mov dword [rax], 0x000C4608
         0xB9, 0xA0, 0x86, 0x01, 0x00,                         // mov ecx, 100000
         0xE2, 0xFE,                                           // loop $
@@ -310,6 +341,17 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
     if elf.len() > 0x50000 {
         return Err(format!("Ảnh kernel {} byte vượt 0x50000 (đè lên stack nhân AP tại 0x150000)", elf.len()));
     }
+    // Bảng section header tối thiểu (1 section SHN_UNDEF rỗng, 40B): GRUB 2.14 từ chối ELF có e_shoff = 0
+    // ("invalid section header table offset in e_shoff"); QEMU -kernel thì không kiểm tra.
+    while elf.len() % 4 != 0 {
+        elf.push(0);
+    }
+    let shoff = elf.len() as u32;
+    elf.extend_from_slice(&[0u8; 40]);
+    elf[32..36].copy_from_slice(&shoff.to_le_bytes()); // e_shoff
+    elf[46..48].copy_from_slice(&40u16.to_le_bytes()); // e_shentsize
+    elf[48..50].copy_from_slice(&1u16.to_le_bytes()); // e_shnum
+    elf[50..52].copy_from_slice(&0u16.to_le_bytes()); // e_shstrndx
     let fsz = (elf.len() as u32).to_le_bytes();
     elf[68..72].copy_from_slice(&fsz);
     elf[72..76].copy_from_slice(&fsz);
@@ -539,6 +581,7 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                 match i {
                     Inst::Const { dst, ty, .. }
                     | Inst::Load { dst, ty, .. }
+                    | Inst::Narrow { dst, ty, .. }
                     | Inst::Slice { dst, ty, .. } => {
                         reg_tys.insert(*dst, *ty);
                     }
@@ -667,6 +710,11 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                         code.extend_from_slice(&elem_size.to_le_bytes());
                         emit_load_rcx(&mut code, *base, &hot);
                         code.extend_from_slice(&[0x48, 0x01, 0xC8]);
+                        emit_store_rax(&mut code, *dst, &hot);
+                    }
+                    Inst::Narrow { dst, src, .. } => {
+                        // Z3 đã chứng minh giá trị vừa kiểu đích: chỉ là phép chép
+                        emit_load_rax(&mut code, *src, &hot);
                         emit_store_rax(&mut code, *dst, &hot);
                     }
                     Inst::Load {
@@ -806,7 +854,9 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                             } else {
                                 code.extend_from_slice(&[0x66, 0xBA]);
                                 code.extend_from_slice(&port_or_reg.to_le_bytes());
-                                if *port_or_reg == 0x1F0 || reg_tys.get(&v_reg) == Some(&Type::Bv16)
+                                if reg_tys.get(&v_reg) == Some(&Type::Bv32) {
+                                    code.push(0xEF); // out dx, eax
+                                } else if *port_or_reg == 0x1F0 || reg_tys.get(&v_reg) == Some(&Type::Bv16)
                                 {
                                     code.extend_from_slice(&[0x66, 0xEF]);
                                 } else {
@@ -824,7 +874,9 @@ fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u
                             } else {
                                 code.extend_from_slice(&[0x31, 0xC0, 0x66, 0xBA]);
                                 code.extend_from_slice(&port_or_reg.to_le_bytes());
-                                if *port_or_reg == 0x1F0 {
+                                if *port_or_reg == 0xCFC {
+                                    code.push(0xED); // in eax, dx (ghi eax xóa nửa cao rax)
+                                } else if *port_or_reg == 0x1F0 {
                                     code.extend_from_slice(&[0x66, 0xED]);
                                 } else {
                                     code.push(0xEC);

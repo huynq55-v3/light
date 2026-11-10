@@ -159,6 +159,7 @@ func kernel_panic void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
         %28 = const 210 bv64
         %29 = const "APIC ID " bv64
         call diag_line %0 %6 %7 %28 %29 %5
+        call fb_present_rect %0 %6 %8 %8 %9 %10
         ret
 }
 
@@ -271,5 +272,69 @@ func smp_selftest void %0:io<0,0xffff> %1:smp {
         call diag_serial_str8 %0 %36
         %37 = const "\n" bv64
         call diag_serial_str8 %0 %37
+        ret
+}
+
+# Dòng trạng thái lúc boot (góc trên trái màn hình + serial):
+#   BLK  = backend (0 không có, 1 ATA, 2 NVMe) << 48 | GPT (0 không có, 1 thấy lightos, 2 GPT thiếu lightos) << 40
+#          | mã nvme_init_ctrl (0 = OK, xem drivers/nvme.lit) << 32 | rộng << 16 | cao của framebuffer thật
+#   PART = LBA đầu phân vùng ; PLEN = số sector (0 = I/O bị chặn)
+func diag_boot_report void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<VgaCell,921600> %3:ptr<DiskQword,64> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+    @req uge %3 0x10000
+    @req ult %3 0x80000000
+
+    @b0
+        %4 = const 0xff bv64
+        %5 = const 0xffff bv64
+        %6 = const 16 bv64
+        %7 = call hw_get %0 %6
+        %8 = and %7 %4
+        %9 = const 48 bv64
+        %10 = shl %8 %9
+        %11 = const 32 bv64
+        %12 = call hw_get %0 %11
+        %13 = and %12 %4
+        %14 = const 40 bv64
+        %15 = shl %13 %14
+        %16 = const 20 bv64
+        %17 = call hw_get %0 %16
+        %18 = and %17 %4
+        %19 = shl %18 %11
+        %20 = const 2 bv64
+        %21 = call hw_get %0 %20
+        %22 = and %21 %5
+        %23 = shl %22 %6
+        %24 = const 3 bv64
+        %25 = call hw_get %0 %24
+        %26 = and %25 %5
+        %27 = or %10 %15
+        %28 = or %27 %19
+        %29 = or %28 %23
+        %30 = or %29 %26
+        %31 = const 2 bv64
+        %32 = const "BLK     " bv64
+        call diag_line %0 %2 %3 %31 %32 %30
+
+        %33 = const 17 bv64
+        %34 = call hw_get %0 %33
+        %35 = const 20 bv64
+        %36 = const "PART    " bv64
+        call diag_line %0 %2 %3 %35 %36 %34
+
+        %37 = const 18 bv64
+        %38 = call hw_get %0 %37
+        %39 = const 38 bv64
+        %40 = const "PLEN    " bv64
+        call diag_line %0 %2 %3 %39 %40 %38
+
+        %42 = const 0 bv64
+        %43 = const 330 bv64
+        %44 = const 56 bv64
+        call gfx_blit_rect %1 %2 %42 %42 %43 %44
+        call fb_present_rect %0 %1 %42 %42 %43 %44
         ret
 }

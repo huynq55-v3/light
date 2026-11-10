@@ -1,0 +1,1235 @@
+# File: lit_program/drivers/nvme.lit
+# Driver NVMe (thăm dò, không ngắt) + Intel VMD + bảng phân vùng GPT. Bộ nhớ/chỉ số bảng HW: xem os/hw.lit.
+#
+# - Tìm NVMe (class 01:08:02) trên PCI thường; nếu không có thì tìm Intel VMD (laptop Intel đời 11+ để NVMe sau
+#   VMD, ẩn khỏi bus 0) và duyệt domain của VMD qua CFGBAR (kiểu ECAM, bus tương đối).
+# - 1 cặp hàng đợi Admin (32 entry) + 1 cặp I/O (64 entry). Mỗi lệnh chờ completion theo phase bit, có timeout.
+# - DMA chỉ vào bộ đệm bounce vật lý cố định 0x80000 (64KB = 128 sector); dữ liệu chép bằng CPU sang ptr đích.
+# - Chỉ dùng phân vùng GPT tên "lightos" có superblock LIGHTVFS. Mọi LBA là tương đối với phân vùng và bị kiểm tra
+#   `lba + n <= part_len` trước khi gửi lệnh -> driver không thể đọc/ghi ra ngoài phân vùng, kể cả khi tầng trên sai.
+#   Đĩa không có GPT (ảnh thô trên QEMU) -> cả namespace, vẫn phải có LIGHTVFS ở LBA 0.
+
+include ../os/hw.lit
+
+# ---------------------------------------------------------------------------------------------------------------
+# Thanh ghi NVMe (BAR0 ánh xạ UC tại ảo 0x80_4000_0000 + offset, xem nvme_find)
+# ---------------------------------------------------------------------------------------------------------------
+
+func qbuf bv64 %0:ptr<DiskQword,8192> %1:bv64 {
+    @req ult %1 8192
+
+    @b0
+        %2 = slice %0 %1 ptr<DiskQword,1>
+        %3 = load %2 0 bv64
+        ret %3
+}
+
+func nvme_reg_ptr ptr<Mmio32,1> %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 0x2000
+
+    @b0
+        %2 = const 31 bv64
+        %3 = call hw_get %0 %2
+        %4 = const 524288 bv64
+        %5 = call std_min %3 %4
+        %6 = const 2 bv64
+        %7 = lshr %1 %6
+        %8 = add %5 %7
+        %9 = const 0x8040000000 ptr<Mmio32,1048576>
+        %10 = slice %9 %8 ptr<Mmio32,1>
+        ret %10
+}
+
+func nvme_rd bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 0x2000
+    @ens ule %5 0xffffffff
+
+    @b0
+        %2 = call nvme_reg_ptr %0 %1
+        %3 = load %2 0 bv32
+        %4 = const 0 bv64
+        %5 = or %3 %4
+        ret %5
+}
+
+func nvme_wr void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 0x2000
+    @req ule %2 0xffffffff
+
+    @b0
+        %3 = call nvme_reg_ptr %0 %1
+        %4 = narrow %2 bv32
+        store %3 0 %4
+        ret
+}
+
+# Chờ CSTS.RDY == %1. Trả 1 nếu được, 0 nếu hết giờ hoặc thiết bị biến mất (đọc ra 0xffffffff)
+func nvme_wait_rdy bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ule %1 1
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 20000000
+        %4 = const 20000000 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b9
+
+    @b2
+        %6 = const 0x1c bv64
+        %7 = call nvme_rd %0 %6
+        %8 = const 0xffffffff bv64
+        %9 = cmp eq %7 %8
+        br %9 @b9 @b3
+
+    @b3
+        %10 = const 1 bv64
+        %11 = and %7 %10
+        %12 = cmp eq %11 %1
+        br %12 @b8 @b4
+
+    @b4
+        %13 = add %3 %10
+        jmp @b1 %13
+
+    @b8
+        %14 = const 1 bv64
+        ret %14
+
+    @b9
+        %15 = const 0 bv64
+        ret %15
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Gửi 1 lệnh và chờ completion. %1 = hàng đợi (0 Admin, 1 I/O). Trả status NVMe (0 = thành công),
+# 0xffffe = completion lệch CID, 0xfffff = hết giờ.
+# ---------------------------------------------------------------------------------------------------------------
+func nvme_submit bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv64 %8:bv64 {
+    @req ule %1 1
+    @req ult %2 256
+    @req ule %3 0xffffffff
+    @req ule %6 0xffffffff
+    @req ule %7 0xffffffff
+    @req ule %8 0xffffffff
+
+    @b0
+        %9 = const 3 bv64
+        %10 = mul %1 %9
+        %11 = const 24 bv64
+        %12 = sub %11 %10                   # chỉ số bảng HW: tail (head = +1, phase = +2)
+        %13 = const 1 bv64
+        %14 = const 2 bv64
+        %15 = add %12 %13
+        %16 = add %12 %14
+        %17 = const 32 bv64
+        %18 = shl %17 %1                    # kích thước hàng đợi: 32 hoặc 64
+        %19 = sub %18 %13                   # mặt nạ
+        %20 = call hw_get %0 %12
+        %21 = and %20 %19                   # tail
+        %22 = call hw_get %0 %15
+        %23 = and %22 %19                   # head
+        %24 = call hw_get %0 %16
+        %25 = and %24 %13                   # phase mong đợi
+        %26 = const 27 bv64
+        %27 = call hw_get %0 %26
+        %28 = const 0xffff bv64
+        %29 = and %27 %28                   # cid
+        %30 = add %29 %13
+        %31 = and %30 %28
+        call hw_set %0 %26 %31
+
+        %32 = const 1024 bv64
+        %33 = mul %1 %32                    # gốc SQ (qword)
+        %34 = const 512 bv64
+        %35 = add %33 %34                   # gốc CQ (qword)
+        %36 = const 8 bv64
+        %37 = mul %21 %36
+        %38 = add %33 %37                   # SQE = 8 qword
+        %39 = const 0x90000 ptr<DiskQword,2048>
+        %40 = slice %39 %38 ptr<DiskQword,8>
+
+        %41 = const 16 bv64
+        %42 = shl %29 %41
+        %43 = shl %3 %17
+        %44 = or %2 %42
+        %45 = or %44 %43                    # CDW0 (opcode | cid << 16) | NSID << 32
+        %46 = const 0 bv64
+        %47 = shl %7 %17
+        %48 = or %6 %47                     # CDW10 | CDW11 << 32
+        store %40 0 %45
+        store %40 8 %46
+        store %40 16 %46
+        store %40 24 %4                     # PRP1
+        store %40 32 %5                     # PRP2
+        store %40 40 %48
+        store %40 48 %8                     # CDW12 (CDW13 = 0)
+        store %40 56 %46
+
+        %49 = add %21 %13
+        %50 = and %49 %19
+        call hw_set %0 %12 %50
+        %51 = const 0x1000 bv64
+        %52 = mul %1 %36
+        %53 = add %51 %52
+        call nvme_wr %0 %53 %50             # chuông SQ tail
+
+        %54 = const 2 bv64
+        %55 = mul %23 %54
+        %56 = add %35 %55
+        %57 = slice %39 %56 ptr<DiskQword,2>
+        jmp @b1 %46
+
+    @b1 %58:bv64
+        @inv ule %58 400000000
+        %59 = const 400000000 bv64
+        %60 = cmp ult %58 %59
+        br %60 @b2 @b9
+
+    @b2
+        %61 = load %57 8 bv64               # DW2 | DW3 << 32 ; DW3 = cid | phase << 16 | status << 17
+        %62 = const 48 bv64
+        %63 = lshr %61 %62
+        %64 = and %63 %13
+        %65 = cmp eq %64 %25
+        br %65 @b4 @b3
+
+    @b3
+        %66 = add %58 %13
+        jmp @b1 %66
+
+    @b4
+        %67 = const 49 bv64
+        %68 = lshr %61 %67
+        %69 = const 0x7fff bv64
+        %70 = and %68 %69                   # status (SC | SCT << 8 | ...)
+        %71 = lshr %61 %17
+        %72 = and %71 %28                   # cid trả về
+        %73 = add %23 %13
+        %74 = cmp eq %73 %18
+        br %74 @b5 @b6
+
+    @b5
+        %75 = xor %25 %13
+        jmp @b7 %46 %75
+
+    @b6
+        jmp @b7 %73 %25
+
+    @b7 %76:bv64 %77:bv64
+        @inv ule %76 64
+        @inv ule %77 1
+        call hw_set %0 %15 %76
+        call hw_set %0 %16 %77
+        %78 = const 0x1004 bv64
+        %79 = add %78 %52
+        call nvme_wr %0 %79 %76             # chuông CQ head
+        %80 = cmp eq %72 %29
+        br %80 @b8 @b10
+
+    @b8
+        ret %70
+
+    @b10
+        %81 = const 0xffffe bv64
+        ret %81
+
+    @b9
+        %82 = const 0xfffff bv64
+        ret %82
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Đọc/ghi %3 sector (1..128) tại LBA tương đối phân vùng %2, qua bounce 0x80000. %1 = 1 ghi, 0 đọc.
+# Trả status (0 = OK); 0xffffd = chưa có NVMe, 0xffffc = vượt biên phân vùng.
+# ---------------------------------------------------------------------------------------------------------------
+func nvme_rw bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
+    @req ule %1 1
+    @req uge %3 1
+    @req ule %3 128
+
+    @b0
+        %4 = const 16 bv64
+        %5 = call hw_get %0 %4
+        %6 = const 2 bv64
+        %7 = cmp eq %5 %6
+        br %7 @b1 @b20
+
+    @b1
+        %8 = const 17 bv64
+        %9 = call hw_get %0 %8              # part_base
+        %10 = const 18 bv64
+        %11 = call hw_get %0 %10            # part_len
+        %12 = const 0x1000000000000 bv64
+        %13 = cmp ult %2 %11
+        %14 = cmp ule %11 %12
+        %15 = cmp ult %9 %12
+        %16 = and %13 %14
+        %17 = and %16 %15
+        br %17 @b2 @b21
+
+    @b2
+        %18 = sub %11 %2
+        %19 = cmp ule %3 %18                # lba + n <= part_len
+        br %19 @b3 @b21
+
+    @b3
+        %20 = add %9 %2                     # LBA tuyệt đối (< 2^49)
+        %21 = const 7 bv64
+        %22 = add %3 %21
+        %23 = const 3 bv64
+        %24 = lshr %22 %23                  # số trang 4KB
+        %25 = const 1 bv64
+        %26 = cmp ule %24 %25
+        br %26 @b4 @b5
+
+    @b4
+        %27 = const 0 bv64
+        jmp @b7 %27
+
+    @b5
+        %28 = cmp eq %24 %6
+        br %28 @b6 @b8
+
+    @b6
+        %29 = const 0x81000 bv64
+        jmp @b7 %29
+
+    @b8
+        %30 = const 0x95000 bv64            # danh sách PRP (trang 2..16 của bounce)
+        jmp @b7 %30
+
+    @b7 %31:bv64
+        %32 = const 0xffffffff bv64
+        %33 = and %20 %32
+        %34 = const 32 bv64
+        %35 = lshr %20 %34
+        %36 = sub %3 %25
+        %37 = sub %6 %1                     # opcode: 0x02 đọc, 0x01 ghi
+        %38 = const 0x80000 bv64
+        %39 = call nvme_submit %0 %25 %37 %25 %38 %31 %33 %35 %36
+        ret %39
+
+    @b20
+        %40 = const 0xffffd bv64
+        ret %40
+
+    @b21
+        %41 = const 0xffffc bv64
+        ret %41
+}
+
+# Đọc %4 sector (1..128) vào %2 (độ dài động %1 qword, cần >= %4 * 64). Lỗi -> vùng đích được xóa 0.
+func nvme_read_into bv64 %0:io<0,0xffff> %1:bv64 %2:ptr<DiskQword,%1> %3:bv64 %4:bv64 {
+    @req uge %4 1
+    @req ule %4 128
+    @req ule mul %4 64 %1
+
+    @b0
+        %5 = const 0 bv64
+        %6 = call nvme_rw %0 %5 %3 %4
+        %7 = const 6 bv64
+        %8 = shl %4 %7                      # số qword
+        %9 = const 0x80000 ptr<DiskQword,8192>
+        %10 = cmp eq %6 %5
+        jmp @b1 %5
+
+    @b1 %11:bv64
+        %12 = cmp ult %11 %8
+        br %12 @b2 @b3
+
+    @b2
+        %13 = slice %2 %11 ptr<DiskQword,1>
+        br %10 @b4 @b5
+
+    @b4
+        %14 = slice %9 %11 ptr<DiskQword,1>
+        %15 = load %14 0 bv64
+        store %13 0 %15
+        jmp @b6
+
+    @b5
+        store %13 0 %5
+        jmp @b6
+
+    @b6
+        %16 = const 1 bv64
+        %17 = add %11 %16
+        jmp @b1 %17
+
+    @b3
+        ret %6
+}
+
+# Ghi %4 sector (1..128) từ %2 (độ dài động %1 qword) xuống LBA tương đối %3
+func nvme_write_from bv64 %0:io<0,0xffff> %1:bv64 %2:ptr<DiskQword,%1> %3:bv64 %4:bv64 {
+    @req uge %4 1
+    @req ule %4 128
+    @req ule mul %4 64 %1
+
+    @b0
+        %5 = const 0 bv64
+        %6 = const 6 bv64
+        %7 = shl %4 %6
+        %8 = const 0x80000 ptr<DiskQword,8192>
+        jmp @b1 %5
+
+    @b1 %9:bv64
+        %10 = cmp ult %9 %7
+        br %10 @b2 @b3
+
+    @b2
+        %11 = slice %2 %9 ptr<DiskQword,1>
+        %12 = load %11 0 bv64
+        %13 = slice %8 %9 ptr<DiskQword,1>
+        store %13 0 %12
+        %14 = const 1 bv64
+        %15 = add %9 %14
+        jmp @b1 %15
+
+    @b3
+        %16 = const 1 bv64
+        %17 = call nvme_rw %0 %16 %3 %4
+        ret %17
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Tìm thiết bị
+# ---------------------------------------------------------------------------------------------------------------
+
+# Intel VMD (class 01:04): Tiger Lake 9a0b, Alder/Raptor Lake 467f, a77f, Meteor Lake 7d0b, Arrow Lake ad0b,
+# Lunar Lake b60b, máy chủ 201d/28c0
+func pci_is_vmd bv64 %0:bv64 {
+    @b0
+        %1 = const 0x9a0b8086 bv64
+        %2 = const 0x467f8086 bv64
+        %3 = const 0xa77f8086 bv64
+        %4 = const 0x7d0b8086 bv64
+        %5 = const 0xad0b8086 bv64
+        %6 = const 0xb60b8086 bv64
+        %7 = const 0x201d8086 bv64
+        %8 = const 0x28c08086 bv64
+        %9 = cmp eq %0 %1
+        %10 = cmp eq %0 %2
+        %11 = cmp eq %0 %3
+        %12 = cmp eq %0 %4
+        %13 = cmp eq %0 %5
+        %14 = cmp eq %0 %6
+        %15 = cmp eq %0 %7
+        %16 = cmp eq %0 %8
+        %17 = or %9 %10
+        %18 = or %17 %11
+        %19 = or %18 %12
+        %20 = or %19 %13
+        %21 = or %20 %14
+        %22 = or %21 %15
+        %23 = or %22 %16
+        %24 = const 0 bv64
+        %25 = or %23 %24
+        ret %25
+}
+
+# Quét PCI thường (bus 0..255). %1 = 0: tìm NVMe (class 01:08:02); %1 = 1: tìm Intel VMD.
+# Trả 0 nếu không thấy, ngược lại 1 + (bus << 8 | dev << 3 | fn).
+func pci_find bv64 %0:io<0xcf8,0xcff> %1:bv64 {
+    @req ule %1 1
+    @ens ule %40 0x10000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2 %2 %2
+
+    @b1 %3:bv64 %4:bv64 %5:bv64
+        @inv ule %3 256
+        @inv ult %4 32
+        @inv ult %5 8
+        %6 = const 256 bv64
+        %7 = cmp ult %3 %6
+        br %7 @b2 @b30
+
+    @b2
+        %8 = call pci_cfg_rd %0 %3 %4 %5 %2
+        %9 = const 0xffff bv64
+        %10 = and %8 %9
+        %11 = cmp eq %10 %9
+        br %11 @b20 @b3
+
+    @b3
+        %12 = const 8 bv64
+        %13 = call pci_cfg_rd %0 %3 %4 %5 %12
+        %14 = lshr %13 %12                  # class << 16 | subclass << 8 | prog-if
+        %15 = cmp eq %1 %2
+        br %15 @b4 @b5
+
+    @b4
+        %16 = const 0x010802 bv64
+        %17 = cmp eq %14 %16
+        br %17 @b29 @b21
+
+    @b5
+        %18 = const 16 bv64
+        %19 = lshr %13 %18
+        %20 = const 0x0104 bv64
+        %21 = cmp eq %19 %20
+        %22 = call pci_is_vmd %8
+        %23 = cmp ne %22 %2
+        %24 = and %21 %23
+        br %24 @b29 @b21
+
+    @b20
+        # Không có thiết bị: fn 0 vắng -> bỏ cả slot
+        %25 = cmp eq %5 %2
+        br %25 @b22 @b21
+
+    @b21
+        %26 = const 1 bv64
+        %27 = add %5 %26
+        %28 = const 8 bv64
+        %29 = cmp ult %27 %28
+        br %29 @b23 @b22
+
+    @b23
+        jmp @b1 %3 %4 %27
+
+    @b22
+        %30 = const 1 bv64
+        %31 = add %4 %30
+        %32 = const 32 bv64
+        %33 = cmp ult %31 %32
+        br %33 @b24 @b25
+
+    @b24
+        jmp @b1 %3 %31 %2
+
+    @b25
+        %34 = add %3 %30
+        jmp @b1 %34 %2 %2
+
+    @b29
+        %35 = const 8 bv64
+        %36 = shl %3 %35
+        %37 = const 3 bv64
+        %38 = shl %4 %37
+        %39 = or %36 %38
+        %41 = or %39 %5
+        %42 = const 1 bv64
+        %43 = add %41 %42
+        jmp @b31 %43
+
+    @b30
+        jmp @b31 %2
+
+    @b31 %40:bv64
+        @inv ule %40 0x10000
+        ret %40
+}
+
+# Cấu hình của domain VMD: CFGBAR ánh xạ tại ảo 0x80_4200_0000 (PD_MMIO[16..31]), bus tương đối 0..31
+func vmd_cfg_ptr ptr<Mmio32,1> %99:io<0,0xffff> %0:bv64 %1:bv64 %2:bv64 %3:bv64 {
+    @req ult %0 32
+    @req ult %1 32
+    @req ult %2 8
+    @req ult %3 4096
+
+    @b0
+        %4 = const 20 bv64
+        %5 = shl %0 %4
+        %6 = const 15 bv64
+        %7 = shl %1 %6
+        %8 = const 12 bv64
+        %9 = shl %2 %8
+        %10 = or %5 %7
+        %11 = or %10 %9
+        %12 = or %11 %3
+        %13 = const 2 bv64
+        %14 = lshr %12 %13
+        %15 = const 0x8042000000 ptr<Mmio32,8388608>
+        %16 = slice %15 %14 ptr<Mmio32,1>
+        ret %16
+}
+
+func vmd_cfg_rd bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
+    @req ult %1 32
+    @req ult %2 32
+    @req ult %3 8
+    @req ult %4 4096
+    @ens ule %8 0xffffffff
+
+    @b0
+        %5 = call vmd_cfg_ptr %0 %1 %2 %3 %4
+        %6 = load %5 0 bv32
+        %7 = const 0 bv64
+        %8 = or %6 %7
+        ret %8
+}
+
+func vmd_cfg_wr void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    @req ult %1 32
+    @req ult %2 32
+    @req ult %3 8
+    @req ult %4 4096
+    @req ule %5 0xffffffff
+
+    @b0
+        %6 = call vmd_cfg_ptr %0 %1 %2 %3 %4
+        %7 = narrow %5 bv32
+        store %6 0 %7
+        ret
+}
+
+# Quét domain VMD tìm NVMe. Trả 0 nếu không thấy, ngược lại 1 + (bus_rel << 8 | dev << 3 | fn)
+func vmd_find_nvme bv64 %0:io<0,0xffff> {
+    @ens ule %40 0x10000
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2 %2 %2
+
+    @b1 %3:bv64 %4:bv64 %5:bv64
+        @inv ule %3 32
+        @inv ult %4 32
+        @inv ult %5 8
+        %6 = const 32 bv64
+        %7 = cmp ult %3 %6
+        br %7 @b2 @b30
+
+    @b2
+        %8 = call vmd_cfg_rd %0 %3 %4 %5 %2
+        %9 = const 0xffff bv64
+        %10 = and %8 %9
+        %11 = cmp eq %10 %9
+        %110 = cmp eq %10 %2
+        %111 = or %11 %110
+        br %111 @b20 @b3
+
+    @b3
+        %12 = const 8 bv64
+        %13 = call vmd_cfg_rd %0 %3 %4 %5 %12
+        %14 = lshr %13 %12
+        %16 = const 0x010802 bv64
+        %17 = cmp eq %14 %16
+        br %17 @b29 @b21
+
+    @b20
+        %25 = cmp eq %5 %2
+        br %25 @b22 @b21
+
+    @b21
+        %26 = const 1 bv64
+        %27 = add %5 %26
+        %28 = const 8 bv64
+        %29 = cmp ult %27 %28
+        br %29 @b23 @b22
+
+    @b23
+        jmp @b1 %3 %4 %27
+
+    @b22
+        %30 = const 1 bv64
+        %31 = add %4 %30
+        %32 = const 32 bv64
+        %33 = cmp ult %31 %32
+        br %33 @b24 @b25
+
+    @b24
+        jmp @b1 %3 %31 %2
+
+    @b25
+        %34 = add %3 %30
+        jmp @b1 %34 %2 %2
+
+    @b29
+        %35 = const 8 bv64
+        %36 = shl %3 %35
+        %37 = const 3 bv64
+        %38 = shl %4 %37
+        %39 = or %36 %38
+        %41 = or %39 %5
+        %42 = const 1 bv64
+        %43 = add %41 %42
+        jmp @b31 %43
+
+    @b30
+        jmp @b31 %2
+
+    @b31 %40:bv64
+        @inv ule %40 0x10000
+        ret %40
+}
+
+# Bật Memory Space + Bus Master cho mọi bridge (header type 1) trên bus tương đối 0 của VMD (root port)
+func vmd_enable_bridges void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        jmp @b1 %1
+
+    @b1 %2:bv64
+        @inv ule %2 32
+        %3 = const 32 bv64
+        %4 = cmp ult %2 %3
+        br %4 @b2 @b9
+
+    @b2
+        %5 = call vmd_cfg_rd %0 %1 %2 %1 %1
+        %6 = const 0xffff bv64
+        %7 = and %5 %6
+        %8 = cmp eq %7 %6
+        %9 = cmp eq %7 %1
+        %10 = or %8 %9
+        br %10 @b8 @b3
+
+    @b3
+        %11 = const 0xc bv64
+        %12 = call vmd_cfg_rd %0 %1 %2 %1 %11
+        %13 = const 16 bv64
+        %14 = lshr %12 %13
+        %15 = const 0x7f bv64
+        %16 = and %14 %15
+        %17 = const 1 bv64
+        %18 = cmp eq %16 %17
+        br %18 @b4 @b8
+
+    @b4
+        %19 = const 4 bv64
+        %20 = call vmd_cfg_rd %0 %1 %2 %1 %19
+        %21 = and %20 %6
+        %22 = const 6 bv64
+        %23 = or %21 %22
+        call vmd_cfg_wr %0 %1 %2 %1 %19 %23
+        jmp @b8
+
+    @b8
+        %24 = const 1 bv64
+        %25 = add %2 %24
+        jmp @b1 %25
+
+    @b9
+        ret
+}
+
+# Ánh xạ BAR NVMe (2 trang 2MB, UC) vào PD_MMIO[0..1] và ghi bảng HW
+func nvme_map_bar void %0:io<0,0xffff> %1:bv64 {
+    @b0
+        %2 = const 0 bv64
+        %3 = const 1 bv64
+        %4 = const 0x200000 bv64
+        %5 = const 0x7fffffffffffffff bv64
+        %6 = and %1 %5
+        %7 = call std_sat_add %6 %4 %5
+        call mmio_map_2m %0 %2 %6
+        call mmio_map_2m %0 %3 %7
+        call mmu_flush %0
+        %8 = const 0x1fffff bv64
+        %9 = and %6 %8
+        %10 = const 2 bv64
+        %11 = lshr %9 %10
+        %12 = const 30 bv64
+        %13 = const 31 bv64
+        call hw_set %0 %12 %6
+        call hw_set %0 %13 %11
+        ret
+}
+
+# Tìm NVMe, bật MEM + Bus Master, ánh xạ BAR0. Trả 1 nếu xong, 0 nếu không có NVMe dùng được.
+func nvme_find bv64 %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        %3 = const 4 bv64
+        %4 = const 0x10 bv64
+        %5 = const 0x14 bv64
+        %6 = const 0xffff bv64
+        %7 = const 6 bv64
+        %8 = const 0xfffffff0 bv64
+        %9 = const 32 bv64
+        %10 = const 0x400000000000 bv64
+        %11 = call pci_find %0 %1
+        %12 = cmp ne %11 %1
+        br %12 @b1 @b10
+
+    @b1
+        # NVMe trên PCI thường (QEMU, máy không bật VMD)
+        %13 = sub %11 %2
+        %14 = const 8 bv64
+        %15 = lshr %13 %14
+        %16 = const 0xff bv64
+        %17 = and %15 %16                   # bus
+        %18 = const 3 bv64
+        %19 = lshr %13 %18
+        %20 = const 0x1f bv64
+        %21 = and %19 %20                   # dev
+        %22 = const 7 bv64
+        %23 = and %13 %22                   # fn
+        %24 = call pci_cfg_rd %0 %17 %21 %23 %3
+        %25 = and %24 %6
+        %26 = or %25 %7
+        call pci_cfg_wr %0 %17 %21 %23 %3 %26
+        %27 = call pci_cfg_rd %0 %17 %21 %23 %4
+        %28 = call pci_cfg_rd %0 %17 %21 %23 %5
+        %29 = and %27 %8
+        %30 = shl %28 %9
+        %31 = or %29 %30
+        %32 = const 29 bv64
+        call hw_set %0 %32 %1
+        jmp @b5 %31
+
+    @b10
+        %33 = call pci_find %0 %2
+        %34 = cmp ne %33 %1
+        br %34 @b11 @b9
+
+    @b11
+        # Intel VMD: bật VMD, ánh xạ CFGBAR, tính bus bắt đầu (VMCONFIG), duyệt domain
+        %35 = sub %33 %2
+        %36 = const 8 bv64
+        %37 = lshr %35 %36
+        %38 = const 0xff bv64
+        %39 = and %37 %38
+        %40 = const 3 bv64
+        %41 = lshr %35 %40
+        %42 = const 0x1f bv64
+        %43 = and %41 %42
+        %44 = const 7 bv64
+        %45 = and %35 %44
+        %46 = call pci_cfg_rd %0 %39 %43 %45 %3
+        %47 = and %46 %6
+        %48 = or %47 %7
+        call pci_cfg_wr %0 %39 %43 %45 %3 %48
+        %49 = call pci_cfg_rd %0 %39 %43 %45 %4
+        %50 = call pci_cfg_rd %0 %39 %43 %45 %5
+        %51 = and %49 %8
+        %52 = shl %50 %9
+        %53 = or %51 %52                    # CFGBAR (32MB, căn 32MB)
+        %54 = cmp ult %53 %10
+        %55 = cmp ne %53 %1
+        %56 = and %54 %55
+        br %56 @b12 @b9
+
+    @b12
+        %57 = const 0 bv64
+        jmp @b13 %57
+
+    @b13 %58:bv64
+        @inv ule %58 16
+        %59 = const 16 bv64
+        %60 = cmp ult %58 %59
+        br %60 @b14 @b15
+
+    @b14
+        %61 = const 21 bv64
+        %62 = shl %58 %61
+        %63 = add %53 %62
+        %64 = add %58 %59
+        call mmio_map_2m %0 %64 %63
+        %65 = add %58 %2
+        jmp @b13 %65
+
+    @b15
+        call mmu_flush %0
+        call vmd_enable_bridges %0
+        %66 = call vmd_find_nvme %0
+        %67 = cmp ne %66 %1
+        br %67 @b16 @b9
+
+    @b16
+        %68 = sub %66 %2
+        %69 = const 8 bv64
+        %70 = lshr %68 %69
+        %71 = const 31 bv64
+        %72 = and %70 %71                   # bus tương đối
+        %73 = const 3 bv64
+        %74 = lshr %68 %73
+        %75 = and %74 %71                   # dev
+        %76 = const 7 bv64
+        %77 = and %68 %76                   # fn
+        %78 = call vmd_cfg_rd %0 %72 %75 %77 %3
+        %79 = and %78 %6
+        %80 = or %79 %7
+        call vmd_cfg_wr %0 %72 %75 %77 %3 %80
+        %81 = call vmd_cfg_rd %0 %72 %75 %77 %4
+        %82 = call vmd_cfg_rd %0 %72 %75 %77 %5
+        %83 = and %81 %8
+        %84 = shl %82 %9
+        %85 = or %83 %84
+        %86 = const 29 bv64
+        call hw_set %0 %86 %2
+        jmp @b5 %85
+
+    @b5 %87:bv64
+        %88 = cmp ult %87 %10
+        %89 = cmp ne %87 %1
+        %90 = and %88 %89
+        br %90 @b6 @b9
+
+    @b6
+        call nvme_map_bar %0 %87
+        ret %2
+
+    @b9
+        ret %1
+}
+
+# Đọc GPT (LBA 1) tìm phân vùng tên "lightos". Không có GPT -> cả namespace. Sau cùng bắt buộc LBA 0 của vùng
+# chọn được có superblock LIGHTVFS; nếu không thì part_len = 0 (mọi I/O bị từ chối). Trả mã như nvme_init_ctrl.
+func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
+    @b0
+        %2 = const 0 bv64
+        %3 = const 1 bv64
+        %4 = const 17 bv64
+        %5 = const 18 bv64
+        %6 = const 32 bv64
+        %7 = const 0x80000 ptr<DiskQword,8192>
+        %8 = call nvme_rw %0 %2 %3 %3
+        %9 = cmp ne %8 %2
+        br %9 @b80 @b1
+
+    @b1
+        %10 = call qbuf %7 %2
+        %11 = const 0x5452415020494645 bv64 # "EFI PART"
+        %12 = cmp eq %10 %11
+        br %12 @b2 @b60
+
+    @b2
+        %13 = const 9 bv64
+        %14 = call qbuf %7 %13            # LBA mảng entry
+        %15 = const 10 bv64
+        %16 = call qbuf %7 %15
+        %17 = const 0xffffffff bv64
+        %18 = and %16 %17                   # số entry
+        %19 = lshr %16 %6                   # kích thước entry
+        %20 = const 128 bv64
+        %21 = cmp eq %19 %20
+        br %21 @b3 @b81
+
+    @b3
+        %22 = call std_min %18 %20
+        %23 = const 3 bv64
+        %24 = add %22 %23
+        %25 = const 2 bv64
+        %26 = lshr %24 %25                  # số sector chứa entry (<= 32)
+        jmp @b4 %2
+
+    @b4 %27:bv64
+        @inv ule %27 32
+        %28 = cmp ult %27 %26
+        br %28 @b5 @b81
+
+    @b5
+        %29 = const 0x1000000000000 bv64
+        %30 = call std_min %14 %29
+        %31 = add %30 %27
+        %32 = call nvme_rw %0 %2 %31 %3
+        %33 = cmp ne %32 %2
+        br %33 @b80 @b6
+
+    @b6
+        jmp @b7 %2
+
+    @b7 %34:bv64
+        @inv ule %34 4
+        %35 = const 4 bv64
+        %36 = cmp ult %34 %35
+        br %36 @b8 @b12
+
+    @b8
+        %37 = const 16 bv64
+        %38 = mul %34 %37
+        %39 = const 7 bv64
+        %40 = add %38 %39
+        %41 = call qbuf %7 %40
+        %42 = const 8 bv64
+        %43 = add %38 %42
+        %44 = call qbuf %7 %43
+        %45 = const 0x006800670069006c bv64 # UTF-16LE "ligh"
+        %46 = const 0x00000073006f0074 bv64 # UTF-16LE "tos\0"
+        %47 = cmp eq %41 %45
+        %48 = cmp eq %44 %46
+        %49 = and %47 %48
+        br %49 @b9 @b11
+
+    @b9
+        %50 = const 4 bv64
+        %51 = add %38 %50
+        %52 = call qbuf %7 %51            # LBA đầu
+        %53 = const 5 bv64
+        %54 = add %38 %53
+        %55 = call qbuf %7 %54            # LBA cuối (bao gồm)
+        %56 = cmp uge %52 %3
+        %57 = cmp uge %55 %52
+        %58 = cmp ult %55 %1
+        %59 = and %56 %57
+        %60 = and %59 %58
+        br %60 @b10 @b11
+
+    @b10
+        %61 = sub %55 %52
+        %62 = add %61 %3
+        call hw_set %0 %4 %52
+        call hw_set %0 %5 %62
+        call hw_set %0 %6 %3                # GPT: thấy lightos
+        jmp @b70
+
+    @b11
+        %63 = add %34 %3
+        jmp @b7 %63
+
+    @b12
+        %64 = add %27 %3
+        jmp @b4 %64
+
+    @b60
+        call hw_set %0 %6 %2                # không có GPT: cả namespace (đã đặt sẵn)
+        jmp @b70
+
+    @b70
+        # Superblock LIGHTVFS ở LBA 0 của vùng đã chọn
+        %65 = call nvme_rw %0 %2 %2 %3
+        %66 = cmp ne %65 %2
+        br %66 @b80 @b71
+
+    @b71
+        %67 = call qbuf %7 %2
+        %68 = const 0x534656544847494c bv64 # "LIGHTVFS"
+        %69 = cmp eq %67 %68
+        br %69 @b72 @b82
+
+    @b72
+        ret %2
+
+    @b80
+        call hw_set %0 %5 %2
+        %70 = const 13 bv64
+        ret %70
+
+    @b81
+        call hw_set %0 %5 %2
+        %71 = const 2 bv64
+        call hw_set %0 %6 %71
+        %72 = const 11 bv64
+        ret %72
+
+    @b82
+        call hw_set %0 %5 %2
+        %73 = const 12 bv64
+        ret %73
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Khởi tạo controller + tìm phân vùng. Trả 0 nếu sẵn sàng; ngược lại mã giai đoạn hỏng (ghi cả vào HW[20]):
+#   1 không thấy NVMe  2 thanh ghi đọc ra 0xffffffff  3 CAP không hỗ trợ (DSTRD/MPSMIN/MQES)  4 không tắt được
+#   5 không bật được  6 Identify lỗi  7 sector khác 512B  8 Set Features lỗi  9/10 tạo hàng đợi I/O lỗi
+#   11 không có phân vùng lightos (GPT)  12 phân vùng không có LIGHTVFS  13 đọc GPT lỗi
+# ---------------------------------------------------------------------------------------------------------------
+func nvme_init_ctrl bv64 %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        %3 = call nvme_find %0
+        %4 = cmp eq %3 %1
+        br %4 @b90 @b1
+
+    @b1
+        %5 = call nvme_rd %0 %1             # CAP thấp
+        %6 = const 4 bv64
+        %7 = call nvme_rd %0 %6             # CAP cao
+        %8 = const 0xffffffff bv64
+        %9 = cmp eq %5 %8
+        br %9 @b91 @b2
+
+    @b2
+        %10 = const 0xffff bv64
+        %11 = and %5 %10                    # MQES
+        %12 = const 0xf bv64
+        %13 = and %7 %12                    # DSTRD
+        %14 = const 16 bv64
+        %15 = lshr %7 %14
+        %16 = and %15 %12                   # MPSMIN
+        %17 = const 63 bv64
+        %18 = cmp eq %13 %1
+        %19 = cmp eq %16 %1
+        %20 = cmp uge %11 %17
+        %21 = and %18 %19
+        %22 = and %21 %20
+        br %22 @b3 @b92
+
+    @b3
+        %23 = const 0x14 bv64
+        %24 = call nvme_rd %0 %23
+        %25 = const 0xfffffffe bv64
+        %26 = and %24 %25
+        call nvme_wr %0 %23 %26             # CC.EN = 0 (reset)
+        %27 = call nvme_wait_rdy %0 %1
+        %28 = cmp eq %27 %1
+        br %28 @b93 @b4
+
+    @b4
+        # Hàng đợi sạch (phase = 0), danh sách PRP = 15 trang tiếp theo của bounce
+        %29 = const 0x90000 ptr<DiskQword,512>
+        %30 = const 0x91000 ptr<DiskQword,512>
+        %31 = const 0x92000 ptr<DiskQword,512>
+        %32 = const 0x93000 ptr<DiskQword,512>
+        %33 = const 0x95000 ptr<DiskQword,512>
+        call page_zero %29
+        call page_zero %30
+        call page_zero %31
+        call page_zero %32
+        call page_zero %33
+        jmp @b5 %1
+
+    @b5 %34:bv64
+        @inv ule %34 15
+        %35 = const 15 bv64
+        %36 = cmp ult %34 %35
+        br %36 @b6 @b7
+
+    @b6
+        %37 = const 12 bv64
+        %38 = shl %34 %37
+        %39 = const 0x81000 bv64
+        %40 = add %39 %38
+        call q512_set %33 %34 %40
+        %41 = add %34 %2
+        jmp @b5 %41
+
+    @b7
+        %42 = const 21 bv64
+        %43 = const 22 bv64
+        %44 = const 23 bv64
+        %45 = const 24 bv64
+        %46 = const 25 bv64
+        %47 = const 26 bv64
+        %48 = const 27 bv64
+        call hw_set %0 %42 %1
+        call hw_set %0 %43 %1
+        call hw_set %0 %44 %2
+        call hw_set %0 %45 %1
+        call hw_set %0 %46 %1
+        call hw_set %0 %47 %2
+        call hw_set %0 %48 %1
+        %49 = const 0x24 bv64
+        %50 = const 0x001f001f bv64
+        call nvme_wr %0 %49 %50             # AQA: 32 + 32
+        %51 = const 0x28 bv64
+        %52 = const 0x2c bv64
+        %53 = const 0x30 bv64
+        %54 = const 0x34 bv64
+        %55 = const 0x90000 bv64
+        %56 = const 0x91000 bv64
+        call nvme_wr %0 %51 %55
+        call nvme_wr %0 %52 %1
+        call nvme_wr %0 %53 %56
+        call nvme_wr %0 %54 %1
+        %57 = const 0x00460001 bv64         # IOCQES=4, IOSQES=6, MPS=4KB, NVM, EN=1
+        call nvme_wr %0 %23 %57
+        %58 = call nvme_wait_rdy %0 %2
+        %59 = cmp eq %58 %1
+        br %59 @b94 @b8
+
+    @b8
+        %60 = const 0x1c bv64
+        %61 = call nvme_rd %0 %60
+        %62 = const 2 bv64
+        %63 = and %61 %62                   # CSTS.CFS
+        %64 = cmp ne %63 %1
+        br %64 @b94 @b9
+
+    @b9
+        # Identify Namespace 1 -> 0x94000
+        %65 = const 6 bv64
+        %66 = const 0x94000 bv64
+        %67 = call nvme_submit %0 %1 %65 %2 %66 %1 %1 %1 %1
+        %68 = cmp ne %67 %1
+        br %68 @b95 @b10
+
+    @b10
+        %69 = const 0x94000 ptr<DiskQword,512>
+        %70 = call q512 %69 %1              # NSZE
+        %71 = const 3 bv64
+        %72 = call q512 %69 %71
+        %73 = lshr %72 %14
+        %74 = and %73 %12                   # FLBAS & 0xf
+        %75 = const 1 bv64
+        %76 = lshr %74 %75
+        %77 = const 16 bv64
+        %78 = add %77 %76
+        %79 = call q512 %69 %78
+        %80 = and %74 %75
+        %81 = const 5 bv64
+        %82 = shl %80 %81                   # 0 hoặc 32
+        %83 = lshr %79 %82
+        %84 = lshr %83 %14
+        %85 = const 0xff bv64
+        %86 = and %84 %85                   # LBADS
+        %87 = const 9 bv64
+        %88 = cmp eq %86 %87
+        br %88 @b11 @b96
+
+    @b11
+        # Set Features: Number of Queues = 1 SQ + 1 CQ (giá trị 0-based)
+        %89 = const 9 bv64
+        %90 = const 7 bv64
+        %91 = call nvme_submit %0 %1 %89 %1 %1 %1 %90 %1 %1
+        %92 = cmp ne %91 %1
+        br %92 @b97 @b12
+
+    @b12
+        # Tạo I/O CQ 1 (64 entry, liên tục, không ngắt) rồi I/O SQ 1 gắn với CQ 1
+        %93 = const 5 bv64
+        %94 = const 0x93000 bv64
+        %95 = const 0x3f0001 bv64
+        %96 = call nvme_submit %0 %1 %93 %1 %94 %1 %95 %2 %1
+        %97 = cmp ne %96 %1
+        br %97 @b98 @b13
+
+    @b13
+        %98 = const 0x92000 bv64
+        %99 = const 0x10001 bv64
+        %100 = call nvme_submit %0 %1 %2 %1 %98 %1 %95 %99 %1
+        %101 = cmp ne %100 %1
+        br %101 @b99 @b14
+
+    @b14
+        %102 = const 16 bv64
+        %103 = const 17 bv64
+        %104 = const 18 bv64
+        %105 = const 19 bv64
+        %106 = const 2 bv64
+        call hw_set %0 %105 %70
+        call hw_set %0 %103 %1
+        call hw_set %0 %104 %70
+        call hw_set %0 %102 %106            # backend = NVMe (tạm thời cả namespace để đọc GPT)
+        %107 = call nvme_find_partition %0 %70
+        ret %107
+
+    @b90
+        ret %2
+    @b91
+        %110 = const 2 bv64
+        ret %110
+    @b92
+        %111 = const 3 bv64
+        ret %111
+    @b93
+        %112 = const 4 bv64
+        ret %112
+    @b94
+        %113 = const 5 bv64
+        ret %113
+    @b95
+        %114 = const 6 bv64
+        ret %114
+    @b96
+        %115 = const 7 bv64
+        ret %115
+    @b97
+        %116 = const 8 bv64
+        ret %116
+    @b98
+        %117 = const 9 bv64
+        ret %117
+    @b99
+        %118 = const 10 bv64
+        ret %118
+}

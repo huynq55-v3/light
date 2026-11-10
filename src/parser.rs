@@ -578,6 +578,11 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                                 idx: p_reg(toks[4])?,
                                 ty: p_type(toks[5], &m.layouts, &defs).map_err(|e| err(&e))?,
                             },
+                            "narrow" => Inst::Narrow {
+                                dst: d,
+                                src: p_reg(toks[3])?,
+                                ty: p_type(toks[4], &m.layouts, &defs).map_err(|e| err(&e))?,
+                            },
                             "load" => Inst::Load {
                                 dst: d,
                                 base: p_reg(toks[3])?,

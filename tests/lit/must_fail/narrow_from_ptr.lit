@@ -1,0 +1,9 @@
+# EXPECT: phải là số nguyên
+layout Q 8 {
+    0: bv64
+}
+func f bv32 %0:ptr<Q,1> {
+    @b0
+        %1 = narrow %0 bv32
+        ret %1
+}

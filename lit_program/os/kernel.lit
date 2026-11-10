@@ -61,6 +61,10 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         %9 = const 0x200000 ptr<VgaCell,921600>
         %10 = const 0x600000 ptr<VgaCell,921600>
 
+        # Bảng HW + cửa sổ MMIO (PML4[1]) + framebuffer thật (GOP từ GRUB hoặc Bochs VGA của QEMU)
+        call mmio_map_init %0
+        call fb_init %0
+
         # Tự kiểm tra fork-join đa nhân (in kết quả ra serial)
         %30 = const 0x7e000 smp
         call smp_selftest %0 %30
@@ -75,6 +79,7 @@ func kernel_boot_entry void %0:io<0,0xffff> {
 
         call sys_init_drivers %0 %4 %5 %6
         call sys_init_desktop %0 %9 %10 %3 %5
+        call diag_boot_report %0 %9 %10 %6
 
         call kscheduler_loop %0 %4 %3 %9 %10 %5
         ret

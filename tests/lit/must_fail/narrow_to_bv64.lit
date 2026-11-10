@@ -1,0 +1,6 @@
+# EXPECT: kiểu đích phải là bv8/bv16/bv32
+func f bv64 %0:bv64 {
+    @b0
+        %1 = narrow %0 bv64
+        ret %1
+}

@@ -1,0 +1,59 @@
+# File: lit_program/drivers/pci.lit
+# Truy cập PCI Configuration Space kiểu cổng I/O (Configuration Mechanism #1): ghi địa chỉ 32-bit vào 0xCF8,
+# đọc/ghi dữ liệu 32-bit ở 0xCFC. Chỉ phủ segment 0, bus 0..255, thanh ghi 0..255 (đủ cho tìm thiết bị + BAR).
+
+func pci_cfg_addr bv64 %0:bv64 %1:bv64 %2:bv64 %3:bv64 {
+    @req ult %0 256
+    @req ult %1 32
+    @req ult %2 8
+    @req ult %3 256
+    @ens ule %20 0xffffffff
+
+    @b0
+        %4 = const 16 bv64
+        %5 = shl %0 %4
+        %6 = const 11 bv64
+        %7 = shl %1 %6
+        %8 = const 8 bv64
+        %9 = shl %2 %8
+        %10 = const 0xfc bv64
+        %11 = and %3 %10
+        %12 = const 0x80000000 bv64
+        %13 = or %12 %5
+        %14 = or %13 %7
+        %15 = or %14 %9
+        %20 = or %15 %11
+        ret %20
+}
+
+# Đọc thanh ghi 32-bit (bus, dev, fn, reg) — thiết bị không tồn tại trả 0xffffffff
+func pci_cfg_rd bv64 %0:io<0xcf8,0xcff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
+    @req ult %1 256
+    @req ult %2 32
+    @req ult %3 8
+    @req ult %4 256
+    @ens ule %7 0xffffffff
+
+    @b0
+        %5 = call pci_cfg_addr %1 %2 %3 %4
+        %6 = narrow %5 bv32
+        hwio_w %0 0xcf8 %6
+        %7 = hwio_r %0 0xcfc
+        ret %7
+}
+
+func pci_cfg_wr void %0:io<0xcf8,0xcff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    @req ult %1 256
+    @req ult %2 32
+    @req ult %3 8
+    @req ult %4 256
+    @req ule %5 0xffffffff
+
+    @b0
+        %6 = call pci_cfg_addr %1 %2 %3 %4
+        %7 = narrow %6 bv32
+        hwio_w %0 0xcf8 %7
+        %8 = narrow %5 bv32
+        hwio_w %0 0xcfc %8
+        ret
+}

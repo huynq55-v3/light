@@ -900,7 +900,7 @@ func app_dispatch_load_app void %0:io<0,0xffff> %1:bv64 %2:bv64 {
 
     @b0
         %3 = call sys_get_app_code_buf_ptr %0 %1
-        call drv_ata_load_app %0 %3 %2
+        call blk_load_app %0 %3 %2
         ret
 }
 
@@ -912,6 +912,9 @@ func app_dispatch_zero_state void %0:io<0,0xffff> %1:bv64 {
         %3 = const 0 bv64
         %4 = slice %2 %3 ptr<DiskQword,64>
         call std_mem_zero %4
+        %5 = const 64 bv64                  # sector 1: trạng thái phụ của App (editor: chế độ duyệt + LBA file)
+        %6 = slice %2 %5 ptr<DiskQword,64>
+        call std_mem_zero %6
         ret
 }
 
@@ -939,7 +942,7 @@ func app_dispatch_disk_io_old void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
 
     @b1
         %23 = slice %4 %11 ptr<DiskQword,64>
-        call drv_ata_write_sector %0 %23 %6
+        call blk_write_sector %0 %23 %6
         ret
 
     @b2
@@ -996,7 +999,7 @@ func app_dispatch_disk_io_old void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
         %35 = shl %33 %34                   # qword_off = sec_slot * 64 (<= 4194240)
         %36 = slice %4 %35 ptr<DiskQword,16384>
         %37 = add %6 %29                    # cur_lba = lba + i
-        call drv_ata_read_sectors_batch %0 %36 %37 %52
+        call blk_read_batch %0 %36 %37 %52
 
         %53 = add %29 %52
         %38 = call std_min %53 %32

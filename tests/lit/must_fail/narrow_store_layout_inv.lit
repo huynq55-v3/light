@@ -1,0 +1,12 @@
+# EXPECT: Vi phạm bất biến Layout
+# narrow giữ nguyên giá trị nên @inv của trường bv32 vẫn được kiểm tra
+layout R 4 {
+    0: bv32 @inv ult val 64
+}
+func f void %0:ptr<R,1> %1:bv64 {
+    @req ult %1 100
+    @b0
+        %2 = narrow %1 bv32
+        store %0 0 %2
+        ret
+}

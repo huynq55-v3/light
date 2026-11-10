@@ -79,7 +79,7 @@ func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
 #    - Qword 0..61 (496 bytes): Nội dung văn bản
 #    - Qword 62: Trạng thái Browser (0 = Edit, >0 = Browser prefix)
 #    - Qword 63: LBA của file đang mở
-func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp {
+func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,128> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -104,6 +104,10 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         %13 = const 1 bv64
         %200 = const 58 bv64                # Slot 58: Browser state
         %201 = const 59 bv64                # Slot 59: Open file LBA
+        # Hai slot trên nằm ở SECTOR 1 của State (%211): sector 0 là văn bản và bị lệnh đọc file ghi đè toàn bộ
+        # (trước đây slot ở sector 0 nên LBA bị xóa khi mở file -> SAVE không bao giờ ghi)
+        %210 = const 64 bv64
+        %211 = slice %2 %210 ptr<DiskQword,64>
 
         %14 = load %1 112 bv64
         %15 = cmp eq %14 %12
@@ -135,6 +139,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @b4
         # Nút [NEW]: Xóa sạch văn bản + Slot 62 (mode = 0) + Slot 63 (lba = 0)
         call std_mem_zero %2
+        call std_mem_zero %211
         jmp @b36
 
     @b5
@@ -146,7 +151,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
 
     @b6
         # Nút [BROWSE]: Bật Browser mode ở Slot 62
-        call cap_state_set %2 %200 %13
+        call cap_state_set %211 %200 %13
         jmp @b36
 
     @b7
@@ -157,7 +162,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
 
     @b8
         # Nút [SAVE]: Ghi lại Sector nếu Slot 63 > 0
-        %35 = call cap_state_get %2 %201
+        %35 = call cap_state_get %211 %201
         %36 = const 0xffffff bv64
         %37 = and %35 %36
         %38 = cmp ugt %37 %12
@@ -168,7 +173,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         ret
 
     @b10
-        %41 = call cap_state_get %2 %200
+        %41 = call cap_state_get %211 %200
         %42 = cmp ugt %41 %12
         br %42 @b11 @b99
 
@@ -196,7 +201,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
     @b121
         # Click thư mục: cập nhật Slot 62
         %107 = add %105 %13
-        call cap_state_set %2 %200 %107
+        call cap_state_set %211 %200 %107
         jmp @b36
 
     @b12
@@ -206,14 +211,14 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
 
     @b122
         # Click tệp: Tự cập nhật Slot 62 = 0 và Slot 63 = lba trước khi yêu cầu Shell đọc sector
-        call cap_state_set %2 %200 %12
-        call cap_state_set %2 %201 %105
+        call cap_state_set %211 %200 %12
+        call cap_state_set %211 %201 %105
         store %1 112 %12
         call ipc_disk_req_read %1 %105
         ret
 
     @b30
-        %56 = call cap_state_get %2 %200
+        %56 = call cap_state_get %211 %200
         %58 = cmp ugt %56 %12
         br %58 @b99 @b31
 
@@ -265,7 +270,7 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         jmp @b36
 
     @b36
-        %77 = call cap_state_get %2 %200
+        %77 = call cap_state_get %211 %200
         %79 = cmp ugt %77 %12
 
         %80 = const 96 bv64

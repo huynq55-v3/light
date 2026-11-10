@@ -61,7 +61,8 @@ Mỗi biến được định danh bằng số thứ tự (`%0`, `%1`, `%2`...) 
 4. **`%d = slice %base %idx ptr<Layout, M_new>`**: Cắt hoặc dịch chuyển thẻ bộ nhớ từ mảng lớn `%base` (`ptr<Layout, M_old>`) tại chỉ số `%idx`. Z3 tự động chứng minh `%idx + M_new <= M_old`.
 5. **`%d = load %base <offset> <ty>`**: Đọc dữ liệu từ thẻ `ptr` (kiểm tra `base != 0`, `offset < max_bytes` và đúng kiểu trường).
 6. **`store %base <offset> %val`**: Ghi dữ liệu 1/2/4/8 byte vào thẻ `ptr` (kiểm tra biên và bất biến `@inv`).
-7. **`hwio_w %cap <port> %val`** & **`%d = hwio_r %cap <port>`**: Đọc/ghi phần cứng 8-bit/16-bit và thanh ghi hệ thống (`CR3`), yêu cầu `%cap` có kiểu `io<Min, Max>` chứa `<port>`.
+7. **`hwio_w %cap <port> %val`** & **`%d = hwio_r %cap <port>`**: Đọc/ghi cổng I/O và thanh ghi hệ thống (`CR3`), yêu cầu `%cap` có kiểu `io<Min, Max>` chứa `<port>`. Độ rộng: ghi theo kiểu giá trị (`bv32` → 32-bit, `bv16`/cổng 0x1F0 → 16-bit, còn lại 8-bit, Z3 chứng minh giá trị vừa); đọc theo cổng (0xCFC → 32-bit, 0x1F0 → 16-bit, còn lại 8-bit).
+   - **`%d = narrow %x bv8|bv16|bv32`**: thu hẹp số nguyên; Z3 phải chứng minh `%x` vừa độ rộng đích (không cắt bit im lặng). Cần để ghi thanh ghi MMIO/cổng 32-bit bằng giá trị tính toán (kết quả phép toán luôn là `bv64`).
 8. **`br %cond @then_bb @else_bb`**: Rẽ nhánh có điều kiện (Z3 tự động tích lũy điều kiện đường đi `cur_cond` qua các tầng nhánh lồng nhau).
 9. **`jmp @target_bb [%arg0 %arg1 ...]`**: Nhảy vô điều kiện kèm truyền **Tham số Khối (`Block Params`)** thay cho hàm $\phi$ (Phi-node) cổ điển, đồng thời kích hoạt kiểm chứng quy nạp toán học trên `@inv` của khối đích.
 10. **`[%d =] call <func_name> [%arg0 ...]`**: Gọi hàm trực tiếp. Tự động kiểm tra phép thu hẹp thẻ quyền năng (`can_delegate`), chứng minh tiền điều kiện `@req` và kế thừa hậu điều kiện `@ens`.
@@ -100,6 +101,15 @@ lit_program/
 - **Vì sao thu hồi an toàn**: App không thể giữ con trỏ qua tick (Layout cấm trường ptr; heap được truyền lại mỗi lần gọi). TLB: nhân BSP nạp lại CR3 sau khi gỡ; mỗi nhân AP nạp lại CR3 trước mỗi job `parallel`.
 - Terminal có lệnh `mem`, `memup` (+1GB), `memdown` (trả hết), `memtest` (ghi/đọc lại mỗi trang 4KB của heap).
 
+### 3.2. Boot trên máy thật, màn hình, đĩa NVMe
+
+- **Boot**: GRUB EFI nạp `kernel.elf` bằng multiboot1. Header xin framebuffer 1280×720×32; GRUB trả framebuffer GOP thật (kích thước bất kỳ). `qemu -kernel` vẫn chạy (không có framebuffer trong Multiboot Info → dùng Bochs VGA, PCI 1234:1111). ELF có bảng section header tối thiểu (GRUB 2.14 bắt buộc). Boot stub chuyển x2APIC → xAPIC nếu firmware để x2APIC, đặt PAT (PA1 = Write-Combining), gửi INIT + 2 SIPI.
+- **Màn hình**: giao diện vẫn là 1280×720. VRAM logic `0x200000` nằm trong RAM; `fb_present_rect` (os/hw.lit) chép vùng thay đổi ra framebuffer thật (pitch bất kỳ, căn giữa, cắt nếu màn hình nhỏ hơn).
+- **MMIO**: Light không cho đổi số nguyên thành `ptr`, nên địa chỉ chỉ biết lúc chạy (framebuffer, BAR) được ánh xạ vào địa chỉ ảo cố định qua PML4[1]: `0x80_0000_0000` framebuffer (WC), `0x80_4000_0000` BAR NVMe (UC), `0x80_4200_0000` CFGBAR của Intel VMD (UC). Bảng HW ở `0x96000`.
+- **Đĩa** (`drivers/blk.lit`): NVMe nếu có, ngược lại ATA PIO. Driver NVMe (`drivers/nvme.lit`, viết bằng Light): tìm NVMe trên PCI hoặc phía sau **Intel VMD** (laptop Intel đời 11+), 1 cặp hàng đợi Admin + 1 cặp I/O, thăm dò completion, DMA qua bộ đệm bounce 64KB ở `0x80000`. Chỉ dùng phân vùng GPT tên **`lightos`** có superblock `LIGHTVFS`; mọi LBA được kiểm tra `< kích thước phân vùng` ngay trong driver. Đĩa không có GPT (ảnh thô trên QEMU) → cả namespace.
+- **Dòng trạng thái** góc trên trái (và serial): `BLK = backend<<48 | gpt<<40 | mã_lỗi_nvme<<32 | rộng<<16 | cao`, `PART` = LBA đầu phân vùng, `PLEN` = số sector. Backend 2 = NVMe, 1 = ATA, 0 = không có; gpt 1 = thấy `lightos`; mã lỗi NVMe xem đầu hàm `nvme_init_ctrl`.
+- **Phím**: F1..F7 mở App ở ô Dock tương ứng (touchpad I2C của laptop chưa có driver), F12 khởi động lại.
+
 ---
 
 ## 4. Hướng dẫn Cài đặt & Chạy thử nghiệm
@@ -116,4 +126,13 @@ cargo run -- lit_program/main.lit kernel.elf
 
 # 2. Khởi động Hệ điều hành với cửa sổ đồ họa VGA và cổng Serial
 qemu-system-x86_64 -kernel kernel.elf -serial stdio
+
+# 3. Giống hệt máy thật: OVMF (UEFI) -> GRUB lightos.efi -> multiboot, đĩa NVMe có GPT (ESP / lightos / ubuntu)
+bash tools/qemu_uefi_nvme.sh
 ```
+
+### Cài lên máy thật (UEFI, đĩa NVMe)
+1. **Tắt Secure Boot** trong BIOS (HP: F10). GRUB khóa lệnh `multiboot` khi Secure Boot bật. Ubuntu vẫn khởi động bình thường khi tắt.
+2. `cargo run --release` (tạo `kernel.elf` + `disk.img`), rồi chạy thử `sudo bash tools/install_lightos.sh` để xem kế hoạch, sau đó `sudo bash tools/install_lightos.sh --yes`. Script dùng lại phân vùng `rustos` (nvme0n1p2): sao lưu nội dung vào `~/lightos_backup_<ngày>/`, ghi `disk.img`, đổi tên GPT thành `lightos`, cài `EFI/lightos/{kernel.elf,lightos.efi}`, thêm mục UEFI "Light OS" ở **cuối** BootOrder (Ubuntu vẫn là mặc định).
+3. Khởi động vào Light OS một lần: `sudo efibootmgr -n <số mục Light OS>` rồi reboot (hoặc F9 lúc bật máy). F12 trong Light OS để quay lại.
+4. Cập nhật sau này: `--kernel-only --yes` (giữ dữ liệu trên phân vùng) hoặc `--disk-only --yes` (ghi lại `disk.img`).

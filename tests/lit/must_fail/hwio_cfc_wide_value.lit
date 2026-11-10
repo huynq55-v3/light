@@ -1,0 +1,8 @@
+# EXPECT: giá trị quá độ rộng
+# Ghi bv64 ra cổng = lệnh out 8-bit: giá trị phải <= 0xff (muốn 32-bit thì narrow sang bv32)
+func f void %0:io<0xcf8,0xcff> %1:bv64 {
+    @req ule %1 0xffffffff
+    @b0
+        hwio_w %0 0xcfc %1
+        ret
+}

@@ -19,6 +19,16 @@ const ROOT_IO: Type = Type::Io {
 
 type Env<'ctx> = HashMap<Reg, BV<'ctx>>;
 
+/// Độ rộng lệnh `in` theo cổng: 0xCFC (dữ liệu PCI config) 32-bit, 0x1F0 (dữ liệu ATA) 16-bit, còn lại 8-bit.
+/// Phải khớp với elf64.rs và oracle.
+pub fn hwio_read_limit(port: u16) -> u64 {
+    match port {
+        0xCFC => 0xFFFF_FFFF,
+        0x1F0 => 0xFFFF,
+        _ => 0xFF,
+    }
+}
+
 fn int_bits(ty: Type) -> Option<u32> {
     match ty {
         Type::Bv8 => Some(8),
@@ -104,6 +114,7 @@ fn dst_of(i: &Inst) -> Option<Reg> {
         | Inst::Cmp { dst, .. }
         | Inst::Slice { dst, .. }
         | Inst::Load { dst, .. }
+        | Inst::Narrow { dst, .. }
         | Inst::SmpWorkers { dst, .. }
         | Inst::Simd256 {
             op: SimdOp::Dot,
@@ -136,6 +147,7 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
             _ => vec![*base, *idx],
         },
         Inst::Load { base, .. } => vec![*base],
+        Inst::Narrow { src, .. } => vec![*src],
         Inst::Store { base, val, .. } => vec![*base, *val],
         Inst::Simd256 { op, dst, lhs, rhs } => {
             if *op == SimdOp::Dot {
@@ -521,6 +533,7 @@ fn fmt_inst(module: &Module, inst: &Inst) -> String {
         }
         Inst::Slice { dst, base, idx, .. } => format!("%{} = slice %{} %{}", dst, base, idx),
         Inst::Load { dst, base, offset, .. } => format!("%{} = load %{} {}", dst, base, offset),
+        Inst::Narrow { dst, src, ty } => format!("%{} = narrow %{} {:?}", dst, src, ty),
         Inst::Store { base, offset, val } => format!("store %{} {} %{}", base, offset, val),
         Inst::Simd256 { op, dst, lhs, rhs } => {
             format!("{:?} %{} %{} %{}", op, dst, lhs, rhs)
@@ -1166,6 +1179,21 @@ impl<'ctx> Verifier<'ctx> {
                     self.assume(&self.eval_bool(inv, &HashMap::new(), Some(&d))?);
                 }
             }
+            Inst::Narrow { dst, src, ty } => {
+                if int_bits(self.reg_ty(*src)?).is_none() {
+                    return Err(format!("narrow: %{} phải là số nguyên", src));
+                }
+                let Some(bits) = int_bits(*ty).filter(|&b| b < 64) else {
+                    return Err(format!("narrow %{}: kiểu đích phải là bv8/bv16/bv32", dst));
+                };
+                let v = self.get_reg(*src)?.clone();
+                self.check(
+                    &v.bvule(&self.bv((1u64 << bits) - 1)),
+                    &format!("narrow %{}: giá trị %{} không vừa {} bit", dst, src, bits),
+                )?;
+                let d = self.decl_reg(*dst, *ty)?;
+                self.solver.assert(&d._eq(&v));
+            }
             Inst::Store { base, offset, val } => {
                 let field = self.check_ptr_access(*base, *offset)?;
                 if self.reg_ty(*val)? != field.ty {
@@ -1319,7 +1347,9 @@ impl<'ctx> Verifier<'ctx> {
                         return Err(format!("hwio_w: %{} phải là số nguyên", v));
                     }
                     if *port != 3 {
-                        let limit = if *port == 0x1F0 || vty == Type::Bv16 {
+                        let limit = if vty == Type::Bv32 {
+                            0xFFFF_FFFF
+                        } else if *port == 0x1F0 || vty == Type::Bv16 {
                             0xFFFF
                         } else {
                             0xFF
@@ -1332,11 +1362,7 @@ impl<'ctx> Verifier<'ctx> {
                 } else if let Some(d) = dst {
                     let bv = self.decl_reg(*d, Type::Bv64)?;
                     if *port != 3 {
-                        self.assume(&bv.bvule(&self.bv(if *port == 0x1F0 {
-                            0xFFFF
-                        } else {
-                            0xFF
-                        })));
+                        self.assume(&bv.bvule(&self.bv(hwio_read_limit(*port))));
                     }
                 }
             }

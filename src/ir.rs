@@ -179,6 +179,14 @@ pub enum Inst {
         smp: Reg,
     },
 
+    /// %dst = narrow %src bv8|bv16|bv32: thu hẹp số nguyên xuống kiểu hẹp hơn. Z3 phải chứng minh giá trị vừa
+    /// độ rộng đích (không cắt bit im lặng). Dùng để ghi thanh ghi MMIO 32-bit bằng giá trị tính toán.
+    Narrow {
+        dst: Reg,
+        src: Reg,
+        ty: Type,
+    },
+
     /// Lệnh đặc quyền cho OS Bare-metal (Đọc/ghi cổng I/O, thanh ghi CR3, MSR hoặc Syscall)
     HwIo {
         dst: Option<Reg>,

@@ -712,6 +712,22 @@ impl<'a> Vm<'a> {
                         self.set_reg(&mut regs, *dst, v, Type::Bv64)
                             .map_err(|w| bad(cur, w))?;
                     }
+                    Inst::Narrow { dst, src, ty } => {
+                        let (v, sty) = get(&regs, *src, cur)?;
+                        if !matches!(sty, Type::Bv8 | Type::Bv16 | Type::Bv32 | Type::Bv64) {
+                            return Err(bad(cur, "narrow trên biến không phải số nguyên".into()));
+                        }
+                        let lim = match ty {
+                            Type::Bv8 => 0xFF,
+                            Type::Bv16 => 0xFFFF,
+                            Type::Bv32 => 0xFFFF_FFFF,
+                            _ => return Err(bad(cur, "narrow: kiểu đích sai".into())),
+                        };
+                        if v > lim {
+                            return Err(bad(cur, format!("narrow %{}: {:#x} không vừa", dst, v)));
+                        }
+                        self.set_reg(&mut regs, *dst, v, *ty).map_err(|w| bad(cur, w))?;
+                    }
                     Inst::Cmp { dst, op, lhs, rhs } => {
                         let (l, _) = get(&regs, *lhs, cur)?;
                         let (r, _) = get(&regs, *rhs, cur)?;
@@ -908,8 +924,14 @@ impl<'a> Vm<'a> {
                         if *is_write {
                             let (v, vty) = get(&regs, val.unwrap_or(0), cur)?;
                             if port != 3 {
-                                let wide = port == 0x1F0 || vty == Type::Bv16;
-                                let lim = if wide { 0xFFFF } else { 0xFF };
+                                let lim = if vty == Type::Bv32 {
+                                    0xFFFF_FFFF
+                                } else if port == 0x1F0 || vty == Type::Bv16 {
+                                    0xFFFF
+                                } else {
+                                    0xFF
+                                };
+                                let wide = lim > 0xFF;
                                 if v > lim {
                                     return Err(bad(
                                         cur,
@@ -917,7 +939,7 @@ impl<'a> Vm<'a> {
                                             "hwio_w cổng {:#x}: giá trị {:#x} không vừa {} bit",
                                             port,
                                             v,
-                                            if wide { 16 } else { 8 }
+                                            if lim > 0xFFFF { 32 } else if wide { 16 } else { 8 }
                                         ),
                                     ));
                                 }
@@ -925,10 +947,8 @@ impl<'a> Vm<'a> {
                         } else if let Some(d) = dst {
                             let lim = if port == 3 {
                                 u64::MAX
-                            } else if port == 0x1F0 {
-                                0xFFFF
                             } else {
-                                0xFF
+                                verify::hwio_read_limit(port)
                             };
                             let v = sample(&mut self.env, 0, lim);
                             self.set_reg(&mut regs, *d, v, Type::Bv64)
