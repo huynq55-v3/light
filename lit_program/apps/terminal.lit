@@ -18,6 +18,8 @@ def COL_SB_BTN 0x1e293b
 def COL_SB_DIM 0x1e3a2f
 def IPC_WIN_DRAWN 112
 def IPC_BG_MASK 152
+def IPC_MEM_REQ 168
+def IPC_MEM_FREE 176
 def STATE_SCROLL 58
 def STATE_INIT 59
 def STATE_CWD 60
@@ -859,6 +861,132 @@ func term_cmd_sys void %0:ptr<DiskQword,64> %1:smp %2:ptr<IpcChannel,1> {
         ret
 }
 
+# 17b. Lệnh 'mem': kích thước heap hiện có và RAM còn trống của bể (MB)
+func term_cmd_mem void %0:ptr<DiskQword,64> %1:ptr<IpcChannel,1> %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %3 = const "\n  HEAP " bv64
+        call term_append_qword %0 %3
+        %4 = const "MB: " bv64
+        call term_append_qword %0 %4
+        %5 = const 17 bv64
+        %6 = lshr %2 %5                     # Qword -> MB
+        call term_append_dec %0 %6
+        %7 = const "  FREE M" bv64
+        call term_append_qword %0 %7
+        %8 = const "B: " bv64
+        call term_append_qword %0 %8
+        %9 = load %1 IPC_MEM_FREE bv64
+        %10 = const 1 bv64
+        %11 = shl %9 %10                    # khung 2MB -> MB
+        call term_append_dec %0 %11
+        ret
+}
+
+# 17c. 'memup' xin thêm 512 chunk (1GB), 'memdown' trả hết về 15 chunk tĩnh. Kernel xử lý ngay sau tick này.
+func term_cmd_mem_req void %0:ptr<DiskQword,64> %1:ptr<IpcChannel,1> %2:bv64 %3:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+
+    @b0
+        %4 = const 0 bv64
+        %5 = cmp ne %3 %4
+        br %5 @b1 @b2
+
+    @b1
+        %6 = const 18 bv64
+        %7 = lshr %2 %6                     # số chunk hiện có
+        %8 = const 16383 bv64
+        %9 = call std_min %7 %8
+        %10 = const 512 bv64
+        %11 = add %9 %10
+        %12 = call std_min %11 %8
+        jmp @b3 %12
+
+    @b2
+        %13 = const 15 bv64
+        jmp @b3 %13
+
+    @b3 %14:bv64
+        @inv ule %14 16383
+        store %1 IPC_MEM_REQ %14
+        %15 = const "\n  MEM_R" bv64
+        call term_append_qword %0 %15
+        %16 = const "EQ: " bv64
+        call term_append_qword %0 %16
+        %17 = const 1 bv64
+        %18 = shl %14 %17
+        call term_append_dec %0 %18
+        %19 = const " MB" bv64
+        call term_append_qword %0 %19
+        ret
+}
+
+# 17d. 'memtest': ghi rồi đọc lại 1 Qword ở MỖI trang 4KB của toàn bộ heap. Trang nào chưa map thật sẽ gây #PF
+# (màn hình panic), nên chạy hết = mọi trang Kernel hứa trong độ dài heap đều có RAM thật.
+func term_cmd_memtest void %0:ptr<DiskQword,64> %1:bv64 %2:ptr<DiskQword,%1> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+
+    @b0
+        %3 = const 9 bv64
+        %4 = lshr %1 %3                     # số trang 4KB
+        %5 = const 0 bv64
+        %6 = const 0x5a5a5a5a00000000 bv64
+        jmp @b1 %5
+
+    @b1 %7:bv64
+        @inv ule %7 %4
+        %8 = cmp ult %7 %4
+        br %8 @b2 @b3
+
+    @b2
+        %9 = shl %7 %3
+        %10 = slice %2 %9 ptr<DiskQword,1>
+        %11 = xor %7 %6
+        store %10 0 %11
+        %12 = const 1 bv64
+        %13 = add %7 %12
+        jmp @b1 %13
+
+    @b3
+        jmp @b4 %5 %5
+
+    @b4 %14:bv64 %15:bv64
+        @inv ule %14 %4
+        @inv ule %15 %14
+        %16 = cmp ult %14 %4
+        br %16 @b5 @b6
+
+    @b5
+        %17 = shl %14 %3
+        %18 = slice %2 %17 ptr<DiskQword,1>
+        %19 = load %18 0 bv64
+        %20 = xor %14 %6
+        %21 = cmp ne %19 %20
+        %22 = add %15 %21
+        %23 = const 1 bv64
+        %24 = add %14 %23
+        jmp @b4 %24 %22
+
+    @b6
+        %25 = const "\n  PAGES" bv64
+        call term_append_qword %0 %25
+        %26 = const ": " bv64
+        call term_append_qword %0 %26
+        call term_append_dec %0 %4
+        %27 = const "  ERR: " bv64
+        call term_append_qword %0 %27
+        call term_append_dec %0 %15
+        ret
+}
+
 # 18. Thực thi lệnh 'help': Liệt kê các lệnh hỗ trợ
 func term_cmd_help void %0:ptr<DiskQword,64> {
     @req uge %0 0x10000
@@ -871,13 +999,19 @@ func term_cmd_help void %0:ptr<DiskQword,64> {
         call term_append_qword %0 %2
         %3 = const "YS CLEAR" bv64
         call term_append_qword %0 %3
-        %4 = const " HELP" bv64
+        %4 = const " HELP ME" bv64
         call term_append_qword %0 %4
+        %5 = const "M MEMUP " bv64
+        call term_append_qword %0 %5
+        %6 = const "MEMDOWN " bv64
+        call term_append_qword %0 %6
+        %7 = const "MEMTEST" bv64
+        call term_append_qword %0 %7
         ret
 }
 
 # 19. Dispatcher thông dịch lệnh từ Command Line (Qwords 50..60)
-func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:ptr<IpcChannel,1> %4:smp {
+func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:ptr<IpcChannel,1> %4:smp %5:bv64 %6:ptr<DiskQword,%5> {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
     @req uge %1 0x10000
@@ -937,10 +1071,48 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
     @b17
         %250 = const "help" bv64
         %260 = cmp eq %18 %250
-        br %260 @b171 @b18
+        br %260 @b171 @b172
 
     @b171
         call term_cmd_help %0
+        jmp @b20
+
+    @b172
+        %251 = const "mem" bv64
+        %261 = cmp eq %18 %251
+        br %261 @b173 @b174
+
+    @b173
+        call term_cmd_mem %0 %3 %5
+        jmp @b20
+
+    @b174
+        %252 = const "memup" bv64
+        %262 = cmp eq %18 %252
+        br %262 @b175 @b176
+
+    @b175
+        %270 = const 1 bv64
+        call term_cmd_mem_req %0 %3 %5 %270
+        jmp @b20
+
+    @b176
+        %253 = const "memdown" bv64
+        %263 = cmp eq %18 %253
+        br %263 @b177 @b178
+
+    @b177
+        %271 = const 0 bv64
+        call term_cmd_mem_req %0 %3 %5 %271
+        jmp @b20
+
+    @b178
+        %254 = const "memtest" bv64
+        %264 = cmp eq %18 %254
+        br %264 @b179 @b18
+
+    @b179
+        call term_cmd_memtest %0 %5 %6
         jmp @b20
 
     @b18
@@ -1259,7 +1431,7 @@ func term_render_retro_view void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:
 }
 
 # 24. Vòng lặp chính của Shell App (app_terminal_main)
-func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp {
+func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp %900:bv64 %901:ptr<DiskQword,%900> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
@@ -1351,7 +1523,7 @@ func app_terminal_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<D
 
     @b63
         # Thực thi lệnh từ dòng lệnh
-        call term_dispatch_cmd %2 %3 %4 %1 %5
+        call term_dispatch_cmd %2 %3 %4 %1 %5 %900 %901
         jmp @b7
 
     @b64

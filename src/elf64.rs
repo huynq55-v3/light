@@ -172,13 +172,17 @@ fn pack_elf64(code: &[u8], entry_offset: u64, panic_offset: Option<u64>) -> Resu
         0x48, 0x8B, 0x7D, 0x08,             // mov rdi, [rbp + 8]  (slice_ptr)
         0x48, 0x8B, 0x75, 0x10,             // mov rsi, [rbp + 16] (arg1)
         0x48, 0x8B, 0x55, 0x18,             // mov rdx, [rbp + 24] (chỉ số phần i)
-        0x0F, 0x1F, 0x40, 0x00,             // nop (giữ nguyên độ dài để các bước nhảy tương đối không đổi)
+        // Nạp lại CR3 = xả TLB của AP: kernel có thể đã gỡ/đổi ánh xạ chunk (mem_req thu hồi rồi cấp lại khung khác)
+        // từ lần chạy trước; TLB cũ của AP sẽ trỏ vào khung đã thuộc App khác.
+        0x0F, 0x20, 0xD9,                   // mov rcx, cr3
+        0x0F, 0x22, 0xD9,                   // mov cr3, rcx
         0xFF, 0xD0,                         // call rax
         0x5D,                               // pop rbp
         0x48, 0x89, 0x45, 0x18,             // mov [rbp + 24], rax
         0x48, 0xC7, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, // mov qword [rbp + 0], 0 (báo BSP đã xong)
-        0xEB, 0xD0,                         // jmp worker_idle (-48 bytes, lập tức quay lại HLT ngủ!)
+        0xEB, 0xCE,                         // jmp worker_idle (-50 bytes, lập tức quay lại HLT ngủ!)
     ]);
+    assert!(ap_code.len() <= 0x200, "AP trampoline đè lên GDT tại 0x8200");
 
     for (idx, &b) in ap_code.iter().enumerate() {
         let addr = (0x8000 + idx) as u32;
@@ -462,6 +466,8 @@ enum Prov {
     Int,
     Ptr(&'static str, u64),
     Smp,
+    /// ptr<L,%n> với %n = tham số thứ `.1` của App (Kernel bảo đảm vùng đã map đúng độ dài đó)
+    DPtr(&'static str, usize),
 }
 
 fn check_app_abi(module: &Module, fname: &str, provided: &[Prov]) -> Result<(), String> {
@@ -477,6 +483,11 @@ fn check_app_abi(module: &Module, fname: &str, provided: &[Prov]) -> Result<(), 
             (Type::Ptr { layout_id, max_elems }, Prov::Ptr(lname, kmax)) => {
                 let l = &module.layouts[layout_id as usize];
                 l.name == *lname && max_elems <= *kmax
+            }
+            // Độ dài phải đúng là tham số mà Kernel dùng làm độ dài (không phải tham số số nguyên khác)
+            (Type::DPtr { layout_id, len }, Prov::DPtr(lname, li)) => {
+                let l = &module.layouts[layout_id as usize];
+                l.name == *lname && f.params.get(*li).map(|p| p.0) == Some(len)
             }
             _ => false,
         };
@@ -988,7 +999,8 @@ pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
     if !module.funcs.iter().any(|f| f.name == "app_draw_icon") {
         return Err("Mỗi App bắt buộc phải implement hàm 'func app_draw_icon'!".into());
     }
-    // Khớp với app_dispatch_entry: call %code VgaCell* Ipc* Arena* Q64 Q64 smp; app_dispatch_draw_icon
+    // Khớp với app_dispatch_entry: call %code VgaCell* Ipc* State Q64 Q64 smp heap_len heap; app_dispatch_draw_icon.
+    // State = 15 chunk tĩnh luôn được map (30MB); heap = mọi chunk ĐÃ map (độ dài động, đổi theo mem_req).
     let main_name = module.funcs.last().map(|f| f.name.clone()).unwrap_or_default();
     check_app_abi(
         module,
@@ -996,10 +1008,12 @@ pub fn compile_app_bin(module: &Module) -> Result<Vec<u8>, String> {
         &[
             Prov::Ptr("VgaCell", 921600),
             Prov::Ptr("IpcChannel", 1),
-            Prov::Ptr("DiskQword", 4294705152),
+            Prov::Ptr("DiskQword", 3932160),
             Prov::Ptr("DiskQword", 64),
             Prov::Ptr("DiskQword", 64),
             Prov::Smp,
+            Prov::Int,
+            Prov::DPtr("DiskQword", 6),
         ],
     )?;
     check_app_abi(module, "app_draw_icon", &[Prov::Ptr("VgaCell", 921600), Prov::Int, Prov::Int])?;

@@ -26,9 +26,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process;
 use std::time::Instant;
 
-// Phải khớp verify.rs
-const RAM_MIN: u64 = 0x1_0000;
-const RAM_TOP: u64 = 0x8000_0000;
+// Dùng chung hằng số với verify.rs (trước đây oracle tự khai RAM_TOP = 2GB trong khi verifier là 1TB:
+// ptr hợp lệ nằm trên 2GB bị oracle báo nhầm, và gen_args không bao giờ thử con trỏ ở vùng cao)
+use verify::{RAM_MIN, RAM_TOP};
 const ROOT_IO: Type = Type::Io {
     min: 0,
     max: 0xFFFF,
@@ -1189,6 +1189,14 @@ fn gen_args(m: &Module, f: &Func, rng: &mut Rng, small: bool) -> Option<Vec<Val>
                     max_elems,
                 } => {
                     let bytes = max_elems.saturating_mul(m.layouts[layout_id as usize].size as u64);
+                    // 1/8 số con trỏ đặt sát đỉnh RAM (nơi phép cộng địa chỉ dễ vượt biên nhất)
+                    if bytes < RAM_TOP - RAM_MIN && rng.below(8) == 0 {
+                        let hi = (RAM_TOP - bytes - 0x1000 * rng.below(16)) & !0xFFF;
+                        if hi >= RAM_MIN {
+                            args.push((hi, ty));
+                            continue;
+                        }
+                    }
                     let base = (next + 0xFFF) & !0xFFF;
                     if base
                         .checked_add(bytes)

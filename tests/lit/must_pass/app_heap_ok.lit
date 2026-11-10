@@ -1,0 +1,29 @@
+# MODE: app
+# App dùng heap động: ghi Qword cuối cùng của heap (Z3 chứng minh nằm trong độ dài %6)
+layout VgaCell 4 {
+    0: bv32
+}
+layout IpcChannel 8 {
+    0: bv64
+}
+layout DiskQword 8 {
+    0: bv64
+}
+func app_draw_icon void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 {
+    @b0
+        ret
+}
+func app_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp %6:bv64 %7:ptr<DiskQword,%6> {
+    @b0
+        %8 = const 0 bv64
+        %9 = cmp ne %6 %8
+        br %9 @b1 @b2
+    @b1
+        %10 = const 1 bv64
+        %11 = sub %6 %10
+        %12 = slice %7 %11 ptr<DiskQword,1>
+        store %12 0 %11
+        jmp @b2
+    @b2
+        ret
+}

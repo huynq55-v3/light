@@ -91,6 +91,15 @@ lit_program/
     └── desktop_app.lit      # Ứng dụng giao diện tương tác thời gian thực qua hộp thư Zero-Copy IpcChannel
 ```
 
+### 3.1. Bộ nhớ của App: cấp phát & thu hồi tường minh
+
+- **Bể khung RAM vật lý** (khung 2MB từ 288MB, tối đa 24576 khung = 48GB): lúc boot `vmm_probe_ram` khóa toàn bộ bitmap rồi chỉ mở những khung nằm **trọn** trong vùng RAM type 1 của memory map (không bao giờ cấp lỗ PCI / ACPI / reserved).
+- **Mỗi App** có cửa sổ ảo 64GB riêng; chunk c (2MB) = trang c+1. Chunk 0..14 (30MB) luôn được map; chunk 15.. lấy từ bể.
+- **ABI hàm main của App**: `(VgaCell*, Ipc*, State ptr<DiskQword,≤3932160>, Q64, Q64, smp, %n:bv64, heap:ptr<DiskQword,%n>)`. `heap` phủ **đúng** các chunk đã map (`n = số_chunk × 262144`), nên Z3 chứng minh App không bao giờ chạm vùng chưa có RAM thật. App có thể khai báo ít tham số hơn (tiền tố).
+- **Cấp / thu hồi**: App ghi số chunk mong muốn vào IPC offset 168 (`mem_req`, 15..16383). Ngay sau tick đó, Kernel cấp thêm (mỗi chunk được **xóa trắng** trước khi giao, chống rò dữ liệu giữa App) hoặc gỡ ánh xạ + trả khung về bể. Lần gọi tiếp theo App nhận heap với độ dài mới. Offset 176 (`mem_free`) = số khung còn trống.
+- **Vì sao thu hồi an toàn**: App không thể giữ con trỏ qua tick (Layout cấm trường ptr; heap được truyền lại mỗi lần gọi). TLB: nhân BSP nạp lại CR3 sau khi gỡ; mỗi nhân AP nạp lại CR3 trước mỗi job `parallel`.
+- Terminal có lệnh `mem`, `memup` (+1GB), `memdown` (trả hết), `memtest` (ghi/đọc lại mỗi trang 4KB của heap).
+
 ---
 
 ## 4. Hướng dẫn Cài đặt & Chạy thử nghiệm
