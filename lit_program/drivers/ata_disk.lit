@@ -225,37 +225,6 @@ func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,131072> %2:bv64 {
         ret
 }
 
-# 4. Nạp N Sectors liên tiếp (%3 <= 4096 Sectors = 2MB) của Model AI / Tokenizer từ đĩa vào Model Arena
-func drv_ata_load_model void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,262144> %2:bv64 %3:bv64 {
-    # %0: ATA IO Cap, %1: Model Arena (262144 Qwords = 2MB), %2: start_lba, %3: sector_count (<= 4096)
-    @req uge %1 0x10000
-    @req ult %1 0x10000000000
-    @req ult %2 268430000
-    @req ule %3 4096
-
-    @b0
-        %4 = const 0 bv64
-        jmp @b1 %4
-
-    @b1 %5:bv64
-        @inv ule %5 4096
-        %6 = cmp ult %5 %3
-        br %6 @b2 @b3
-
-    @b2
-        %7 = const 6 bv64
-        %8 = shl %5 %7                      # qword_off = sec_idx * 64 (<= 4095 * 64 = 262080)
-        %9 = slice %1 %8 ptr<DiskQword,64>  # Z3 chứng minh: 262080 + 64 = 262144 <= 262144 (UNSAT!)
-        %10 = add %2 %5                     # cur_lba = start_lba + sec_idx
-        call drv_ata_read_sector %0 %9 %10
-        %11 = const 1 bv64
-        %12 = add %5 %11
-        jmp @b1 %12
-
-    @b3
-        ret
-}
-
 # 5. Đọc theo lô nhiều Sector liên tiếp (1..256 Sectors = tối đa 128KB) chỉ với 1 lệnh ATA 0x20 duy nhất!
 #    Giảm 256 lần số lượng lệnh điều khiển cổng I/O (0x1f2..0x1f7) khi nạp Model AI lớn từ đĩa
 func drv_ata_read_sectors_batch void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> %2:bv64 %3:bv64 {

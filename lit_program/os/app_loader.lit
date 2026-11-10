@@ -1,16 +1,17 @@
 # File: lit_program/os/app_loader.lit
-# LIGHT OS: Bộ Cấp phát Lô 64GB & Bộ Quản lý Khung RAM Vật lý theo Chunk 2MB (On-Demand VMM)
+# LIGHT OS: Nạp App, cửa sổ ảo 64GB mỗi App & Bộ quản lý khung RAM vật lý 2MB
 #
 # MÔ HÌNH BỘ NHỚ CỦA MỖI APP (slot 0..6), cửa sổ ảo bắt đầu tại (slot+1) * 64GB:
-#   - Trang 0 (+0MB)        : Code/Icon của App (khung vật lý cố định (slot+2) * 32MB)
-#   - Trang 1 (+2MB)        : Chunk 0 của Arena, chứa State[0..63] (khung vật lý cố định (slot+2) * 32MB + 2MB)
-#   - Trang 2..16 (+4..34MB): Chunk 1..15 của Arena, được cấp ĐỘNG từ Bể Khung RAM toàn cục (VMM_POOL_BASE, 128 khung x 2MB)
-# Arena = 16 Chunk liên tục trong không gian ảo = ptr<DiskQword,4194304> (32MB). App xin thêm Chunk qua
-# IpcChannel.chunk_req (xem cap_heap_alloc); Kernel xử lý ngay sau khi App trả quyền điều khiển (app_dispatch_entry)
-# hoặc trước khi đọc đĩa vào Arena (app_dispatch_disk_io). Khi App đóng, mọi Chunk động được trả lại bể.
+#   - Trang 0 (+0MB)         : Code/Icon của App
+#   - Trang 1..15 (+2..32MB) : Chunk 0..14 của Arena (Chunk 0 chứa State[0..63]); cả 16 trang được ánh xạ TĨNH
+#                              từ khung vật lý (slot+2) * 32MB trong vmm_alloc_app_arena
+#   - Chunk 15 trở lên       : chỉ được cấp động từ bể khung (VMM_POOL_BASE = 0x12000000) khi đọc đĩa vào Arena
+#                              (app_dispatch_disk_io_old -> vmm_ensure_chunks_nozero); trả lại bể khi App đóng
+# (Bộ cấp phát phía App qua chunk_req đã gỡ bỏ; sẽ thay bằng sys_mem_commit đồng bộ — xem lộ trình bước 4.)
 #
-# BẢNG QUẢN TRỊ VMM (0x7f000, 64 Qwords):
-#   [0],[1] = Bitmap 128 khung (bit = 1: đã cấp)   [2] = số khung đã cấp   [8..14] = số Chunk đang có của slot 0..6
+# BẢNG QUẢN TRỊ VMM (0x7f000, 512 Qwords):
+#   [2] = số khung đã cấp   [3] = đỉnh RAM khả dụng   [4] = tổng RAM khả dụng   [5] = độ dài mmap   [6] = số khung của bể
+#   [8..14] = số Chunk đang có của slot 0..6   [128..383] = bitmap khung (bit = 1: đã cấp)
 
 include ../drivers/ata_disk.lit
 include ../lib/cap_mem.lit
@@ -521,32 +522,6 @@ func vmm_frame_free void %0:ptr<DiskQword,512> %1:bv64 {
         ret
 }
 
-# Xóa sạch 1 Chunk 2MB (262144 Qwords) bằng AVX2 256-bit (vxor256: 4 Qwords = 32 bytes/lệnh) — nhanh gấp 4 lần vòng lặp đơn!
-func vmm_zero_chunk void %0:ptr<DiskQword,262144> {
-    @req uge %0 0x10000
-    @req ult %0 0x10000000000
-
-    @b0
-        %1 = const 0 bv64
-        jmp @b1 %1
-
-    @b1 %2:bv64
-        @inv ule %2 262144
-        %3 = const 262140 bv64
-        %4 = cmp ule %2 %3
-        br %4 @b2 @b3
-
-    @b2
-        %5 = slice %0 %2 ptr<DiskQword,4>
-        vxor256 %5 %5 %5
-        %7 = const 4 bv64
-        %8 = add %2 %7
-        jmp @b1 %8
-
-    @b3
-        ret
-}
-
 # Gắn 1 khung RAM mới vào Chunk %3 (1..16382) của App %2: PD_Pool[slot * 16384 + chunk + 1] = khung | Present | RW | 2MB. Trả 1 nếu OK, 0 nếu hết khung
 func vmm_map_chunk bv64 %0:ptr<DiskQword,131072> %1:ptr<DiskQword,512> %2:bv64 %3:bv64 {
     @req uge %0 0x10000
@@ -587,122 +562,6 @@ func vmm_map_chunk bv64 %0:ptr<DiskQword,131072> %1:ptr<DiskQword,512> %2:bv64 %
     @b99 %20:bv64
         @inv ule %20 1
         ret %20
-}
-
-# Đồng bộ số Chunk 2MB của App %3 theo mục tiêu %4 (1..16383):
-# - Nếu %4 > old_granted: Cấp thêm khung từ bể, xóa sạch Chunk mới, nạp lại CR3.
-# - Nếu %4 < old_granted: Thu hồi ngay các khung dư thừa (%4 .. old_granted - 1) về bể RAM, xóa ô PD và nạp lại CR3!
-func vmm_ensure_chunks bv64 %0:io<0,0xffff> %1:ptr<DiskQword,131072> %2:ptr<DiskQword,512> %3:bv64 %4:bv64 {
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req uge %2 0x10000
-    @req ult %2 0x80000000
-    @req ult %3 7
-    @ens uge %99 1
-    @ens ule %99 16383
-
-    @b0
-        %5 = const 1 bv64
-        %105 = const 15 bv64
-        %6 = const 16383 bv64
-        %7 = call std_clamp %4 %105 %6      # target_chunks thuộc [15 .. 16383]
-        %8 = const 8 bv64
-        %9 = add %8 %3
-        %10 = call vmm_tbl_get %2 %9
-        %11 = call std_clamp %10 %105 %6    # old_granted thuộc [15 .. 16383]
-        %30 = cmp ult %7 %11
-        br %30 @b10 @b1
-
-    @b1
-        jmp @b11 %11
-
-    @b11 %12:bv64
-        @inv uge %12 15
-        @inv ule %12 16383
-        %13 = cmp ult %12 %7
-        br %13 @b2 @b4
-
-    @b2
-        %14 = call vmm_map_chunk %1 %2 %3 %12
-        %15 = const 0 bv64
-        %16 = cmp ne %14 %15
-        br %16 @b3 @b4
-
-    @b3
-        %17 = add %12 %5
-        jmp @b11 %17
-
-    @b4
-        # %12 = số Chunk hiện có sau khi cấp. Ghi lại vào bảng quản trị rồi nạp lại CR3 để CPU thấy ngay các trang mới
-        call vmm_tbl_set %2 %9 %12
-        %18 = const 0x10000 bv64
-        hwio_w %0 3 %18
-        %19 = call sys_get_app_state_ptr %0 %3
-        jmp @b5 %11
-
-    @b5 %20:bv64
-        @inv ule %20 16383
-        %21 = cmp ult %20 %12
-        br %21 @b6 @b7
-
-    @b6
-        # Xóa sạch Chunk mới cấp (%20 >= old_granted >= 1 nên không đụng Chunk 0 chứa State)
-        %22 = const 18 bv64
-        %23 = shl %20 %22
-        %24 = slice %19 %23 ptr<DiskQword,262144>
-        call vmm_zero_chunk %24
-        %25 = add %20 %5
-        jmp @b5 %25
-
-    @b7
-        jmp @b99 %12
-
-    @b10
-        jmp @b20 %7
-
-    @b20 %40:bv64
-        @inv uge %40 15
-        @inv ule %40 16383
-        %41 = cmp ult %40 %11
-        br %41 @b21 @b24
-
-    @b21
-        %42 = const 14 bv64
-        %43 = shl %3 %42
-        %44 = add %40 %5                    # trang = chunk + 1
-        %45 = add %43 %44                   # pd_idx < 65536
-        %46 = slice %1 %45 ptr<DiskQword,1>
-        %47 = load %46 0 bv64
-        %48 = const 0 bv64
-        store %46 0 %48                     # gỡ ánh xạ
-        %49 = const 0xffffffe00000 bv64
-        %50 = and %47 %49
-        %51 = const 0x12000000 bv64
-        %52 = call std_sat_sub %50 %51
-        %53 = const 21 bv64
-        %54 = lshr %52 %53
-        %55 = const 16384 bv64
-        %56 = cmp ult %54 %55
-        br %56 @b22 @b23
-
-    @b22
-        call vmm_frame_free %2 %54
-        jmp @b23
-
-    @b23
-        %57 = add %40 %5
-        jmp @b20 %57
-
-    @b24
-        call vmm_tbl_set %2 %9 %7
-        %58 = const 0x10000 bv64
-        hwio_w %0 3 %58
-        jmp @b99 %7
-
-    @b99 %99:bv64
-        @inv uge %99 1
-        @inv ule %99 16383
-        ret %99
 }
 
 # Cấp nhanh thêm Chunk 2MB cho luồng nạp đĩa (không cần zero-fill vì sẽ được ghi đè ngay lập tức bởi dữ liệu sector từ đĩa)
@@ -842,30 +701,9 @@ func app_dispatch_entry void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcCh
         %7 = call sys_get_app_code_ptr %0 %6
         %8 = call sys_get_app_state_ptr %0 %6
 
-        # 1. Báo cho App biết số Chunk đã cấp (bit 0..15) và số khung RAM còn trống của bể (bit 16..31)
-        %9 = call sys_get_vmm_table %0
-        %10 = const 8 bv64
-        %11 = add %10 %6
-        %12 = call vmm_tbl_get %9 %11
-        %13 = const 1 bv64
-        %14 = const 16383 bv64
-        %15 = call std_clamp %12 %13 %14    # granted (1..16383)
-        %16 = const 2 bv64
-        %17 = call vmm_tbl_get %9 %16       # used frames
-        %30 = const 6 bv64
-        %31 = call vmm_tbl_get %9 %30
-        %32 = const 128 bv64
-        %33 = const 16384 bv64
-        %18 = call std_clamp %31 %32 %33    # max_frames (128..16384)
-        %19 = call std_sat_sub %18 %17      # free frames
-        %20 = const 0xffff bv64
-        %21 = and %19 %20
         %220 = const 16 bv64
-        %22 = shl %21 %220
-        %23 = or %15 %22
-        store %2 176 %23
 
-        # 1b. Ghi địa chỉ hàm SMP Worker (`code_ptr + 16`) vào `0x7e000[2]` và địa chỉ gốc `Arena` (`%8`) vào `0x7e000[3]`
+        # 1. Ghi địa chỉ hàm SMP Worker (`code_ptr + 16`) vào `0x7e000[2]` và địa chỉ gốc `Arena` (`%8`) vào `0x7e000[3]`
         #     để App có thể đọc và truyền vào lệnh `spawn`, đồng thời AP Trampoline tự động truyền `Arena` làm tham số thứ 3 (`RDX`)!
         %290 = const 0 bv64
         %291 = add %7 %290
@@ -881,19 +719,6 @@ func app_dispatch_entry void %0:io<0,0xffff> %1:ptr<VgaCell,921600> %2:ptr<IpcCh
         # 2. Chạy App
         call %7 %1 %2 %8 %3 %4 %5
 
-        # 3. Xử lý yêu cầu xin thêm / thu hồi Chunk của App ngay khi App trả quyền (trước khi Kernel xử lý đọc đĩa)
-        %24 = load %2 168 bv64
-        %25 = const 0 bv64
-        %26 = cmp ne %24 %25
-        br %26 @b1 @b2
-
-    @b1
-        store %2 168 %25
-        %27 = const 0xa00000 ptr<DiskQword,131072>
-        %28 = call vmm_ensure_chunks %0 %27 %9 %6 %24
-        jmp @b2
-
-    @b2
         ret
 }
 
@@ -928,173 +753,6 @@ func app_dispatch_zero_state void %0:io<0,0xffff> %1:bv64 {
         %3 = const 0 bv64
         %4 = slice %2 %3 ptr<DiskQword,64>
         call std_mem_zero %4
-        ret
-}
-
-func app_dispatch_get_state bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
-    @req ult %1 7
-    @req ult %2 64
-
-    @b0
-        %3 = call sys_get_app_state_ptr %0 %1
-        %4 = call cap_state_get %3 %2
-        ret %4
-}
-
-# Điều phối Đọc/Ghi Đĩa vào bất kỳ biến Buffer nào trên Arena (Kernel tự cấp đủ Chunk RAM cho vùng đích trước khi đọc)
-# Yêu cầu %2 = [dst_sec_off (bit 40..55) | num_sectors (bit 24..39) | lba (bit 0..23)]
-# Ánh xạ "mô hình nạp sẵn" (QEMU: -device pc-dimm tại địa chỉ vật lý MODEL_PHYS = 0x400000000, nội dung = gemma_model.bin)
-# vào Arena của App %1 bắt đầu từ Chunk %2 (15..16000): PD[slot*16384 + chunk + 1 + i] = (MODEL_PHYS + i*2MB) | 0x83.
-# Chỉ làm khi RAM vật lý báo cáo cho bể < MODEL_PHYS (DIMM không nằm trong bể khung) và magic "GEMMDL01" khớp. Không cấp thêm khung nào.
-func vmm_map_model void %0:io<0,0xffff> %1:bv64 %2:bv64 {
-    @req ult %1 7
-    @req uge %2 15
-    @req ule %2 16000
-
-    @b0
-        %3 = const 0x400000000 ptr<DiskQword,512>
-        %4 = const 0 bv64
-        %5 = slice %3 %4 ptr<DiskQword,1>
-        %6 = load %5 0 bv64
-        %7 = const 0x31304c444d4d4547 bv64
-        %8 = cmp eq %6 %7
-        br %8 @b1 @b9
-
-    @b1
-        %10 = const 14 bv64
-        %11 = slice %3 %10 ptr<DiskQword,1>
-        %12 = load %11 0 bv64               # tổng Qword của file
-        %13 = const 2500000000 bv64
-        %14 = call std_min %12 %13
-        %15 = const 262143 bv64
-        %16 = add %14 %15
-        %17 = const 18 bv64
-        %18 = lshr %16 %17                  # số Chunk 2MB cần ánh xạ (<= 9537)
-        %19 = add %2 %18
-        %20 = const 16382 bv64
-        %21 = cmp ule %19 %20
-        br %21 @b2 @b9
-
-    @b2
-        %22 = const 14 bv64
-        %23 = shl %1 %22                    # slot * 16384
-        %24 = add %23 %2
-        %25 = const 1 bv64
-        %26 = add %24 %25                   # pd_idx của Chunk %2
-        %27 = const 0xa00000 ptr<DiskQword,131072>
-        %28 = const 0x400000000 bv64
-        %29 = const 0x83 bv64
-        %30 = or %28 %29
-        jmp @b3 %4
-
-    @b3 %31:bv64
-        @inv ule %31 9600
-        %32 = cmp ult %31 %18
-        br %32 @b4 @b5
-
-    @b4
-        %33 = const 21 bv64
-        %34 = shl %31 %33
-        %35 = add %30 %34
-        %36 = add %26 %31
-        %37 = const 120000 bv64
-        %38 = call std_min %36 %37
-        %39 = slice %27 %38 ptr<DiskQword,1>
-        store %39 0 %35
-        %40 = add %31 %25
-        jmp @b3 %40
-
-    @b5
-        %41 = call sys_get_vmm_table %0
-        %42 = const 8 bv64
-        %43 = add %42 %1
-        %44 = call vmm_tbl_get %41 %43
-        %45 = call std_max %44 %19
-        call vmm_tbl_set %41 %43 %45        # số Chunk của slot = max(cũ, chunk_cuối)
-        %46 = const 0x10000 bv64
-        hwio_w %0 3 %46                     # nạp lại CR3
-        jmp @b9
-
-    @b9
-        ret
-}
-
-# Đọc đĩa "rộng" (bit 63 = 1): nạp thẳng vào Arena tới 32GB từ LBA tới 2^26 (32GB đĩa).
-# Yêu cầu %2 = [1<<63 | fine (bit 61) | dst_units (bit 38..60, đơn vị 4KB) | n_units (bit 26..37, 1..4095; đơn vị 8 sector nếu fine=1, 128 sector nếu fine=0) | lba (bit 0..25)]
-# Chunk đích PHẢI đã được cấp trước (chunk_req); thiếu thì bỏ qua yêu cầu.
-func app_dispatch_disk_io_wide void %0:io<0,0xffff> %1:bv64 %2:bv64 {
-    @req ult %1 7
-
-    @b0
-        %3 = call sys_get_app_state_ptr %0 %1
-        %4 = const 0x3ffffff bv64
-        %5 = and %2 %4                      # lba (26 bit)
-        %6 = const 26 bv64
-        %7 = lshr %2 %6
-        %8 = const 0xfff bv64
-        %9 = and %7 %8                      # n_units (0..4095)
-        %10 = const 38 bv64
-        %11 = lshr %2 %10
-        %12 = const 0x7fffff bv64
-        %13 = and %11 %12                   # dst_units (23 bit, 4KB)
-        %14 = const 1 bv64
-        %15 = call std_max %9 %14           # n_units >= 1
-        %16 = const 3 bv64
-        %17 = shl %13 %16                   # dst_sec (< 2^26)
-        %111 = const 61 bv64
-        %112 = lshr %2 %111
-        %113 = and %112 %14                 # fine
-        %114 = const 7 bv64
-        %115 = const 4 bv64
-        %116 = mul %113 %115
-        %117 = sub %114 %116                # 7 (thô: 128 sector) hoặc 3 (mịn: 8 sector)
-        %18 = shl %15 %117                  # n_sec (8..524160)
-        %19 = add %17 %18                   # tổng sector đích
-        %20 = const 4095 bv64
-        %21 = add %19 %20
-        %22 = const 12 bv64
-        %23 = lshr %21 %22                  # số Chunk cần có
-        %24 = call sys_get_vmm_table %0
-        %25 = const 8 bv64
-        %26 = add %25 %1
-        %27 = call vmm_tbl_get %24 %26      # Chunk đã cấp
-        %28 = cmp ule %23 %27
-        br %28 @b1 @b9
-
-    @b1
-        %29 = add %5 %18
-        %30 = const 268435456 bv64
-        %31 = cmp ule %29 %30               # lba + n <= 2^28 (LBA28)
-        br %31 @b2 @b9
-
-    @b2
-        %32 = const 0 bv64
-        jmp @b3 %32
-
-    @b3 %40:bv64
-        @inv ule %40 524160
-        %41 = cmp ult %40 %18
-        br %41 @b4 @b9
-
-    @b4
-        %42 = call std_sat_sub %18 %40      # rem >= 1
-        %43 = const 256 bv64
-        %44 = call std_clamp %42 %14 %43    # batch 1..256
-        %45 = add %17 %40                   # sector đích hiện tại
-        %46 = const 6 bv64
-        %47 = shl %45 %46                   # qword đích (<= ~2^34)
-        %48 = const 4294688768 bv64         # N - 16384
-        %49 = call std_min %47 %48
-        %50 = slice %3 %49 ptr<DiskQword,16384>
-        %51 = add %5 %40
-        %52 = const 268435455 bv64
-        %53 = call std_min %51 %52
-        call drv_ata_read_sectors_batch %0 %50 %53 %44
-        %54 = add %40 %44
-        %55 = call std_min %54 %18
-        jmp @b3 %55
-
-    @b9
         ret
 }
 
@@ -1189,56 +847,14 @@ func app_dispatch_disk_io_old void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
         ret
 }
 
-# Điều phối Đọc/Ghi Đĩa: yêu cầu đọc có bit 63 = 1 -> đọc rộng; còn lại theo định dạng cũ (56 bit)
+# Điều phối Đọc/Ghi Đĩa (định dạng 56 bit: lba[0..23] | n[24..39] | dst[40..55])
 func app_dispatch_disk_io void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
     @req ult %1 7
 
     @b0
-        %4 = const 0 bv64
-        %5 = cmp ne %3 %4
-        br %5 @b2 @b1
-
-    @b1
-        %6 = const 63 bv64
-        %7 = lshr %2 %6
-        %8 = cmp ne %7 %4
-        br %8 @b3 @b2
-
-    @b2
         %9 = const 0xffffffffffffff bv64
         %10 = and %2 %9
         call app_dispatch_disk_io_old %0 %1 %10 %3
-        ret
-
-    @b3
-        %11 = const 62 bv64
-        %12 = lshr %2 %11
-        %13 = const 1 bv64
-        %14 = and %12 %13
-        %15 = cmp ne %14 %4
-        br %15 @b4 @b5
-
-    @b4
-        %16 = const 0xffff bv64
-        %17 = and %2 %16
-        %18 = const 15 bv64
-        %19 = const 16000 bv64
-        %20 = call std_clamp %17 %18 %19
-        call vmm_map_model %0 %1 %20
-        ret
-
-    @b5
-        call app_dispatch_disk_io_wide %0 %1 %2
-        ret
-}
-
-func app_dispatch_set_state void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
-    @req ult %1 7
-    @req ult %2 64
-
-    @b0
-        %4 = call sys_get_app_state_ptr %0 %1
-        call cap_state_set %4 %2 %3
         ret
 }
 

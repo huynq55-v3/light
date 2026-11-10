@@ -35,29 +35,6 @@ func canvas_fill_rect void %0:ptr<VgaCell,921600> %1:bv64 %2:bv64 %3:bv64 %4:bv6
         ret
 }
 
-# 2. Vẽ 1 ký tự Font 8x16 theo tọa độ CỤC BỘ bên trong Cửa sổ (Không bao giờ lấn ra ngoài viền cửa sổ!)
-func canvas_draw_char void %0:ptr<VgaCell,921600> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv32 {
-    # %0: Backbuffer, %1: Font/Pool, %2: rel_x, %3: rel_y, %4: ascii, %5: color
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-
-    @b0
-        %6 = const 860 bv64
-        %7 = const 516 bv64
-        %8 = call std_min %2 %6             # clamped_x <= 860
-        %9 = call std_min %3 %7             # clamped_y <= 516
-
-        %10 = const 202 bv64
-        %11 = const 62 bv64
-        %12 = add %10 %8                    # abs_x <= 1062 (<= 1260)
-        %13 = add %11 %9                    # abs_y <= 578  (<= 700)
-
-        call gfx_draw_char16 %0 %1 %12 %13 %4 %5
-        ret
-}
-
 # 3. Yêu cầu Compositor cập nhật 1 vùng hình chữ nhật theo tọa độ CỤC BỘ của Cửa sổ
 func canvas_invalidate_rect void %0:ptr<IpcChannel,1> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
     @req uge %0 0x10000
