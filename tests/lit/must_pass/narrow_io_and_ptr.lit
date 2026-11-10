@@ -1,0 +1,24 @@
+layout Q 8 {
+    0: bv64
+}
+func put void %0:io<0x3f8,0x3f8> %1:bv64 {
+    @req ule %1 0xff
+    @b0
+        hwio_w %0 0x3f8 %1
+        ret
+}
+func g void %0:ptr<Q,4> {
+    @b0
+        ret
+}
+func f void %0:io<0x3f8,0x3ff> %1:ptr<Q,16> %2:bv64 {
+    @b0
+        %3 = const 0xff bv64
+        %4 = and %2 %3
+        call put %0 %4
+        %5 = const 12 bv64
+        %6 = slice %1 %5 ptr<Q,4>
+        call g %6
+        call g %1
+        ret
+}

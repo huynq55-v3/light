@@ -1,0 +1,15 @@
+# EXPECT: không bị chi phối bởi điểm định nghĩa
+layout Q 8 {
+    0: bv64
+}
+func f bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 5 bv64
+        jmp @b2
+    @b2
+        ret %3
+}

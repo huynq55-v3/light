@@ -19,9 +19,9 @@ def COL_SB_BTN 0x1e293b
 def COL_SB_DIM 0x1e3a2f
 def IPC_WIN_DRAWN 112
 def IPC_BG_MASK 152
-def STATE_SCROLL 61
-def STATE_INIT 62
-def STATE_CWD 63
+def STATE_SCROLL 58
+def STATE_INIT 59
+def STATE_CWD 60
 def TERM_VIS_LINES 17
 def TERM_MAX_Y 516
 
@@ -973,14 +973,14 @@ func term_dispatch_cmd void %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:ptr<Dis
         jmp @b21
 
     @b21
-        # Xóa sạch Qwords 50..60 về 0 (giữ nguyên State[61] = scroll_line)
+        # Xóa sạch Qwords 50..57 về 0 (giữ nguyên State[58..60] = scroll_line, init, cwd)
         %37 = const 50 bv64
-        %39 = const 61 bv64
+        %39 = const 58 bv64
         call cap_mem_zero_range %0 %37 %39
         ret
 }
 
-# 20. Xử lý gõ phím vào Command Line (Qwords 50..60, offset 400..487)
+# 20. Xử lý gõ phím vào Command Line (Qwords 50..57, offset 400..463)
 func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
@@ -996,7 +996,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         jmp @b10 %4
 
     @b10 %6:bv64
-        @inv ule %6 86
+        @inv ule %6 62
         %7 = const 400 bv64
         %8 = add %7 %6
         %9 = call std_mem_get_byte %0 %8
@@ -1005,7 +1005,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         br %11 @b13 @b11
 
     @b11
-        %12 = const 85 bv64
+        %12 = const 61 bv64
         %13 = cmp ult %6 %12
         br %13 @b12 @b13
 
@@ -1045,7 +1045,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         jmp @b20 %30
 
     @b20 %31:bv64
-        @inv ule %31 85
+        @inv ule %31 61
         %32 = const 400 bv64
         %33 = add %32 %31
         %34 = call std_mem_get_byte %0 %33
@@ -1054,7 +1054,7 @@ func term_cmd_push_or_bs void %0:ptr<DiskQword,64> %1:bv8 {
         br %36 @b23 @b21
 
     @b21
-        %37 = const 84 bv64
+        %37 = const 60 bv64
         %38 = cmp ult %31 %37
         br %38 @b22 @b99
 

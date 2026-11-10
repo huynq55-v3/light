@@ -1,0 +1,28 @@
+layout Q 8 {
+    0: bv64
+}
+func sum bv64 %0:ptr<Q,64> {
+    @ens ule %9 0xffffffffffff
+    @b0
+        %1 = const 0 bv64
+        jmp @b1 %1 %1
+    @b1 %2:bv64 %3:bv64
+        @inv ule %2 64
+        @inv ule %3 %2
+        %4 = const 64 bv64
+        %5 = cmp ult %2 %4
+        br %5 @b2 @b3
+    @b2
+        %6 = slice %0 %2 ptr<Q,1>
+        %7 = load %6 0 bv64
+        %20 = const 1 bv64
+        %21 = and %7 %20
+        %22 = add %3 %21
+        %23 = add %2 %20
+        jmp @b1 %23 %22
+    @b3
+        jmp @b4 %3
+    @b4 %9:bv64
+        @inv ule %9 64
+        ret %9
+}

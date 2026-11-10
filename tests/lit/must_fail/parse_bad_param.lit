@@ -1,0 +1,8 @@
+# EXPECT: Tham số không hợp lệ
+layout Q 8 {
+    0: bv64
+}
+func f void %0 {
+    @b0
+        ret
+}

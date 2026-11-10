@@ -1,0 +1,13 @@
+# Lỗ hổng còn mở: spawn nhận fn_addr là bv64 bất kỳ -> nhân AP nhảy tới địa chỉ tùy ý
+layout Q 8 {
+    0: bv64
+}
+func evil void %0:ptr<Q,64> %1:ptr<Q,128> {
+    @b0
+        %2 = const 1 bv64
+        %3 = const 0xdeadbeef bv64
+        %4 = const 0 bv64
+        %5 = slice %1 %2 ptr<Q,1>
+        spawn %0 %2 %3 %5 %4
+        ret
+}

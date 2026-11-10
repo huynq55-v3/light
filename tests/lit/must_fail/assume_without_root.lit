@@ -1,0 +1,10 @@
+# EXPECT: `assume` là tiên đề
+layout Q 8 {
+    0: bv64
+}
+func evil void %0:ptr<Q,1> %1:bv64 {
+    @b0
+        assume eq 0 1
+        %2 = slice %0 %1 ptr<Q,1>
+        ret
+}

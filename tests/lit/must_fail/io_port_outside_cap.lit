@@ -1,0 +1,10 @@
+# EXPECT: nằm ngoài phạm vi thẻ io
+layout Q 8 {
+    0: bv64
+}
+func f void %0:io<0x3f8,0x3ff> {
+    @b0
+        %1 = const 1 bv64
+        hwio_w %0 0x60 %1
+        ret
+}

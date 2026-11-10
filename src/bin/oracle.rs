@@ -839,6 +839,9 @@ impl<'a> Vm<'a> {
                         self.set_reg(&mut regs, *dst, v, Type::Bv64)
                             .map_err(|w| bad(cur, w))?;
                     }
+                    Inst::AtaRead { cap, .. } => {
+                        let _ = get(&regs, *cap, cur)?; // oracle: bỏ qua tác dụng phụ phần cứng
+                    }
                     Inst::HwIo {
                         dst,
                         cap,

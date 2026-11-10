@@ -1,0 +1,9 @@
+# EXPECT: Biểu thức Z3 có token thừa
+layout Q 8 {
+    0: bv64
+}
+func f void %0:bv64 {
+    @req ult %0 10 20
+    @b0
+        ret
+}

@@ -98,6 +98,7 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
             arg1,
         } => vec![*smp, *core, *fn_addr, *slice_ptr, *arg1],
         Inst::Sync { smp, core, .. } => vec![*smp, *core],
+        Inst::AtaRead { cap, ptr, idx, nsec } => vec![*cap, *ptr, *idx, *nsec],
         Inst::HwIo { cap, val, .. } => std::iter::once(*cap).chain(val.iter().copied()).collect(),
         Inst::Br { cond, .. } => vec![*cond],
         Inst::Jmp { args, .. } | Inst::Call { args, .. } => args.clone(),
@@ -451,6 +452,7 @@ fn fmt_inst(module: &Module, inst: &Inst) -> String {
             format!("spawn %{} %{} %{} %{} %{}", smp, core, fn_addr, slice_ptr, arg1)
         }
         Inst::Sync { dst, smp, core } => format!("%{} = sync %{} %{}", dst, smp, core),
+        Inst::AtaRead { cap, ptr, idx, nsec } => format!("ata_read %{} %{} %{} %{}", cap, ptr, idx, nsec),
         Inst::HwIo { dst, cap, port_or_reg, val, is_write } => {
             if *is_write {
                 format!("hwio_w %{} {:#x} %{:?}", cap, port_or_reg, val)
@@ -841,6 +843,8 @@ impl<'ctx> Verifier<'ctx> {
                         layout_id,
                         max_elems,
                     } => {
+                        // Không còn ngoại lệ cho bảng SMP 0x7e000: trước đây mọi hàm (kể cả App) đều rèn được
+                        // ptr<Bất_kỳ, 512 byte> vào đây và ghi đè fn_addr của nhân AP -> thực thi mã tùy ý.
                         if !func.params.iter().any(|&(_, t)| t == ROOT_IO) {
                             return Err(format!(
                                 "Bảo mật: Hàm '{}' không giữ thẻ gốc io<0,0xffff> để ánh xạ RAM tại %{}",
@@ -1155,6 +1159,33 @@ impl<'ctx> Verifier<'ctx> {
 
                 self.active_spawns.push((core_bv, ptr_bv, slice_bytes));
             }
+            Inst::AtaRead { cap, ptr, idx, nsec } => {
+                let Type::Io { min, max } = self.reg_ty(*cap)? else {
+                    return Err(format!("Bảo mật I/O: %{} không phải thẻ Type::Io", cap));
+                };
+                if 0x1F0 < min || 0x1F0 > max {
+                    return Err("ata_read: cổng 0x1F0 nằm ngoài thẻ io".into());
+                }
+                let Type::Ptr { layout_id, max_elems } = self.reg_ty(*ptr)? else {
+                    return Err(format!("ata_read: %{} phải là con trỏ", ptr));
+                };
+                let lay = &self.layouts[layout_id as usize];
+                if lay.fields.iter().any(|f| f.inv.is_some()) {
+                    return Err(format!(
+                        "ata_read: không được ghi byte thô từ đĩa vào Layout '{}' có @inv (load sau đó sẽ tin @inv sai)",
+                        lay.name
+                    ));
+                }
+                let esz = lay.size as u64;
+                let (i_bv, n_bv) = (self.get_reg(*idx)?.clone(), self.get_reg(*nsec)?.clone());
+                self.check(&n_bv.bvuge(&self.bv(1)), "ata_read: nsec phải >= 1")?;
+                self.check(&n_bv.bvule(&self.bv(256)), "ata_read: nsec phải <= 256")?;
+                self.check(&i_bv.bvule(&self.bv(1 << 20)), "ata_read: idx quá lớn")?;
+                self.check(
+                    &i_bv.bvadd(&n_bv).bvmul(&self.bv(512)).bvule(&self.bv(max_elems * esz)),
+                    "ata_read: ghi vượt biên vùng nhớ đích",
+                )?;
+            }
             Inst::Sync { dst, smp, core } => {
                 let Type::Ptr {
                     layout_id: smp_l,
@@ -1348,6 +1379,12 @@ impl<'ctx> Verifier<'ctx> {
                 self.add_pred(bi, ti, self.cur_cond.clone());
             }
             Inst::Assume(e) => {
+                if !func.params.iter().any(|&(_, t)| t == ROOT_IO) {
+                    return Err(format!(
+                        "Bảo mật: `assume` là tiên đề không được chứng minh — chỉ hàm giữ thẻ gốc io<0,0xffff> được dùng ('{}' không có)",
+                        func.name
+                    ));
+                }
                 self.assume(&self.ev(e)?);
                 self.n_assume += 1;
             }

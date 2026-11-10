@@ -174,6 +174,14 @@ pub enum Inst {
         is_write: bool,
     },
 
+    /// Đọc `nsec` sector từ cổng dữ liệu ATA 0x1F0 (rep insd) vào [ptr + idx*512] — an toàn vì Z3 chứng minh (idx+nsec)*512 <= kích thước vùng ptr
+    AtaRead {
+        cap: Reg,
+        ptr: Reg,
+        idx: Reg,
+        nsec: Reg,
+    },
+
     /// Điều hướng luồng thực thi (Control Flow)
     Br {
         cond: Reg,

@@ -1,0 +1,9 @@
+# EXPECT: Lỗi chia cho 0
+layout Q 8 {
+    0: bv64
+}
+func f bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = udiv %0 %1
+        ret %2
+}

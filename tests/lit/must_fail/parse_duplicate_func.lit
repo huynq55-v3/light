@@ -1,0 +1,12 @@
+# EXPECT: Hàm 'f' bị khai báo hai lần
+layout Q 8 {
+    0: bv64
+}
+func f void {
+    @b0
+        ret
+}
+func f void {
+    @b0
+        ret
+}

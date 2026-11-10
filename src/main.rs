@@ -101,6 +101,13 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if args.len() > 2 && args[1] == "check-app" {
+        // Kiểm chứng + kiểm tra ABI App (giống lúc pack) nhưng không ghi file
+        compile_and_verify_app(&args[2])?;
+        println!("OK: App hợp lệ");
+        return Ok(());
+    }
+
     if args.len() > 1 && args[1] == "pack" {
         println!("📦 Đang đóng gói 'storage/' vào 'disk.img'...");
         return build_disk_img();

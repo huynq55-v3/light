@@ -85,7 +85,11 @@ fn p_str_qword(s: &str) -> Result<u64, String> {
 }
 
 /// Đọc file .lit và đệ quy ghép các file `include <relative_path>` theo đúng thư mục của file hiện tại
-fn load_source_recursive(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<String, String> {
+fn load_source_recursive(
+    path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    origins: &mut Vec<String>,
+) -> Result<String, String> {
     let canon = path
         .canonicalize()
         .map_err(|e| format!("Không tìm thấy file '{}': {}", path.display(), e))?;
@@ -97,7 +101,8 @@ fn load_source_recursive(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<
         .map_err(|e| format!("Lỗi đọc '{}': {}", path.display(), e))?;
 
     let mut combined = String::new();
-    for raw_line in content.lines() {
+    for (i, raw_line) in content.lines().enumerate() {
+        let origin = format!("{}:{}", path.display(), i + 1);
         let line = raw_line.split('#').next().unwrap_or("").trim();
         let mut toks = line.split_whitespace();
         if toks.next() == Some("include") {
@@ -106,11 +111,13 @@ fn load_source_recursive(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<
                 .ok_or("Thiếu đường dẫn sau từ khóa include")?
                 .trim_matches('"');
             let next_path = parent_dir.join(rel_path);
-            combined.push_str(&load_source_recursive(&next_path, visited)?);
+            combined.push_str(&load_source_recursive(&next_path, visited, origins)?);
             combined.push('\n');
+            origins.push(origin);
         } else {
             combined.push_str(raw_line);
             combined.push('\n');
+            origins.push(origin);
         }
     }
     Ok(combined)
@@ -118,8 +125,9 @@ fn load_source_recursive(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<
 
 pub fn parse_file(entry_path: &str) -> Result<Module, String> {
     let mut visited = HashSet::new();
-    let full_src = load_source_recursive(Path::new(entry_path), &mut visited)?;
-    parse_module(&full_src)
+    let mut origins = Vec::new();
+    let full_src = load_source_recursive(Path::new(entry_path), &mut visited, &mut origins)?;
+    parse_module_at(&full_src, Some(&origins))
 }
 
 fn p_reg(s: &str) -> Result<Reg, String> {
@@ -293,6 +301,38 @@ where
     Ok(Z3Expr::Const(p_u64(tok, defs)?))
 }
 
+/// Phân tích biểu thức Z3 và bắt buộc dùng hết token (token thừa thường là lỗi gõ của AI, trước đây bị bỏ qua im lặng)
+fn p_z3_all(toks: &[&str], defs: &HashMap<String, u64>) -> Result<Z3Expr, String> {
+    let mut it = toks.iter().copied();
+    let e = p_z3(&mut it, defs)?;
+    let rest: Vec<&str> = it.collect();
+    if !rest.is_empty() {
+        return Err(format!("Biểu thức Z3 có token thừa: {}", rest.join(" ")));
+    }
+    Ok(e)
+}
+
+/// Số token hợp lệ của từng lệnh SSA: (tối thiểu, tối đa). Kiểm tra trước khi truy cập toks[i] để báo lỗi
+/// có số dòng thay vì panic, và để token thừa (ví dụ `%3 = add %1 %2 %9`) không bị bỏ qua im lặng.
+fn inst_arity(toks: &[&str]) -> Option<(usize, usize)> {
+    const ANY: usize = usize::MAX;
+    Some(match toks[0] {
+        "store" | "vadd256" | "vsub256" | "vmul256" | "vxor256" | "br" | "hwio_w" => (4, 4),
+        "spawn" => (6, 6),
+        "ata_read" => (5, 5),
+        "jmp" | "call" => (2, ANY),
+        "ret" => (1, 2),
+        "assume" | "assert" => (2, ANY),
+        d if d.starts_with('%') && toks.get(1) == Some(&"=") => match toks.get(2).copied()? {
+            "const" | "hwio_r" | "vdot256" | "sync" => (5, 5),
+            "slice" | "load" | "cmp" => (6, 6),
+            "call" => (4, ANY),
+            _ => (5, 5),
+        },
+        _ => return None,
+    })
+}
+
 fn p_params(
     toks: &[&str],
     layouts: &[Layout],
@@ -303,21 +343,34 @@ fn p_params(
     for t in toks {
         if let Some((r, ty)) = t.split_once(':') {
             out.push((p_reg(r)?, p_type(ty, layouts, defs)?));
+        } else if *t != "{" {
+            return Err(format!("Tham số không hợp lệ '{}' (cần dạng %r:kiểu)", t));
         }
     }
     Ok(out)
 }
 
+#[allow(dead_code)]
 pub fn parse_module(src: &str) -> Result<Module, String> {
+    parse_module_at(src, None)
+}
+
+/// `origins[i]` = "file:dòng" gốc của dòng thứ i trong `src` đã ghép include (để báo lỗi đúng vị trí)
+fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, String> {
     let mut m = Module::default();
     let mut defs: HashMap<String, u64> = HashMap::new();
     let mut in_layout = false;
 
     for (line_no, raw_line) in src.lines().enumerate() {
-        let err = |msg: &str| format!("Dòng {}: {}", line_no + 1, msg);
+        let loc = origins
+            .and_then(|o| o.get(line_no).cloned())
+            .unwrap_or_else(|| format!("dòng {}", line_no + 1));
+        let err = |msg: &str| format!("Dòng {}: {}", loc, msg);
+        // Bọc cả dòng để mọi lỗi (kể cả từ p_reg/p_blk) đều kèm số dòng và nội dung dòng
+        let mut parse_line = || -> Result<(), String> {
         let owned_toks = tokenize_line(raw_line).map_err(|e| err(&e))?;
         if owned_toks.is_empty() {
-            continue;
+            return Ok(());
         }
         let toks: Vec<&str> = owned_toks.iter().map(|s| s.as_str()).collect();
 
@@ -333,6 +386,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             }
             "layout" => {
                 // layout Process 24 {
+                if toks.len() < 3 {
+                    return Err(err("Cú pháp: layout <Tên> <kích_thước> {"));
+                }
+                if m.layouts.iter().any(|l| l.name == toks[1]) {
+                    return Err(err(&format!("Layout '{}' bị khai báo hai lần", toks[1])));
+                }
                 m.layouts.push(Layout {
                     name: toks[1].into(),
                     size: p_u64(toks[2], &defs).map_err(|e| err(&e))? as u32,
@@ -342,6 +401,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             }
             "func" => {
                 // func init_proc -> bv64 %0:ptr<Process,1> {
+                if toks.len() < 3 {
+                    return Err(err("Cú pháp: func <tên> <kiểu_trả_về|void> [%r:kiểu ...] {"));
+                }
+                if m.funcs.iter().any(|f| f.name == toks[1]) {
+                    return Err(err(&format!("Hàm '{}' bị khai báo hai lần", toks[1])));
+                }
                 let ret_ty = if toks[2] == "void" {
                     None
                 } else {
@@ -361,13 +426,13 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                 .last_mut()
                 .ok_or_else(|| err("Lỗi @req"))?
                 .requires
-                .push(p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?),
+                .push(p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?),
             "@ens" => m
                 .funcs
                 .last_mut()
                 .ok_or_else(|| err("Lỗi @ens"))?
                 .ensures
-                .push(p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?),
+                .push(p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?),
             "@inv" => {
                 let blk = m
                     .funcs
@@ -375,7 +440,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                     .and_then(|f| f.blocks.last_mut())
                     .ok_or_else(|| err("@inv ngoài Block"))?;
                 blk.invs
-                    .push(p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?);
+                    .push(p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?);
             }
             b if b.starts_with('@') => {
                 // @b1 %1:bv64
@@ -389,11 +454,14 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             }
             _ if in_layout => {
                 // 0: bv64 @inv ugt val 0
+                if toks.len() < 2 || (toks.len() > 2 && toks[2] != "@inv") || toks.len() == 3 {
+                    return Err(err("Cú pháp trường: <offset>: <kiểu> [@inv <biểu_thức>]"));
+                }
                 let offset =
                     p_u64(toks[0].trim_end_matches(':'), &defs).map_err(|e| err(&e))? as u32;
                 let ty = p_type(toks[1], &m.layouts, &defs).map_err(|e| err(&e))?;
                 let inv = if toks.get(2) == Some(&"@inv") {
-                    Some(p_z3(&mut toks[3..].iter().copied(), &defs).map_err(|e| err(&e))?)
+                    Some(p_z3_all(&toks[3..], &defs).map_err(|e| err(&e))?)
                 } else {
                     None
                 };
@@ -405,6 +473,15 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             }
             _ => {
                 // Các chỉ thị SSA bên trong Basic Block
+                let (lo, hi) = inst_arity(&toks).ok_or_else(|| err("Không nhận diện được lệnh SSA"))?;
+                if toks.len() < lo || toks.len() > hi {
+                    return Err(err(&format!(
+                        "Lệnh '{}' cần {} token nhưng có {}",
+                        toks.join(" "),
+                        if lo == hi { lo.to_string() } else if hi == usize::MAX { format!(">= {}", lo) } else { format!("{}..{}", lo, hi) },
+                        toks.len()
+                    )));
+                }
                 let inst = match toks[0] {
                     "store" => Inst::Store {
                         base: p_reg(toks[1])?,
@@ -440,10 +517,10 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                         val: toks.get(1).map(|r| p_reg(r)).transpose()?,
                     },
                     "assume" => Inst::Assume(
-                        p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?,
+                        p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?,
                     ),
                     "assert" => Inst::Assert(
-                        p_z3(&mut toks[1..].iter().copied(), &defs).map_err(|e| err(&e))?,
+                        p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?,
                     ),
                     "call" => {
                         let target_str = toks[1];
@@ -467,6 +544,13 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                             }
                         }
                     }
+                    // ata_read %cap %ptr %sec_idx %nsec: rep insd nsec sector từ cổng 0x1F0 vào [ptr + sec_idx*512]
+                    "ata_read" => Inst::AtaRead {
+                        cap: p_reg(toks[1])?,
+                        ptr: p_reg(toks[2])?,
+                        idx: p_reg(toks[3])?,
+                        nsec: p_reg(toks[4])?,
+                    },
                     "hwio_w" => Inst::HwIo {
                         dst: None,
                         cap: p_reg(toks[1])?,
@@ -558,6 +642,12 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                 blk.insts.push(inst);
             }
         }
+        Ok(())
+        };
+        parse_line().map_err(|e| {
+            let e = if e.starts_with("Dòng ") { e } else { err(&e) };
+            format!("{}\n    > {}", e, raw_line.trim())
+        })?;
     }
     Ok(m)
 }

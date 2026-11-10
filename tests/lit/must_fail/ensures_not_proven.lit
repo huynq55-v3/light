@@ -1,0 +1,9 @@
+# EXPECT: Vi phạm điều kiện đầu ra (@ens #0)
+layout Q 8 {
+    0: bv64
+}
+func f bv64 %0:bv64 {
+    @ens ult %0 10
+    @b0
+        ret %0
+}

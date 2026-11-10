@@ -1,0 +1,9 @@
+# EXPECT: cần 5 token nhưng có 6
+layout Q 8 {
+    0: bv64
+}
+func f void %0:bv64 {
+    @b0
+        %1 = and %0 %0 %0
+        ret
+}

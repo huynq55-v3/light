@@ -32,6 +32,18 @@ func smp_get_ap_count bv64 %0:ptr<DiskQword,64> {
         ret %1
 }
 
+# 1b. Lấy địa chỉ hàm `app_smp_worker` của App đang chạy (được Kernel ghi sẵn tại `0x7e000[2]`)
+func smp_get_app_worker_fn bv64 %0:ptr<DiskQword,64> {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+
+    @b0
+        %1 = const 2 bv64
+        %2 = slice %0 %1 ptr<DiskQword,1>
+        %3 = load %2 0 bv64
+        ret %3
+}
+
 # 2. Kiểm tra Nhân Worker thứ %1 (1..15) đã hoàn thành công việc chưa bằng chỉ thị `sync`
 func smp_is_worker_done bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
@@ -43,6 +55,37 @@ func smp_is_worker_done bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @b0
         %2 = sync %0 %1
         ret %2
+}
+
+# 2b. Chờ Nhân Worker thứ %1 (1..15) hoàn thành công việc (Spin-wait bounded 10.000.000 chu kỳ)
+func smp_wait_worker void %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 1
+    @req ule %1 15
+
+    @b0
+        %2 = const 0 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv ule %3 10000000
+        %4 = const 10000000 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b4
+
+    @b2
+        %6 = sync %0 %1
+        %7 = cmp ne %6 %2
+        br %7 @b4 @b3
+
+    @b3
+        %8 = const 1 bv64
+        %9 = add %3 %8
+        jmp @b1 %9
+
+    @b4
+        ret
 }
 
 # 3. Đọc kết quả trả về (64-bit) của Nhân Worker thứ %1 (1..15)

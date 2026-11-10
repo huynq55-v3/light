@@ -1,0 +1,9 @@
+# EXPECT: Tràn số cộng
+layout Q 8 {
+    0: bv64
+}
+func f bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = add %0 %1
+        ret %2
+}

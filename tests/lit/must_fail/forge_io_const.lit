@@ -1,0 +1,9 @@
+# EXPECT: Không thể tạo thẻ quyền năng Io bằng const
+layout Q 8 {
+    0: bv64
+}
+func f void {
+    @b0
+        %1 = const 0 io<0,0xffff>
+        ret
+}

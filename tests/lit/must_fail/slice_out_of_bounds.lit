@@ -1,0 +1,10 @@
+# EXPECT: Tràn biên mảng khi slice
+layout Q 8 {
+    0: bv64
+}
+func f void %0:ptr<Q,4> %1:bv64 {
+    @req ule %1 4
+    @b0
+        %2 = slice %0 %1 ptr<Q,1>
+        ret
+}

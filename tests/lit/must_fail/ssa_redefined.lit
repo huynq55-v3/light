@@ -1,0 +1,10 @@
+# EXPECT: bị định nghĩa nhiều hơn một lần
+layout Q 8 {
+    0: bv64
+}
+func f void {
+    @b0
+        %1 = const 0 bv64
+        %1 = const 1 bv64
+        ret
+}

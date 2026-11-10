@@ -1,0 +1,10 @@
+# Lỗ hổng còn mở: Kernel giao bảng SMP cho App dưới dạng ptr ghi được -> App ghi fn_addr của slot nhân AP
+layout Q 8 {
+    0: bv64
+}
+func evil void %0:ptr<Q,64> {
+    @b0
+        %1 = const 0xdeadbeef bv64
+        store %0 32 %1
+        ret
+}

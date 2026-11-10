@@ -1,0 +1,9 @@
+# EXPECT: Dịch bit quá 64-bit
+layout Q 8 {
+    0: bv64
+}
+func f bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = shl %0 %1
+        ret %2
+}

@@ -104,8 +104,8 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         %11 = const 540 bv64
         %12 = const 0 bv64
         %13 = const 1 bv64
-        %200 = const 62 bv64                # Slot 62: Browser state
-        %201 = const 63 bv64                # Slot 63: Open file LBA
+        %200 = const 58 bv64                # Slot 58: Browser state
+        %201 = const 59 bv64                # Slot 59: Open file LBA
 
         %14 = load %1 112 bv64
         %15 = cmp eq %14 %12
@@ -235,9 +235,9 @@ func app_editor_main void %0:ptr<VgaCell,921600> %1:ptr<IpcChannel,1> %2:ptr<Dis
         ret
 
     @b33
-        # Kẹp chiều dài văn bản < 490 bytes để không bao giờ chạm vào Slot 62, 63!
+        # Kẹp chiều dài văn bản < 460 bytes để không bao giờ chạm vào Slot 58..63!
         %202 = call std_str_len %2
-        %203 = const 490 bv64
+        %203 = const 460 bv64
         %204 = cmp ult %202 %203
         %205 = const 8 bv8
         %206 = cmp eq %61 %205

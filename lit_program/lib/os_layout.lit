@@ -6,7 +6,7 @@ layout DiskQword 8 {
     0: bv64
 }
 
-layout IpcChannel 168 {
+layout IpcChannel 184 {
     0: bv64
     8: bv8 @inv ult val 128
     16: bv64 @inv ult val 1260
@@ -19,7 +19,7 @@ layout IpcChannel 168 {
     72: bv64 @inv ult val 700
     80: bv64
     88: bv64                                # ipc_win_cmd: 0 = Normal, 1 = App requested Shell to close & reset
-    96: bv64 @inv ult val 268435456
+    96: bv64 @inv ule val 0xffffffffffffffff   # disk_read_req: kiểu cũ lba[0..23]|n[24..39]|dst[40..55]; bit63=1: rộng (xem app_dispatch_disk_io_wide)
     104: bv64 @inv ult val 268435456
     112: bv64 @inv ule val 1
     120: bv64 @inv ule val 1280
@@ -28,6 +28,8 @@ layout IpcChannel 168 {
     144: bv64 @inv ule val 720
     152: bv64                               # ipc_bg_mask: Bitmask of apps running in background (bit i = 1 << slot)
     160: bv64                               # Trạng thái giữ phím Shift (1 = đang giữ Shift, 0 = nhả)
+    168: bv64 @inv ule val 16383             # chunk_req: App xin tổng số Chunk 2MB cần có (0 = không có yêu cầu, 1..16383 = tới 16GB), Kernel xử lý xong sẽ xóa về 0
+    176: bv64 @inv ule val 0xffffffff       # chunk_state (Kernel ghi trước mỗi lần chạy App): bit 0..15 = số Chunk đã cấp, bit 16..31 = số khung RAM còn trống
 }
 
 layout VfsEntry 32 {

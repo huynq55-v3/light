@@ -2,6 +2,8 @@
 include ../lib/os_layout.lit
 
 # 1. Đọc 1 sector (512 bytes = 64 Qwords) từ ổ đĩa ATA Primary Master (LBA 28-bit)
+include ../lib/std_lib.lit
+
 func drv_ata_read_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
     @req uge %1 0x10000
     @req ult %1 0x10000000000
@@ -193,19 +195,19 @@ func drv_ata_write_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
         ret
 }
 
-# 3. Nạp 256 Sector (131.072 bytes = 16384 Qwords) mã máy của App từ đĩa vào Lô 64GB riêng biệt
-func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> %2:bv64 {
+# 3. Nạp 2048 Sector (1MB = 131072 Qwords) mã máy của App từ đĩa vào Lô 64GB riêng biệt
+func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,131072> %2:bv64 {
     @req uge %1 0x10000
     @req ult %1 0x10000000000
-    @req ult %2 268435000
+    @req ult %2 268430000
 
     @b0
         %3 = const 0 bv64
         jmp @b1 %3
 
     @b1 %4:bv64
-        @inv ule %4 256
-        %5 = const 256 bv64
+        @inv ule %4 2048
+        %5 = const 2048 bv64
         %6 = cmp ult %4 %5
         br %6 @b2 @b3
 
@@ -222,3 +224,146 @@ func drv_ata_load_app void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> %2:bv64 {
     @b3
         ret
 }
+
+# 4. Nạp N Sectors liên tiếp (%3 <= 4096 Sectors = 2MB) của Model AI / Tokenizer từ đĩa vào Model Arena
+func drv_ata_load_model void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,262144> %2:bv64 %3:bv64 {
+    # %0: ATA IO Cap, %1: Model Arena (262144 Qwords = 2MB), %2: start_lba, %3: sector_count (<= 4096)
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+    @req ult %2 268430000
+    @req ule %3 4096
+
+    @b0
+        %4 = const 0 bv64
+        jmp @b1 %4
+
+    @b1 %5:bv64
+        @inv ule %5 4096
+        %6 = cmp ult %5 %3
+        br %6 @b2 @b3
+
+    @b2
+        %7 = const 6 bv64
+        %8 = shl %5 %7                      # qword_off = sec_idx * 64 (<= 4095 * 64 = 262080)
+        %9 = slice %1 %8 ptr<DiskQword,64>  # Z3 chứng minh: 262080 + 64 = 262144 <= 262144 (UNSAT!)
+        %10 = add %2 %5                     # cur_lba = start_lba + sec_idx
+        call drv_ata_read_sector %0 %9 %10
+        %11 = const 1 bv64
+        %12 = add %5 %11
+        jmp @b1 %12
+
+    @b3
+        ret
+}
+
+# 5. Đọc theo lô nhiều Sector liên tiếp (1..256 Sectors = tối đa 128KB) chỉ với 1 lệnh ATA 0x20 duy nhất!
+#    Giảm 256 lần số lượng lệnh điều khiển cổng I/O (0x1f2..0x1f7) khi nạp Model AI lớn từ đĩa
+func drv_ata_read_sectors_batch void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,16384> %2:bv64 %3:bv64 {
+    # %0: ATA IO Cap, %1: Buffer đích (tối đa 256 * 64 = 16384 Qwords), %2: start_lba, %3: count (1..256)
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+    @req ult %2 268435456
+    @req uge %3 1
+    @req ule %3 256
+
+    @b0
+        %4 = const 0xff bv64
+        %5 = const 0xe0 bv64
+        %6 = const 24 bv64
+        %7 = lshr %2 %6
+        %8 = and %2 %4
+        %9 = const 8 bv64
+        %10 = lshr %2 %9
+        %11 = and %10 %4
+        %12 = const 16 bv64
+        %13 = lshr %2 %12
+        %14 = and %13 %4
+        %15 = and %7 %4
+        %16 = or %5 %15
+        # Theo chuẩn ATA LBA28: ghi 0 vào cổng 0x1f2 tương đương với 256 sectors!
+        %17 = and %3 %4
+        %18 = const 0xc4 bv64               # READ MULTIPLE (QEMU gộp 16 sector / 1 yêu cầu block thay vì 1)
+
+        # SET MULTIPLE MODE = 16 sector/khối (lệnh 0xC6), chờ BSY = 0
+        %70 = const 16 bv64
+        %71 = const 0xc6 bv64
+        hwio_w %0 0x1f6 %16
+        hwio_w %0 0x1f2 %70
+        hwio_w %0 0x1f7 %71
+        %72 = const 0 bv64
+        jmp @b60 %72
+
+    @b60 %73:bv64
+        @inv ule %73 10000
+        %74 = const 10000 bv64
+        %75 = cmp ult %73 %74
+        br %75 @b61 @b62
+
+    @b61
+        %76 = hwio_r %0 0x1f7
+        %77 = const 0x80 bv64
+        %78 = and %76 %77
+        %79 = const 0 bv64
+        %80 = cmp eq %78 %79
+        br %80 @b62 @b63
+
+    @b63
+        %81 = const 1 bv64
+        %82 = add %73 %81
+        jmp @b60 %82
+
+    @b62
+        hwio_w %0 0x1f6 %16
+        hwio_w %0 0x1f2 %17
+        hwio_w %0 0x1f3 %8
+        hwio_w %0 0x1f4 %11
+        hwio_w %0 0x1f5 %14
+        hwio_w %0 0x1f7 %18
+
+        %19 = const 0 bv64
+        jmp @b1 %19
+
+    @b1 %20:bv64
+        @inv ule %20 256
+        %21 = cmp ult %20 %3
+        br %21 @b2 @b9
+
+    @b2
+        %22 = const 0 bv64
+        jmp @b3 %22
+
+    @b3 %23:bv64
+        @inv ule %20 256
+        @inv ule %23 10000
+        %24 = const 10000 bv64
+        %25 = cmp ult %23 %24
+        br %25 @b4 @b6
+
+    @b4
+        %26 = hwio_r %0 0x1f7
+        %27 = const 0x88 bv64
+        %28 = and %26 %27
+        %29 = const 0x08 bv64
+        %30 = cmp eq %28 %29
+        br %30 @b6 @b5
+
+    @b5
+        %31 = const 1 bv64
+        %32 = add %23 %31
+        jmp @b3 %32
+
+    @b6
+        # Một khối DRQ gồm blk = min(16, count - i) sector (READ MULTIPLE): đọc cả khối bằng 1 lệnh rep insd
+        %33 = sub %3 %20
+        %34 = const 16 bv64
+        %35 = call std_min %33 %34
+        %36 = const 1 bv64
+        %37 = call std_max %35 %36
+        ata_read %0 %1 %20 %37
+        %38 = add %20 %37
+        jmp @b1 %38
+
+    @b9
+        ret
+}
+

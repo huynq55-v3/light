@@ -1,0 +1,11 @@
+# EXPECT: không được ghi byte thô từ đĩa vào Layout 'Idx' có @inv
+layout Idx 8 {
+    0: bv64 @inv ult val 4
+}
+func evil void %0:io<0x1f0,0x1f7> %1:ptr<Idx,64> {
+    @b0
+        %3 = const 0 bv64
+        %4 = const 1 bv64
+        ata_read %0 %1 %3 %4
+        ret
+}

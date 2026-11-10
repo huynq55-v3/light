@@ -3,25 +3,28 @@
 # Đóng gói truy vấn Bảng Thư mục (Directory Table) với hậu điều kiện @ens được Z3 chứng minh
 
 include os_layout.lit
+include std_lib.lit
 
 # 1. Lấy địa chỉ Sector LBA bắt đầu của mục VFS thứ %1 (0..15)
-#    Z3 bảo chứng đầu ra: %10 < 16777216 (luôn thỏa mãn @req ult 268435000 của ATA Driver!)
+#    Z3 bảo chứng đầu ra: %11 < 268435000 (luôn thỏa mãn @req ult 268435000 của ATA Driver!)
 func vfs_entry_get_lba bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req ult %1 16
-    @ens ult %9 16777216
+    @ens ult %11 268430000
 
     @b0
-        # Mỗi VfsEntry chiếm 32 bytes = 4 Qwords. Qword +2 chứa start_sec
+        # Mỗi VfsEntry chiếm 32 bytes = 4 Qwords. Qword +2 chứa start_sec (bit 0..31)
         %2 = const 2 bv64
         %3 = shl %1 %2
         %4 = add %3 %2
         %5 = slice %0 %4 ptr<DiskQword,1>
         %6 = load %5 0 bv64
-        %7 = const 0xffffff bv64
-        %9 = and %6 %7
-        ret %9
+        %7 = const 0xffffffff bv64
+        %8 = and %6 %7
+        %9 = const 268429000 bv64
+        %11 = call std_min %8 %9
+        ret %11
 }
 
 # 2. Lấy vị trí chuỗi đường dẫn (path_offset: 0..255) trong String Pool của mục VFS thứ %1
@@ -64,7 +67,7 @@ func vfs_entry_get_path_len bv64 %0:ptr<DiskQword,64> %1:bv64 {
         ret %11
 }
 
-# 4. Kiểm tra mục VFS thứ %1 có phải là Chương trình Thực thi (FLAG_APP = bit 32 của Qword +3) không
+# 4. Kiểm tra mục VFS thứ %1 có phải là Chương trình Thực thi (FLAG_APP = bit 32 của Qword +2) không
 func vfs_entry_is_app bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -74,7 +77,7 @@ func vfs_entry_is_app bv64 %0:ptr<DiskQword,64> %1:bv64 {
     @b0
         %2 = const 2 bv64
         %3 = shl %1 %2
-        %4 = const 3 bv64
+        %4 = const 2 bv64
         %5 = add %3 %4
         %6 = slice %0 %5 ptr<DiskQword,1>
         %7 = load %6 0 bv64
@@ -83,4 +86,44 @@ func vfs_entry_is_app bv64 %0:ptr<DiskQword,64> %1:bv64 {
         %10 = const 1 bv64
         %11 = and %9 %10
         ret %11
+}
+
+# 5. Lấy kích thước thực tế (byte) của mục VFS thứ %1 (0..15) dạng 64-bit đầy đủ
+func vfs_entry_get_size bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 16
+    @ens ule %9 0x7fffffffffffffff
+
+    @b0
+        %2 = const 2 bv64
+        %3 = shl %1 %2
+        %4 = const 3 bv64
+        %5 = add %3 %4
+        %6 = slice %0 %5 ptr<DiskQword,1>
+        %7 = load %6 0 bv64
+        %8 = const 0x7fffffffffffffff bv64
+        %9 = and %7 %8
+        ret %9
+}
+
+# 6. Tự động tính đúng số Sector (512B) cần cấp phát cho mục VFS thứ %1: (file_size + 511) / 512, kẹp tối đa 60000 Sectors (~29MB, vừa Arena 32MB)
+func vfs_entry_get_sectors bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req ult %1 16
+    @ens uge %10 1
+    @ens ule %10 60000
+
+    @b0
+        %2 = call vfs_entry_get_size %0 %1
+        %3 = const 511 bv64
+        %4 = add %2 %3
+        %5 = const 9 bv64
+        %6 = lshr %4 %5
+        %7 = const 1 bv64
+        %8 = const 60000 bv64
+        %9 = call std_max %6 %7
+        %10 = call std_min %9 %8
+        ret %10
 }

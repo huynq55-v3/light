@@ -1,0 +1,13 @@
+# EXPECT: Lỗi kiểu/bảo mật
+layout Q 8 {
+    0: bv64
+}
+func g void %0:ptr<Q,100> {
+    @b0
+        ret
+}
+func f void %0:ptr<Q,1> {
+    @b0
+        call g %0
+        ret
+}

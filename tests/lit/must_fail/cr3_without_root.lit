@@ -1,0 +1,10 @@
+# EXPECT: thanh ghi CR3
+layout Q 8 {
+    0: bv64
+}
+func f void %0:io<0,0x10> {
+    @b0
+        %1 = const 0x10000 bv64
+        hwio_w %0 3 %1
+        ret
+}

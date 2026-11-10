@@ -1,0 +1,9 @@
+# EXPECT: Vi phạm bất biến Layout (@inv)
+layout C 8 {
+    0: bv64 @inv ult val 128
+}
+func f void %0:ptr<C,1> %1:bv64 {
+    @b0
+        store %0 0 %1
+        ret
+}

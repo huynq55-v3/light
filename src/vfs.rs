@@ -70,7 +70,7 @@ pub struct VfsEntry {
     pub path_offset: u32,    // Offset trong Path String Pool
     pub path_len: u32,       // Độ dài relative path
     pub start_sec: u64,      // LBA sector bắt đầu
-    pub file_size: u32,      // Kích thước byte thực tế
+    pub file_size: u64,      // Kích thước byte thực tế (64-bit đầy đủ)
     pub flags: u32,          // Cờ trạng thái
 }
 
@@ -82,9 +82,9 @@ impl VfsEntry {
         buf[0..8].copy_from_slice(&self.short_name);
         buf[8..12].copy_from_slice(&self.path_offset.to_le_bytes());
         buf[12..16].copy_from_slice(&self.path_len.to_le_bytes());
-        buf[16..24].copy_from_slice(&self.start_sec.to_le_bytes());
-        buf[24..28].copy_from_slice(&self.file_size.to_le_bytes());
-        buf[28..32].copy_from_slice(&self.flags.to_le_bytes());
+        let sec_and_flags = (self.start_sec & 0xffff_ffff) | ((self.flags as u64) << 32);
+        buf[16..24].copy_from_slice(&sec_and_flags.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.file_size.to_le_bytes());
         buf
     }
 
@@ -101,13 +101,17 @@ impl VfsEntry {
             b.copy_from_slice(&buf[s..s + 8]);
             u64::from_le_bytes(b)
         };
+        let sec_and_flags = read_u64(16);
+        let start_sec = sec_and_flags & 0xffff_ffff;
+        let flags = (sec_and_flags >> 32) as u32;
+        let file_size = read_u64(24);
         Self {
             short_name,
             path_offset: read_u32(8),
             path_len: read_u32(12),
-            start_sec: read_u64(16),
-            file_size: read_u32(24),
-            flags: read_u32(28),
+            start_sec,
+            file_size,
+            flags,
         }
     }
 }
@@ -155,7 +159,12 @@ pub fn pack_storage_to_disk(storage_root: &Path, disk_path: &Path) -> Result<Sup
     collect_files_recursive(&storage_root.join("data"), storage_root, &mut data_list)?;
 
     apps_list.sort_by(|a, b| a.1.cmp(&b.1));
-    data_list.sort_by(|a, b| a.1.cmp(&b.1));
+    // Sắp xếp các file nhỏ (< 1GB) lên trước để LBA của các file runtime luôn nằm ở đầu đĩa (< 65536 sectors)
+    data_list.sort_by(|a, b| {
+        let size_a = fs::metadata(&a.0).map(|m| m.len()).unwrap_or(0);
+        let size_b = fs::metadata(&b.0).map(|m| m.len()).unwrap_or(0);
+        size_a.cmp(&size_b).then_with(|| a.1.cmp(&b.1))
+    });
     file_list.extend(apps_list);
     file_list.extend(data_list);
 
@@ -179,12 +188,12 @@ pub fn pack_storage_to_disk(storage_root: &Path, disk_path: &Path) -> Result<Sup
     // Data payload bắt đầu sau String Pool
     let mut cur_data_lba = pool_start_lba + min_pool_sectors;
 
-    let mut file_data_blobs = Vec::new();
+    let mut file_data_paths: Vec<(u64, PathBuf)> = Vec::new();
 
     for (abs_path, rel_path) in &file_list {
-        let content =
-            fs::read(abs_path).map_err(|e| format!("Không thể đọc {:?}: {}", abs_path, e))?;
-        let size = content.len() as u32;
+        let metadata = fs::metadata(abs_path)
+            .map_err(|e| format!("Không thể lấy thông tin {:?}: {}", abs_path, e))?;
+        let size = metadata.len();
 
         let path_offset = string_pool.len() as u32;
         let path_bytes = rel_path.as_bytes();
@@ -217,7 +226,7 @@ pub fn pack_storage_to_disk(storage_root: &Path, disk_path: &Path) -> Result<Sup
             flags,
         });
 
-        file_data_blobs.push((start_sec, content));
+        file_data_paths.push((start_sec, abs_path.clone()));
     }
 
     let needed_pool_sectors = ((string_pool.len() + SECTOR_SIZE - 1) / SECTOR_SIZE) as u64;
@@ -229,7 +238,7 @@ pub fn pack_storage_to_disk(storage_root: &Path, disk_path: &Path) -> Result<Sup
         for entry in &mut entries {
             entry.start_sec += diff;
         }
-        for (sec, _) in &mut file_data_blobs {
+        for (sec, _) in &mut file_data_paths {
             *sec += diff;
         }
         cur_data_lba += diff;
@@ -280,12 +289,25 @@ pub fn pack_storage_to_disk(storage_root: &Path, disk_path: &Path) -> Result<Sup
         .write_all(&string_pool)
         .map_err(|e| e.to_string())?;
 
-    // 5. Ghi các file data
-    for (start_sec, blob) in file_data_blobs {
+    // 5. Ghi các file data (truyền dòng trực tiếp tiết kiệm RAM tối đa, buffer 4MB siêu tốc trên NVMe)
+    let mut stream_buf = vec![0u8; 4 * 1024 * 1024];
+    for (start_sec, abs_path) in file_data_paths {
         disk_file
             .seek(SeekFrom::Start(start_sec * SECTOR_SIZE as u64))
             .map_err(|e| e.to_string())?;
-        disk_file.write_all(&blob).map_err(|e| e.to_string())?;
+        let mut src_file = File::open(&abs_path)
+            .map_err(|e| format!("Không thể mở {:?}: {}", abs_path, e))?;
+        loop {
+            let n = src_file
+                .read(&mut stream_buf)
+                .map_err(|e| format!("Lỗi đọc {:?}: {}", abs_path, e))?;
+            if n == 0 {
+                break;
+            }
+            disk_file
+                .write_all(&stream_buf[..n])
+                .map_err(|e| format!("Lỗi ghi {:?}: {}", abs_path, e))?;
+        }
     }
 
     disk_file.flush().map_err(|e| e.to_string())?;
