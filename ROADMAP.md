@@ -188,6 +188,10 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    (WRITE) -> mở lại thấy bản mới, "< Back", đèn vàng không đóng, kéo thanh tiêu đề, đèn đỏ đóng; uefi + usb; RAM 320M (App tự vẽ khung
    cũ) vẫn chạy; Terminal + Widgets; cargo test; stack-report 714 hàm.
    Còn lại: đèn vàng / xanh chưa có chức năng (chưa có thu nhỏ / phóng to); chữ vẫn là font bitmap 8x16.
+11. ~~Cửa sổ bị cắt ngang khi kéo xuống~~ (2026-11-11, người dùng thấy trên máy thật): compositor còn giới hạn vùng vẽ
+   ở `VIEW_H` = 624 (đỉnh Dock CŨ nằm trong khung nhìn). Dock nay là bảng nổi ngoài khung nhìn -> `VIEW_H` = 720; kéo /
+   phóng to bị kẹp để y + h + 6 <= 720 (cửa sổ dừng ở mép, không bị cắt). USB: khôi phục EP0 + thử lại đọc descriptor
+   cấu hình (nhánh usb-ep0-retry), dòng chẩn đoán USBC; bàn phím USB ngoài đã chạy trên máy thật.
 
 ## 📋 Tiếp theo
 

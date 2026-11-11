@@ -43,14 +43,14 @@ def WIN_H 540
 def WIN_MIN_W 300                           # kích thước App được báo: [300,1074] x [150,558]
 def WIN_MIN_H 150
 def WIN_MAX_W 1074                          # 200 + 1074 + 6 = 1280 (gfx/khung nhìn)
-def WIN_MAX_H 558                           # 60 + 558 + 6 = 624 (đỉnh Dock)
+def WIN_MAX_H 558                           # 60 + 558 + 6 = 624 (vị trí mở mặc định)
 def WIN_TITLE_H 32
 def WIN_XBTN 28                             # nút đóng (đèn đỏ kiểu macOS, u 12..23) = 28 điểm đầu thanh tiêu đề
 def WIN_GRIP 16                             # góc kéo đổi kích thước = ô 16x16 góc dưới-phải
 def WIN_MAX_X 974                           # 1280 - (300 + 6)
 def WIN_MAX_Y 590
 def VIEW_W 1280
-def VIEW_H 624
+def VIEW_H 720                              # cả khung nhìn (màn hình y 160..880; Dock nổi ở y 987+ nằm ngoài)
 def VIEW_SX 320
 def VIEW_SY 160
 
@@ -483,7 +483,7 @@ func cs_raise void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         %mw = load %w CompWin.w
         %mh = load %w CompWin.h
         %xmax = sub 1274 %mw                    # x + w + 6 <= 1280
-        %ymax = sub 618 %mh                     # y + h + 6 <= 624: cửa sổ mới không bị Dock cắt
+        %ymax = sub 714 %mh                     # y + h + 6 <= 720: cửa sổ mới nằm trọn trong khung nhìn
         %cx0 = call std_min %nx %xmax
         %cx = call std_min %cx0 WIN_MAX_X
         %cy0 = call std_min %ny %ymax
@@ -620,7 +620,7 @@ func comp_shade void %view:ptr<VgaCell,1382400> %y:bv64 %xs:bv64 %xe:bv64 %cx1:b
 }
 
 # Vẽ cửa sổ của surface %surf đặt tại (wx, wy), phủ ew x eh (kể 6 điểm bóng đổ), vào khung nhìn %view, chỉ trong
-# [x1,x2) x [y1,y2) (cắt thêm theo khung nhìn 1280 x 624: không bao giờ đè Dock).
+# [x1,x2) x [y1,y2) (cắt thêm theo khung nhìn 1280 x 720).
 # 4 góc bo tròn (bán kính 8): điểm ngoài góc KHÔNG vẽ -> lộ cảnh bên dưới. %shade = 1 (chỉ khi vẽ lại cảnh từ nền):
 # bóng mềm phải + dưới (lệch 4 điểm) = làm tối cảnh bên dưới 3 mức; vẽ vùng bẩn của App (shade = 0) không đụng bóng
 # để không làm tối dồn nhiều lần.
@@ -1170,7 +1170,7 @@ func cs_drag_tick void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,
         %rs = cmp ne %mode 0
         br %rs @resize @pos
     @resize
-        # đề nghị kích thước = chuột - góc trên-trái, kẹp [300, 1274-x] x [150, 558]; App quyết định có nhận không
+        # đề nghị kích thước = chuột - góc trên-trái, kẹp [300, 1274-x] x [150, min(558, 714-y)]; App quyết định có nhận không
         %rsx = load %g IpcChannel.scr_x
         %rsy = load %g IpcChannel.scr_y
         %rox = add %wx VIEW_SX
@@ -1183,7 +1183,9 @@ func cs_drag_tick void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,
         %roy = add %wy VIEW_SY
         %rby = call std_max %rsy %roy
         %ph0 = sub %rby %roy
-        %ph1 = call std_min %ph0 WIN_MAX_H
+        %ph2 = call std_min %ph0 WIN_MAX_H
+        %phmax = sub 714 %wy                    # y + h + 6 <= 720: phóng to không tràn mép dưới khung nhìn
+        %ph1 = call std_min %ph2 %phmax
         %ph = call std_max %ph1 WIN_MIN_H
         %ch = call cs_chan %chs %slot
         %qw = load %ch IpcChannel.cfg_w
@@ -1203,7 +1205,8 @@ func cs_drag_tick void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,
         %gy = load %c CompCtl.gy
         %sx = load %g IpcChannel.scr_x
         %sy = load %g IpcChannel.scr_y
-        # vị trí mới = (chuột trên khung nhìn - chỗ nắm), kẹp trong [0, 1274-w] x [0, 590]
+        # vị trí mới = (chuột trên khung nhìn - chỗ nắm), kẹp trong [0, 1274-w] x [0, 714-h]: cả cửa sổ + bóng luôn
+        # nằm trong khung nhìn (kéo xuống quá thì dừng ở mép, không bị cắt ngang)
         %ox = add %gx VIEW_SX
         %bx = call std_max %sx %ox
         %nx0 = sub %bx %ox
@@ -1213,7 +1216,9 @@ func cs_drag_tick void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,
         %oy = add %gy VIEW_SY
         %by = call std_max %sy %oy
         %ny0 = sub %by %oy
-        %ny = call std_min %ny0 WIN_MAX_Y
+        %ymax = sub 714 %wh
+        %ny1 = call std_min %ny0 %ymax
+        %ny = call std_min %ny1 WIN_MAX_Y
         %sx_ = cmp eq %nx %wx
         %sy_ = cmp eq %ny %wy
         %same = and %sx_ %sy_
