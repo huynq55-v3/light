@@ -16,20 +16,14 @@ func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64>
         call drv_kbd_init %0 %1
         call usb_init %0
 
-        %6 = const 0 bv64
-        call blk_read_sector %0 %2 %6
-
-        %7 = const 2 bv64
-        %8 = call cap_state_get %2 %7
-        %9 = const 0xffffff bv64
-        %10 = and %8 %9
-
-        %11 = const 4 bv64
-        %12 = call cap_state_get %2 %11
-        %13 = and %12 %9
-
-        call blk_read_sector %0 %2 %10
-        call blk_read_sector %0 %3 %13
+        # Gắn LightFS (mã gắn -> HW[33] để chẩn đoán) và gán các App trong apps/ vào slot Dock
+        %6 = call lfs_mount %0
+        %7 = const 33 bv64
+        call hw_set %0 %7 %6
+        call lfs_scan_apps %0
+        %8 = const 0 bv64
+        call std_mem_zero %2
+        call std_mem_zero %3
 
         %14 = const 79 bv8
         %15 = const 75 bv8

@@ -1,0 +1,1326 @@
+# File: lit_program/os/lightfs.lit
+# LightFS phía Kernel: gắn hệ tệp lúc boot, phục vụ yêu cầu file của App (copy-on-write), nạp App từ thư mục apps/.
+# Định dạng đĩa và giao thức IPC: xem lib/lightfs_api.lit và src/lightfs.rs.
+#
+# Thứ tự ghi copy-on-write (mất điện ở BẤT KỲ đâu vẫn còn nguyên bản cũ hoặc bản mới):
+#   dữ liệu -> khối trống  ->  flush  ->  bảng mới -> vùng không hoạt động  ->  flush  ->  bản ghi commit thế hệ+1
+#   -> slot (thế hệ+1) % 2  ->  flush. Lúc gắn: chọn commit hợp lệ có thế hệ cao nhất mà checksum bảng khớp.
+#
+# Bộ nhớ Kernel (PD_0[11], 0x1600000..0x17fffff):
+#   0x1600000  ST  ptr<DiskQword,64>: 0 đã gắn  1 thế hệ  2 vùng bảng (0/1)  3 số khối dữ liệu  4 tổng sector
+#              5 mã gắn (0 OK, 1 không có đĩa/magic, 2 header hỏng, 3 không có commit hợp lệ, 4 bảng hỏng)
+#              16..22 kết quả yêu cầu gần nhất của App slot 0..6   24..30 id file App của slot 0..6 cộng 1 (0 = trống)
+#   0x1601000  TAB ptr<DiskQword,4096>: bảng file hiện hành (256 mục x 16 qword)
+#   0x1650000  SEC ptr<DiskQword,64>: sector tạm (header, bản ghi commit)
+
+include ../lib/lightfs_api.lit
+include ../lib/cap_mem.lit
+include ../drivers/blk.lit
+
+def LFS_DATA_LBA 136
+def LFS_MAX_BLOCKS 0x200000
+def LFS_STATE_SECS 61376
+
+func lfs_st ptr<DiskQword,64> %0:io<0,0xffff> {
+    @ens uge %1 0x10000
+    @ens ult %1 0x10000000000
+
+    @b0
+        %1 = const 0x1600000 ptr<DiskQword,64>
+        ret %1
+}
+
+func lfs_tab ptr<DiskQword,4096> %0:io<0,0xffff> {
+    @ens uge %1 0x10000
+    @ens ult %1 0x10000000000
+
+    @b0
+        %1 = const 0x1601000 ptr<DiskQword,4096>
+        ret %1
+}
+
+func lfs_sec ptr<DiskQword,64> %0:io<0,0xffff> {
+    @ens uge %1 0x10000
+    @ens ult %1 0x10000000000
+
+    @b0
+        %1 = const 0x1650000 ptr<DiskQword,64>
+        ret %1
+}
+
+func lfs_sget bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 64
+
+    @b0
+        %2 = call lfs_st %0
+        %3 = slice %2 %1 ptr<DiskQword,1>
+        %4 = load %3 0 bv64
+        ret %4
+}
+
+func lfs_sset void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 64
+
+    @b0
+        %3 = call lfs_st %0
+        %4 = slice %3 %1 ptr<DiskQword,1>
+        store %4 0 %2
+        ret
+}
+
+func lfs_q64 bv64 %0:ptr<DiskQword,64> %1:bv64 {
+    @req ult %1 64
+
+    @b0
+        %2 = slice %0 %1 ptr<DiskQword,1>
+        %3 = load %2 0 bv64
+        ret %3
+}
+
+func lfs_err bv64 %0:bv64 {
+    @req ult %0 64
+
+    @b0
+        %1 = const 0x8000000000000000 bv64
+        %2 = or %1 %0
+        ret %2
+}
+
+# Đọc/ghi một sector vào SEC
+func lfs_sec_rw void %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req ult %1 0x100000000
+
+    @b0
+        %3 = call lfs_sec %0
+        %4 = const 64 bv64
+        %5 = const 1 bv64
+        call blk_rw_dyn %0 %4 %3 %1 %5 %2
+        ret
+}
+
+# Đọc bản ghi commit ở slot %1 (0/1) vào ST[8+4s..]: hợp lệ, thế hệ, vùng, checksum bảng
+func lfs_read_commit void %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 2
+
+    @b0
+        %2 = const 1 bv64
+        %3 = add %2 %1
+        %4 = const 0 bv64
+        call lfs_sec_rw %0 %3 %4
+        %5 = call lfs_sec %0
+        %6 = const 7 bv64
+        %7 = const LFS_FNV bv64
+        %8 = call lfs_cks %6 %5 %7
+        %9 = call lfs_q64 %5 %4
+        %10 = call lfs_q64 %5 %2
+        %11 = const 2 bv64
+        %12 = call lfs_q64 %5 %11
+        %13 = const 3 bv64
+        %14 = call lfs_q64 %5 %13
+        %15 = call lfs_q64 %5 %6
+        %16 = const 0x54494d4f4353464c bv64 # "LFSCOMIT"
+        %17 = cmp eq %9 %16
+        %18 = cmp eq %15 %8
+        %19 = cmp ule %12 %2
+        %20 = const 0x1000000000000000 bv64
+        %21 = cmp ult %10 %20
+        %22 = and %17 %18
+        %23 = and %19 %21
+        %24 = and %22 %23
+        %25 = const 4 bv64
+        %26 = mul %1 %25
+        %27 = const 8 bv64
+        %28 = add %27 %26
+        br %24 @b1 @b2
+
+    @b1
+        call lfs_sset %0 %28 %2
+        jmp @b3
+
+    @b2
+        call lfs_sset %0 %28 %4
+        jmp @b3
+
+    @b3
+        %29 = add %28 %2
+        call lfs_sset %0 %29 %10
+        %30 = add %29 %2
+        call lfs_sset %0 %30 %12
+        %31 = add %30 %2
+        call lfs_sset %0 %31 %14
+        ret
+}
+
+# Thử nạp bảng từ commit slot %1 (đã đọc bằng lfs_read_commit): 1 nếu hợp lệ và checksum bảng khớp
+func lfs_try_slot bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 2
+    @ens ule %30 1
+
+    @b0
+        %2 = const 4 bv64
+        %3 = mul %1 %2
+        %4 = const 8 bv64
+        %5 = add %4 %3
+        %6 = call lfs_sget %0 %5
+        %7 = const 0 bv64
+        %8 = cmp eq %6 %7
+        br %8 @b9 @b1
+
+    @b1
+        %9 = const 2 bv64
+        %10 = add %5 %9
+        %11 = call lfs_sget %0 %10          # vùng
+        %12 = const 1 bv64
+        %13 = and %11 %12
+        %14 = const 64 bv64
+        %15 = mul %13 %14
+        %16 = const 8 bv64
+        %17 = add %16 %15                   # LBA vùng = 8 + 64 * vùng
+        %18 = call lfs_tab %0
+        %19 = const 4096 bv64
+        call blk_rw_dyn %0 %19 %18 %17 %14 %7
+        %20 = const LFS_FNV bv64
+        %21 = call lfs_cks %19 %18 %20
+        %22 = const 3 bv64
+        %23 = add %5 %22
+        %24 = call lfs_sget %0 %23
+        %25 = cmp eq %21 %24
+        br %25 @b2 @b9
+
+    @b2
+        # Bảng hợp lệ: ghi nhận thế hệ và vùng
+        %26 = add %5 %12
+        %27 = call lfs_sget %0 %26
+        call lfs_sset %0 %12 %27
+        %28 = const 2 bv64
+        call lfs_sset %0 %28 %13
+        jmp @b10 %12
+
+    @b9
+        jmp @b10 %7
+
+    @b10 %30:bv64
+        @inv ule %30 1
+        ret %30
+}
+
+# Gắn hệ tệp. Trả mã gắn (ST[5]).
+func lfs_mount bv64 %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        %3 = const 5 bv64
+        call lfs_sset %0 %1 %1
+        call lfs_sset %0 %3 %2
+        %4 = call blk_backend %0
+        %5 = cmp eq %4 %1
+        br %5 @b90 @b1
+
+    @b1
+        call lfs_sec_rw %0 %1 %1
+        %6 = call lfs_sec %0
+        %7 = call lfs_q64 %6 %1
+        %8 = const 0x315346544847494c bv64 # "LIGHTFS1"
+        %9 = cmp eq %7 %8
+        br %9 @b2 @b90
+
+    @b2
+        %10 = const 7 bv64
+        %11 = const LFS_FNV bv64
+        %12 = call lfs_cks %10 %6 %11
+        %13 = call lfs_q64 %6 %10
+        %14 = call lfs_q64 %6 %2            # phiên bản
+        %15 = const 2 bv64
+        %16 = call lfs_q64 %6 %15           # tổng sector
+        %17 = const 3 bv64
+        %18 = call lfs_q64 %6 %17
+        %19 = const 4 bv64
+        %20 = call lfs_q64 %6 %19
+        %21 = call lfs_q64 %6 %3
+        %22 = const 6 bv64
+        %23 = call lfs_q64 %6 %22
+        %24 = cmp eq %12 %13
+        %25 = cmp eq %14 %2
+        %26 = const 64 bv64
+        %27 = cmp eq %18 %26
+        %28 = const 8 bv64
+        %29 = cmp eq %20 %28
+        %30 = const 72 bv64
+        %31 = cmp eq %21 %30
+        %32 = const LFS_DATA_LBA bv64
+        %33 = cmp eq %23 %32
+        %34 = cmp uge %16 %32
+        %35 = const 0x100000000 bv64
+        %36 = cmp ult %16 %35
+        %37 = and %24 %25
+        %38 = and %27 %29
+        %39 = and %31 %33
+        %40 = and %34 %36
+        %41 = and %37 %38
+        %42 = and %39 %40
+        %43 = and %41 %42
+        br %43 @b3 @b91
+
+    @b3
+        # NVMe: tổng sector không được vượt phân vùng
+        %44 = const 2 bv64
+        %45 = cmp eq %4 %44
+        %46 = const 18 bv64
+        %47 = call hw_get %0 %46
+        %48 = cmp ugt %16 %47
+        %49 = and %45 %48
+        br %49 @b91 @b4
+
+    @b4
+        %50 = sub %16 %32
+        %51 = const 3 bv64
+        %52 = lshr %50 %51
+        %53 = const LFS_MAX_BLOCKS bv64
+        %54 = call std_min %52 %53
+        call lfs_sset %0 %17 %54
+        call lfs_sset %0 %19 %16
+        call lfs_read_commit %0 %1
+        call lfs_read_commit %0 %2
+        # Slot có thế hệ cao hơn thử trước
+        %55 = const 9 bv64
+        %56 = call lfs_sget %0 %55
+        %57 = const 13 bv64
+        %58 = call lfs_sget %0 %57
+        %59 = cmp uge %56 %58
+        br %59 @b5 @b6
+
+    @b5
+        jmp @b7 %1 %2
+
+    @b6
+        jmp @b7 %2 %1
+
+    @b7 %60:bv64 %61:bv64
+        @inv ult %60 2
+        @inv ult %61 2
+        %62 = call lfs_try_slot %0 %60
+        %63 = cmp ne %62 %1
+        br %63 @b8 @b71
+
+    @b71
+        %64 = call lfs_try_slot %0 %61
+        %65 = cmp ne %64 %1
+        br %65 @b8 @b92
+
+    @b8
+        # Mục 0 phải là thư mục gốc
+        %66 = call lfs_tab %0
+        %67 = call lfs_is_dir %66 %1
+        %68 = cmp ne %67 %1
+        br %68 @b81 @b93
+
+    @b81
+        call lfs_sset %0 %1 %2
+        call lfs_sset %0 %3 %1
+        jmp @b99
+
+    @b90
+        jmp @b99
+
+    @b91
+        %70 = const 2 bv64
+        call lfs_sset %0 %3 %70
+        jmp @b99
+
+    @b92
+        %71 = const 3 bv64
+        call lfs_sset %0 %3 %71
+        jmp @b99
+
+    @b93
+        %72 = const 4 bv64
+        call lfs_sset %0 %3 %72
+        jmp @b99
+
+    @b99
+        %73 = call lfs_sget %0 %3
+        ret %73
+}
+
+# Ghi bảng TAB thành thế hệ mới (gọi sau khi dữ liệu đã được ghi)
+func lfs_commit void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        %3 = const 2 bv64
+        call blk_flush %0
+        %4 = call lfs_sget %0 %3
+        %5 = xor %4 %2
+        %6 = and %5 %2                      # vùng mới = 1 - vùng cũ
+        %7 = const 64 bv64
+        %8 = mul %6 %7
+        %9 = const 8 bv64
+        %10 = add %9 %8
+        %11 = call lfs_tab %0
+        %12 = const 4096 bv64
+        call blk_rw_dyn %0 %12 %11 %10 %7 %2
+        call blk_flush %0
+        %13 = const LFS_FNV bv64
+        %14 = call lfs_cks %12 %11 %13
+        %15 = call lfs_sget %0 %2
+        %16 = const 0x1000000000000000 bv64
+        %17 = call std_min %15 %16
+        %18 = add %17 %2                    # thế hệ mới
+        %19 = call lfs_sec %0
+        call std_mem_zero %19
+        %20 = const 0x54494d4f4353464c bv64
+        call cap_state_set %19 %1 %20
+        call cap_state_set %19 %2 %18
+        call cap_state_set %19 %3 %6
+        %21 = const 3 bv64
+        call cap_state_set %19 %21 %14
+        %22 = const 7 bv64
+        %23 = call lfs_cks %22 %19 %13
+        call cap_state_set %19 %22 %23
+        %24 = and %18 %2
+        %25 = add %24 %2                    # slot = 1 + thế hệ % 2
+        call lfs_sec_rw %0 %25 %2
+        call blk_flush %0
+        call lfs_sset %0 %2 %18
+        call lfs_sset %0 %3 %6
+        ret
+}
+
+# Giá trị kẹp <= 2^21 của qword k mục i (dùng cho phép toán khối, chống tràn khi bảng bị sửa bậy)
+func lfs_tclamp bv64 %0:ptr<DiskQword,4096> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ult %1 256
+    @req ult %2 16
+    @ens ule %5 0x200000
+
+    @b0
+        %3 = call lfs_tget %0 %1 %2
+        %4 = const LFS_MAX_BLOCKS bv64
+        %5 = call std_min %3 %4
+        ret %5
+}
+
+# Nếu có file chiếm khối trong [%1, %1 + %2): trả khối ngay sau extent đó (> %1), ngược lại 0
+func lfs_overlap bv64 %0:ptr<DiskQword,4096> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 0x400000
+    @req ule %2 0x200000
+    @ens ule %30 0x400000
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 1 bv64
+        %5 = add %1 %2
+        jmp @b1 %3
+
+    @b1 %6:bv64
+        @inv ule %6 256
+        %7 = const 256 bv64
+        %8 = cmp ult %6 %7
+        br %8 @b2 @b8
+
+    @b2
+        %9 = call lfs_is_file %0 %6
+        %10 = const 3 bv64
+        %11 = call lfs_tclamp %0 %6 %10     # khối đầu
+        %12 = const 4 bv64
+        %13 = call lfs_tclamp %0 %6 %12     # số khối
+        %14 = add %11 %13
+        %15 = cmp ne %9 %3
+        %16 = cmp ne %13 %3
+        %17 = cmp ult %11 %5
+        %18 = cmp ult %1 %14
+        %19 = and %15 %16
+        %20 = and %17 %18
+        %21 = and %19 %20
+        br %21 @b3 @b4
+
+    @b3
+        jmp @b9 %14
+
+    @b4
+        %22 = add %6 %4
+        jmp @b1 %22
+
+    @b8
+        jmp @b9 %3
+
+    @b9 %30:bv64
+        @inv ule %30 0x400000
+        ret %30
+}
+
+# Cấp %1 khối liên tiếp (first-fit) trong %2 khối dữ liệu: trả khối đầu, hoặc bit 63 nếu hết chỗ
+func lfs_alloc bv64 %0:ptr<DiskQword,4096> %1:bv64 %2:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @req ule %1 0x200000
+    @req ule %2 0x200000
+
+    @b0
+        %3 = const 0 bv64
+        %4 = const 1 bv64
+        %5 = const 0x8000000000000000 bv64
+        jmp @b1 %3 %3
+
+    @b1 %6:bv64 %7:bv64
+        # %6: khối ứng viên, %7: số lần dời (mỗi lần vượt qua một extent, tối đa 256)
+        @inv ule %6 0x400000
+        @inv ule %7 300
+        %8 = const 300 bv64
+        %9 = cmp ult %7 %8
+        %10 = add %6 %1
+        %11 = cmp ule %10 %2
+        %12 = and %9 %11
+        br %12 @b2 @b8
+
+    @b2
+        %13 = call lfs_overlap %0 %6 %1
+        %14 = cmp eq %13 %3
+        br %14 @b3 @b4
+
+    @b3
+        jmp @b9 %6
+
+    @b4
+        %15 = add %7 %4
+        jmp @b1 %13 %15
+
+    @b8
+        jmp @b9 %5
+
+    @b9 %20:bv64
+        ret %20
+}
+
+# Mục %1 hợp lệ để đọc: extent nằm trong vùng dữ liệu và đủ chỗ cho kích thước. 1 nếu đúng.
+func lfs_extent_ok bv64 %0:io<0,0xffff> %1:ptr<DiskQword,4096> %2:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+    @req ult %2 256
+    @ens ule %20 1
+
+    @b0
+        %3 = const 2 bv64
+        %4 = call lfs_tget %1 %2 %3         # kích thước
+        %5 = const 3 bv64
+        %6 = call lfs_tget %1 %2 %5
+        %7 = const 4 bv64
+        %8 = call lfs_tget %1 %2 %7
+        %9 = call lfs_sget %0 %5            # số khối dữ liệu
+        %10 = const LFS_MAX_BLOCKS bv64
+        %11 = cmp ule %6 %10
+        %12 = cmp ule %8 %10
+        %13 = and %11 %12
+        br %13 @b1 @b8
+
+    @b1
+        %14 = add %6 %8
+        %15 = cmp ule %14 %9
+        %16 = const 12 bv64
+        %17 = shl %8 %16                    # byte của extent (< 2^34)
+        %18 = cmp ule %4 %17
+        %19 = and %15 %18
+        br %19 @b2 @b8
+
+    @b2
+        %21 = const 1 bv64
+        jmp @b9 %21
+
+    @b8
+        %22 = const 0 bv64
+        jmp @b9 %22
+
+    @b9 %20:bv64
+        @inv ule %20 1
+        ret %20
+}
+
+# READ: file %1 -> State của App từ sector %2. Trả kích thước hoặc lỗi.
+func lfs_op_read bv64 %0:io<0,0xffff> %1:ptr<DiskQword,3932160> %2:bv64 %3:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %4 = call lfs_tab %0
+        %5 = const 256 bv64
+        %6 = cmp ult %2 %5
+        br %6 @b1 @b80
+
+    @b1
+        %7 = call lfs_is_file %4 %2
+        %8 = const 0 bv64
+        %9 = cmp ne %7 %8
+        br %9 @b2 @b81
+
+    @b2
+        %10 = call lfs_extent_ok %0 %4 %2
+        %11 = cmp ne %10 %8
+        br %11 @b3 @b83
+
+    @b3
+        %12 = const 2 bv64
+        %13 = call lfs_tget %4 %2 %12
+        %130 = const 0x400000000 bv64
+        %131 = call std_min %13 %130        # lfs_extent_ok đã bảo đảm kích thước <= 2^33
+        %14 = const 511 bv64
+        %15 = add %131 %14
+        %16 = const 9 bv64
+        %17 = lshr %15 %16                  # số sector (<= 2^25)
+        %18 = const LFS_STATE_SECS bv64
+        %19 = cmp ule %3 %18
+        br %19 @b4 @b82
+
+    @b4
+        %20 = sub %18 %3
+        %21 = cmp ule %17 %20
+        br %21 @b5 @b82
+
+    @b5
+        %22 = const 6 bv64
+        %23 = shl %3 %22                    # qword đầu trong State
+        %24 = shl %17 %22                   # số qword dữ liệu
+        %25 = slice %1 %23 ptr<DiskQword,%24>
+        %26 = const 3 bv64
+        %27 = call lfs_tclamp %4 %2 %26
+        %28 = const 3 bv64
+        %29 = shl %27 %28
+        %30 = const LFS_DATA_LBA bv64
+        %31 = add %30 %29
+        call blk_rw_dyn %0 %24 %25 %31 %17 %8
+        %32 = const LFS_FNV bv64
+        %33 = call lfs_cks %24 %25 %32
+        %34 = const 5 bv64
+        %35 = call lfs_tget %4 %2 %34
+        %36 = cmp eq %33 %35
+        br %36 @b6 @b83
+
+    @b6
+        ret %13
+
+    @b80
+        %40 = const 2 bv64
+        %41 = call lfs_err %40
+        ret %41
+
+    @b81
+        %42 = const 3 bv64
+        %43 = call lfs_err %42
+        ret %43
+
+    @b82
+        %44 = const 4 bv64
+        %45 = call lfs_err %44
+        ret %45
+
+    @b83
+        %46 = const 8 bv64
+        %47 = call lfs_err %46
+        ret %47
+}
+
+# Xóa các byte từ vị trí %2 đến hết sector chứa nó trong vùng %1 (đệm 0 cho sector cuối của file)
+func lfs_zero_tail void %0:bv64 %1:ptr<DiskQword,%0> %2:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+    @req ult %2 0x100000000
+    @req ule %0 0x10000000
+
+    @b0
+        %3 = const 3 bv64
+        %4 = lshr %2 %3                     # qword chứa byte %2
+        %5 = const 7 bv64
+        %6 = and %2 %5
+        %7 = const 0 bv64
+        %8 = cmp ne %6 %7
+        %9 = cmp ult %4 %0
+        %10 = and %8 %9
+        br %10 @b1 @b2
+
+    @b1
+        %11 = slice %1 %4 ptr<DiskQword,1>
+        %12 = load %11 0 bv64
+        %13 = shl %6 %3                     # số bit giữ lại
+        %14 = const 64 bv64
+        %15 = sub %14 %13
+        %16 = const 0xffffffffffffffff bv64
+        %17 = lshr %16 %15
+        %18 = and %12 %17
+        store %11 0 %18
+        %19 = const 1 bv64
+        %20 = add %4 %19
+        jmp @b3 %20
+
+    @b2
+        jmp @b3 %4
+
+    @b3 %21:bv64
+        @inv ule %21 0x20000000
+        %22 = const 63 bv64
+        %23 = add %21 %22
+        %24 = const 0xffffffffffffffc0 bv64
+        %25 = and %23 %24                   # cuối sector (qword)
+        %26 = call std_min %25 %0
+        jmp @b4 %21
+
+    @b4 %27:bv64
+        @inv ule %27 0x20000000
+        %28 = cmp ult %27 %26
+        br %28 @b5 @b6
+
+    @b5
+        %29 = slice %1 %27 ptr<DiskQword,1>
+        store %29 0 %7
+        %30 = const 1 bv64
+        %31 = add %27 %30
+        jmp @b4 %31
+
+    @b6
+        ret
+}
+
+# WRITE: thay toàn bộ nội dung file %2 bằng %4 byte trong State của App từ sector %3 (copy-on-write)
+func lfs_op_write bv64 %0:io<0,0xffff> %1:ptr<DiskQword,3932160> %2:bv64 %3:bv64 %4:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %5 = call lfs_tab %0
+        %6 = const 0 bv64
+        %7 = const 256 bv64
+        %8 = cmp ult %2 %7
+        br %8 @b1 @b80
+
+    @b1
+        %9 = call lfs_is_file %5 %2
+        %10 = call lfs_tget %5 %2 %6
+        %11 = const 4 bv64
+        %12 = and %10 %11                   # file App: không cho App ghi đè mã của App khác
+        %13 = cmp ne %9 %6
+        %14 = cmp eq %12 %6
+        %15 = and %13 %14
+        br %15 @b2 @b81
+
+    @b2
+        %16 = const LFS_STATE_SECS bv64
+        %17 = cmp ule %3 %16
+        %18 = const 0x2000000 bv64
+        %19 = cmp ult %4 %18
+        %20 = and %17 %19
+        br %20 @b3 @b82
+
+    @b3
+        %21 = const 511 bv64
+        %22 = add %4 %21
+        %23 = const 9 bv64
+        %24 = lshr %22 %23                  # số sector
+        %25 = sub %16 %3
+        %26 = cmp ule %24 %25
+        br %26 @b4 @b82
+
+    @b4
+        %27 = const 7 bv64
+        %28 = add %24 %27
+        %29 = const 3 bv64
+        %30 = lshr %28 %29                  # số khối
+        %31 = call lfs_sget %0 %29          # số khối dữ liệu
+        %32 = const LFS_MAX_BLOCKS bv64
+        %33 = call std_min %31 %32
+        %34 = call lfs_alloc %5 %30 %33
+        %35 = const 63 bv64
+        %36 = lshr %34 %35
+        %37 = cmp eq %36 %6
+        br %37 @b5 @b83
+
+    @b5
+        %38 = const 6 bv64
+        %39 = shl %3 %38
+        %40 = shl %24 %38
+        %41 = slice %1 %39 ptr<DiskQword,%40>
+        call lfs_zero_tail %40 %41 %4
+        %42 = const 0x400000 bv64
+        %43 = call std_min %34 %42
+        %44 = shl %43 %29
+        %45 = const LFS_DATA_LBA bv64
+        %46 = add %45 %44
+        %47 = const 1 bv64
+        call blk_rw_dyn %0 %40 %41 %46 %24 %47
+        %48 = const LFS_FNV bv64
+        %49 = call lfs_cks %40 %41 %48
+        %50 = const 2 bv64
+        call lfs_tset %5 %2 %50 %4
+        %51 = const 3 bv64
+        call lfs_tset %5 %2 %51 %43
+        %52 = const 4 bv64
+        call lfs_tset %5 %2 %52 %30
+        %53 = const 5 bv64
+        call lfs_tset %5 %2 %53 %49
+        %54 = call lfs_sget %0 %47
+        %55 = const 0x1000000000000000 bv64
+        %56 = call std_min %54 %55
+        %57 = add %56 %47
+        %58 = const 6 bv64
+        call lfs_tset %5 %2 %58 %57
+        call lfs_commit %0
+        ret %4
+
+    @b80
+        %60 = const 2 bv64
+        %61 = call lfs_err %60
+        ret %61
+
+    @b81
+        %62 = const 3 bv64
+        %63 = call lfs_err %62
+        ret %63
+
+    @b82
+        %64 = const 4 bv64
+        %65 = call lfs_err %64
+        ret %65
+
+    @b83
+        %66 = const 5 bv64
+        %67 = call lfs_err %66
+        ret %67
+}
+
+# Mục trống đầu tiên 1..255, hoặc 0 nếu bảng đầy
+func lfs_free_entry bv64 %0:ptr<DiskQword,4096> {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @ens ult %20 256
+
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        jmp @b1 %2
+
+    @b1 %3:bv64
+        @inv uge %3 1
+        @inv ule %3 256
+        %4 = const 256 bv64
+        %5 = cmp ult %3 %4
+        br %5 @b2 @b8
+
+    @b2
+        %6 = call lfs_tget %0 %3 %1
+        %7 = and %6 %2
+        %8 = cmp eq %7 %1
+        br %8 @b3 @b4
+
+    @b3
+        jmp @b9 %3
+
+    @b4
+        %9 = add %3 %2
+        jmp @b1 %9
+
+    @b8
+        jmp @b9 %1
+
+    @b9 %20:bv64
+        @inv ult %20 256
+        ret %20
+}
+
+# CREATE: mục mới tên = 8 qword tại sector %3 của State, trong thư mục %2; %4 bit 1 = thư mục. Trả id mới.
+func lfs_op_create bv64 %0:io<0,0xffff> %1:ptr<DiskQword,3932160> %2:bv64 %3:bv64 %4:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %5 = call lfs_tab %0
+        %6 = const 0 bv64
+        %7 = const 256 bv64
+        %8 = cmp ult %2 %7
+        br %8 @b1 @b80
+
+    @b1
+        %9 = call lfs_is_dir %5 %2
+        %10 = cmp ne %9 %6
+        br %10 @b2 @b81
+
+    @b2
+        %11 = const LFS_STATE_SECS bv64
+        %12 = cmp ult %3 %11
+        br %12 @b3 @b82
+
+    @b3
+        %13 = const 6 bv64
+        %14 = shl %3 %13
+        %15 = slice %1 %14 ptr<DiskQword,8>
+        %16 = call lfs_name_ok %15
+        %17 = call lfs_find_child %5 %2 %15
+        %18 = cmp ne %16 %6
+        %19 = cmp eq %17 %6
+        %20 = and %18 %19
+        br %20 @b4 @b84
+
+    @b4
+        %21 = call lfs_free_entry %5
+        %22 = cmp ne %21 %6
+        br %22 @b5 @b83
+
+    @b5
+        %23 = const 1 bv64
+        %24 = const 2 bv64
+        %25 = and %4 %24
+        %26 = or %25 %23
+        call lfs_tset %5 %21 %6 %26
+        call lfs_tset %5 %21 %23 %2
+        call lfs_tset %5 %21 %24 %6
+        %27 = const 3 bv64
+        call lfs_tset %5 %21 %27 %6
+        %28 = const 4 bv64
+        call lfs_tset %5 %21 %28 %6
+        %29 = const 5 bv64
+        %30 = const LFS_FNV bv64
+        call lfs_tset %5 %21 %29 %30
+        %31 = call lfs_sget %0 %23
+        %32 = const 0x1000000000000000 bv64
+        %33 = call std_min %31 %32
+        %34 = add %33 %23
+        %35 = const 6 bv64
+        call lfs_tset %5 %21 %35 %34
+        %36 = const 7 bv64
+        call lfs_tset %5 %21 %36 %6
+        jmp @b6 %6
+
+    @b6 %37:bv64
+        @inv ule %37 8
+        %38 = const 8 bv64
+        %39 = cmp ult %37 %38
+        br %39 @b7 @b10
+
+    @b7
+        %40 = slice %15 %37 ptr<DiskQword,1>
+        %41 = load %40 0 bv64
+        %42 = add %37 %38
+        call lfs_tset %5 %21 %42 %41
+        %43 = const 1 bv64
+        %44 = add %37 %43
+        jmp @b6 %44
+
+    @b10
+        call lfs_commit %0
+        ret %21
+
+    @b80
+        %60 = const 2 bv64
+        %61 = call lfs_err %60
+        ret %61
+
+    @b81
+        %62 = const 3 bv64
+        %63 = call lfs_err %62
+        ret %63
+
+    @b82
+        %64 = const 4 bv64
+        %65 = call lfs_err %64
+        ret %65
+
+    @b83
+        %66 = const 6 bv64
+        %67 = call lfs_err %66
+        ret %67
+
+    @b84
+        %68 = const 7 bv64
+        %69 = call lfs_err %68
+        ret %69
+}
+
+# 1 nếu thư mục %1 còn mục con
+func lfs_has_child bv64 %0:ptr<DiskQword,4096> %1:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x10000000000
+    @ens ule %20 1
+
+    @b0
+        %2 = const 0 bv64
+        %3 = const 1 bv64
+        jmp @b1 %2
+
+    @b1 %4:bv64
+        @inv ule %4 256
+        %5 = const 256 bv64
+        %6 = cmp ult %4 %5
+        br %6 @b2 @b8
+
+    @b2
+        %7 = call lfs_tget %0 %4 %2
+        %8 = and %7 %3
+        %9 = call lfs_tget %0 %4 %3
+        %10 = cmp ne %8 %2
+        %11 = cmp eq %9 %1
+        %12 = cmp ne %4 %2
+        %13 = and %10 %11
+        %14 = and %13 %12
+        br %14 @b3 @b4
+
+    @b3
+        jmp @b9 %3
+
+    @b4
+        %15 = add %4 %3
+        jmp @b1 %15
+
+    @b8
+        jmp @b9 %2
+
+    @b9 %20:bv64
+        @inv ule %20 1
+        ret %20
+}
+
+# DELETE: xóa mục %1 (không phải gốc, không phải App, thư mục phải rỗng)
+func lfs_op_delete bv64 %0:io<0,0xffff> %1:bv64 {
+    @b0
+        %2 = call lfs_tab %0
+        %3 = const 0 bv64
+        %4 = const 1 bv64
+        %5 = const 256 bv64
+        %6 = cmp ult %1 %5
+        %7 = cmp ne %1 %3
+        %8 = and %6 %7
+        br %8 @b1 @b80
+
+    @b1
+        %9 = call lfs_tget %2 %1 %3
+        %10 = and %9 %4
+        %11 = const 4 bv64
+        %12 = and %9 %11
+        %13 = cmp ne %10 %3
+        %14 = cmp eq %12 %3
+        %15 = and %13 %14
+        br %15 @b2 @b81
+
+    @b2
+        %16 = call lfs_has_child %2 %1
+        %17 = cmp eq %16 %3
+        br %17 @b3 @b84
+
+    @b3
+        jmp @b4 %3
+
+    @b4 %18:bv64
+        @inv ule %18 16
+        %19 = const 16 bv64
+        %20 = cmp ult %18 %19
+        br %20 @b5 @b6
+
+    @b5
+        call lfs_tset %2 %1 %18 %3
+        %21 = add %18 %4
+        jmp @b4 %21
+
+    @b6
+        call lfs_commit %0
+        ret %3
+
+    @b80
+        %60 = const 2 bv64
+        %61 = call lfs_err %60
+        ret %61
+
+    @b81
+        %62 = const 3 bv64
+        %63 = call lfs_err %62
+        ret %63
+
+    @b84
+        %64 = const 9 bv64
+        %65 = call lfs_err %64
+        ret %65
+}
+
+# Chép bảng hiện hành vào State của App (qword LFS_TAB_Q)
+func lfs_copy_table void %0:io<0,0xffff> %1:ptr<DiskQword,3932160> {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %2 = call lfs_tab %0
+        %3 = const LFS_TAB_Q bv64
+        %4 = slice %1 %3 ptr<DiskQword,4096>
+        %5 = const 0 bv64
+        jmp @b1 %5
+
+    @b1 %6:bv64
+        @inv ule %6 4096
+        %7 = const 4096 bv64
+        %8 = cmp ult %6 %7
+        br %8 @b2 @b3
+
+    @b2
+        %9 = slice %2 %6 ptr<DiskQword,1>
+        %10 = load %9 0 bv64
+        %11 = slice %4 %6 ptr<DiskQword,1>
+        store %11 0 %10
+        %12 = const 1 bv64
+        %13 = add %6 %12
+        jmp @b1 %13
+
+    @b3
+        ret
+}
+
+# Thực hiện yêu cầu %1 (mã lệnh) với id %2, sector %3, độ dài/cờ %4
+func lfs_do_op bv64 %0:io<0,0xffff> %1:ptr<DiskQword,3932160> %2:bv64 %3:bv64 %4:bv64 %5:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x10000000000
+
+    @b0
+        %6 = const 0 bv64
+        %7 = call lfs_sget %0 %6
+        %8 = cmp ne %7 %6
+        br %8 @b1 @b90
+
+    @b1
+        %9 = const 1 bv64
+        %10 = cmp eq %2 %9
+        br %10 @b91 @b2
+
+    @b2
+        %11 = const 2 bv64
+        %12 = cmp eq %2 %11
+        br %12 @b20 @b3
+
+    @b20
+        %13 = call lfs_op_read %0 %1 %3 %4
+        ret %13
+
+    @b3
+        %14 = const 3 bv64
+        %15 = cmp eq %2 %14
+        br %15 @b30 @b4
+
+    @b30
+        %16 = call lfs_op_write %0 %1 %3 %4 %5
+        ret %16
+
+    @b4
+        %17 = const 4 bv64
+        %18 = cmp eq %2 %17
+        br %18 @b40 @b5
+
+    @b40
+        %19 = call lfs_op_create %0 %1 %3 %4 %5
+        ret %19
+
+    @b5
+        %20 = const 5 bv64
+        %21 = cmp eq %2 %20
+        br %21 @b50 @b92
+
+    @b50
+        %22 = call lfs_op_delete %0 %3
+        ret %22
+
+    @b90
+        %23 = const 1 bv64
+        %24 = call lfs_err %23
+        ret %24
+
+    @b91
+        ret %6
+
+    @b92
+        %25 = const 10 bv64
+        %26 = call lfs_err %25
+        ret %26
+}
+
+# Phục vụ yêu cầu đang chờ của App slot %3 (nếu có). Trả 1 nếu đã phục vụ.
+func lfs_service bv64 %0:io<0,0xffff> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,3932160> %3:bv64 {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @req ult %3 7
+    @ens ule %20 1
+
+    @b0
+        %4 = load %1 IPC_FS_OP bv64
+        %5 = const 0 bv64
+        %6 = cmp eq %4 %5
+        br %6 @b8 @b1
+
+    @b1
+        store %1 IPC_FS_OP %5
+        %7 = load %1 IPC_FS_ID bv64
+        %8 = load %1 IPC_FS_OFF bv64
+        %9 = load %1 IPC_FS_LEN bv64
+        %10 = call lfs_do_op %0 %2 %4 %7 %8 %9
+        store %1 IPC_FS_RES %10
+        %11 = const 16 bv64
+        %12 = add %11 %3
+        call lfs_sset %0 %12 %10
+        call lfs_copy_table %0 %2
+        %13 = const 1 bv64
+        jmp @b9 %13
+
+    @b8
+        jmp @b9 %5
+
+    @b9 %20:bv64
+        @inv ule %20 1
+        ret %20
+}
+
+# Gán file App (cờ App, không phải thư mục) theo thứ tự bảng vào slot 0..6: ST[24+slot] = id + 1
+func lfs_scan_apps void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
+        %3 = const 24 bv64
+        jmp @b1 %1
+
+    @b1 %4:bv64
+        @inv ule %4 7
+        %5 = const 7 bv64
+        %6 = cmp ult %4 %5
+        br %6 @b2 @b3
+
+    @b2
+        %7 = add %3 %4
+        call lfs_sset %0 %7 %1
+        %8 = add %4 %2
+        jmp @b1 %8
+
+    @b3
+        %9 = call lfs_sget %0 %1
+        %10 = cmp ne %9 %1
+        br %10 @b31 @b9
+
+    @b31
+        %11 = call lfs_tab %0
+        jmp @b4 %2 %1
+
+    @b4 %12:bv64 %13:bv64
+        # %12: mục đang xét, %13: số App đã gán
+        @inv ule %12 256
+        @inv ule %13 7
+        %14 = const 256 bv64
+        %15 = cmp ult %12 %14
+        %16 = const 7 bv64
+        %17 = cmp ult %13 %16
+        %18 = and %15 %17
+        br %18 @b5 @b9
+
+    @b5
+        %19 = call lfs_tget %11 %12 %1
+        %20 = const 7 bv64
+        %21 = and %19 %20
+        %22 = const 5 bv64                  # đang dùng + App, không phải thư mục
+        %23 = cmp eq %21 %22
+        br %23 @b6 @b7
+
+    @b6
+        %24 = add %3 %13
+        %25 = add %12 %2
+        call lfs_sset %0 %24 %25
+        %26 = add %12 %2
+        %27 = add %13 %2
+        jmp @b4 %26 %27
+
+    @b7
+        %28 = add %12 %2
+        jmp @b4 %28 %13
+
+    @b9
+        ret
+}
+
+# 1 nếu slot %1 có App
+func lfs_app_present bv64 %0:io<0,0xffff> %1:bv64 {
+    @req ult %1 7
+    @ens ule %6 1
+
+    @b0
+        %2 = const 24 bv64
+        %3 = add %2 %1
+        %4 = call lfs_sget %0 %3
+        %5 = const 0 bv64
+        %7 = cmp ne %4 %5
+        br %7 @b1 @b2
+
+    @b1
+        %8 = const 1 bv64
+        jmp @b3 %8
+
+    @b2
+        jmp @b3 %5
+
+    @b3 %6:bv64
+        @inv ule %6 1
+        ret %6
+}
+
+# Nạp mã App của slot %1 vào %2 (1MB). Sai extent/checksum hoặc quá 1MB -> gỡ App khỏi slot. Trả 1 nếu nạp được.
+func lfs_load_app bv64 %0:io<0,0xffff> %1:bv64 %2:ptr<DiskQword,131072> {
+    @req ult %1 7
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
+    @ens ule %30 1
+
+    @b0
+        %3 = const 24 bv64
+        %4 = add %3 %1
+        %5 = call lfs_sget %0 %4
+        %6 = const 0 bv64
+        %7 = const 1 bv64
+        %8 = const 257 bv64
+        %9 = cmp uge %5 %7
+        %10 = cmp ult %5 %8
+        %11 = and %9 %10
+        br %11 @b1 @b8
+
+    @b1
+        %12 = sub %5 %7
+        %13 = call lfs_tab %0
+        %14 = call lfs_extent_ok %0 %13 %12
+        %15 = const 2 bv64
+        %16 = call lfs_tget %13 %12 %15
+        %17 = const 0x100000 bv64
+        %18 = cmp ule %16 %17
+        %19 = cmp ne %14 %6
+        %20 = and %18 %19
+        br %20 @b2 @b8
+
+    @b2
+        %21 = const 511 bv64
+        %22 = add %16 %21
+        %23 = const 9 bv64
+        %24 = lshr %22 %23                  # số sector (<= 2048)
+        %25 = const 6 bv64
+        %26 = shl %24 %25
+        %27 = slice %2 %6 ptr<DiskQword,%26>
+        %28 = const 3 bv64
+        %29 = call lfs_tclamp %13 %12 %28
+        %31 = shl %29 %28
+        %32 = const LFS_DATA_LBA bv64
+        %33 = add %32 %31
+        call blk_rw_dyn %0 %26 %27 %33 %24 %6
+        %34 = const LFS_FNV bv64
+        %35 = call lfs_cks %26 %27 %34
+        %36 = const 5 bv64
+        %37 = call lfs_tget %13 %12 %36
+        %38 = cmp eq %35 %37
+        br %38 @b3 @b8
+
+    @b3
+        jmp @b9 %7
+
+    @b8
+        call lfs_sset %0 %4 %6
+        jmp @b9 %6
+
+    @b9 %30:bv64
+        @inv ule %30 1
+        ret %30
+}

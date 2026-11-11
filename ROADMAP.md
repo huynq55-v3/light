@@ -71,11 +71,13 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
 - Kiểu tuyến tính cho `ptr<L,%n>` do allocator cấp: sau `release` không dùng lại được (verifier theo dõi trạng thái).
 - Allocator trong heap App (bitmap/free-list viết bằng Light) thay cho co/giãn cả heap.
 
-### Bước 6 — LightFS
-- Thay VFS phẳng hiện tại (superblock + thư mục + string pool, file liên tục, không xóa/không mở rộng được) bằng hệ
-  tệp có cấp phát extent, ghi an toàn khi mất điện (journal hoặc copy-on-write), checksum.
-- Công cụ host: `light sync` đọc trực tiếp từ phân vùng/ảnh đĩa; fsck.
-- Bộ test: ảnh đĩa hỏng, đầy đĩa, mất điện giữa chừng.
+### Bước 6 — LightFS ✅
+- Đã thay VFS phẳng bằng **LightFS**: khối 4KB, mỗi file một extent, bảng 256 mục (tên ≤ 63 byte, thư mục lồng nhau).
+- Ghi an toàn khi mất điện bằng copy-on-write: dữ liệu → bảng sang vùng B/A → bản ghi commit (thế hệ + checksum) →
+  `flush` giữa các bước; mount chọn commit hợp lệ có thế hệ cao nhất. Checksum FNV-1a cho header, bảng, commit và dữ liệu file.
+- App không còn đụng LBA thô: mọi truy cập qua IPC của Kernel (TABLE/READ/WRITE/CREATE/DELETE); terminal có `ls cd cat mkdir touch rm write`.
+- Công cụ host: `light sync` (host ⇄ ảnh/phân vùng), `light fsck`, `light pack [--size]`; test: ảnh đĩa hỏng, đầy đĩa, mất điện giữa chừng (`cargo test`).
+- Còn lại: file chỉ 1 extent (ghi lại = cấp extent mới), bảng cố định 256 mục, installer vẫn ghi ảnh 64MB (không giãn theo phân vùng).
 
 ### Các lỗi/thiếu sót còn mở
 - [ ] IPC dùng chung cho mọi App: yêu cầu đĩa của App chạy ngầm có thể bị tính cho App foreground.

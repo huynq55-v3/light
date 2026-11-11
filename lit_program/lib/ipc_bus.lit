@@ -79,50 +79,6 @@ func ipc_mouse_clear_click void %0:ptr<IpcChannel,1> {
         ret
 }
 
-func ipc_disk_req_read void %0:ptr<IpcChannel,1> %1:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-
-    @b0
-        %2 = const 0xffffff bv64
-        %3 = and %1 %2
-        store %0 96 %3
-        ret
-}
-
-func ipc_disk_req_write void %0:ptr<IpcChannel,1> %1:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-
-    @b0
-        %2 = const 0xffffff bv64
-        %3 = and %1 %2
-        store %0 104 %3
-        ret
-}
-
-func ipc_disk_take_read_req bv64 %0:ptr<IpcChannel,1> {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-
-    @b0
-        %1 = load %0 96 bv64
-        %2 = const 0 bv64
-        store %0 96 %2
-        ret %1
-}
-
-func ipc_disk_take_write_req bv64 %0:ptr<IpcChannel,1> {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-
-    @b0
-        %1 = load %0 104 bv64
-        %2 = const 0 bv64
-        store %0 104 %2
-        ret %1
-}
-
 # Khởi tạo toàn bộ Hộp thư Giao tiếp IpcChannel về trạng thái chuẩn lúc Boot
 func ipc_channel_init void %0:ptr<IpcChannel,1> {
     @req uge %0 0x10000

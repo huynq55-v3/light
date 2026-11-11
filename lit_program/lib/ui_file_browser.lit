@@ -1,210 +1,60 @@
 # File: lit_program/lib/ui_file_browser.lit
-# Thư viện LightGUI: Drill-Down VFS Explorer đọc trực tiếp từ Path String Pool (Hỗ trợ tên dài & thư mục lồng sâu)
+# Thư viện LightGUI: duyệt thư mục LightFS theo id (bảng file do Kernel chép vào State của App, xem lightfs_api.lit)
+# Dòng thứ r (tối đa 9) nằm ở y = start_y + 48 + r * 38; nút [<.. BACK] ở dòng đầu khi không phải thư mục gốc.
 
 include ui_button.lit
 include std_lib.lit
-include vfs_api.lit
+include lightfs_api.lit
 
-# 1. Kiểm tra đường dẫn tại (path_off=%1, path_len=%2) có bắt đầu bằng tiền tố thư mục hiện tại (pref_off=%3, pref_len=%4) không
-func ui_fb_match_prefix bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req ule %1 256
-    @req ule %2 128
-    @req ule %3 256
-    @req ule %4 128
+def UI_FB_ROWS 9
 
-    @b0
-        %5 = const 0 bv64
-        %6 = cmp ule %2 %4
-        br %6 @b1 @b2
-
-    @b1
-        ret %5
-
-    @b2
-        jmp @b3 %5
-
-    @b3 %7:bv64
-        @inv ule %7 128
-        %8 = cmp ult %7 %4
-        br %8 @b4 @b6
-
-    @b4
-        %9 = add %1 %7
-        %10 = add %3 %7
-        %11 = call std_mem_get_byte %0 %9
-        %12 = call std_mem_get_byte %0 %10
-        %13 = cmp ne %11 %12
-        br %13 @b1 @b5
-
-    @b5
-        %14 = const 1 bv64
-        %15 = add %7 %14
-        jmp @b3 %15
-
-    @b6
-        %16 = const 1 bv64
-        ret %16
-}
-
-# 2. Tìm vị trí kết thúc của tên mục con trực tiếp sau tiền tố (Dừng ngay tại dấu '/' đầu tiên nếu là Thư mục con)
-func ui_fb_find_seg_end bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req ule %1 384
-    @req ule %2 384
-    @req ule %1 %2
-    @ens uge %10 1
-    @ens uge %10 %1
-    @ens ule %10 385
-
-    @b0
-        jmp @b1 %1
-
-    @b1 %3:bv64
-        @inv uge %3 %1
-        @inv ule %3 384
-        %4 = cmp ult %3 %2
-        br %4 @b2 @b5
-
-    @b2
-        %5 = call std_mem_get_byte %0 %3
-        %6 = const 47 bv64
-        %7 = cmp eq %5 %6
-        br %7 @b3 @b4
-
-    @b3
-        %8 = const 1 bv64
-        %9 = add %3 %8
-        jmp @b6 %9
-
-    @b4
-        %11 = const 1 bv64
-        %12 = add %3 %11
-        jmp @b1 %12
-
-    @b5
-        %13 = const 1 bv64
-        %14 = call std_max %3 %13
-        jmp @b6 %14
-
-    @b6 %10:bv64
-        @inv uge %10 1
-        @inv uge %10 %1
-        @inv ule %10 385
-        ret %10
-}
-
-# 3. Vẽ chuỗi tên dài tùy ý (tối đa 32 ký tự) trực tiếp từ Path String Pool (%1) từ vị trí %4 đến %5
-func ui_fb_draw_pool_str void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv32 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req ule %2 600
-    @req ule %3 650
-    @req ule %4 384
-    @req ule %5 385
-
-    @b0
-        %7 = const 0 bv64
-        jmp @b1 %7
-
-    @b1 %8:bv64
-        @inv ule %8 32
-        %9 = const 32 bv64
-        %10 = cmp ult %8 %9
-        br %10 @b2 @b4
-
-    @b2
-        %11 = add %4 %8
-        %12 = cmp ult %11 %5
-        br %12 @b3 @b4
-
-    @b3
-        %13 = call std_mem_get_byte %1 %11
-        %14 = const 9 bv64                  # Mỗi ký tự rộng 8px + cách nhau 1px = 9px!
-        %15 = mul %8 %14
-        %16 = add %2 %15
-        call gfx_draw_char16 %0 %1 %16 %3 %13 %6
-        %17 = const 1 bv64
-        %18 = add %8 %17
-        jmp @b1 %18
-
-    @b4
-        ret
-}
-
-# 4. Tìm độ dài tiền tố của thư mục cha khi bấm nút [<.. BACK] (Lùi về dấu '/' liền trước)
-func ui_fb_parent_pref_len bv64 %0:ptr<DiskQword,64> %1:bv64 %2:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req ule %1 256
-    @req ule %2 128
-    @ens ule %12 128
-
-    @b0
-        %3 = const 1 bv64
-        %5 = const 0 bv64
-        %4 = cmp ule %2 %3
-        br %4 @b1 @b2
-
-    @b1
-        jmp @b8 %5
-
-    @b2
-        %6 = sub %2 %3
-        jmp @b3 %5 %5
-
-    @b3 %8:bv64 %9:bv64
-        @inv ule %8 128
-        @inv ule %9 128
-        %10 = cmp ult %8 %6
-        br %10 @b4 @b7
-
-    @b4
-        %11 = add %1 %8
-        %13 = call std_mem_get_byte %0 %11
-        %14 = const 47 bv64
-        %15 = cmp eq %13 %14
-        %16 = add %8 %3
-        br %15 @b5 @b6
-
-    @b5
-        jmp @b3 %16 %16
-
-    @b6
-        jmp @b3 %16 %9
-
-    @b7
-        jmp @b8 %9
-
-    @b8 %12:bv64
-        @inv ule %12 128
-        ret %12
-}
-
-# 5. Hiển thị các mục con trực tiếp của thư mục hiện tại (Lấy từ Path String Pool %1 và Directory Table %2)
-func ui_fb_render void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> %3:bv64 %4:bv64 %5:bv64 %6:bv64 {
-    # %0: fb, %1: pool_buf (0x7c000), %2: vfs_dir_buf (0x7b000), %3: start_x, %4: start_y, %5: pref_off, %6: pref_len
+# Vẽ tên của mục %3 (tối đa 24 ký tự đầu) tại (%4, %5)
+func ui_fb_draw_name void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,4096> %3:bv64 %4:bv64 %5:bv64 %6:bv32 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
-    @req ult %2 0x80000000
+    @req ult %2 0x10000000000
+    @req ult %3 256
+    @req ule %4 900
+    @req ule %5 700
+
+    @b0
+        %7 = const 8 bv64
+        %8 = call lfs_tget %2 %3 %7
+        call gfx_draw_str8 %0 %1 %4 %5 %8 %6
+        %9 = const 9 bv64
+        %10 = call lfs_tget %2 %3 %9
+        %11 = const 72 bv64
+        %12 = add %4 %11
+        call gfx_draw_str8 %0 %1 %12 %5 %10 %6
+        %13 = const 10 bv64
+        %14 = call lfs_tget %2 %3 %13
+        %15 = const 144 bv64
+        %16 = add %4 %15
+        call gfx_draw_str8 %0 %1 %16 %5 %14 %6
+        ret
+}
+
+# Hiển thị các mục con của thư mục %5
+func ui_fb_render void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,4096> %3:bv64 %4:bv64 %5:bv64 {
+    @req uge %0 0x10000
+    @req ult %0 0x80000000
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x10000000000
     @req uge %3 40
     @req ule %3 360
     @req uge %4 30
     @req ule %4 300
-    @req ule %5 256
-    @req ule %6 128
+    @req ult %5 256
 
     @b0
-        %7 = const 0 bv64
-        # 1. Nếu đang ở trong thư mục con (pref_len > 0): Vẽ nút [<.. BACK] và đường dẫn hiện tại ở dòng đầu
-        %8 = cmp ugt %6 %7
+        %6 = const 0 bv64
+        %7 = const 1 bv64
+        %8 = cmp ne %5 %6
         br %8 @b1 @b2
 
     @b1
@@ -218,7 +68,6 @@ func ui_fb_render void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQ
         %16 = add %4 %15
         %17 = const 0x334155 bv32
         call gfx_fill_rect %0 %10 %12 %14 %16 %17
-
         %18 = const 32 bv64
         %19 = add %3 %18
         %20 = const 16 bv64
@@ -226,257 +75,157 @@ func ui_fb_render void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQ
         %22 = const 0x4b434142202e2e3c bv64 # "<.. BACK"
         %23 = const 0xf8fafc bv32
         call gfx_draw_str8 %0 %1 %19 %21 %22 %23
-
-        # In đường dẫn thư mục đang mở bên cạnh nút [<.. BACK]
+        # Tên thư mục đang mở bên cạnh nút BACK
         %24 = const 200 bv64
         %25 = add %3 %24
-        %26 = add %5 %6
-        %27 = const 0x94a3b8 bv32
-        call ui_fb_draw_pool_str %0 %1 %25 %21 %5 %26 %27
+        %26 = const 0x94a3b8 bv32
+        call ui_fb_draw_name %0 %1 %2 %5 %25 %21 %26
         jmp @b2
 
     @b2
-        # 2. Vòng lặp duyệt các VfsEntry: Lọc theo tiền tố (pref_off, pref_len) và chống trùng lặp thư mục con
-        jmp @b3 %7 %7 %7
+        jmp @b3 %6
 
-    @b3 %28:bv64 %29:bv64 %30:bv64
-        # %28: idx (0..16), %29: row_count (0..8), %30: prev_sig (Chữ ký mục vừa vẽ để gộp thư mục trùng)
-        @inv ule %28 16
-        @inv ule %29 8
-        %31 = const 16 bv64
-        %32 = const 8 bv64
-        %33 = cmp ult %28 %31
-        %34 = cmp ult %29 %32
-        %35 = and %33 %34
-        br %35 @b4 @b11
+    @b3 %27:bv64
+        @inv ule %27 UI_FB_ROWS
+        %28 = const UI_FB_ROWS bv64
+        %29 = cmp ult %27 %28
+        br %29 @b4 @b9
 
     @b4
-        %43 = call vfs_entry_get_path_off %2 %28
-        %47 = call vfs_entry_get_path_len %2 %28
-        %38 = const 1 bv64
-
-        # Nếu path_len == 0 (Slot trống) -> Bỏ qua
-        %48 = cmp eq %47 %7
-        br %48 @b10 @b5
+        %30 = call lfs_nth_child %2 %5 %27
+        %31 = cmp eq %30 %6
+        br %31 @b9 @b5
 
     @b5
-        # Kiểm tra có khớp tiền tố thư mục hiện tại (pref_off=%5, pref_len=%6) không?
-        %49 = call ui_fb_match_prefix %1 %43 %47 %5 %6
-        %50 = cmp ne %49 %7
-        br %50 @b6 @b10
+        %32 = const 38 bv64
+        %33 = mul %27 %32
+        %34 = const 48 bv64
+        %35 = add %4 %34
+        %36 = add %35 %33                   # y dòng
+        %37 = const 30 bv64
+        %38 = add %36 %37
+        %39 = const 24 bv64
+        %40 = add %3 %39
+        %41 = const 520 bv64
+        %42 = add %3 %41
+        %43 = const 0x1e293b bv32
+        call gfx_fill_rect %0 %40 %36 %42 %38 %43
+        %44 = const 36 bv64
+        %45 = add %3 %44
+        %46 = const 7 bv64
+        %47 = add %36 %46
+        %48 = call lfs_is_dir %2 %30
+        %49 = cmp ne %48 %6
+        br %49 @b6 @b7
 
     @b6
-        # Tìm đoạn tên con trực tiếp: từ seg_start = path_off + pref_len đến seg_end
-        %51 = add %43 %6                    # seg_start (<= 384)
-        %52 = add %43 %47                   # path_end (<= 384)
-        %53 = call std_min %51 %52
-        %54 = call ui_fb_find_seg_end %1 %53 %52
-        %55 = sub %54 %53                   # seg_len
-
-        # Tính chữ ký sig = (first_char << 16) | (last_char << 8) | seg_len để gộp thư mục con trùng nhau
-        %56 = call std_mem_get_byte %1 %53
-        %57 = const 16 bv64
-        %58 = shl %56 %57
-        %59 = or %58 %55
-        %60 = cmp eq %59 %30
-        br %60 @b10 @b7
+        %50 = const 0xfbbf24 bv32           # thư mục: vàng amber
+        call ui_fb_draw_name %0 %1 %2 %30 %45 %47 %50
+        jmp @b8
 
     @b7
-        # Vẽ dòng thứ %29 (y = start_y + 48 + row_count * 38)
-        %61 = const 38 bv64
-        %62 = mul %29 %61
-        %63 = const 48 bv64
-        %64 = add %4 %63
-        %65 = add %64 %62                   # row_y
-        %66 = const 30 bv64
-        %67 = add %65 %66
-
-        %68 = const 24 bv64
-        %69 = add %3 %68
-        %70 = const 520 bv64
-        %71 = add %3 %70
-        %72 = const 0x1e293b bv32
-        call gfx_fill_rect %0 %69 %65 %71 %67 %72
-
-        # Kiểm tra ký tự cuối của đoạn (tại seg_end - 1) có phải dấu '/' (Thư mục) không?
-        %73 = sub %54 %38
-        %74 = const 511 bv64
-        %75 = call std_min %73 %74
-        %76 = call std_mem_get_byte %1 %75
-        %77 = const 47 bv64                 # '/'
-        %78 = cmp eq %76 %77
-
-        %79 = const 36 bv64
-        %80 = add %3 %79
-        %81 = const 7 bv64
-        %82 = add %65 %81
-        br %78 @b8 @b9
+        %51 = const 0x38bdf8 bv32           # file: xanh cyan
+        call ui_fb_draw_name %0 %1 %2 %30 %45 %47 %51
+        jmp @b8
 
     @b8
-        # Là THƯ MỤC (Kết thúc bằng '/') -> Vẽ màu Vàng Amber (0xfbbf24)
-        %83 = const 0xfbbf24 bv32
-        call ui_fb_draw_pool_str %0 %1 %80 %82 %53 %54 %83
-        jmp @b91
+        %52 = add %27 %7
+        jmp @b3 %52
 
     @b9
-        # Là FILE -> Vẽ màu Xanh Cyan (0x38bdf8)
-        %84 = const 0x38bdf8 bv32
-        call ui_fb_draw_pool_str %0 %1 %80 %82 %53 %54 %84
-        jmp @b91
-
-    @b91
-        %85 = add %28 %38
-        %86 = add %29 %38
-        jmp @b3 %85 %86 %59
-
-    @b10
-        %87 = const 1 bv64
-        %88 = add %28 %87
-        jmp @b3 %88 %29 %30
-
-    @b11
         ret
 }
 
-# 6. Bắt sự kiện Click trong Browser:
-#    - Nếu click [<.. BACK]: trả về (1 << 32) | new_pref_len
-#    - Nếu click vào THƯ MỤC: trả về (2 << 32) | (new_pref_off << 8) | new_pref_len
-#    - Nếu click vào FILE:    trả về (3 << 32) | file_lba
-#    - Nếu click trượt:       trả về 0
-func ui_fb_handle_click bv64 %0:ptr<DiskQword,64> %1:ptr<DiskQword,64> %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv64 %7:bv64 %8:bv64 {
-    # %0: pool_buf, %1: vfs_dir_buf, %2: mx, %3: my, %4: click, %5: start_x, %6: start_y, %7: pref_off, %8: pref_len
+# Bắt click trong Browser đang hiển thị thư mục %6:
+#   [<.. BACK] -> (1 << 32) | thư mục cha    thư mục -> (2 << 32) | id    file -> (3 << 32) | id    trượt -> 0
+func ui_fb_handle_click bv64 %0:ptr<DiskQword,4096> %1:bv64 %2:bv64 %3:bv64 %4:bv64 %5:bv64 %6:bv64 {
     @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req ule %2 1280
-    @req ule %3 720
-    @req uge %5 40
-    @req ule %5 360
-    @req uge %6 30
-    @req ule %6 300
-    @req ule %7 256
-    @req ule %8 128
+    @req ult %0 0x10000000000
+    @req uge %4 40
+    @req ule %4 360
+    @req uge %5 30
+    @req ule %5 300
+    @req ult %6 256
+    @req ule %1 1280
+    @req ule %2 720
 
     @b0
-        %9 = const 0 bv64
-        %10 = cmp ugt %8 %9
-        br %10 @b1 @b2
+        %7 = const 0 bv64
+        %8 = const 1 bv64
+        %9 = const 32 bv64
+        %10 = cmp eq %3 %7
+        br %10 @b90 @b1
 
     @b1
-        # Kiểm tra nút [<.. BACK] (x = start_x + 24..start_x + 180, y = start_y + 10..start_y + 38)
-        %11 = const 24 bv64
-        %12 = add %5 %11
-        %13 = const 10 bv64
-        %14 = add %6 %13
-        %15 = const 156 bv64
-        %16 = const 28 bv64
-        %17 = call ui_btn_hit %2 %3 %4 %12 %14 %15 %16
-        %18 = cmp ne %17 %9
-        br %18 @b11 @b2
-
-    @b11
-        %19 = call ui_fb_parent_pref_len %0 %7 %8
-        %20 = const 8 bv64
-        %21 = shl %7 %20
-        %22 = or %21 %19
-        %23 = const 0x100000000 bv64        # Tag 1 = Đổi thư mục (BACK)
-        %24 = or %23 %22
-        ret %24
+        %11 = cmp ne %6 %7
+        br %11 @b2 @b3
 
     @b2
-        jmp @b3 %9 %9 %9
+        %12 = const 24 bv64
+        %13 = add %4 %12
+        %14 = const 10 bv64
+        %15 = add %5 %14
+        %16 = const 156 bv64
+        %17 = const 28 bv64
+        %18 = call ui_btn_hit %1 %2 %3 %13 %15 %16 %17
+        %19 = cmp ne %18 %7
+        br %19 @b21 @b3
 
-    @b3 %25:bv64 %26:bv64 %27:bv64
-        @inv ule %25 16
-        @inv ule %26 8
-        %28 = const 16 bv64
-        %29 = const 8 bv64
-        %30 = cmp ult %25 %28
-        %31 = cmp ult %26 %29
-        %32 = and %30 %31
-        br %32 @b4 @b12
+    @b21
+        %20 = call lfs_parent %0 %6
+        %21 = shl %8 %9
+        %22 = or %21 %20
+        ret %22
+
+    @b3
+        # Dòng được click: (my - start_y - 48) / 38, phải nằm trong 30px đầu của dòng
+        %23 = const 48 bv64
+        %24 = add %5 %23
+        %25 = const 24 bv64
+        %26 = add %4 %25
+        %27 = const 520 bv64
+        %28 = add %4 %27
+        %29 = cmp uge %2 %24
+        %30 = cmp uge %1 %26
+        %31 = cmp ult %1 %28
+        %32 = and %29 %30
+        %33 = and %32 %31
+        br %33 @b4 @b90
 
     @b4
-        %40 = call vfs_entry_get_path_off %1 %25
-        %44 = call vfs_entry_get_path_len %1 %25
-        %35 = const 1 bv64
-
-        %45 = cmp eq %44 %9
-        br %45 @b10 @b5
+        %34 = sub %2 %24
+        %35 = const 38 bv64
+        %36 = udiv %34 %35
+        %37 = urem %34 %35
+        %38 = const 30 bv64
+        %39 = cmp ult %37 %38
+        %40 = const UI_FB_ROWS bv64
+        %41 = cmp ult %36 %40
+        %42 = and %39 %41
+        br %42 @b5 @b90
 
     @b5
-        %46 = call ui_fb_match_prefix %0 %40 %44 %7 %8
-        %47 = cmp ne %46 %9
-        br %47 @b6 @b10
+        %43 = call lfs_nth_child %0 %6 %36
+        %44 = cmp eq %43 %7
+        br %44 @b90 @b6
 
     @b6
-        %48 = add %40 %8
-        %49 = add %40 %44
-        %50 = call std_min %48 %49
-        %51 = call ui_fb_find_seg_end %0 %50 %49
-        %52 = sub %51 %50
-
-        %53 = call std_mem_get_byte %0 %50
-        %54 = const 16 bv64
-        %55 = shl %53 %54
-        %56 = or %55 %52
-        %57 = cmp eq %56 %27
-        br %57 @b10 @b7
+        %45 = call lfs_is_dir %0 %43
+        %46 = cmp ne %45 %7
+        br %46 @b7 @b8
 
     @b7
-        # Kiểm tra có click trúng dòng %26 không (y = start_y + 48 + row * 38, cao 30px)
-        %58 = const 38 bv64
-        %59 = mul %26 %58
-        %60 = const 48 bv64
-        %61 = add %6 %60
-        %62 = add %61 %59
-
-        %63 = const 24 bv64
-        %64 = add %5 %63
-        %65 = const 496 bv64
-        %66 = const 30 bv64
-        %67 = call ui_btn_hit %2 %3 %4 %64 %62 %65 %66
-        %68 = cmp ne %67 %9
-        br %68 @b8 @b91
+        %47 = const 2 bv64
+        %48 = shl %47 %9
+        %49 = or %48 %43
+        ret %49
 
     @b8
-        # Đã click trúng dòng này! Kiểm tra ký tự cuối đoạn (seg_end - 1) có phải '/' (Thư mục) không?
-        %69 = sub %51 %35
-        %70 = const 511 bv64
-        %71 = call std_min %69 %70
-        %72 = call std_mem_get_byte %0 %71
-        %73 = const 47 bv64
-        %74 = cmp eq %72 %73
-        br %74 @b81 @b82
+        %50 = const 3 bv64
+        %51 = shl %50 %9
+        %52 = or %51 %43
+        ret %52
 
-    @b81
-        # Là THƯ MỤC -> new_pref_off = path_off (%40), new_pref_len = seg_end - path_off (%51 - %40)
-        %75 = sub %51 %40
-        %76 = const 8 bv64
-        %77 = shl %40 %76
-        %78 = or %77 %75
-        %79 = const 0x100000000 bv64        # Tag 1 = Mở Thư mục
-        %80 = or %79 %78
-        ret %80
-
-    @b82
-        # Là FILE -> Đọc start_sec chuẩn qua vfs_api.lit!
-        %85 = call vfs_entry_get_lba %1 %25
-        %86 = const 0x300000000 bv64        # Tag 3 = Mở File
-        %87 = or %86 %85
-        ret %87
-
-    @b91
-        %88 = add %25 %35
-        %89 = add %26 %35
-        jmp @b3 %88 %89 %56
-
-    @b10
-        %90 = const 1 bv64
-        %91 = add %25 %90
-        jmp @b3 %91 %26 %27
-
-    @b12
-        ret %9
+    @b90
+        ret %7
 }

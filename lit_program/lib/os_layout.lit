@@ -6,7 +6,7 @@ layout DiskQword 8 {
     0: bv64
 }
 
-layout IpcChannel 200 {
+layout IpcChannel 240 {
     0: bv64
     8: bv8 @inv ult val 128
     16: bv64 @inv ult val 1260              # chuột X trong khung nhìn App (kernel quy đổi từ 184 mỗi nhịp)
@@ -32,13 +32,10 @@ layout IpcChannel 200 {
     176: bv64 @inv ule val 0xffffffff       # dự trữ (chunk_state của allocator cũ đã gỡ)
     184: bv64 @inv ult val 1900             # chuột X trên màn hình 1920x1080 (driver chuột / phím F ghi)
     192: bv64 @inv ult val 1060             # chuột Y trên màn hình
+    200: bv64                               # LightFS: mã lệnh (0 = không có yêu cầu), xem lib/lightfs_api.lit
+    208: bv64                               # LightFS: id mục
+    216: bv64                               # LightFS: sector trong vùng State của App
+    224: bv64                               # LightFS: độ dài byte / cờ
+    232: bv64                               # LightFS: kết quả (bit 63 = lỗi)
 }
 
-layout VfsEntry 32 {
-    0: bv64                                 # 8 ký tự tên file ngắn (ASCII Qword)
-    8: bv32                                 # Offset trong String Pool
-    12: bv32                                # Chiều dài chuỗi đường dẫn
-    16: bv64                                # Sector LBA bắt đầu trên đĩa
-    24: bv32                                # Kích thước file thực tế (byte)
-    28: bv32                                # Cờ trạng thái (FLAG_APP, FLAG_DATA...)
-}

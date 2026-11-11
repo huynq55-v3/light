@@ -4,6 +4,39 @@ include ../lib/os_layout.lit
 # 1. Đọc 1 sector (512 bytes = 64 Qwords) từ ổ đĩa ATA Primary Master (LBA 28-bit)
 include ../lib/std_lib.lit
 
+# FLUSH CACHE (0xE7) rồi chờ hết BSY: dữ liệu đã ghi nằm trên đĩa khi hàm trả về
+func drv_ata_flush void %0:io<0x1f0,0x1f7> {
+    @b0
+        %1 = const 0xe0 bv64
+        hwio_w %0 0x1f6 %1
+        %2 = const 0xe7 bv64
+        hwio_w %0 0x1f7 %2
+        %3 = const 0 bv64
+        jmp @b1 %3
+
+    @b1 %4:bv64
+        @inv ule %4 1000000
+        %5 = const 1000000 bv64
+        %6 = cmp ult %4 %5
+        br %6 @b2 @b4
+
+    @b2
+        %7 = hwio_r %0 0x1f7
+        %8 = const 0x80 bv64
+        %9 = and %7 %8
+        %10 = const 0 bv64
+        %11 = cmp eq %9 %10
+        br %11 @b4 @b3
+
+    @b3
+        %12 = const 1 bv64
+        %13 = add %4 %12
+        jmp @b1 %13
+
+    @b4
+        ret
+}
+
 func drv_ata_read_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
     @req uge %1 0x10000
     @req ult %1 0x10000000000
@@ -200,8 +233,7 @@ func drv_ata_write_sector void %0:io<0x1f0,0x1f7> %1:ptr<DiskQword,64> %2:bv64 {
         jmp @b5 %47
 
     @b7
-        %48 = const 0xe7 bv64
-        hwio_w %0 0x1f7 %48
+        call drv_ata_flush %0
         ret
 }
 

@@ -1,10 +1,10 @@
-// File: src/main.rs (Biên dịch Kernel + Quản lý Virtual Storage VFS cho Light OS)
+// File: src/main.rs (Biên dịch Kernel + đóng gói/đồng bộ/kiểm tra ảnh đĩa LightFS cho Light OS)
 mod elf64;
 mod ir;
 mod parser;
 mod verify;
 mod x86;
-pub mod vfs;
+mod lightfs;
 
 use std::path::Path;
 use std::{env, fs, process};
@@ -46,11 +46,22 @@ pub fn compile_all_apps(src_dir: &str, out_dir: &str) -> Result<usize, String> {
     Ok(count)
 }
 
-pub fn build_disk_img() -> Result<(), String> {
+/// Kích thước ảnh: `--size <byte>` nếu có, mặc định 64MB
+fn size_arg(args: &[String]) -> Result<u64, String> {
+    match args.iter().position(|a| a == "--size") {
+        Some(i) => {
+            let v: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).ok_or("--size cần số byte")?;
+            Ok(v / lightfs::SECTOR as u64)
+        }
+        None => Ok(lightfs::DEFAULT_SECTORS),
+    }
+}
+
+pub fn build_disk_img(total: u64) -> Result<(), String> {
     fs::create_dir_all("storage/apps").map_err(|e| e.to_string())?;
     fs::create_dir_all("storage/data").map_err(|e| e.to_string())?;
 
-    // Khởi tạo 2 file dữ liệu mẫu nếu chưa tồn tại (do revert git)
+    // Khởi tạo file dữ liệu mẫu nếu chưa tồn tại (do revert git)
     let note_path = Path::new("storage/data/note.txt");
     if !note_path.exists() {
         fs::write(note_path, b"Hello world from light os!").map_err(|e| e.to_string())?;
@@ -60,24 +71,49 @@ pub fn build_disk_img() -> Result<(), String> {
     let app_count = compile_all_apps("lit_program/apps", "storage/apps")?;
     println!("  ✓ Compiled {} app(s) into 'storage/apps/'", app_count);
 
-    // 2. Đóng gói storage/ vào disk.img
-    let sb = vfs::pack_storage_to_disk(Path::new("storage"), Path::new("disk.img"))?;
-
+    // 2. Đóng gói storage/ vào disk.img (LightFS)
+    let lfs = lightfs::pack(Path::new("storage"), Path::new("disk.img"), total)?;
+    let used = lfs.used_blocks().iter().filter(|&&u| u).count();
     println!(
-        "[4/4] Mounted 'storage/' into 'disk.img' (Superblock: {} files, next_free_lba: {})",
-        sb.total_files, sb.next_free_lba
+        "[4/4] LightFS 'disk.img': {} MB, {} mục, {} / {} khối 4KB đã dùng",
+        total / 2048,
+        lfs.table.iter().filter(|e| e.used()).count(),
+        used,
+        lfs.blocks
     );
     Ok(())
+}
+
+/// `light fsck [ảnh]`: in báo cáo, mã thoát 1 nếu có lỗi
+fn cmd_fsck(img: &str) -> Result<(), String> {
+    let r = lightfs::fsck(lightfs::Dev::open(Path::new(img), false)?);
+    for n in &r.notes {
+        println!("  {}", n);
+    }
+    for e in &r.errors {
+        println!("  LỖI: {}", e);
+    }
+    println!("{}: {} file, {} thư mục, {} khối dữ liệu, {} lỗi", img, r.files, r.dirs, r.used_blocks, r.errors.len());
+    if r.errors.is_empty() { Ok(()) } else { Err(format!("fsck: {} lỗi", r.errors.len())) }
 }
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 1 && args[1] == "sync" {
-        println!("🔄 Đang đồng bộ ngược từ 'disk.img' về 'storage/'...");
-        let count = vfs::sync_disk_to_storage(Path::new("disk.img"), Path::new("storage"))?;
-        println!("✓ Hoàn tất đồng bộ: {} file(s) được cập nhật.", count);
+        // light sync [ảnh hoặc phân vùng, mặc định disk.img]
+        let img = args.get(2).map(|s| s.as_str()).unwrap_or("disk.img");
+        println!("🔄 Đang đồng bộ ngược từ '{}' về 'storage/'...", img);
+        let (n, bad) = lightfs::sync(lightfs::Dev::open(Path::new(img), false)?, Path::new("storage"))?;
+        for b in &bad {
+            println!("  bỏ qua: {}", b);
+        }
+        println!("✓ Hoàn tất đồng bộ: {} file", n);
         return Ok(());
+    }
+
+    if args.len() > 1 && args[1] == "fsck" {
+        return cmd_fsck(args.get(2).map(|s| s.as_str()).unwrap_or("disk.img"));
     }
 
     if args.len() > 2 && args[1] == "check" {
@@ -99,7 +135,7 @@ fn run() -> Result<(), String> {
 
     if args.len() > 1 && args[1] == "pack" {
         println!("📦 Đang đóng gói 'storage/' vào 'disk.img'...");
-        return build_disk_img();
+        return build_disk_img(size_arg(&args)?);
     }
 
     let default_in = "lit_program/os/kernel.lit".to_string();
@@ -139,7 +175,7 @@ fn run() -> Result<(), String> {
         elf_bytes.len()
     );
 
-    build_disk_img()?;
+    build_disk_img(lightfs::DEFAULT_SECTORS)?;
     Ok(())
 }
 

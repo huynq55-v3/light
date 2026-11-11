@@ -8,7 +8,7 @@
 #
 # Việc làm:
 #   1. Sao lưu nội dung phân vùng rustos + thư mục EFI/rustos + /etc/grub.d/40_custom vào ~/lightos_backup_<ngày>/
-#   2. Xóa chữ ký ext4, ghi disk.img (LIGHTVFS) vào phân vùng, đặt tên GPT = "lightos"
+#   2. Xóa chữ ký ext4, ghi disk.img (LIGHTFS1) vào phân vùng, đặt tên GPT = "lightos"
 #   3. ESP: EFI/lightos/kernel.elf + EFI/lightos/lightos.efi (GRUB standalone có sẵn multiboot, menu Light OS/Ubuntu)
 #   4. Xóa mục UEFI cũ trỏ vào \EFI\rustos, thêm mục "Light OS" ở CUỐI BootOrder (Ubuntu vẫn khởi động mặc định)
 #   5. Thay mục "Rust-only OS" trong /etc/grub.d/40_custom bằng "Light OS" (chainload), chạy update-grub
@@ -46,7 +46,7 @@ run() { if [ $YES = 1 ]; then echo "+ $*"; "$@"; else echo "[thử] $*"; fi; }
 
 [ "$(id -u)" = 0 ] || die "cần chạy bằng sudo"
 [ -f "$KERNEL" ] && [ -f "$IMG" ] || die "thiếu $KERNEL hoặc $IMG (chạy cargo run --release trước)"
-head -c 8 "$IMG" | grep -q LIGHTVFS || die "$IMG không có superblock LIGHTVFS"
+head -c 8 "$IMG" | grep -q LIGHTFS1 || die "$IMG không có superblock LIGHTFS1"
 [ -b "$PART" ] || die "không có $PART"
 findmnt -n -o SOURCE / | grep -q "^$PART\$" && die "$PART là phân vùng gốc của hệ thống!"
 mountpoint -q "$ESP_MNT" || die "ESP chưa mount ở $ESP_MNT"

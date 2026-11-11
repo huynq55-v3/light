@@ -5,9 +5,9 @@
 #   VMD, ẩn khỏi bus 0) và duyệt domain của VMD qua CFGBAR (kiểu ECAM, bus tương đối).
 # - 1 cặp hàng đợi Admin (32 entry) + 1 cặp I/O (64 entry). Mỗi lệnh chờ completion theo phase bit, có timeout.
 # - DMA chỉ vào bộ đệm bounce vật lý cố định 0x80000 (64KB = 128 sector); dữ liệu chép bằng CPU sang ptr đích.
-# - Chỉ dùng phân vùng GPT tên "lightos" có superblock LIGHTVFS. Mọi LBA là tương đối với phân vùng và bị kiểm tra
+# - Chỉ dùng phân vùng GPT tên "lightos" có header LIGHTFS1. Mọi LBA là tương đối với phân vùng và bị kiểm tra
 #   `lba + n <= part_len` trước khi gửi lệnh -> driver không thể đọc/ghi ra ngoài phân vùng, kể cả khi tầng trên sai.
-#   Đĩa không có GPT (ảnh thô trên QEMU) -> cả namespace, vẫn phải có LIGHTVFS ở LBA 0.
+#   Đĩa không có GPT (ảnh thô trên QEMU) -> cả namespace, vẫn phải có LIGHTFS1 ở LBA 0.
 
 include ../os/hw.lit
 
@@ -393,6 +393,15 @@ func nvme_write_from bv64 %0:io<0,0xffff> %1:bv64 %2:ptr<DiskQword,%1> %3:bv64 %
         %16 = const 1 bv64
         %17 = call nvme_rw %0 %16 %3 %4
         ret %17
+}
+
+# Lệnh Flush (NVM opcode 0): mọi lần ghi trước đó đã nằm trên bộ nhớ bền vững khi lệnh hoàn tất
+func nvme_flush bv64 %0:io<0,0xffff> {
+    @b0
+        %1 = const 1 bv64
+        %2 = const 0 bv64
+        %3 = call nvme_submit %0 %1 %2 %1 %2 %2 %2 %2 %2
+        ret %3
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -872,7 +881,7 @@ func nvme_find bv64 %0:io<0,0xffff> {
 }
 
 # Đọc GPT (LBA 1) tìm phân vùng tên "lightos". Không có GPT -> cả namespace. Sau cùng bắt buộc LBA 0 của vùng
-# chọn được có superblock LIGHTVFS; nếu không thì part_len = 0 (mọi I/O bị từ chối). Trả mã như nvme_init_ctrl.
+# chọn được có header LIGHTFS1; nếu không thì part_len = 0 (mọi I/O bị từ chối). Trả mã như nvme_init_ctrl.
 func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
     @b0
         %2 = const 0 bv64
@@ -984,14 +993,14 @@ func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
         jmp @b70
 
     @b70
-        # Superblock LIGHTVFS ở LBA 0 của vùng đã chọn
+        # Header LIGHTFS1 ở LBA 0 của vùng đã chọn
         %65 = call nvme_rw %0 %2 %2 %3
         %66 = cmp ne %65 %2
         br %66 @b80 @b71
 
     @b71
         %67 = call qbuf %7 %2
-        %68 = const 0x534656544847494c bv64 # "LIGHTVFS"
+        %68 = const 0x315346544847494c bv64 # "LIGHTFS1"
         %69 = cmp eq %67 %68
         br %69 @b72 @b82
 
@@ -1020,7 +1029,7 @@ func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
 # Khởi tạo controller + tìm phân vùng. Trả 0 nếu sẵn sàng; ngược lại mã giai đoạn hỏng (ghi cả vào HW[20]):
 #   1 không thấy NVMe  2 thanh ghi đọc ra 0xffffffff  3 CAP không hỗ trợ (DSTRD/MPSMIN/MQES)  4 không tắt được
 #   5 không bật được  6 Identify lỗi  7 sector khác 512B  8 Set Features lỗi  9/10 tạo hàng đợi I/O lỗi
-#   11 không có phân vùng lightos (GPT)  12 phân vùng không có LIGHTVFS  13 đọc GPT lỗi
+#   11 không có phân vùng lightos (GPT)  12 phân vùng không có LIGHTFS1  13 đọc GPT lỗi
 # ---------------------------------------------------------------------------------------------------------------
 func nvme_init_ctrl bv64 %0:io<0,0xffff> {
     @b0
