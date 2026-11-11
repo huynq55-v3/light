@@ -14,6 +14,8 @@ mod elf64;
 mod ir;
 #[path = "../parser.rs"]
 mod parser;
+#[path = "../verify.rs"]
+mod verify;
 #[path = "../x86.rs"]
 mod x86;
 
@@ -445,7 +447,11 @@ fn main() {
     let (mut fz_ok, mut fz_skip) = (0, 0);
     for (name, m, src) in &mods {
         let runs = if src.is_some() { runs / 10 + 1 } else { runs };
+        let _ = x86::take_frames();
         let (code, offs) = elf64::compile_code(m, false).unwrap_or_else(|e| panic!("{}: {}", name, e));
+        if let Err(e) = verify::check_frames(m, &x86::take_frames()) {
+            panic!("{}: {}", name, e);
+        }
         if let Ok(d) = std::env::var("CGDUMP") {
             std::fs::write(format!("{}/{}.bin", d, name), &code).unwrap();
         }

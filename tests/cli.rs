@@ -113,3 +113,11 @@ fn named_labels_work_and_errors_use_them() {
     let (out, _, good) = light(&d, &["check", "n.lit", "--json", "--no-cache"]);
     assert!(!good && out.contains("hai lần"), "{}", out);
 }
+
+#[test]
+fn real_stack_frames_never_exceed_verifier_bound() {
+    // kernel + mọi App: khung thật do bộ sinh mã báo <= cận của verifier cho từng hàm
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let (out, err, ok) = light(&root, &["stack-report"]);
+    assert!(ok && out.contains("OK:"), "{}\n{}", out, err);
+}

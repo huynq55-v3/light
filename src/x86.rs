@@ -326,6 +326,16 @@ pub fn reg_types(module: &Module, func: &Func) -> HashMap<Reg, Type> {
 
 // ---------------------------------------------------------------------------- sinh mã
 /// Sinh mã cho `func` vào cuối `code`. `call_patches`: (vị trí rel32, func_id); `rt_patches`: vị trí rel32 gọi lt_parallel.
+thread_local! {
+    static FRAMES: std::cell::RefCell<Vec<(String, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Khung stack THẬT (byte) của từng hàm đã sinh mã kể từ lần gọi trước: địa chỉ trả về + rbp + thanh ghi callee-saved đã push
+/// + vùng spill + đối số đẩy lên stack lớn nhất của một lời gọi (kèm đệm căn 16) + `push rdi` của ata_read + khung lt_parallel.
+pub fn take_frames() -> Vec<(String, u64)> {
+    FRAMES.with(|f| std::mem::take(&mut *f.borrow_mut()))
+}
+
 pub fn emit_func(
     module: &Module,
     func: &Func,
@@ -579,6 +589,24 @@ pub fn emit_func(
     let mut frame = spilled.len() as i32 * 8;
     if (frame + npush * 8) % 16 != 0 {
         frame += 8;
+    }
+    {
+        // Ghi nhận khung stack thật để đối chiếu với cận của verifier (xem verify::check_frames)
+        let insts = || func.blocks.iter().flat_map(|b| &b.insts);
+        let call_extra = insts()
+            .filter_map(|i| match i {
+                Inst::Call { args, .. } | Inst::CallPtr { args, .. } => {
+                    let e = args.len().saturating_sub(6) as u64;
+                    Some(e * 8 + if e % 2 != 0 { 8 } else { 0 })
+                }
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let ata = if insts().any(|i| matches!(i, Inst::AtaRead { .. })) { 8 } else { 0 };
+        let par = if insts().any(|i| matches!(i, Inst::Parallel { .. })) { 8 + 6 * 8 + 24 } else { 0 }; // call + lt_parallel
+        let real = 16 + npush as u64 * 8 + frame as u64 + call_extra + ata + par;
+        FRAMES.with(|f| f.borrow_mut().push((func.name.clone(), real)));
     }
     let opd = |r: Reg| -> Opd {
         match consts.get(&r) {

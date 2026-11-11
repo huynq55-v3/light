@@ -166,3 +166,10 @@ mã máy thật với số học của Rust (`cgtest`, `tests/lit/codegen/ovf.li
 Thay cho số SSA/nhãn số, có thể viết `%tổng`, `%i`, `@loop`, `@done` (bắt đầu bằng chữ hoặc `_`). Parser đổi chúng thành số trước khi kiểm chứng
 nên dùng được ở mọi vị trí (tham số, `@req/@ens/@inv`, kiểu `ptr<L,%n>`, đích `br/jmp`, tham chiếu tới trước); `%<số>` và `@b<số>` vẫn hợp lệ và
 có thể dùng lẫn. Thông báo lỗi và `--json` in lại bằng tên. Tên nhãn không được là `req`, `ens`, `inv`; block đầu tiên trong văn bản là entry.
+
+## Kiểm khung stack
+
+Cận stack của verifier (`verify::local_stack_bound`) là một lập luận; `light stack-report` kiểm nó bằng đo đạc: bộ sinh mã báo khung THẬT của từng hàm
+(địa chỉ trả về + rbp + thanh ghi push + vùng spill + đối số đẩy lên stack + `push rdi` của ata_read + khung `lt_parallel`) và lệnh fail nếu có hàm
+vượt cận. Chạy trên kernel và mọi App; `cgtest` kiểm thêm trên mọi chương trình trong `tests/lit/codegen` và các chương trình fuzz (hàm có tới 8
+tham số, nhiều lời gọi).

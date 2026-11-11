@@ -367,6 +367,32 @@ fn check_contract(func: &Func) -> Result<(), String> {
     Ok(())
 }
 
+/// Cận trên khung stack của RIÊNG hàm `f` (không tính các hàm nó gọi). Khung thật (x86.rs) = 8 byte cho MỖI biến phải tràn
+/// (<= số thanh ghi SSA phân biệt) + tối đa 11 thanh ghi callee-saved + rbp + địa chỉ trả về, + 128 byte đệm cho đối số đẩy lên stack,
+/// `push rdi` của ata_read và khung lt_parallel. Chỉ phụ thuộc SỐ LƯỢNG biến, không phụ thuộc số định danh.
+pub fn local_stack_bound(f: &Func) -> u64 {
+    let mut regs: std::collections::HashSet<Reg> = f.params.iter().map(|p| p.0).collect();
+    for b in &f.blocks {
+        regs.extend(b.params.iter().map(|p| p.0));
+        regs.extend(b.insts.iter().filter_map(dst_of));
+    }
+    (regs.len() as u64 * 8 + 8 * 11 + 16 + 8 + 15 & !15) + 128
+}
+
+/// Khung stack thật do bộ sinh mã báo (x86::take_frames) phải <= cận của verifier cho từng hàm; trả về (số hàm, khoảng trống nhỏ nhất)
+pub fn check_frames(module: &Module, frames: &[(String, u64)]) -> Result<(usize, i64), String> {
+    let mut min_slack = i64::MAX;
+    for (name, real) in frames {
+        let Some(f) = module.funcs.iter().find(|f| &f.name == name) else { continue };
+        let bound = local_stack_bound(f);
+        if *real > bound {
+            return Err(format!("Hàm '{}': khung stack thật {} byte > cận verifier {} byte", name, real, bound));
+        }
+        min_slack = min_slack.min(bound as i64 - *real as i64);
+    }
+    Ok((frames.len(), min_slack))
+}
+
 pub fn check_module(module: &Module) -> Result<(), String> {
     for l in &module.layouts {
         if l.size == 0 {
@@ -432,15 +458,8 @@ pub fn check_module(module: &Module) -> Result<(), String> {
                 deepest = deepest.max(depth(m, id, st, memo)?);
             }
         }
-        // Khung stack thật (x86.rs) = 8 byte cho MỖI biến phải tràn ra stack (<= số thanh ghi SSA phân biệt) + tối đa 11 thanh ghi
-        // callee-saved + rbp + địa chỉ trả về. Chỉ phụ thuộc SỐ LƯỢNG biến, không phụ thuộc số định danh (%70000 không tốn thêm).
-        let mut regs: std::collections::HashSet<Reg> = m.funcs[f].params.iter().map(|p| p.0).collect();
-        for b in &m.funcs[f].blocks {
-            regs.extend(b.params.iter().map(|p| p.0));
-            regs.extend(b.insts.iter().filter_map(dst_of));
-        }
         st[f] = 2;
-        memo[f] = (regs.len() as u64 * 8 + 8 * 11 + 16 + 8 + 15 & !15) + 128 + deepest;
+        memo[f] = local_stack_bound(&m.funcs[f]) + deepest;
         Ok(memo[f])
     }
     for f in 0..n {

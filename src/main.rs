@@ -107,6 +107,30 @@ fn run() -> Result<(), String> {
     args.retain(|a| a != "--json" && a != "--no-cache");
     tooling::set_flags(json, no_cache);
 
+    if args.len() > 1 && args[1] == "stack-report" {
+        // Biên dịch kernel + mọi App, đối chiếu khung stack thật với cận của verifier
+        let mut total = 0;
+        let mut worst = i64::MAX;
+        let mut files = vec!["lit_program/os/kernel.lit".to_string()];
+        for e in fs::read_dir("lit_program/apps").map_err(|e| e.to_string())? {
+            let p = e.map_err(|e| e.to_string())?.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("lit") {
+                files.push(p.to_string_lossy().into_owned());
+            }
+        }
+        for f in &files {
+            let m = parser::parse_file(f)?;
+            let _ = x86::take_frames();
+            elf64::compile_code(&m, f.ends_with("kernel.lit"))?;
+            let (n, slack) = verify::check_frames(&m, &x86::take_frames())?;
+            say!("  {}: {} hàm, khoảng trống nhỏ nhất {} byte", f, n, slack);
+            total += n;
+            worst = worst.min(slack);
+        }
+        say!("OK: {} hàm, khung thật luôn <= cận verifier (khoảng trống nhỏ nhất {} byte)", total, worst);
+        return Ok(());
+    }
+
     if args.len() > 1 && args[1] == "doc" {
         return tooling::cmd_doc(&args[2..]);
     }
