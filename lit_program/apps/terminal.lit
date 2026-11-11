@@ -1,5 +1,5 @@
 # File: lit_program/apps/terminal.lit
-# App: RETRO TERMINAL CLI SHELL (Lô 64GB riêng) - Hỗ trợ VFS Drill-Down & Thanh Cuộn (Scrollbar)
+# App: RETRO TERMINAL CLI SHELL (Lô 64GB riêng) - Hỗ trợ LightFS & Thanh Cuộn (Scrollbar)
 
 include ../lib/ui_window.lit
 include ../lib/std_lib.lit
