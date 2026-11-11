@@ -130,16 +130,34 @@ pub fn parse_file(entry_path: &str) -> Result<Module, String> {
     parse_module_at(&full_src, Some(&origins))
 }
 
+/// Số định danh dạng thập phân CHUẨN: không số 0 đứng đầu (tránh `%01` và `%1` là cùng một biến, `@b01` và `@b1` cùng một block)
+fn p_id(digits: &str, what: &str, whole: &str) -> Result<u32, String> {
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(format!("Lỗi cú pháp {}: '{}'", what, whole));
+    }
+    if digits.len() > 1 && digits.starts_with('0') {
+        return Err(format!(
+            "{} '{}' có số 0 đứng đầu: sẽ trùng với '{}{}' (chỉ nhận dạng chuẩn, vd {}1)",
+            what,
+            whole,
+            &whole[..whole.len() - digits.len()],
+            digits.trim_start_matches('0'),
+            &whole[..whole.len() - digits.len()]
+        ));
+    }
+    digits.parse().map_err(|_| format!("{} '{}' quá lớn", what, whole))
+}
+
 fn p_reg(s: &str) -> Result<Reg, String> {
-    s.trim_matches(|c| c == '%' || c == ',' || c == ':' || c == '(' || c == ')')
-        .parse()
-        .map_err(|_| format!("Lỗi cú pháp Reg: {}", s))
+    let t = s.trim_matches(|c| c == ',' || c == ':' || c == '(' || c == ')');
+    let d = t.strip_prefix('%').ok_or_else(|| format!("Lỗi cú pháp thanh ghi: '{}'", s))?;
+    p_id(d, "Thanh ghi", t)
 }
 
 fn p_blk(s: &str) -> Result<BlockId, String> {
-    s.trim_matches(|c| c == '@' || c == 'b' || c == ',' || c == ':')
-        .parse()
-        .map_err(|_| format!("Lỗi cú pháp BlockId: {}", s))
+    let t = s.trim_matches(|c| c == ',' || c == ':');
+    let d = t.strip_prefix("@b").ok_or_else(|| format!("Lỗi cú pháp BlockId: '{}'", s))?;
+    p_id(d, "Block", t)
 }
 
 fn p_u64(s: &str, defs: &HashMap<String, u64>) -> Result<u64, String> {

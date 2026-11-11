@@ -62,3 +62,18 @@ fn doc_lists_contracts_and_supports_json() {
     let (j, _, _) = light(&root, &["doc", "lfs_find_child", "--json"]);
     assert!(j.starts_with("[{\"kind\":\"func\",\"name\":\"lfs_find_child\"") && j.contains("\"ensures\":[\"ult %20 256\"]"), "{}", j);
 }
+
+#[test]
+fn leading_zero_ids_are_rejected_not_aliased() {
+    let d = scratch("zero");
+    // @b01 sẽ trùng @b1; %01 sẽ trùng %1
+    std::fs::write(d.join("a.lit"), "func f void %0:bv64 {\n    @b0\n        jmp @b01\n\n    @b1\n        ret\n}\n").unwrap();
+    let (out, _, ok) = light(&d, &["check", "a.lit", "--json"]);
+    assert!(!ok && out.contains("số 0 đứng đầu") && out.contains("a.lit:3"), "{}", out);
+    std::fs::write(d.join("b.lit"), "func f bv64 %0:bv64 {\n    @b0\n        %01 = add_wrap %0 %0\n        ret %01\n}\n").unwrap();
+    let (out, _, ok) = light(&d, &["check", "b.lit", "--json"]);
+    assert!(!ok && out.contains("số 0 đứng đầu"), "{}", out);
+    std::fs::write(d.join("c.lit"), "func f bv64 %0:bv64 {\n    @b0\n        %1 = add_wrap %0 %0\n        ret %1\n}\n").unwrap();
+    let (_, _, ok) = light(&d, &["check", "c.lit", "--json"]);
+    assert!(ok);
+}
