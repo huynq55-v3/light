@@ -432,20 +432,15 @@ pub fn check_module(module: &Module) -> Result<(), String> {
                 deepest = deepest.max(depth(m, id, st, memo)?);
             }
         }
-        let max_reg = m.funcs[f]
-            .params
-            .iter()
-            .map(|p| p.0)
-            .chain(m.funcs[f].blocks.iter().flat_map(|b| {
-                b.params
-                    .iter()
-                    .map(|p| p.0)
-                    .chain(b.insts.iter().filter_map(dst_of))
-            }))
-            .max()
-            .unwrap_or(0);
+        // Khung stack thật (x86.rs) = 8 byte cho MỖI biến phải tràn ra stack (<= số thanh ghi SSA phân biệt) + tối đa 11 thanh ghi
+        // callee-saved + rbp + địa chỉ trả về. Chỉ phụ thuộc SỐ LƯỢNG biến, không phụ thuộc số định danh (%70000 không tốn thêm).
+        let mut regs: std::collections::HashSet<Reg> = m.funcs[f].params.iter().map(|p| p.0).collect();
+        for b in &m.funcs[f].blocks {
+            regs.extend(b.params.iter().map(|p| p.0));
+            regs.extend(b.insts.iter().filter_map(dst_of));
+        }
         st[f] = 2;
-        memo[f] = (((max_reg as u64 + 8) * 8 + 15) & !15).max(0x800) + 128 + deepest;
+        memo[f] = (regs.len() as u64 * 8 + 8 * 11 + 16 + 8 + 15 & !15) + 128 + deepest;
         Ok(memo[f])
     }
     for f in 0..n {

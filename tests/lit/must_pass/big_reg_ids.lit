@@ -1,0 +1,7 @@
+# Khung stack chỉ phụ thuộc SỐ biến, không phụ thuộc số định danh: %70000 không được tốn 560KB stack
+func big_reg_ids bv64 %0:bv64 {
+    @b0
+        %70000 = add_wrap %0 %0
+        %70001 = add_wrap %70000 %0
+        ret %70001
+}

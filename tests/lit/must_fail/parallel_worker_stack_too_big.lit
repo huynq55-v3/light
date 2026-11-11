@@ -1,11 +1,660 @@
-# Worker chạy trên stack 32KB của nhân AP
+# Worker chạy trên stack 32KB của nhân AP: chuỗi 130 hàm gọi nhau (mỗi khung >= ~250 byte theo cận trên của verifier) vượt 28KB
 # EXPECT: stack nhân AP
 layout Q 8 {
     0: bv64
 }
+func c0 void %0:bv64 {
+    @b0
+        ret
+}
+func c1 void %0:bv64 {
+    @b0
+        call c0 %0
+        ret
+}
+func c2 void %0:bv64 {
+    @b0
+        call c1 %0
+        ret
+}
+func c3 void %0:bv64 {
+    @b0
+        call c2 %0
+        ret
+}
+func c4 void %0:bv64 {
+    @b0
+        call c3 %0
+        ret
+}
+func c5 void %0:bv64 {
+    @b0
+        call c4 %0
+        ret
+}
+func c6 void %0:bv64 {
+    @b0
+        call c5 %0
+        ret
+}
+func c7 void %0:bv64 {
+    @b0
+        call c6 %0
+        ret
+}
+func c8 void %0:bv64 {
+    @b0
+        call c7 %0
+        ret
+}
+func c9 void %0:bv64 {
+    @b0
+        call c8 %0
+        ret
+}
+func c10 void %0:bv64 {
+    @b0
+        call c9 %0
+        ret
+}
+func c11 void %0:bv64 {
+    @b0
+        call c10 %0
+        ret
+}
+func c12 void %0:bv64 {
+    @b0
+        call c11 %0
+        ret
+}
+func c13 void %0:bv64 {
+    @b0
+        call c12 %0
+        ret
+}
+func c14 void %0:bv64 {
+    @b0
+        call c13 %0
+        ret
+}
+func c15 void %0:bv64 {
+    @b0
+        call c14 %0
+        ret
+}
+func c16 void %0:bv64 {
+    @b0
+        call c15 %0
+        ret
+}
+func c17 void %0:bv64 {
+    @b0
+        call c16 %0
+        ret
+}
+func c18 void %0:bv64 {
+    @b0
+        call c17 %0
+        ret
+}
+func c19 void %0:bv64 {
+    @b0
+        call c18 %0
+        ret
+}
+func c20 void %0:bv64 {
+    @b0
+        call c19 %0
+        ret
+}
+func c21 void %0:bv64 {
+    @b0
+        call c20 %0
+        ret
+}
+func c22 void %0:bv64 {
+    @b0
+        call c21 %0
+        ret
+}
+func c23 void %0:bv64 {
+    @b0
+        call c22 %0
+        ret
+}
+func c24 void %0:bv64 {
+    @b0
+        call c23 %0
+        ret
+}
+func c25 void %0:bv64 {
+    @b0
+        call c24 %0
+        ret
+}
+func c26 void %0:bv64 {
+    @b0
+        call c25 %0
+        ret
+}
+func c27 void %0:bv64 {
+    @b0
+        call c26 %0
+        ret
+}
+func c28 void %0:bv64 {
+    @b0
+        call c27 %0
+        ret
+}
+func c29 void %0:bv64 {
+    @b0
+        call c28 %0
+        ret
+}
+func c30 void %0:bv64 {
+    @b0
+        call c29 %0
+        ret
+}
+func c31 void %0:bv64 {
+    @b0
+        call c30 %0
+        ret
+}
+func c32 void %0:bv64 {
+    @b0
+        call c31 %0
+        ret
+}
+func c33 void %0:bv64 {
+    @b0
+        call c32 %0
+        ret
+}
+func c34 void %0:bv64 {
+    @b0
+        call c33 %0
+        ret
+}
+func c35 void %0:bv64 {
+    @b0
+        call c34 %0
+        ret
+}
+func c36 void %0:bv64 {
+    @b0
+        call c35 %0
+        ret
+}
+func c37 void %0:bv64 {
+    @b0
+        call c36 %0
+        ret
+}
+func c38 void %0:bv64 {
+    @b0
+        call c37 %0
+        ret
+}
+func c39 void %0:bv64 {
+    @b0
+        call c38 %0
+        ret
+}
+func c40 void %0:bv64 {
+    @b0
+        call c39 %0
+        ret
+}
+func c41 void %0:bv64 {
+    @b0
+        call c40 %0
+        ret
+}
+func c42 void %0:bv64 {
+    @b0
+        call c41 %0
+        ret
+}
+func c43 void %0:bv64 {
+    @b0
+        call c42 %0
+        ret
+}
+func c44 void %0:bv64 {
+    @b0
+        call c43 %0
+        ret
+}
+func c45 void %0:bv64 {
+    @b0
+        call c44 %0
+        ret
+}
+func c46 void %0:bv64 {
+    @b0
+        call c45 %0
+        ret
+}
+func c47 void %0:bv64 {
+    @b0
+        call c46 %0
+        ret
+}
+func c48 void %0:bv64 {
+    @b0
+        call c47 %0
+        ret
+}
+func c49 void %0:bv64 {
+    @b0
+        call c48 %0
+        ret
+}
+func c50 void %0:bv64 {
+    @b0
+        call c49 %0
+        ret
+}
+func c51 void %0:bv64 {
+    @b0
+        call c50 %0
+        ret
+}
+func c52 void %0:bv64 {
+    @b0
+        call c51 %0
+        ret
+}
+func c53 void %0:bv64 {
+    @b0
+        call c52 %0
+        ret
+}
+func c54 void %0:bv64 {
+    @b0
+        call c53 %0
+        ret
+}
+func c55 void %0:bv64 {
+    @b0
+        call c54 %0
+        ret
+}
+func c56 void %0:bv64 {
+    @b0
+        call c55 %0
+        ret
+}
+func c57 void %0:bv64 {
+    @b0
+        call c56 %0
+        ret
+}
+func c58 void %0:bv64 {
+    @b0
+        call c57 %0
+        ret
+}
+func c59 void %0:bv64 {
+    @b0
+        call c58 %0
+        ret
+}
+func c60 void %0:bv64 {
+    @b0
+        call c59 %0
+        ret
+}
+func c61 void %0:bv64 {
+    @b0
+        call c60 %0
+        ret
+}
+func c62 void %0:bv64 {
+    @b0
+        call c61 %0
+        ret
+}
+func c63 void %0:bv64 {
+    @b0
+        call c62 %0
+        ret
+}
+func c64 void %0:bv64 {
+    @b0
+        call c63 %0
+        ret
+}
+func c65 void %0:bv64 {
+    @b0
+        call c64 %0
+        ret
+}
+func c66 void %0:bv64 {
+    @b0
+        call c65 %0
+        ret
+}
+func c67 void %0:bv64 {
+    @b0
+        call c66 %0
+        ret
+}
+func c68 void %0:bv64 {
+    @b0
+        call c67 %0
+        ret
+}
+func c69 void %0:bv64 {
+    @b0
+        call c68 %0
+        ret
+}
+func c70 void %0:bv64 {
+    @b0
+        call c69 %0
+        ret
+}
+func c71 void %0:bv64 {
+    @b0
+        call c70 %0
+        ret
+}
+func c72 void %0:bv64 {
+    @b0
+        call c71 %0
+        ret
+}
+func c73 void %0:bv64 {
+    @b0
+        call c72 %0
+        ret
+}
+func c74 void %0:bv64 {
+    @b0
+        call c73 %0
+        ret
+}
+func c75 void %0:bv64 {
+    @b0
+        call c74 %0
+        ret
+}
+func c76 void %0:bv64 {
+    @b0
+        call c75 %0
+        ret
+}
+func c77 void %0:bv64 {
+    @b0
+        call c76 %0
+        ret
+}
+func c78 void %0:bv64 {
+    @b0
+        call c77 %0
+        ret
+}
+func c79 void %0:bv64 {
+    @b0
+        call c78 %0
+        ret
+}
+func c80 void %0:bv64 {
+    @b0
+        call c79 %0
+        ret
+}
+func c81 void %0:bv64 {
+    @b0
+        call c80 %0
+        ret
+}
+func c82 void %0:bv64 {
+    @b0
+        call c81 %0
+        ret
+}
+func c83 void %0:bv64 {
+    @b0
+        call c82 %0
+        ret
+}
+func c84 void %0:bv64 {
+    @b0
+        call c83 %0
+        ret
+}
+func c85 void %0:bv64 {
+    @b0
+        call c84 %0
+        ret
+}
+func c86 void %0:bv64 {
+    @b0
+        call c85 %0
+        ret
+}
+func c87 void %0:bv64 {
+    @b0
+        call c86 %0
+        ret
+}
+func c88 void %0:bv64 {
+    @b0
+        call c87 %0
+        ret
+}
+func c89 void %0:bv64 {
+    @b0
+        call c88 %0
+        ret
+}
+func c90 void %0:bv64 {
+    @b0
+        call c89 %0
+        ret
+}
+func c91 void %0:bv64 {
+    @b0
+        call c90 %0
+        ret
+}
+func c92 void %0:bv64 {
+    @b0
+        call c91 %0
+        ret
+}
+func c93 void %0:bv64 {
+    @b0
+        call c92 %0
+        ret
+}
+func c94 void %0:bv64 {
+    @b0
+        call c93 %0
+        ret
+}
+func c95 void %0:bv64 {
+    @b0
+        call c94 %0
+        ret
+}
+func c96 void %0:bv64 {
+    @b0
+        call c95 %0
+        ret
+}
+func c97 void %0:bv64 {
+    @b0
+        call c96 %0
+        ret
+}
+func c98 void %0:bv64 {
+    @b0
+        call c97 %0
+        ret
+}
+func c99 void %0:bv64 {
+    @b0
+        call c98 %0
+        ret
+}
+func c100 void %0:bv64 {
+    @b0
+        call c99 %0
+        ret
+}
+func c101 void %0:bv64 {
+    @b0
+        call c100 %0
+        ret
+}
+func c102 void %0:bv64 {
+    @b0
+        call c101 %0
+        ret
+}
+func c103 void %0:bv64 {
+    @b0
+        call c102 %0
+        ret
+}
+func c104 void %0:bv64 {
+    @b0
+        call c103 %0
+        ret
+}
+func c105 void %0:bv64 {
+    @b0
+        call c104 %0
+        ret
+}
+func c106 void %0:bv64 {
+    @b0
+        call c105 %0
+        ret
+}
+func c107 void %0:bv64 {
+    @b0
+        call c106 %0
+        ret
+}
+func c108 void %0:bv64 {
+    @b0
+        call c107 %0
+        ret
+}
+func c109 void %0:bv64 {
+    @b0
+        call c108 %0
+        ret
+}
+func c110 void %0:bv64 {
+    @b0
+        call c109 %0
+        ret
+}
+func c111 void %0:bv64 {
+    @b0
+        call c110 %0
+        ret
+}
+func c112 void %0:bv64 {
+    @b0
+        call c111 %0
+        ret
+}
+func c113 void %0:bv64 {
+    @b0
+        call c112 %0
+        ret
+}
+func c114 void %0:bv64 {
+    @b0
+        call c113 %0
+        ret
+}
+func c115 void %0:bv64 {
+    @b0
+        call c114 %0
+        ret
+}
+func c116 void %0:bv64 {
+    @b0
+        call c115 %0
+        ret
+}
+func c117 void %0:bv64 {
+    @b0
+        call c116 %0
+        ret
+}
+func c118 void %0:bv64 {
+    @b0
+        call c117 %0
+        ret
+}
+func c119 void %0:bv64 {
+    @b0
+        call c118 %0
+        ret
+}
+func c120 void %0:bv64 {
+    @b0
+        call c119 %0
+        ret
+}
+func c121 void %0:bv64 {
+    @b0
+        call c120 %0
+        ret
+}
+func c122 void %0:bv64 {
+    @b0
+        call c121 %0
+        ret
+}
+func c123 void %0:bv64 {
+    @b0
+        call c122 %0
+        ret
+}
+func c124 void %0:bv64 {
+    @b0
+        call c123 %0
+        ret
+}
+func c125 void %0:bv64 {
+    @b0
+        call c124 %0
+        ret
+}
+func c126 void %0:bv64 {
+    @b0
+        call c125 %0
+        ret
+}
+func c127 void %0:bv64 {
+    @b0
+        call c126 %0
+        ret
+}
+func c128 void %0:bv64 {
+    @b0
+        call c127 %0
+        ret
+}
+func c129 void %0:bv64 {
+    @b0
+        call c128 %0
+        ret
+}
 func big void %0:ptr<Q,4> %1:bv64 %2:bv64 {
     @b0
-        %9000 = const 0 bv64
+        call c129 %1
         ret
 }
 func f void %0:smp %1:ptr<Q,16> {
