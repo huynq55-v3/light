@@ -230,6 +230,15 @@ fn p_binop(s: &str) -> Option<BinOp> {
         "ashr" => Some(BinOp::AShr),
         "fxmul" => Some(BinOp::FxMul),
         "fxdiv" => Some(BinOp::FxDiv),
+        "add_wrap" => Some(BinOp::AddWrap),
+        "sub_wrap" => Some(BinOp::SubWrap),
+        "mul_wrap" => Some(BinOp::MulWrap),
+        "add_sat" => Some(BinOp::AddSat),
+        "sub_sat" => Some(BinOp::SubSat),
+        "mul_sat" => Some(BinOp::MulSat),
+        "add_ovf" => Some(BinOp::AddOvf),
+        "sub_ovf" => Some(BinOp::SubOvf),
+        "mul_ovf" => Some(BinOp::MulOvf),
         _ => None,
     }
 }
@@ -660,5 +669,131 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
             format!("{}\n    > {}", e, raw_line.trim())
         })?;
     }
+    for f in &mut m.funcs {
+        lower_func(f);
+    }
     Ok(m)
+}
+
+/// Hạ các phép *_sat / *_ovf thành lệnh gốc bv64 thuần (không rẽ nhánh, không cmp) để verifier và bộ sinh mã không cần biết chúng.
+/// Cờ tràn là bv64 0/1: cộng = bit cao của (a&b | (a|b)&~s); trừ = bit cao của (~a&b | ~(a^b)&d);
+/// nhân = (a != 0) & ((a*b)/(a|[a==0]) != b). *_sat = kết quả quay vòng OR mặt nạ toàn 1 (cộng/nhân) hoặc AND mặt nạ (trừ).
+struct Low<'a> {
+    out: &'a mut Vec<Inst>,
+    next: &'a mut u32,
+}
+impl Low<'_> {
+    fn r(&mut self) -> u32 {
+        *self.next += 1;
+        *self.next - 1
+    }
+    fn k(&mut self, val: u64) -> u32 {
+        let d = self.r();
+        self.out.push(Inst::Const { dst: d, ty: Type::Bv64, val });
+        d
+    }
+    fn op(&mut self, op: BinOp, lhs: u32, rhs: u32, dst: Option<u32>) -> u32 {
+        let d = dst.unwrap_or_else(|| self.r());
+        self.out.push(Inst::Bin { dst: d, op, lhs, rhs });
+        d
+    }
+    fn top(&mut self, x: u32, dst: Option<u32>) -> u32 {
+        let c = self.k(63);
+        self.op(BinOp::LShr, x, c, dst)
+    }
+    fn nonzero(&mut self, x: u32, dst: Option<u32>) -> u32 {
+        let z = self.k(0);
+        let n = self.op(BinOp::SubWrap, z, x, None);
+        let o = self.op(BinOp::Or, x, n, None);
+        self.top(o, dst)
+    }
+    fn mask(&mut self, flag: u32) -> u32 {
+        let z = self.k(0);
+        self.op(BinOp::SubWrap, z, flag, None)
+    }
+    fn add_ovf(&mut self, l: u32, r: u32, dst: Option<u32>) -> (u32, u32) {
+        let s = self.op(BinOp::AddWrap, l, r, None);
+        let ones = self.k(u64::MAX);
+        let (t1, t2) = (self.op(BinOp::And, l, r, None), self.op(BinOp::Or, l, r, None));
+        let ns = self.op(BinOp::Xor, s, ones, None);
+        let t3 = self.op(BinOp::And, t2, ns, None);
+        let t4 = self.op(BinOp::Or, t1, t3, None);
+        (s, self.top(t4, dst))
+    }
+    fn sub_ovf(&mut self, l: u32, r: u32, dst: Option<u32>) -> (u32, u32) {
+        let d = self.op(BinOp::SubWrap, l, r, None);
+        let ones = self.k(u64::MAX);
+        let na = self.op(BinOp::Xor, l, ones, None);
+        let t1 = self.op(BinOp::And, na, r, None);
+        let x = self.op(BinOp::Xor, l, r, None);
+        let nx = self.op(BinOp::Xor, x, ones, None);
+        let t2 = self.op(BinOp::And, nx, d, None);
+        let t3 = self.op(BinOp::Or, t1, t2, None);
+        (d, self.top(t3, dst))
+    }
+    fn mul_ovf(&mut self, l: u32, r: u32, dst: Option<u32>) -> (u32, u32) {
+        let p = self.op(BinOp::MulWrap, l, r, None);
+        let nza = self.nonzero(l, None);
+        let one = self.k(1);
+        let isz = self.op(BinOp::Xor, nza, one, None);
+        let anz = self.op(BinOp::Or, l, isz, None); // a == 0 -> chia cho 1
+        let q = self.op(BinOp::UDiv, p, anz, None);
+        let x = self.op(BinOp::Xor, q, r, None);
+        let nzq = self.nonzero(x, None);
+        (p, self.op(BinOp::And, nza, nzq, dst))
+    }
+}
+
+fn lower_func(f: &mut Func) {
+    let mut max = f.params.iter().map(|p| p.0).max().unwrap_or(0);
+    for b in &f.blocks {
+        for p in &b.params {
+            max = max.max(p.0);
+        }
+        for i in &b.insts {
+            if let Inst::Bin { dst, .. } | Inst::Cmp { dst, .. } | Inst::Const { dst, .. } = i {
+                max = max.max(*dst);
+            }
+        }
+    }
+    let mut next = max + 1;
+    for b in &mut f.blocks {
+        let old = std::mem::take(&mut b.insts);
+        for inst in old {
+            let Inst::Bin { dst, op, lhs: l, rhs: r } = inst else {
+                b.insts.push(inst);
+                continue;
+            };
+            let mut lw = Low { out: &mut b.insts, next: &mut next };
+            match op {
+                BinOp::AddOvf => {
+                    lw.add_ovf(l, r, Some(dst));
+                }
+                BinOp::SubOvf => {
+                    lw.sub_ovf(l, r, Some(dst));
+                }
+                BinOp::MulOvf => {
+                    lw.mul_ovf(l, r, Some(dst));
+                }
+                BinOp::AddSat => {
+                    let (s, c) = lw.add_ovf(l, r, None);
+                    let m = lw.mask(c);
+                    lw.op(BinOp::Or, s, m, Some(dst));
+                }
+                BinOp::SubSat => {
+                    let (d, c) = lw.sub_ovf(l, r, None);
+                    let one = lw.k(1);
+                    let keep = lw.op(BinOp::Xor, c, one, None);
+                    let m = lw.mask(keep);
+                    lw.op(BinOp::And, d, m, Some(dst));
+                }
+                BinOp::MulSat => {
+                    let (p, c) = lw.mul_ovf(l, r, None);
+                    let m = lw.mask(c);
+                    lw.op(BinOp::Or, p, m, Some(dst));
+                }
+                _ => b.insts.push(inst),
+            }
+        }
+    }
 }

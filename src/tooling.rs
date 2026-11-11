@@ -90,7 +90,7 @@ fn hint_for(msg: &str, kind: &str) -> &'static str {
     } else if m.contains("Tràn số cộng index") || m.contains("Tràn biên mảng khi slice") || m.contains("Tràn vùng nhớ") || m.contains("vượt độ dài động") {
         "Chỉ số/offset có thể vượt vùng ptr: thêm @req ult %idx <kích thước> cho tham số, hoặc kẹp bằng std_min(%idx, N-1) trước khi slice/load/store."
     } else if m.contains("Tràn số") {
-        "Phép toán số học có thể tràn 64-bit: giới hạn toán hạng bằng @req (vd @req ule %x 0xffffffff), hoặc dùng std_min/std_sat_add/std_sat_sub trước khi tính."
+        "Phép toán số học có thể tràn 64-bit: chọn nghĩa khi tràn: add_sat/sub_sat/mul_sat (kẹp ở biên), add_wrap/sub_wrap/mul_wrap (quay vòng, vd hash/checksum), add_ovf/sub_ovf/mul_ovf (cờ 0/1 để br xử lý); hoặc giữ phép thường và giới hạn toán hạng bằng @req (vd @req ule %x 0xffffffff) / std_min."
     } else if m.contains("Vi phạm bất biến (@inv") {
         "Giá trị truyền vào jmp không thỏa @inv của block đích: kiểm tra bộ đếm vòng lặp tăng thế nào, thêm cận (vd @inv ule %i N) và buộc các biến liên quan (vd @inv ult %j %i)."
     } else if m.contains("Vi phạm @req") && m.contains("khi gọi hàm") {

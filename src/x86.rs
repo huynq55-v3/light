@@ -674,8 +674,9 @@ pub fn emit_func(
                     let Some(d) = dst_loc(dst) else { continue };
                     let (mut l, mut r) = (opd(*lhs), opd(*rhs));
                     match op {
-                        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor => {
-                            let comm = *op != BinOp::Sub;
+                        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor
+                        | BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => {
+                            let comm = !matches!(op, BinOp::Sub | BinOp::SubWrap);
                             if comm && (r == Opd::L(d) || matches!(l, Opd::I(_))) && l != Opd::L(d) {
                                 std::mem::swap(&mut l, &mut r);
                             }
@@ -685,8 +686,8 @@ pub fn emit_func(
                             };
                             load(c, w, l);
                             match op {
-                                BinOp::Add => alu(c, 0x03, 0, w, r),
-                                BinOp::Sub => alu(c, 0x2B, 5, w, r),
+                                BinOp::Add | BinOp::AddWrap => alu(c, 0x03, 0, w, r),
+                                BinOp::Sub | BinOp::SubWrap => alu(c, 0x2B, 5, w, r),
                                 BinOp::And => alu(c, 0x23, 4, w, r),
                                 BinOp::Or => alu(c, 0x0B, 1, w, r),
                                 BinOp::Xor => alu(c, 0x33, 6, w, r),

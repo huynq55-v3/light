@@ -1,0 +1,45 @@
+func t_add_wrap bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = add_wrap %0 %1
+        ret %2
+}
+func t_add_sat bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = add_sat %0 %1
+        ret %2
+}
+func t_add_ovf bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = add_ovf %0 %1
+        ret %2
+}
+func t_sub_wrap bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = sub_wrap %0 %1
+        ret %2
+}
+func t_sub_sat bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = sub_sat %0 %1
+        ret %2
+}
+func t_sub_ovf bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = sub_ovf %0 %1
+        ret %2
+}
+func t_mul_wrap bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = mul_wrap %0 %1
+        ret %2
+}
+func t_mul_sat bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = mul_sat %0 %1
+        ret %2
+}
+func t_mul_ovf bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = mul_ovf %0 %1
+        ret %2
+}

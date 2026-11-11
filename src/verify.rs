@@ -843,9 +843,9 @@ impl<'ctx> Verifier<'ctx> {
 
     fn eval_binop(&self, op: BinOp, l: &BV<'ctx>, r: &BV<'ctx>) -> BV<'ctx> {
         match op {
-            BinOp::Add => l.bvadd(r),
-            BinOp::Sub => l.bvsub(r),
-            BinOp::Mul => l.bvmul(r),
+            BinOp::Add | BinOp::AddWrap | BinOp::AddSat | BinOp::AddOvf => l.bvadd(r),
+            BinOp::Sub | BinOp::SubWrap | BinOp::SubSat | BinOp::SubOvf => l.bvsub(r),
+            BinOp::Mul | BinOp::MulWrap | BinOp::MulSat | BinOp::MulOvf => l.bvmul(r),
             BinOp::UDiv => l.bvudiv(r),
             BinOp::SDiv => l.bvsdiv(r),
             BinOp::URem => l.bvurem(r),

@@ -117,9 +117,9 @@ fn interp(m: &Module, fid: usize, args: &[u64], bufs: &Bufs, fuel: &mut u64, dep
                 Inst::Bin { dst, op, lhs, rhs } => {
                     let (a, c) = (get(&r, *lhs)?, get(&r, *rhs)?);
                     let v = match op {
-                        BinOp::Add => a.wrapping_add(c),
-                        BinOp::Sub => a.wrapping_sub(c),
-                        BinOp::Mul => a.wrapping_mul(c),
+                        BinOp::Add | BinOp::AddWrap | BinOp::AddSat | BinOp::AddOvf => a.wrapping_add(c),
+                        BinOp::Sub | BinOp::SubWrap | BinOp::SubSat | BinOp::SubOvf => a.wrapping_sub(c),
+                        BinOp::Mul | BinOp::MulWrap | BinOp::MulSat | BinOp::MulOvf => a.wrapping_mul(c),
                         BinOp::And => a & c,
                         BinOp::Or => a | c,
                         BinOp::Xor => a ^ c,
@@ -387,6 +387,40 @@ fn gen_prog(r: &mut Rng) -> String {
     s.replace("call g ", "call g %0 ")
 }
 
+/// Ngữ nghĩa add/sub/mul_{wrap,sat,ovf}: mã máy thật phải khớp số học của Rust trên các giá trị biên
+fn check_ovf_semantics() -> usize {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lit/codegen/ovf.lit");
+    let m = parser::parse_file(path).expect("ovf.lit");
+    let (code, offs) = elf64::compile_code(&m, false).expect("biên dịch ovf.lit");
+    let exe = load_code(&code);
+    let edge: [u64; 14] = [0, 1, 2, 3, 7, 0xffff, 1 << 32, (1 << 32) - 1, 1 << 63, (1 << 63) - 1, u64::MAX, u64::MAX - 1, 0x1234_5678_9abc_def0, 0xdead_beef];
+    let mut bad = 0;
+    for (fi, f) in m.funcs.iter().enumerate() {
+        for &a in &edge {
+            for &b in &edge {
+                let want = match f.name.as_str() {
+                    "t_add_wrap" => a.wrapping_add(b),
+                    "t_sub_wrap" => a.wrapping_sub(b),
+                    "t_mul_wrap" => a.wrapping_mul(b),
+                    "t_add_sat" => a.saturating_add(b),
+                    "t_sub_sat" => a.saturating_sub(b),
+                    "t_mul_sat" => a.saturating_mul(b),
+                    "t_add_ovf" => a.overflowing_add(b).1 as u64,
+                    "t_sub_ovf" => a.overflowing_sub(b).1 as u64,
+                    "t_mul_ovf" => a.overflowing_mul(b).1 as u64,
+                    n => panic!("ovf.lit: hàm lạ {}", n),
+                };
+                let got = native(exe, offs[fi], &[a, b]);
+                if got != want {
+                    bad += 1;
+                    println!("SAI {}({:#x}, {:#x}) = {:#x}, mong {:#x}", f.name, a, b, got, want);
+                }
+            }
+        }
+    }
+    bad
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let runs: usize = args.iter().position(|a| a == "--runs").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(2000);
@@ -491,6 +525,11 @@ fn main() {
         }
     }
     println!("== fuzz: {} chương trình ngẫu nhiên, {} lượt khớp, {} bỏ qua", fuzz, fz_ok, fz_skip);
+    if !bench {
+        let bad = check_ovf_semantics();
+        println!("== ngữ nghĩa add/sub/mul_{{wrap,sat,ovf}}: {} sai", bad);
+        fails += bad;
+    }
     if fails > 0 {
         println!("THẤT BẠI: {} hàm sai", fails);
         std::process::exit(1);

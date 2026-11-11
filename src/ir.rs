@@ -71,6 +71,17 @@ pub enum BinOp {
     // Số thực Điểm cố định Q16.16 (Fixed-Point Arithmetic: fxmul = (a*b)>>16, fxdiv = (a<<16)/b)
     FxMul,
     FxDiv,
+    // Phép số học tường minh khi tràn 64-bit. *Wrap: quay vòng, không đòi chứng minh. *Sat / *Ovf: bị parser HẠ thành các lệnh
+    // gốc (xem parser::lower) nên verify/x86 không bao giờ thấy chúng.
+    AddWrap,
+    SubWrap,
+    MulWrap,
+    AddSat,
+    SubSat,
+    MulSat,
+    AddOvf,
+    SubOvf,
+    MulOvf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

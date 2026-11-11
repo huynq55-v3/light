@@ -133,9 +133,9 @@ fn cmp(op: CmpOp, l: u64, r: u64) -> bool {
 /// Ngữ nghĩa TOÀN PHẦN của bitvector Z3 (dùng trong biểu thức @req/@inv/@ens): không bao giờ lỗi.
 fn bv_total(op: BinOp, l: u64, r: u64) -> u64 {
     match op {
-        BinOp::Add => l.wrapping_add(r),
-        BinOp::Sub => l.wrapping_sub(r),
-        BinOp::Mul => l.wrapping_mul(r),
+        BinOp::Add | BinOp::AddWrap | BinOp::AddSat | BinOp::AddOvf => l.wrapping_add(r),
+        BinOp::Sub | BinOp::SubWrap | BinOp::SubSat | BinOp::SubOvf => l.wrapping_sub(r),
+        BinOp::Mul | BinOp::MulWrap | BinOp::MulSat | BinOp::MulOvf => l.wrapping_mul(r),
         BinOp::UDiv => {
             if r == 0 {
                 u64::MAX

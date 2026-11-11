@@ -147,3 +147,16 @@ bash tools/qemu_uefi_nvme.sh
   `lit_program/`; tra theo tên, chú thích hoặc đường dẫn. Dùng thay cho việc đọc cả file thư viện.
 - Cache Z3: kết quả chứng minh lưu ở `.light-cache/z3.keys` (khóa = băm mã verifier + layouts + hàm + hợp đồng của hàm được gọi).
   Build lại không đổi gì mất ~0,06s thay vì ~7s. `--no-cache` hoặc `LIGHT_NO_CACHE=1` để tắt; xóa thư mục để làm mới.
+
+## Số học tường minh khi tràn 64-bit
+
+`add`/`sub`/`mul` thường đòi verifier chứng minh không tràn. Khi cần định nghĩa hành vi tràn, dùng (cả ba họ cho cộng, trừ, nhân):
+
+| Lệnh | Khi tràn |
+|---|---|
+| `%d = add_sat %a %b` (`sub_sat`, `mul_sat`) | kẹp ở biên (0 hoặc 2^64-1), luôn qua verifier |
+| `%d = add_wrap %a %b` (`sub_wrap`, `mul_wrap`) | quay vòng modulo 2^64 (hash, checksum), không đòi chứng minh |
+| `%f = add_ovf %a %b` (`sub_ovf`, `mul_ovf`) | `%f` = 1 nếu phép tương ứng sẽ tràn, ngược lại 0 (bv64); dùng với `br`/`add_wrap` |
+
+`*_sat` và `*_ovf` được parser hạ thành các lệnh bv64 thuần (không rẽ nhánh), nên verifier và bộ sinh mã không đổi; ngữ nghĩa được kiểm trên
+mã máy thật với số học của Rust (`cgtest`, `tests/lit/codegen/ovf.lit`).
