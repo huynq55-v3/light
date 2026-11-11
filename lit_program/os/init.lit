@@ -54,10 +54,11 @@ func sys_init_desktop void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
         %10 = const 0x161b26 bv32
 
         call gfx_fill_rect_scr %2 %7 %7 %8 %9 %10
-        # Dock vẽ trong khung nhìn có gốc (320, 359) = 359 * 1920 + 320 -> nằm giữa đáy màn hình
-        %15 = const 689600 bv64
-        %16 = slice %2 %15 ptr<VgaCell,1382400>
-        call dock_render_bar %0 %16 %3 %4
+        # Nạp App + vẽ Dock (khung nhìn gốc (320, 359), giữa đáy màn hình) vào bộ đệm sau
+        call dock_load_apps %0 %3
+        call dock_redraw %0 %2
+        %dsb = call dock_ds %0
+        store %dsb DockState.drawn 1
         store %3 80 %7
         call gfx_blit_rect %1 %2 %7 %7 %8 %9
         call fb_present_rect %0 %1 %7 %7 %8 %9

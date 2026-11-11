@@ -1,0 +1,513 @@
+# File: lit_program/os/dock.lit
+# LIGHT OS — Dock (lát 6 GUI): phần VẼ THUẦN, không giữ io (giống cs_* của compositor).
+#
+# Dock vẽ vào khung nhìn có gốc màn hình (DK_ORG_X, DK_ORG_Y) = (320, 359), surface (1382400, 1920, 1280, 720).
+# Bố cục (tọa độ khung nhìn Dock):
+#   - bảng bo góc căn giữa, rộng n*68 + 12 (n = số ô = slot App cuối + 1), y [628, 704): bóng đổ + viền + nền + vệt sáng trên
+#   - icon 52x52 (do App tự vẽ) tại x0 + 14 + 68*i, y 640 (đang rê chuột: nâng lên 4 điểm, có ô nền sáng phía sau);
+#     compositor cắt 4 góc icon cho tròn
+#   - dưới icon: chấm xám = App đang mở; vạch xanh dài = App đang focus
+#   - rê chuột lên icon: nhãn tên App (lấy từ tên file trong LightFS) phía trên Dock
+# Trạng thái ở DockState (0x79e00); phần cần io (vẽ icon bằng mã App, đọc LightFS, đưa lên màn hình) nằm trong wm.lit.
+
+include ../std/surface.lit
+
+def DK_N 1382400
+def DK_STRIDE 1920
+def DK_W 1280
+def DK_H 720
+def DK_ORG_X 320
+def DK_ORG_Y 359
+def DK_PITCH 68
+def DK_ICON 52
+def DK_PAD 14
+def DK_Y0 628                               # bảng Dock [628, 704)
+def DK_Y1 704
+def DK_ICON_Y 640
+def DK_LIFT_Y 636                           # icon đang rê chuột
+def DK_IND_Y 697                            # chấm / vạch chỉ báo [697, 701)
+def DK_TIP_Y 592                            # nhãn tên [592, 618)
+def DK_CLEAR_Y 580                          # vùng Dock vẽ lại: y [580, 720)
+def DK_NONE 7
+
+def DK_BG 0x161b26                          # nền desktop (= COMP_BG)
+def DK_SHADOW 0x0e1119
+def DK_BORDER 0x313b52
+def DK_FILL 0x1d2433
+def DK_SHINE 0x3d4966
+def DK_HOVER 0x2d374d
+def DK_DOT 0x8b95a7
+def DK_FOCUS 0x38bdf8
+def DK_TIP_BG 0x0f141f
+def DK_TIP_FG 0xe2e8f0
+
+layout DockState 144 {
+    0: bv64 drawn @inv ule val 1            # 1 = Dock đang hiện đúng trạng thái dưới đây
+    8: bv64 hover @inv ule val 7            # ô đang rê chuột, 7 = không có
+    16: bv64 run @inv ult val 128           # bit i = App slot i đang mở
+    24: bv64 focus @inv ule val 7           # ô của App foreground, 7 = không có
+    32: bv64 n @inv ule val 7               # số ô (slot App cuối + 1)
+    40: bv64 x0 @inv ule val 640            # mép trái bảng Dock (tọa độ khung nhìn Dock)
+    48: bv64 present @inv ult val 128       # bit i = slot i có App nạp được
+    56: bv64 kbd @inv ule val 1             # 1 = chuột đang đứng ở chỗ phím F đặt (chưa rê thật) -> không hover
+    64: bv64 name0                          # 8 byte đầu tên file App slot 0..6 (vd "terminal")
+    72: bv64 name1
+    80: bv64 name2
+    88: bv64 name3
+    96: bv64 name4
+    104: bv64 name5
+    112: bv64 name6
+    128: bv64 kx                            # chỗ phím F đặt chuột (màn hình)
+    136: bv64 ky
+}
+
+# Khoảng lõm vào của hàng y (0 = hàng trên cùng) trong góc bo bán kính r: số d nhỏ nhất sao cho tâm điểm
+# (d + 0.5, y + 0.5) nằm trong đường tròn tâm (r, r): (2r-2d-1)^2 + (2r-2y-1)^2 <= 4r^2.
+func dk_inset bv64 %r:bv64 %y:bv64 {
+    @req ule %r 32
+    @req ult %y %r
+    @ens ule %res %r
+    @b0
+        %r2 = add %r %r
+        %y2 = add %y %y
+        %ty = sub %r2 %y2
+        %ty1 = sub %ty 1
+        %yy = mul %ty1 %ty1
+        %lim = mul %r2 %r2
+        jmp @l 0
+    @l %d:bv64
+        @inv ule %d %r
+        %end = cmp eq %d %r
+        br %end @done @test
+    @test
+        %d2 = add %d %d
+        %tx = sub %r2 %d2
+        %tx1 = sub %tx 1
+        %xx = mul %tx1 %tx1
+        %s = add %xx %yy
+        %inside = cmp ule %s %lim
+        br %inside @found @next
+    @next
+        %d1 = add %d 1
+        jmp @l %d1
+    @found
+        ret %d
+    @done
+        ret %r
+}
+
+# Hình chữ nhật [x0,x1) x [y0,y1) bo 4 góc bán kính r (tự giảm khi hình quá nhỏ), tự cắt theo khung nhìn
+func dk_rrect void %px:ptr<VgaCell,1382400> %x0:bv64 %y0:bv64 %x1:bv64 %y1:bv64 %r:bv64 %c:bv32 {
+    @req ule %x1 0x10000
+    @req ule %y1 0x10000
+    @req ule %r 32
+    @b0
+        %okx = cmp ult %x0 %x1
+        %oky = cmp ult %y0 %y1
+        %ok = and %okx %oky
+        br %ok @go @out
+    @go
+        %w = sub %x1 %x0
+        %h = sub %y1 %y0
+        %hw = lshr %w 1
+        %hh = lshr %h 1
+        %ra = call math_min %r %hw
+        %rr = call math_min %ra %hh
+        jmp @l 0
+    @l %j:bv64
+        @inv ule %j %h
+        %more = cmp ult %j %h
+        br %more @row @out
+    @row
+        %top = cmp ult %j %rr
+        br %top @intop @chkbot
+    @intop
+        %it = call dk_inset %rr %j
+        jmp @fill %it
+    @chkbot
+        %last = sub %h 1
+        %fromb = sub %last %j
+        %bot = cmp ult %fromb %rr
+        br %bot @inbot @flat
+    @inbot
+        %ib = call dk_inset %rr %fromb
+        jmp @fill %ib
+    @flat
+        jmp @fill 0
+    @fill %in:bv64
+        %xa = add_sat %x0 %in
+        %xb = sub_sat %x1 %in
+        %ya = add %y0 %j
+        %yb = add %ya 1
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %xa %ya %xb %yb %c
+        %j1 = add %j 1
+        jmp @l %j1
+    @out
+        ret
+}
+
+# Cắt 4 góc của ô vuông 52x52 tại (x, y) cho tròn (bán kính 8): tô phần ngoài góc bằng màu nền c
+func dk_round_icon void %px:ptr<VgaCell,1382400> %x:bv64 %y:bv64 %c:bv32 {
+    @req ule %x 1280
+    @req ule %y 720
+    @b0
+        %xr = add %x DK_ICON
+        %yb = add %y DK_ICON
+        jmp @l 0
+    @l %j:bv64
+        @inv ule %j 8
+        %more = cmp ult %j 8
+        br %more @row @out
+    @row
+        %in = call dk_inset 8 %j
+        %xl = add %x %in
+        %xs = sub %xr %in
+        %ya = add %y %j
+        %ya1 = add %ya 1
+        %yz = sub %yb %j
+        %yz0 = sub %yz 1
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %x %ya %xl %ya1 %c
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %xs %ya %xr %ya1 %c
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %x %yz0 %xl %yz %c
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %xs %yz0 %xr %yz %c
+        %j1 = add %j 1
+        jmp @l %j1
+    @out
+        ret
+}
+
+# Mép trái bảng Dock cho n ô (bảng rộng n*68 + 12, căn giữa khung nhìn rộng 1280)
+func dk_layout_x0 bv64 %n:bv64 {
+    @req ule %n 7
+    @ens ule %r 640
+    @b0
+        %m = call math_max %n 1
+        %a = mul %m DK_PITCH
+        %w = add %a 12
+        %hw = lshr %w 1
+        %x0 = sub 640 %hw
+        ret %x0
+}
+
+# x của icon ô i
+func dk_icon_x bv64 %x0:bv64 %i:bv64 {
+    @req ule %x0 640
+    @req ult %i 7
+    @ens ule %r 1076
+    @b0
+        %a = mul %i DK_PITCH
+        %b = add %x0 DK_PAD
+        %c = add %b %a
+        ret %c
+}
+
+# Ô Dock tại điểm màn hình (sx, sy): 0..n-1, hoặc 7 nếu không trúng ô nào (vùng trúng mỗi ô: icon nới 8 điểm hai bên)
+func dk_hit bv64 %ds:ptr<DockState,1> %sx:bv64 %sy:bv64 {
+    @ens ule %r 7
+    @b0
+        %ytop = add DK_ORG_Y DK_Y0
+        %ybot = add DK_ORG_Y DK_Y1
+        %iny0 = cmp uge %sy %ytop
+        %iny1 = cmp ult %sy %ybot
+        %iny = and %iny0 %iny1
+        br %iny @x @none
+    @x
+        %x0 = load %ds DockState.x0
+        %n = load %ds DockState.n
+        %l0 = add DK_ORG_X %x0
+        %left = add %l0 6                   # = mép trái icon 0 trừ 8
+        %inl = cmp uge %sx %left
+        br %inl @slot @none
+    @slot
+        %dx = sub %sx %left
+        %i = udiv %dx DK_PITCH
+        %ok = cmp ult %i %n
+        br %ok @hit @none
+    @hit
+        %i7 = call math_min %i 6
+        ret %i7
+    @none
+        ret 7
+}
+
+# Tên App trong DockState (8 byte đầu tên file)
+func dk_name bv64 %ds:ptr<DockState,1> %i:bv64 {
+    @b0
+        %a0 = cmp eq %i 0
+        br %a0 @n0 @c1
+    @c1
+        %a1 = cmp eq %i 1
+        br %a1 @n1 @c2
+    @c2
+        %a2 = cmp eq %i 2
+        br %a2 @n2 @c3
+    @c3
+        %a3 = cmp eq %i 3
+        br %a3 @n3 @c4
+    @c4
+        %a4 = cmp eq %i 4
+        br %a4 @n4 @c5
+    @c5
+        %a5 = cmp eq %i 5
+        br %a5 @n5 @n6
+    @n0
+        %v0 = load %ds DockState.name0
+        ret %v0
+    @n1
+        %v1 = load %ds DockState.name1
+        ret %v1
+    @n2
+        %v2 = load %ds DockState.name2
+        ret %v2
+    @n3
+        %v3 = load %ds DockState.name3
+        ret %v3
+    @n4
+        %v4 = load %ds DockState.name4
+        ret %v4
+    @n5
+        %v5 = load %ds DockState.name5
+        ret %v5
+    @n6
+        %v6 = load %ds DockState.name6
+        ret %v6
+}
+
+# Ghi tên App slot i vào DockState
+func dk_set_name void %ds:ptr<DockState,1> %i:bv64 %v:bv64 {
+    @b0
+        jmp @c0
+    @c0
+        %a0 = cmp eq %i 0
+        br %a0 @n0 @c1
+    @c1
+        %a1 = cmp eq %i 1
+        br %a1 @n1 @c2
+    @c2
+        %a2 = cmp eq %i 2
+        br %a2 @n2 @c3
+    @c3
+        %a3 = cmp eq %i 3
+        br %a3 @n3 @c4
+    @c4
+        %a4 = cmp eq %i 4
+        br %a4 @n4 @c5
+    @c5
+        %a5 = cmp eq %i 5
+        br %a5 @n5 @n6
+    @n0
+        store %ds DockState.name0 %v
+        ret
+    @n1
+        store %ds DockState.name1 %v
+        ret
+    @n2
+        store %ds DockState.name2 %v
+        ret
+    @n3
+        store %ds DockState.name3 %v
+        ret
+    @n4
+        store %ds DockState.name4 %v
+        ret
+    @n5
+        store %ds DockState.name5 %v
+        ret
+    @n6
+        store %ds DockState.name6 %v
+        ret
+}
+
+# Số ký tự tên hiển thị: dừng ở byte 0 hoặc '.', tối đa 8
+func dk_name_len bv64 %name:bv64 {
+    @ens ule %r 8
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 8
+        %end = cmp eq %i 8
+        br %end @done @test
+    @test
+        %sh = mul %i 8
+        %v = lshr %name %sh
+        %ch = and %v 0xff
+        %z = cmp eq %ch 0
+        %dot = cmp eq %ch 46
+        %stop = or %z %dot
+        br %stop @found @next
+    @next
+        %i1 = add %i 1
+        jmp @l %i1
+    @found
+        ret %i
+    @done
+        ret 8
+}
+
+# Ký tự thứ i của tên khi hiển thị: chữ đầu viết hoa, phần còn lại viết thường
+func dk_name_char bv64 %name:bv64 %i:bv64 {
+    @req ult %i 8
+    @b0
+        %sh = mul %i 8
+        %v = lshr %name %sh
+        %ch = and %v 0xff
+        %first = cmp eq %i 0
+        br %first @up @low
+    @up
+        %lo0 = cmp uge %ch 97
+        %lo1 = cmp ule %ch 122
+        %lo = and %lo0 %lo1
+        br %lo @toup @keep
+    @toup
+        %u = sub %ch 32
+        ret %u
+    @low
+        %up0 = cmp uge %ch 65
+        %up1 = cmp ule %ch 90
+        %upc = and %up0 %up1
+        br %upc @tolow @keep
+    @tolow
+        %l = add %ch 32
+        ret %l
+    @keep
+        ret %ch
+}
+
+# Nhãn tên phía trên icon ô i (tâm x = cx)
+func dk_tooltip void %px:ptr<VgaCell,1382400> %cx:bv64 %name:bv64 {
+    @req ule %cx 1280
+    @b0
+        %len = call dk_name_len %name
+        %has = cmp ne %len 0
+        br %has @draw @out
+    @draw
+        %tw = mul %len 9
+        %bw = add %tw 18
+        %hb = lshr %bw 1
+        %bx0 = sub_sat %cx %hb
+        %bx1 = add %bx0 %bw
+        %ty1 = add DK_TIP_Y 26
+        call dk_rrect %px %bx0 DK_TIP_Y %bx1 %ty1 7 DK_BORDER
+        %ix0 = add %bx0 1
+        %ix1 = sub %bx1 1
+        %iy0 = add DK_TIP_Y 1
+        %iy1 = sub %ty1 1
+        call dk_rrect %px %ix0 %iy0 %ix1 %iy1 6 DK_TIP_BG
+        %tx0 = add %bx0 9
+        %tyy = add DK_TIP_Y 5
+        jmp @l 0 %tx0
+    @l %i:bv64 %x:bv64
+        @inv ule %i 8
+        %more = cmp ult %i %len
+        br %more @ch @out
+    @ch
+        %c = call dk_name_char %name %i
+        call surf_char DK_N %px DK_STRIDE DK_W DK_H %x %tyy %c DK_TIP_FG
+        %i1 = add %i 1
+        %x1 = add_sat %x 9
+        jmp @l %i1 %x1
+    @out
+        ret
+}
+
+# Vẽ mọi thứ của Dock TRỪ icon (icon do mã App vẽ, qua cầu nối): nền, bảng, ô nền icon đang rê, nhãn tên, chỉ báo
+func dk_draw_base void %px:ptr<VgaCell,1382400> %ds:ptr<DockState,1> {
+    @b0
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H 0 DK_CLEAR_Y DK_W DK_H DK_BG
+        %n = load %ds DockState.n
+        %x0 = load %ds DockState.x0
+        %m = call math_max %n 1
+        %a = mul %m DK_PITCH
+        %w = add %a 12
+        %x1 = add %x0 %w
+        # bóng đổ (lệch xuống 4), viền, nền, vệt sáng trên
+        %sx0 = sub_sat %x0 2
+        %sx1 = add %x1 2
+        %sy0 = add DK_Y0 2
+        %sy1 = add DK_Y1 5
+        call dk_rrect %px %sx0 %sy0 %sx1 %sy1 16 DK_SHADOW
+        call dk_rrect %px %x0 DK_Y0 %x1 DK_Y1 16 DK_BORDER
+        %fx0 = add %x0 1
+        %fx1 = sub %x1 1
+        %fy0 = add DK_Y0 1
+        %fy1 = sub DK_Y1 1
+        call dk_rrect %px %fx0 %fy0 %fx1 %fy1 15 DK_FILL
+        %hx0 = add %x0 16
+        %hx1 = sub_sat %x1 16
+        %hy1 = add %fy0 1
+        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %hx0 %fy0 %hx1 %hy1 DK_SHINE
+        # ô đang rê chuột: nền sáng + nhãn tên
+        %hv = load %ds DockState.hover
+        %hon = cmp ult %hv %n
+        br %hon @hover @ind
+    @hover
+        %hv6 = call math_min %hv 6
+        %ix = call dk_icon_x %x0 %hv6
+        %tx0 = sub_sat %ix 6
+        %tx1 = add %ix 58
+        %ty0 = sub DK_LIFT_Y 4
+        %ty1 = add DK_LIFT_Y 58
+        call dk_rrect %px %tx0 %ty0 %tx1 %ty1 12 DK_HOVER
+        %cx = add %ix 26
+        %cx1 = call math_min %cx 1280
+        %nm = call dk_name %ds %hv6
+        call dk_tooltip %px %cx1 %nm
+        jmp @ind
+    @ind
+        %run = load %ds DockState.run
+        %foc = load %ds DockState.focus
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 7
+        %more = cmp ult %i %n
+        br %more @slot @out
+    @slot
+        %bit = shl 1 %i
+        %on0 = and %run %bit
+        %on = cmp ne %on0 0
+        br %on @mark @next
+    @mark
+        %ix2 = call dk_icon_x %x0 %i
+        %y1 = add DK_IND_Y 4
+        %isf = cmp eq %i %foc
+        br %isf @bar @dot
+    @bar
+        %bx0 = add %ix2 18
+        %bx1 = add %ix2 34
+        call dk_rrect %px %bx0 DK_IND_Y %bx1 %y1 2 DK_FOCUS
+        jmp @next
+    @dot
+        %dx0 = add %ix2 24
+        %dx1 = add %ix2 28
+        call dk_rrect %px %dx0 DK_IND_Y %dx1 %y1 2 DK_DOT
+        jmp @next
+    @next
+        %i1 = add %i 1
+        jmp @l %i1
+    @out
+        ret
+}
+
+# y của icon ô i (đang rê chuột -> nâng lên) và màu nền ngay sau icon (để cắt góc)
+func dk_icon_y bv64 %ds:ptr<DockState,1> %i:bv64 {
+    @ens ule %r 650
+    @b0
+        %hv = load %ds DockState.hover
+        %h = cmp eq %hv %i
+        br %h @lift @rest
+    @lift
+        ret DK_LIFT_Y
+    @rest
+        ret DK_ICON_Y
+}
+
+func dk_icon_under bv32 %ds:ptr<DockState,1> %i:bv64 {
+    @b0
+        %hv = load %ds DockState.hover
+        %h = cmp eq %hv %i
+        br %h @lift @rest
+    @lift
+        ret DK_HOVER:bv32
+    @rest
+        ret DK_FILL:bv32
+}
