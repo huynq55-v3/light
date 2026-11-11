@@ -255,6 +255,33 @@ func cs_has bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf
 }
 # Tên cửa sổ: 8 ký tự ASCII trong một qword (byte thấp = ký tự đầu), cách nhau 9 điểm, tại (214, 68) của surface.
 # Dùng bảng font `data` (std/surface) nên không cần con trỏ font của Kernel.
+# Khoảng lõm của hàng j (0..7, tính từ mép) ở góc bo bán kính 8 của cửa sổ
+func comp_inset8 bv64 %j:bv64 {
+    @ens ule %r 5
+    @b0
+        %a = cmp eq %j 0
+        br %a @r5 @c1
+    @c1
+        %b = cmp eq %j 1
+        br %b @r3 @c2
+    @c2
+        %c = cmp eq %j 2
+        br %c @r2 @c3
+    @c3
+        %d = cmp ult %j 5
+        br %d @r1 @r0
+    @r5
+        ret 5
+    @r3
+        ret 3
+    @r2
+        ret 2
+    @r1
+        ret 1
+    @r0
+        ret 0
+}
+
 func cs_title void %s:ptr<VgaCell,1382400> %title:bv64 %fg:bv32 {
     @b0
         jmp @l 0
@@ -305,12 +332,7 @@ func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         %bt = add %wh 60                    # mép dưới
         %rs = add %r 6
         %bs = add %bt 6
-        # hai góc khuyết của bóng đổ = màu nền (khi cửa sổ co lại, chỗ này còn điểm ảnh cũ)
-        call gfx_fill_rect %s %r 60 %rs 66 COMP_BG
-        call gfx_fill_rect %s 200 %bt 206 %bs COMP_BG
-        # bóng đổ phải và dưới
-        call gfx_fill_rect %s %r 66 %rs %bs 0x05070a
-        call gfx_fill_rect %s 206 %bt %r %bs 0x05070a
+        # bóng đổ: compositor làm tối cảnh bên dưới lúc vẽ (comp_draw_window), không vẽ vào surface
         # viền 2 điểm
         %r2 = sub %r 2
         %bt2 = sub %bt 2
@@ -328,6 +350,29 @@ func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         %xm1 = sub %r 26
         %xm2 = sub %r 18
         call gfx_fill_rect %s %xm1 72 %xm2 80 0xffffff
+        # cung viền ở 4 góc bo (bán kính 8): mỗi hàng góc tô 2 điểm viền ngay trong mép bo
+        jmp @arc 2
+    @arc %j:bv64
+        @inv ule %j 8
+        %am = cmp ult %j 8
+        br %am @arc1 @fin
+    @arc1
+        %in = call comp_inset8 %j
+        %ty = add %j 60
+        %ty1 = add %ty 1
+        %by = sub %bt %j
+        %by0 = sub %by 1
+        %lx0 = add %in 200
+        %lx1 = add %lx0 2
+        %rx1 = sub %r %in
+        %rx0 = sub %rx1 2
+        call gfx_fill_rect %s %lx0 %ty %lx1 %ty1 %border
+        call gfx_fill_rect %s %rx0 %ty %rx1 %ty1 %border
+        call gfx_fill_rect %s %lx0 %by0 %lx1 %by %border
+        call gfx_fill_rect %s %rx0 %by0 %rx1 %by %border
+        %j1 = add %j 1
+        jmp @arc %j1
+    @fin
         ret
     @done
         ret
@@ -463,16 +508,106 @@ func comp_row void %src:ptr<VgaCell,1382400> %dst:ptr<VgaCell,1382400> %so:bv64 
     @done
         ret
 }
-# Vẽ cửa sổ của surface %surf đặt tại (wx, wy), phủ ew x eh (kể bóng đổ), vào khung nhìn %view, chỉ trong [x1,x2) x [y1,y2)
-# (cắt thêm theo khung nhìn 1280 x 624: không bao giờ đè Dock)
-func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400> %wx:bv64 %wy:bv64 %ew:bv64 %eh:bv64 %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
+# Chép đoạn [xs, xe) của hàng y khung nhìn (cắt theo [cx1, cx2)) từ surface cửa sổ đặt tại (wx, wy)
+func comp_seg void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400> %wx:bv64 %wy:bv64 %y:bv64 %xs:bv64 %xe:bv64 %cx1:bv64 %cx2:bv64 {
+    @req ule %wx 974
+    @req ule %wy %y
+    @req ule %y 720
+    @b0
+        %a = call std_max %xs %cx1
+        %b = call std_min %xe %cx2
+        %ok = cmp ult %a %b
+        br %ok @go @done
+    @go
+        %ok2 = cmp uge %a %wx
+        br %ok2 @copy @done
+    @copy
+        %ux = sub %a %wx
+        %sx = add_sat %ux WIN_X0
+        %vy = sub %y %wy
+        %sy = add %vy WIN_Y0
+        %srow = mul_sat %sy 1920
+        %so = add_sat %srow %sx
+        %drow = mul %y 1920
+        %do = add_sat %drow %a
+        %span = sub %b %a
+        call comp_row %surf %view %so %do %span
+        ret
+    @done
+        ret
+}
+
+# Làm tối đoạn [xs, xe) của hàng y khung nhìn (cắt theo [cx1, cx2)): p - (p >> sh) mỗi kênh màu (sh 2: 25%, 3: 12%, 4: 6%)
+func comp_shade void %view:ptr<VgaCell,1382400> %y:bv64 %xs:bv64 %xe:bv64 %cx1:bv64 %cx2:bv64 %sh:bv64 {
+    @req ule %y 720
+    @req uge %sh 2
+    @req ule %sh 4
+    @b0
+        %a = call std_max %xs %cx1
+        %b0 = call std_min %xe %cx2
+        %b = call std_min %b0 1280
+        %ok = cmp ult %a %b
+        br %ok @go @done
+    @go
+        %row = mul %y 1920
+        %o0 = add %row %a
+        %span = sub %b %a
+        %end = add %o0 %span
+        %fits = cmp ule %end 1382400
+        br %fits @mask @done
+    @mask
+        %m2 = cmp eq %sh 2
+        br %m2 @k2 @n3
+    @n3
+        %m3 = cmp eq %sh 3
+        br %m3 @k3 @k4
+    @k2
+        jmp @px 0x3f3f3f:bv32 2:bv32
+    @k3
+        jmp @px 0x1f1f1f:bv32 3:bv32
+    @k4
+        jmp @px 0x0f0f0f:bv32 4:bv32
+    @px %mk:bv32 %sh32:bv32
+        @inv ule %sh32 4
+        %seg = slice %view %o0 ptr<VgaCell,%span>
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %span
+        @inv ule %sh32 4
+        %more = cmp ult %i %span
+        br %more @one @done
+    @one
+        %cell = slice %seg %i ptr<VgaCell,1>
+        %p = load %cell 0 bv32
+        %q = lshr %p %sh32
+        %d = and %q %mk
+        %n64 = sub %p %d
+        %n = narrow %n64 bv32
+        store %cell 0 %n
+        %i1 = add %i 1
+        jmp @l %i1
+    @done
+        ret
+}
+
+# Vẽ cửa sổ của surface %surf đặt tại (wx, wy), phủ ew x eh (kể 6 điểm bóng đổ), vào khung nhìn %view, chỉ trong
+# [x1,x2) x [y1,y2) (cắt thêm theo khung nhìn 1280 x 624: không bao giờ đè Dock).
+# 4 góc bo tròn (bán kính 8): điểm ngoài góc KHÔNG vẽ -> lộ cảnh bên dưới. %shade = 1 (chỉ khi vẽ lại cảnh từ nền):
+# bóng mềm phải + dưới (lệch 4 điểm) = làm tối cảnh bên dưới 3 mức; vẽ vùng bẩn của App (shade = 0) không đụng bóng
+# để không làm tối dồn nhiều lần.
+func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400> %wx:bv64 %wy:bv64 %ew:bv64 %eh:bv64 %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 %shade:bv64 {
     @req ule %wx 974
     @req ule %wy 590
     @req ule %ew 1080
     @req ule %eh 564
+    @req uge %ew 6
+    @req uge %eh 6
     @b0
         %wxe = add %wx %ew
         %wye = add %wy %eh
+        %w = sub %ew 6
+        %h = sub %eh 6
+        %bx = add %wx %w                    # mép phải thân cửa sổ
         %xa0 = call std_max %x1 %wx
         %ya0 = call std_max %y1 %wy
         %xb0 = call std_min %x2 %wxe
@@ -485,10 +620,6 @@ func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400>
         %oky = cmp ult %ya0 %yb
         br %oky @start @done
     @start
-        # Cột nguồn: xa - wx + 200 (xa >= wx)
-        %ux = sub %xa0 %wx
-        %sx = add %ux WIN_X0
-        %span = sub %xb %xa0
         jmp @l %ya0
     @l %y:bv64
         @inv ule %y %yb
@@ -496,13 +627,64 @@ func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400>
         %more = cmp ult %y %yb
         br %more @row @done
     @row
-        %vy = sub %y %wy
-        %sy = add %vy WIN_Y0
-        %srow = mul %sy 1920
-        %so = add %srow %sx
-        %drow = mul %y 1920
-        %do = add %drow %xa0
-        call comp_row %surf %view %so %do %span
+        %ry = sub %y %wy
+        %body = cmp ult %ry %h
+        br %body @brow @srow
+    @brow
+        # góc trên (ry < 8) / góc dưới (h - 1 - ry < 8)
+        %top = cmp ult %ry 8
+        br %top @ctop @cbot
+    @ctop
+        %it = call comp_inset8 %ry
+        jmp @copy %it
+    @cbot
+        %hl = sub %h 1
+        %fb = sub %hl %ry
+        %nb = cmp ult %fb 8
+        br %nb @cbot2 @flat
+    @cbot2
+        %ib = call comp_inset8 %fb
+        jmp @copy %ib
+    @flat
+        jmp @copy 0
+    @copy %in:bv64
+        @inv ule %in 5
+        %cs = add %wx %in
+        %ce = sub_sat %bx %in
+        call comp_seg %surf %view %wx %wy %y %cs %ce %xa0 %xb
+        %sh = cmp ne %shade 0
+        %low = cmp uge %ry 4
+        %rs = and %sh %low
+        br %rs @rshadow @next
+    @rshadow
+        # bóng phải: 3 dải 2 điểm, nhạt dần
+        %r1 = add %bx 2
+        %r2 = add %bx 4
+        %r3 = add %bx 6
+        call comp_shade %view %y %bx %r1 %xa0 %xb 2
+        call comp_shade %view %y %r1 %r2 %xa0 %xb 3
+        call comp_shade %view %y %r2 %r3 %xa0 %xb 4
+        jmp @next
+    @srow
+        %sh2 = cmp ne %shade 0
+        br %sh2 @bshadow @next
+    @bshadow
+        # bóng dưới: hàng cách đáy d = ry - h (0..5) -> mức 2 + d/2; góc phải-dưới lấy mức nhạt hơn
+        %dd = sub %ry %h
+        %dh = lshr %dd 1
+        %lv0 = add %dh 2
+        %lv = call std_min %lv0 4
+        %bs = add %wx 4
+        call comp_shade %view %y %bs %bx %xa0 %xb %lv
+        %q1 = add %bx 2
+        %q2 = add %bx 4
+        %q3 = add %bx 6
+        %l3 = call std_max %lv 3
+        call comp_shade %view %y %bx %q1 %xa0 %xb %lv
+        call comp_shade %view %y %q1 %q2 %xa0 %xb %l3
+        call comp_shade %view %y %q2 %q3 %xa0 %xb 4
+        jmp @next
+    @next
         %yn = add %y 1
         jmp @l %yn
     @done
@@ -563,7 +745,7 @@ func cs_repaint void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7>
         %ew = add %ww 6
         %eh = add %wh 6
         %surf = call cs_surface %sf %slot
-        call comp_draw_window %surf %view %wx %wy %ew %eh %xa %ya %xb %yb
+        call comp_draw_window %surf %view %wx %wy %ew %eh %xa %ya %xb %yb 1
         jmp @l %i2
     @skip
         jmp @l %i2
@@ -805,7 +987,7 @@ func cs_present void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7>
         %pew = add %pw 6
         %peh = add %ph 6
         %s = call cs_surface %sf %slot
-        call comp_draw_window %s %fb %wx %wy %pew %peh %dx1 %dy1 %dx2 %dy2
+        call comp_draw_window %s %fb %wx %wy %pew %peh %dx1 %dy1 %dx2 %dy2 0
         %cx1 = call std_min %dx1 VIEW_W
         %cy1 = call std_min %dy1 VIEW_H
         %cx2 = call std_min %dx2 VIEW_W

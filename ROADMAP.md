@@ -150,6 +150,17 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    (KBD 3040FAFAFAFAFA00); legacy 7140FAFA..; uefi 7744FAFA..; usb (không có i8042) KBD = 1, bàn phím USB vẫn chạy.
    CHƯA kiểm trên máy thật. Nếu vẫn không nhận phím: màn chẩn đoán sẽ TỰ HIỆN khi bàn phím không ACK lệnh F4 -> chụp dòng KBD.
    Dòng chẩn đoán phần cứng: ẩn mặc định, F10 bật / tắt (`diag_tick`), tự hiện khi bàn phím i8042 lỗi.
+8. ~~Thanh trên cùng + cửa sổ bo góc, bóng mềm~~ (2026-11-11, người dùng chọn đề xuất 2, 3, 4 của lát 6):
+   - Thanh trên cùng (`os/topbar.lit` vẽ thuần `tb_*` + cầu nối `topbar_tick`/`rtc_read` trong wm.lit): logo + "Light OS"
+     | tên App focus (hoặc "Desktop") | "dd/mm/yyyy  hh:mm" từ RTC (cổng 0x70/0x71, BCD/nhị phân, 12/24h). Cộng
+     `TB_TZ_HOURS` = 7 (RTC theo UTC như Ubuntu đặt; máy dùng chung Windows thì đặt 0). Chỉ vẽ lại khi đổi phút / đổi
+     App focus. Dòng chẩn đoán (F10) dời xuống dưới thanh (y 42..150).
+   - Cửa sổ: 4 góc bo bán kính 8 (`comp_draw_window` không vẽ điểm ngoài góc -> lộ cảnh dưới; `cs_frame` vẽ cung viền),
+     bóng đổ mềm = làm tối cảnh bên dưới 3 mức (25% / 12% / 6%, `comp_shade`) thay cho dải đen 6 điểm vẽ trong surface.
+     Bóng chỉ vẽ khi vẽ lại cảnh từ nền; đưa vùng bẩn của App lên (cs_present) không đụng bóng -> không tối dồn (kiểm:
+     điểm ảnh bóng giữ nguyên sau 10 lệnh gõ trong Terminal).
+   Kiểm: usb/legacy/uefi, RAM 320M (App tự vẽ khung vuông như cũ), giờ khớp đồng hồ máy chủ.
+   Còn lại (đề xuất 1, chưa làm): nền desktop gradient / hình nền.
 
 ## 📋 Tiếp theo
 
