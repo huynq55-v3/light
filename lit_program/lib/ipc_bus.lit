@@ -126,7 +126,7 @@ func ipc_channel_init void %0:ptr<IpcChannel,1> {
         store %0 IpcChannel.configure 0
         store %0 IpcChannel.dock_x0 0
         store %0 IpcChannel.kbd_pick 0
-        store %0 IpcChannel.diag_toggle 0
+        store %0 IpcChannel.hotkey 0
         ret
 }
 

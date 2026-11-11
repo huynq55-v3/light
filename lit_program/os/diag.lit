@@ -286,6 +286,8 @@ func smp_selftest void %0:io<0,0xffff> %1:smp {
 #          4 không có interface HID boot, 8 + bước = hỏng ở bước dò. USBD2 = controller thứ hai.
 #   USBC = mỗi byte 1 slot: mã hoàn thành xHCI của bước dò hỏng (4 lỗi đường truyền, 3 babble, 6 STALL, 0xFF hết giờ;
 #          bước 3 đã thử lại 3 lần, lần cuối chỉ 64 byte) — chỉ controller đang chạy HID (HW[46]).
+#   BL   = đèn nền (drivers/backlight.lit): trạng thái << 56 | FREQ << 28 | DUTY; trạng thái 1/2 = bộ điều khiển PWM 0/1,
+#          E0 không có GPU Intel, E1 BAR lạ, E2 không có PWM đang bật. F8 / F9 = tối / sáng.
 #   USB2 = như USB nhưng cho controller xHCI thứ hai (HW[41]; 0 = không có)
 #   USB  = giai đoạn << 56 | dev PCI << 48 | số cổng << 40 | số slot << 32 | mã hoàn thành << 24 | bàn phím << 16
 #          | chuột << 8 | bước dò cuối (xem drivers/usb_xhci.lit)
@@ -368,10 +370,13 @@ func diag_boot_report void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
         %uc = call hw_get %0 46
         %ucl = const "USBC    " bv64
         call diag_line %0 %51 %3 186 %ucl %uc
+        %bl = call hw_get %0 312
+        %bll = const "BL      " bv64
+        call diag_line %0 %51 %3 204 %bll %bl
 
         %42 = const 0 bv64
         %43 = const 320 bv64
-        %44 = const 206 bv64
+        %44 = const 224 bv64
         %45 = const 34 bv64
         call gfx_blit_rect %1 %2 %42 %45 %43 %44
         call fb_present_rect %0 %1 %42 %45 %43 %44
@@ -385,9 +390,9 @@ func diag_hide void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,20736
     @req uge %2 0x10000
     @req ult %2 0x40000000
     @b0
-        call gfx_fill_rect_scr %2 0 34 320 206 0x161b26:bv32
-        call gfx_blit_rect %1 %2 0 34 320 206
-        call fb_present_rect %0 %1 0 34 320 206
+        call gfx_fill_rect_scr %2 0 34 320 224 0x161b26:bv32
+        call gfx_blit_rect %1 %2 0 34 320 224
+        call fb_present_rect %0 %1 0 34 320 224
         ret
 }
 
@@ -418,11 +423,11 @@ func diag_tick void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,20736
     @req ult %2 0x40000000
     @b0
         %3 = const 0x7c000 ptr<DiskQword,64>
-        %t = load %g IpcChannel.diag_toggle
-        %req = cmp ne %t 0
+        %t = load %g IpcChannel.hotkey
+        %req = cmp eq %t 1                   # 1 = F10; 2/3 (F8/F9 độ sáng) để bl_tick xử lý
         br %req @flip @out
     @flip
-        store %g IpcChannel.diag_toggle 0
+        store %g IpcChannel.hotkey 0
         %v = call hw_get %0 301
         %on = cmp ne %v 0
         br %on @hide @show
