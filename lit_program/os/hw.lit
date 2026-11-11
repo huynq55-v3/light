@@ -26,24 +26,6 @@ layout Mmio32 4 {
     0: bv32
 }
 
-func q512 bv64 %0:ptr<DiskQword,512> %1:bv64 {
-    @req ult %1 512
-
-    @b0
-        %2 = slice %0 %1 ptr<DiskQword,1>
-        %3 = load %2 0 bv64
-        ret %3
-}
-
-func q512_set void %0:ptr<DiskQword,512> %1:bv64 %2:bv64 {
-    @req ult %1 512
-
-    @b0
-        %3 = slice %0 %1 ptr<DiskQword,1>
-        store %3 0 %2
-        ret
-}
-
 func page_zero void %0:ptr<DiskQword,512> {
     @b0
         %1 = const 0 bv64

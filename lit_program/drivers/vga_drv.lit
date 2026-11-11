@@ -56,18 +56,6 @@ func drv_vga_set_cell void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv32 {
         ret
 }
 
-# 3. Đọc 1 điểm ảnh 32-bit RGB từ vị trí phẳng %1 (Dùng cho Save-Under Cursor)
-func drv_vga_get_cell bv32 %0:ptr<VgaCell,1382400> %1:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req ult %1 1382400
-
-    @b0
-        %2 = slice %0 %1 ptr<VgaCell,1>
-        %3 = load %2 0 bv32
-        ret %3
-}
-
 # 4. Bản cho cả màn hình 1920x1080
 func drv_vga_set_cell_scr void %0:ptr<VgaCell,2073600> %1:bv64 %2:bv32 {
     @req uge %0 0x10000
