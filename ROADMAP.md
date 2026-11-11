@@ -161,6 +161,15 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
      điểm ảnh bóng giữ nguyên sau 10 lệnh gõ trong Terminal).
    Kiểm: usb/legacy/uefi, RAM 320M (App tự vẽ khung vuông như cũ), giờ khớp đồng hồ máy chủ.
    Còn lại (đề xuất 1, chưa làm): nền desktop gradient / hình nền.
+9. ~~Bàn phím USB ngoài~~ (2026-11-11; người dùng: bàn phím laptop nhận, bàn phím USB cắm thẳng cổng USB-A thì không,
+   chuột USB cùng máy chạy): lỗi chồng lấn bảng XS của driver xHCI — kết quả phân tích descriptor ghi tạm ở XS[30..35],
+   trùng bản ghi slot 2 (+6/+7) và slot 3 (+0..+3: loại/DCI/MPS/báo cáo trước). Dò thiết bị thứ 4 ghi đè slot 3 -> nếu
+   bàn phím rơi vào slot 3 (laptop có webcam / Bluetooth / vân tay gắn trong chiếm slot 1-2) thì bàn phím chết, chuột
+   (slot 4) vẫn chạy. Dời sang XS[200..204]. Tái hiện QEMU (`qt.py usbx`, QT_DEV = tablet, usb-net, kbd, mouse): bản cũ
+   không gõ được, bản mới gõ + chuột đều chạy. Thêm: SET_IDLE(0) cho bàn phím; dòng chẩn đoán USBD/USBD2 (HW[44/45]):
+   mỗi byte 1 slot = tốc độ << 4 | kết quả (1 bàn phím, 2 chuột, 3 hub, 4 không có HID boot, 8+bước = hỏng).
+   CHƯA kiểm trên máy thật. Còn thiếu: hub USB (bàn phím có hub bên trong / qua hub ngoài -> USBD báo 3), cắm nóng sau
+   boot, phục hồi endpoint sau lỗi truyền.
 
 ## 📋 Tiếp theo
 

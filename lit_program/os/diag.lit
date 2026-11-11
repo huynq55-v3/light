@@ -282,6 +282,8 @@ func smp_selftest void %0:io<0,0xffff> %1:smp {
 #   PART = LBA đầu phân vùng ; PLEN = số sector (0 = I/O bị chặn)
 #   KBD  = i8042: cấu hình cũ << 56 | cấu hình mới << 48 | trả lời F6/F0/02/F4 của bàn phím << 40..16 | chuột F4 << 8 | cờ
 #          (0xFA = ACK, 0xEE = hết giờ, cờ 1 = không có i8042). Xem drivers/kbd_drv.lit (i8042_setup).
+#   USBD = mỗi byte 1 slot USB (slot 1 = byte thấp): tốc độ << 4 | kết quả: 1 bàn phím, 2 chuột, 3 hub (chưa hỗ trợ),
+#          4 không có interface HID boot, 8 + bước = hỏng ở bước dò. USBD2 = controller thứ hai.
 #   USB2 = như USB nhưng cho controller xHCI thứ hai (HW[41]; 0 = không có)
 #   USB  = giai đoạn << 56 | dev PCI << 48 | số cổng << 40 | số slot << 32 | mã hoàn thành << 24 | bàn phím << 16
 #          | chuột << 8 | bước dò cuối (xem drivers/usb_xhci.lit)
@@ -355,10 +357,16 @@ func diag_boot_report void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
         %kd = call hw_get %0 300
         %kdl = const "KBD     " bv64
         call diag_line %0 %51 %3 132 %kdl %kd
+        %ud = call hw_get %0 44
+        %udl = const "USBD    " bv64
+        call diag_line %0 %51 %3 150 %udl %ud
+        %ud2 = call hw_get %0 45
+        %udl2 = const "USBD2   " bv64
+        call diag_line %0 %51 %3 168 %udl2 %ud2
 
         %42 = const 0 bv64
-        %43 = const 330 bv64
-        %44 = const 152 bv64
+        %43 = const 320 bv64
+        %44 = const 188 bv64
         %45 = const 34 bv64
         call gfx_blit_rect %1 %2 %42 %45 %43 %44
         call fb_present_rect %0 %1 %42 %45 %43 %44
@@ -372,9 +380,9 @@ func diag_hide void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,20736
     @req uge %2 0x10000
     @req ult %2 0x40000000
     @b0
-        call gfx_fill_rect_scr %2 0 34 330 152 0x161b26:bv32
-        call gfx_blit_rect %1 %2 0 34 330 152
-        call fb_present_rect %0 %1 0 34 330 152
+        call gfx_fill_rect_scr %2 0 34 320 188 0x161b26:bv32
+        call gfx_blit_rect %1 %2 0 34 320 188
+        call fb_present_rect %0 %1 0 34 320 188
         ret
 }
 

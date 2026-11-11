@@ -20,12 +20,14 @@
 #   3 RTSOFF   4 DBOFF   5 kích thước context (32/64)   6 số cổng   7/8 ring lệnh (enq, cycle)   9/10 ring sự kiện (deq, cycle)
 #   16 + (slot-1)*8: +0 loại (0 không, 1 bàn phím, 2 chuột) +1 DCI endpoint +2 MPS (EP0, sau đó endpoint IN)
 #                    +3 báo cáo trước (bàn phím) +4 cổng +5 interface +6 tốc độ
-#   30..35 kết quả phân tích descriptor   80 + 2*slot: ring EP0 (enq, cycle)   100 + 2*slot: ring interrupt
+#   200..204 kết quả phân tích descriptor (trước đây 30..35: TRÙNG bản ghi slot 2/3 -> dò thiết bị thứ 4 ghi đè
+#            loại/DCI/MPS của slot 3: bàn phím ở slot 3 chết khi laptop có webcam/Bluetooth chiếm slot 1-2)   80 + 2*slot: ring EP0 (enq, cycle)   100 + 2*slot: ring interrupt
 #   400..408 bảng mã HID usage (0..71) -> scancode set 1
 # MMIO: BAR0 ánh xạ UC vào PD_MMIO[2..3] = ảo 0x80_4040_0000.
 # Chẩn đoán: HW[40] = giai đoạn << 56 | dev PCI << 48 | số cổng << 40 | số slot << 32 | mã hoàn thành cuối << 24
 #             | bàn phím << 16 | chuột << 8 | bước cuối của xh_probe (1 desc thiết bị, 2 desc cấu hình 9B, 3 desc đầy đủ,
 #             4 phân tích, 5 Configure Endpoint, 6 SET_CONFIGURATION)
+# HW[44 + controller] = dòng USBD: mỗi byte 1 slot = tốc độ << 4 | kết quả (xem usb_note)
 
 include ../os/hw.lit
 include kbd_drv.lit
@@ -922,14 +924,14 @@ func xh_intv bv64 %0:bv64 %1:bv64 {
 }
 
 # Duyệt %1 byte descriptor cấu hình trong bộ đệm: tìm interface HID boot (class 3, subclass 1, protocol 1/2) và
-# endpoint interrupt IN đầu tiên của nó. Kết quả: XS[30] = protocol (0 = không thấy), 31 interface, 32 địa chỉ
+# endpoint interrupt IN đầu tiên của nó. Kết quả: XS[200] = protocol (0 = không thấy), 31 interface, 32 địa chỉ
 # endpoint, 33 MPS, 34 bInterval.
 func xh_parse_cfg void %0:io<0,0xffff> %1:bv64 {
     @req ule %1 256
 
     @b0
         %2 = const 0 bv64
-        %3 = const 30 bv64
+        %3 = const 200 bv64
         call xs_set %0 %3 %2
         jmp @b1 %2 %2 %2
 
@@ -1024,13 +1026,13 @@ func xh_parse_cfg void %0:io<0,0xffff> %1:bv64 {
         %66 = add %4 %65
         %67 = call xh_bb %0 %66              # bInterval
         call xs_set %0 %3 %5
-        %68 = const 31 bv64
+        %68 = const 201 bv64
         call xs_set %0 %68 %6
-        %69 = const 32 bv64
+        %69 = const 202 bv64
         call xs_set %0 %69 %43
-        %70 = const 33 bv64
+        %70 = const 203 bv64
         call xs_set %0 %70 %64
-        %71 = const 34 bv64
+        %71 = const 204 bv64
         call xs_set %0 %71 %67
         jmp @b7
 
@@ -1077,6 +1079,9 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         br %15 @b1 @b90
 
     @b1
+        %dcl = call xh_bb %0 4                # bDeviceClass (9 = hub) -> XS[210 + slot] cho chẩn đoán
+        %dci = add %1 210
+        call xs_set %0 %dci %dcl
         # bMaxPacketSize0 khác giá trị đoán (thiết bị FS có EP0 64 byte...) -> Evaluate Context
         %16 = const 7 bv64
         %17 = call xh_bb %0 %16
@@ -1168,7 +1173,7 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         call xs_set %0 %924 %904
         %944 = const 13 bv64
         call xs_set %0 %944 %62
-        %72 = const 30 bv64
+        %72 = const 200 bv64
         %73 = call xs_get %0 %72
         %74 = const 2 bv64
         %75 = cmp uge %73 %3
@@ -1178,16 +1183,16 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
 
     @b6
         # Configure Endpoint cho endpoint interrupt IN
-        %78 = const 31 bv64
+        %78 = const 201 bv64
         %79 = call xs_get %0 %78             # interface
-        %80 = const 32 bv64
+        %80 = const 202 bv64
         %81 = call xs_get %0 %80             # địa chỉ endpoint
-        %82 = const 33 bv64
+        %82 = const 203 bv64
         %83 = call xs_get %0 %82
         %84 = const 1024 bv64
         %85 = call std_min %83 %84
         %86 = call std_max %85 %3            # MPS 1..1024
-        %87 = const 34 bv64
+        %87 = const 204 bv64
         %88 = call xs_get %0 %87
         %89 = const 6 bv64
         %90 = add %9 %89
@@ -1293,6 +1298,15 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         %160 = const 0x0B21 bv64
         %161 = or %160 %159
         %162 = call xh_ctrl %0 %1 %161 %2
+        # Bàn phím: SET_IDLE(0) như Linux (chỉ báo cáo khi đổi phím); thiết bị không hỗ trợ thì STALL, bỏ qua
+        %kb1 = cmp eq %73 1
+        br %kb1 @idle @b8c
+    @idle
+        %ilc = const 0x0A21 bv64
+        %ilr = or %ilc %159
+        %ilk = call xh_ctrl %0 %1 %ilr %2
+        jmp @b8c
+    @b8c
         %163 = const 1 bv64
         %164 = add %9 %163
         call xs_set %0 %164 %100             # DCI
@@ -1697,6 +1711,44 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         ret %200
 }
 
+# Chẩn đoán từng slot: XS[220 + slot] = tốc độ << 4 | kết quả: 1 bàn phím, 2 chuột, 3 hub (driver chưa hỗ trợ),
+# 4 không có interface HID boot, 8 + bước = hỏng ở bước dò (1 desc thiết bị, 2/3 desc cấu hình, 5 Configure EP, 6 SET_CONFIG)
+func usb_note void %0:io<0,0xffff> %slot:bv64 %speed:bv64 %res:bv64 {
+    @req uge %slot 1
+    @req ule %slot 8
+    @b0
+        %sp = and %speed 15
+        %hi = shl %sp 4
+        %ok = cmp ne %res 0
+        br %ok @hid @why
+    @hid
+        %r = and %res 3
+        jmp @set %r
+    @why
+        %ci = add %slot 210
+        %cls = call xs_get %0 %ci
+        %hub = cmp eq %cls 9
+        br %hub @h @step
+    @h
+        jmp @set 3
+    @step
+        %st = call xs_get %0 12
+        %s7 = and %st 7
+        %nb = cmp eq %s7 4
+        br %nb @noboot @fail
+    @noboot
+        jmp @set 4
+    @fail
+        %f = or %s7 8
+        jmp @set %f
+    @set %code:bv64
+        %c4 = and %code 15
+        %v = or %hi %c4
+        %di = add %slot 220
+        call xs_set %0 %di %v
+        ret
+}
+
 # Duyệt cổng gốc: reset cổng USB2 có thiết bị, gán địa chỉ, dò HID. Trả slot << 32 | bàn phím << 16 | chuột << 8.
 func xh_scan_ports bv64 %0:io<0,0xffff> {
     @b0
@@ -1778,6 +1830,7 @@ func xh_scan_ports bv64 %0:io<0,0xffff> {
     @b7
         %49 = add %9 %2
         %50 = call xh_probe %0 %47
+        call usb_note %0 %47 %46 %50
         %51 = cmp eq %50 %2
         %52 = const 2 bv64
         %53 = cmp eq %50 %52
@@ -1817,6 +1870,32 @@ func xh_scan_ports bv64 %0:io<0,0xffff> {
         %66 = or %61 %63
         %67 = or %66 %65
         ret %67
+}
+
+# HW[44 + controller] = byte (slot-1) là XS[220 + slot] (dòng USBD / USBD2 của màn chẩn đoán)
+func usb_pack_notes void %0:io<0,0xffff> {
+    @b0
+        jmp @l 1 0
+    @l %i:bv64 %acc:bv64
+        @inv uge %i 1
+        @inv ule %i 9
+        %more = cmp ule %i 8
+        br %more @one @done
+    @one
+        %xi = add %i 220
+        %v = call xs_get %0 %xi
+        %b = and %v 0xff
+        %k = sub %i 1
+        %sh = shl %k 3
+        %bs = shl %b %sh
+        %a2 = or %acc %bs
+        %i2 = add %i 1
+        jmp @l %i2 %a2
+    @done
+        %sel = call xh_sel %0
+        %hi = add %sel 44
+        call hw_set %0 %hi %acc
+        ret
 }
 
 # Thử 1 controller (bus 0, dev %1, fn %2). Trả số thiết bị HID đang chạy (0 = controller đã bị dừng lại).
@@ -1864,6 +1943,7 @@ func xh_try bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
 
     @b2
         call hw_set %0 %8 %20
+        call usb_pack_notes %0
         %22 = const 1 bv64
         call xs_set %0 %3 %22
         ret %22
@@ -1874,6 +1954,7 @@ func xh_try bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         %24 = shl %23 %4
         %25 = or %20 %24
         call hw_set %0 %8 %25
+        call usb_pack_notes %0
         call xh_stop %0
         ret %3
 
@@ -1959,6 +2040,8 @@ func usb_init void %0:io<0,0xffff> {
         call hw_set %0 %251 %1
         %252 = const 43 bv64
         call hw_set %0 %252 %1
+        call hw_set %0 44 %1
+        call hw_set %0 45 %1
         jmp @b4 %1 %1
 
     @b4 %27:bv64 %28:bv64
