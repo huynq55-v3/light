@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vm": {
+      "command": "python3",
+      "args": ["tools/light_mcp.py"]
+    }
+  }
+}

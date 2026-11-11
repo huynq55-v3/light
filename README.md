@@ -131,6 +131,7 @@ cargo run --release   # kernel.elf (lit_program/os/kernel.lit) + storage/apps/*.
 
 # 2. Khởi động trên QEMU có cửa sổ (gắn đĩa LightFS chứa App, 4G RAM, KVM; serial in ra terminal)
 bash tools/qemu_run.sh            # --fresh: chép lại đĩa sạch, --usb: bàn phím/chuột USB
+                                  # --agent: COM1 thành socket cho Claude (xem "Kênh Agent"), --headless: không cửa sổ
 
 # 3. Giống hệt máy thật: OVMF (UEFI) -> GRUB lightos.efi -> multiboot, đĩa NVMe có GPT (ESP / lightos / ubuntu)
 bash tools/qemu_uefi_nvme.sh
@@ -151,6 +152,42 @@ bash tools/qemu_uefi_nvme.sh
   `lit_program/`; tra theo tên, chú thích hoặc đường dẫn. Dùng thay cho việc đọc cả file thư viện.
 - Cache Z3: kết quả chứng minh lưu ở `.light-cache/z3.keys` (khóa = băm mã verifier + layouts + hàm + hợp đồng của hàm được gọi).
   Build lại không đổi gì mất ~0,06s thay vì ~7s. `--no-cache` hoặc `LIGHT_NO_CACHE=1` để tắt; xóa thư mục để làm mới.
+
+## Kênh Agent: Claude chạy lệnh trong Light OS (QEMU)
+
+Lõi shell `std/shell.lit` (thuần, không io) là bộ thông dịch CHẠY TỪNG BƯỚC: `sh_begin` rồi gọi `sh_step` tới khi xong;
+mỗi khi cần đĩa, lõi dừng lại xin mặt tiền một thao tác LightFS mức thấp (READ / WRITE / CREATE / DELETE), mặt tiền làm
+rồi trả kết quả bằng `sh_op_done`. Kết quả: stdout, stderr, mã thoát (0 / 1 lỗi / 2 cú pháp / 127 không có lệnh), cờ cắt.
+
+- Lệnh: `help echo pwd cd ls stat cat write append mkdir touch rm grep wc head tail sort uniq find env unset true false`.
+- Cú pháp: nháy `'...'` (nguyên văn) và `"..."` (thay `$VAR`), `$VAR ${VAR} $?`, `TÊN=giá_trị`, ống `a | b`,
+  chuyển hướng `> >> <`, chuỗi lệnh `a ; b`, `a && b`, `a || b`. `\` chỉ thoát ký tự đặc biệt của shell; chuỗi `\n`... khác
+  đi nguyên tới lệnh (`write`, `append`, `echo -e` hiểu `\n \t \\ \xHH`). Lỗi cú pháp được báo trước khi lệnh nào chạy.
+  Chưa có: glob, `$(...)`, `2>`, chạy nền.
+- Ống chạy tuần tự qua hai bộ đệm 128KB (A / B đổi vai); đầu ra của mỗi lệnh vào một bộ đệm rồi mới chuyển tiếp: lệnh
+  sau, file (`>`, `>>`, `write`, `append` đều đi qua cùng một đường) hoặc stdout. Đầu ra bị cắt (tràn 128KB ở bất kỳ
+  lệnh nào trong ống) KHÔNG BAO GIỜ được ghi vào file: lệnh báo "file too large" và trả 1.
+- `grep` tìm chuỗi cố định (`^` / `$` neo đầu / cuối dòng, `-v -i -n -c`), `sort` tối đa 6144 dòng (`-r -n -u`, heapsort),
+  `find` duyệt bảng LightFS (`-name` với `* ?`, `-type f|d`). Biến: 4KB, giữ qua các lệnh của phiên.
+
+Kernel (`os/agent.lit`) đọc lệnh từ COM1 mỗi nhịp, chạy lõi tới hết (thao tác đĩa làm đồng bộ, `ag_op`, có chặn khi
+chưa gắn hệ tệp) và trả một dòng `@@LR|id|exit|trunc|stdout|stderr` (thoát ký tự `\\ \n \t \xHH`); khởi động xong in
+`@@LREADY`. Giới hạn: dòng lệnh 128KB, stdout 64KB, stderr 1KB, file 1MB. Bộ nhớ: vùng Kernel PD_0[11]
+(stdout 0x1660000, dòng lệnh 0x1670000, vùng làm việc của lõi 448KB ở 0x1690000, nội dung file 0x1700000).
+App Terminal (`apps/terminal.lit`) là mặt tiền thứ hai của CÙNG lõi: mỗi thao tác đĩa là một yêu cầu IPC; khi đang chạy
+lệnh, App đặt `IpcChannel.run_req` để Kernel gọi lại mỗi nhịp (không cần phím), chỉ vẽ lại khi xong lệnh. Bộ đệm cuộn
+32KB tự xuống dòng, cửa sổ đổi kích thước được, nút cuộn ^ / v; thêm lệnh riêng `clear sys mem memup memdown memtest`
+(chỉ khi là cả dòng). Người và Claude gõ cùng một bộ lệnh.
+MCP server có 3 công cụ: `run` (một dòng lệnh), `read_file`, `write_file` (gửi `write 'PATH' '<nội dung đã thoát>'`,
+`'` thành `\x27`, chia thành `write` + `append` theo khối 120000 ký tự).
+
+```bash
+bash tools/qemu_run.sh --agent             # cửa sổ QEMU + socket target/light_serial.sock
+python3 tools/light_mcp.py --run "ls /apps"  # thử tay: in stdout/stderr, mã thoát = mã của lệnh
+# Claude Code dùng MCP server (stdio, không cần cài gì thêm) qua tools/light_mcp.json -> công cụ mcp__vm__run:
+claude -p "liệt kê các App trong Light OS" --strict-mcp-config --mcp-config tools/light_mcp.json \
+       --allowedTools "mcp__vm__run" --disallowedTools "Bash,Edit,Write,WebFetch,WebSearch"
+```
 
 ## Số học tường minh khi tràn 64-bit
 
@@ -213,9 +250,10 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text`, `surf_round_inset`, `surf_round_rect` (hình bo góc dùng chung cho Dock / compositor / widget) |
 | `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
 | `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
+| `shell` | lõi shell dùng chung: `sh_begin` / `sh_step` / `sh_op_done` / `sh_op_name` (bộ thông dịch chạy từng bước, `ShState` giữ cwd, `$?` và thao tác đĩa đang chờ; vùng làm việc `SH_WS` = 448KB), `sh_unescape`, `sh_resolve` (đường dẫn `/a/../b`) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
-lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Terminal in số bằng `fmt_u64` (`term_append_dec`).
+lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Lõi shell in số bằng `fmt_u64` (`sh_out_dec`).
 
 ## Kênh IPC riêng cho từng App
 

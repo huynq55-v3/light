@@ -3,6 +3,7 @@
 
 include init.lit
 include diag.lit
+include agent.lit
 
 layout KernelState 16 {
     0: bv64 @inv ule val 64
@@ -45,6 +46,7 @@ func kscheduler_loop void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> 
         call app_desktop_ipc_task %0 %3 %4 %2 %5
         call diag_tick %0 %3 %4 %2
         call bl_tick %0 %2
+        call ag_tick %0
         jmp @b1 %11
 }
 
@@ -95,7 +97,7 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         jmp @run
 
     @run
-
+        call ag_init %0
         call kscheduler_loop %0 %4 %3 %9 %10 %5
         ret
 }

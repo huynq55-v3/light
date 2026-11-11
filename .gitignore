@@ -7,3 +7,4 @@ repo-to-text*
 /models
 *.gguf
 .light-cache/
+__pycache__/

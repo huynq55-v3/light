@@ -45,6 +45,12 @@ def tap(k, shift=False):
     key(k, True); time.sleep(0.05); key(k, False)
     if shift: key('shift', False)
     time.sleep(0.08)
+# ký hiệu -> qcode QEMU (bàn phím US); SHIFTED cần giữ Shift
+PLAIN = {'.': 'dot', '-': 'minus', '/': 'slash', '=': 'equal', ',': 'comma', ';': 'semicolon', "'": 'apostrophe',
+         '[': 'bracket_left', ']': 'bracket_right', '\\': 'backslash', '`': 'grave_accent', '\t': 'tab'}
+SHIFTED = dict(zip('!@#$%^&*()_+:"<>?{}|~', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'minus', 'equal',
+               'semicolon', 'apostrophe', 'comma', 'dot', 'slash', 'bracket_left', 'bracket_right', 'backslash',
+               'grave_accent']))
 for c in cmds:
     op, _, arg = c.partition(':')
     if op == 'wait': time.sleep(float(arg))
@@ -54,7 +60,9 @@ for c in cmds:
             if ch == ' ': tap('spc')
             elif ch == '\n': tap('ret')
             elif ch.isupper(): tap(ch.lower(), True)
-            else: tap({'.': 'dot', '-': 'minus', '/': 'slash'}.get(ch, ch))
+            elif ch in PLAIN: tap(PLAIN[ch])
+            elif ch in SHIFTED: tap(SHIFTED[ch], True)
+            else: tap(ch)
     elif op == 'shot':
         cmd('screendump', filename=f'{S}/{arg}.ppm')
         subprocess.run([sys.executable, '-c', f"from PIL import Image; Image.open('{S}/{arg}.ppm').save('{S}/{arg}.png')"])

@@ -27,7 +27,8 @@ layout IpcChannel 320 {
     72: bv64 cursor_y @inv ult val 1060
     80: bv64 dirty                          # 1 = đã có vùng bẩn (dirty_*) trong khung hình này
     88: bv64 win_cmd                        # 0 = bình thường, 1 = App xin Shell đóng & reset
-    96: bv64 disk_req @inv ule val 0xffffffffffffffff   # cũ: lba[0..23]|n[24..39]|dst[40..55]
+    96: bv64 run_req @inv ule val 0xffffffffffffffff    # App ghi khác 0 = gọi tôi lại mỗi nhịp dù không có input (đang dở việc);
+                                            # app_sync_out chép thành bit của slot trong bg_mask kênh chung, ghi 0 để thôi
     104: bv64 disk_lba @inv ult val 268435456
     112: bv64 win_drawn @inv ule val 1      # 1 = App đã vẽ khung cửa sổ / Kernel vừa phục vụ yêu cầu LightFS
     120: bv64 dirty_x1 @inv ule val 1280    # vùng bẩn (tọa độ khung nhìn App)
