@@ -161,7 +161,9 @@ này và trả một dòng `@@LR|id|exit|trunc|stdout|stderr` (thoát ký tự `
 Phiên giữ thư mục hiện tại giữa các lệnh. Lệnh: `help echo pwd ls cd stat cat write append mkdir touch rm`. Văn bản của
 `write`/`append` hiểu `\n \t \\ \xHH`. Lệnh đụng đĩa: lõi chỉ lập kế hoạch (`ShState.op`), mặt tiền thực hiện bằng
 LightFS rồi gọi `sh_fs_done` — Kernel làm đồng bộ (`ag_do_plan`, file tối đa 1MB, stdout 64KB, dòng lệnh tối đa 448KB).
-App Terminal vẫn dùng bộ lệnh cũ của nó cho tới khi được chuyển sang lõi này.
+App Terminal (`apps/terminal.lit`) là mặt tiền thứ hai của CÙNG lõi: thực hiện kế hoạch đĩa bằng yêu cầu IPC LightFS
+(TABLE -> CREATE / READ -> WRITE, mỗi bước một lượt Kernel gọi lại App), bộ đệm cuộn 32KB tự xuống dòng, cửa sổ đổi kích
+thước được, nút cuộn ^ / v; thêm lệnh riêng `clear sys mem memup memdown memtest`. Người và Claude gõ cùng một bộ lệnh.
 MCP server có 3 công cụ: `run` (một dòng lệnh), `read_file`, `write_file` (tự thoát ký tự, chia thành `write` + `append`).
 
 ```bash
@@ -236,7 +238,7 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `shell` | lõi shell dùng chung: `sh_exec` (một dòng lệnh -> stdout / stderr / mã thoát, `ShState` giữ cwd và kế hoạch thao tác đĩa), `sh_fs_done`, `sh_unescape`, `sh_resolve` (đường dẫn `/a/../b`) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
-lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Terminal in số bằng `fmt_u64` (`term_append_dec`).
+lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Lõi shell in số bằng `fmt_u64` (`sh_out_dec`).
 
 ## Kênh IPC riêng cho từng App
 

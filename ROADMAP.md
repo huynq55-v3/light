@@ -211,8 +211,13 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    Terminal cũ vẫn ghi / đọc được ở legacy / usb / uefi (NVMe), desktop vẫn phản hồi khi Agent ghi file lớn.
    Còn mở: Agent xóa / tạo lại mục trong khi App (Editor) còn giữ id cũ -> App có thể ghi nhầm vào mục id đó được dùng lại;
    append đọc lại + ghi lại cả file (O(kích thước)); chưa thử `claude -p` thật.
-   Tiếp: chuyển App Terminal sang lõi,
-   shell v2 (nháy kép, `|`, `>`, `&&`, biến, grep / wc / head...), trình thông dịch.
+   Terminal mới (cùng ngày): viết lại `apps/terminal.lit` (2030 -> ~960 dòng) trên lõi shell + std/widget: bộ đệm cuộn
+   32KB (= stdout của lõi), tự xuống dòng, đổi kích thước, cuộn, máy trạng thái IPC cho lệnh đĩa, giữ lệnh riêng
+   clear / sys / mem / memup / memdown / memtest. Bàn phím: thêm ' ` \ và bảng Shift đầy đủ (@ $ ^ < > " | ~ ...);
+   font thêm \ | ~ ` $ ^ (font nay đủ mọi ký tự in được). tools/qt.py gõ được ký hiệu.
+   Đã thử: legacy / usb / uefi, cat 900KB (hiện phần đầu tới khi đầy + "[output truncated]"), Agent sửa đĩa thì
+   Terminal thấy ngay, xóa thư mục đang đứng -> về /, đổi kích thước, đóng / mở lại.
+   Tiếp: shell v2 (nháy kép, `|`, `>`, `&&`, biến, grep / wc / head...), trình thông dịch.
 
 ## 📋 Tiếp theo
 

@@ -162,7 +162,7 @@ TOOLS = [{
     "description": (
         "Run one shell command inside Light OS (running in QEMU) and return its exit code, stdout and stderr. "
         "The shell session (current directory) persists between calls. Commands are ASCII, one line. "
-        "Available now: help, echo, pwd, ls, cd, stat, cat, write, append, mkdir, touch, rm (run `help` for usage). "
+        "Same shell as the Light OS Terminal app. Commands: help, echo, pwd, ls, cd, stat, cat, write, append, mkdir, touch, rm (run `help` for usage). "
         "No quoting, pipes or redirection yet; paths cannot contain spaces. TEXT of write/append uses escapes "
         "\\n \\t \\\\ \\xHH (prefer the write_file tool for file content). "
         "Exit codes: 0 ok, 1 error, 2 usage, 127 unknown command. stdout is capped at 64 KiB, stderr at 1 KiB."),

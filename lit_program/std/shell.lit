@@ -76,7 +76,7 @@ data SH_C_STAT Byte {
     "stat"
 }
 data SH_M_HELP Byte {
-    "commands:\n  help           this list\n  echo TEXT      print TEXT\n  pwd            current directory\n  ls [PATH]      list a directory (dirs end with /)\n  cd [PATH]      change directory (no PATH = /)\n  stat PATH      type, size and id of an entry\n  cat PATH       print a file\n  write PATH TEXT   replace file content with TEXT (creates the file)\n  append PATH TEXT  add TEXT at the end of a file (creates the file)\n  mkdir PATH     create a directory\n  touch PATH     create an empty file if missing\n  rm PATH        remove a file or an empty directory\nTEXT escapes: \\\\n newline, \\\\t tab, \\\\\\\\ backslash, \\\\xHH any byte\n"
+    "commands:\n  help           this list\n  echo TEXT      print TEXT\n  pwd            current directory\n  ls [PATH]      list a directory (dirs end with /)\n  cd [PATH]      change directory (no PATH = /)\n  stat PATH      type, size and id of an entry\n  cat PATH       print a file\n  write PATH TEXT   replace file content with TEXT (creates the file)\n  append PATH TEXT  add TEXT at the end of a file (creates the file)\n  mkdir PATH     create a directory\n  touch PATH     create an empty file if missing\n  rm PATH        remove a file or an empty directory\nTEXT escapes: \\n newline, \\t tab, \\\\ backslash, \\xHH any byte\n"
 }
 data SH_C_CAT Byte {
     "cat"
@@ -1109,6 +1109,49 @@ func sh_unescape bv64 %n:bv64 %src:ptr<Byte,%n> %cap:bv64 %dst:ptr<Byte,%cap> %p
         ret %at
 }
 
+
+# ---------------------------------------------------------------- việc chung của mặt tiền khi thực hiện kế hoạch
+
+def SH_E_TOOBIG 0x8000000000000004        # cùng mã lỗi 4 của LightFS ("file too large")
+
+# Tên mục sẽ tạo (name_off / name_len trong dòng lệnh (n, s)) -> 8 qword %q (đệm 0) cho LightFS CREATE
+func sh_pack_name void %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %q:ptr<DiskQword,8> {
+    @b0
+        %no = load %st ShState.name_off
+        %nl = load %st ShState.name_len
+        %o = call math_min %no %n
+        %room = sub %n %o
+        %l0 = call math_min %nl %room
+        %l = call math_min %l0 63
+        call mem_fill_q 8 %q 0
+        %qb = view %q ptr<Byte,64>
+        %src = slice %s %o ptr<Byte,%l>
+        call mem_copy_b 64 %qb %l %src %l
+        ret
+}
+
+# Văn bản của write / append (data_off / data_len trong dòng lệnh) đã giải thoát -> %dst từ vị trí %base.
+# Trả độ dài file mới, hoặc SH_E_TOOBIG nếu có thể không vừa %cap.
+func sh_fill_data bv64 %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %cap:bv64 %dst:ptr<Byte,%cap> %base:bv64 {
+    @b0
+        %do = load %st ShState.data_off
+        %dl0 = load %st ShState.data_len
+        %o = call math_min %do %n
+        %room = sub %n %o
+        %dl = call math_min %dl0 %room
+        %src = slice %s %o ptr<Byte,%dl>
+        %inb = cmp ule %base %cap
+        br %inb @free @big
+    @free
+        %fr = sub %cap %base
+        %fits = cmp ule %dl %fr
+        br %fits @copy @big
+    @copy
+        %pos = call sh_unescape %dl %src %cap %dst %base
+        ret %pos
+    @big
+        ret SH_E_TOOBIG
+}
 
 # Chạy một dòng lệnh; trả mã thoát (cũng ghi vào ShState.exit)
 func sh_exec bv64 %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %tab:ptr<DiskQword,4096> %oc:bv64 %out:ptr<Byte,%oc> %ec:bv64 %err:ptr<Byte,%ec> {
