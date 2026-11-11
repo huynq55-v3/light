@@ -373,7 +373,7 @@ func std_in_range bv64 %0:bv64 %1:bv64 %2:bv64 {
 
 # 3. Bộ ép kiểu an toàn Zero-cost Casts từ bv8 / bv16 / bv32 sang bv64
 func std_bv8_to_bv64 bv64 %0:bv8 {
-    @ens ult %0 256
+    @ens ult %r 256
 
     @b0
         ret %0

@@ -324,20 +324,18 @@ fn check_ssa(func: &Func, cfg: &Cfg) -> Result<(), String> {
     Ok(())
 }
 
+/// Tên giá trị trả về trong @ens: thanh ghi duy nhất không phải tham số (None nếu @ens chỉ nhắc tham số).
+fn result_reg(func: &Func) -> Option<Reg> {
+    let params: HashSet<Reg> = func.params.iter().map(|p| p.0).collect();
+    let mut v = vec![];
+    for e in &func.ensures {
+        expr_regs(e, &mut v);
+    }
+    v.into_iter().find(|r| !params.contains(r))
+}
+
 fn check_contract(func: &Func) -> Result<(), String> {
     let params: HashSet<Reg> = func.params.iter().map(|p| p.0).collect();
-    let rets: HashSet<Reg> = func
-        .blocks
-        .iter()
-        .flat_map(|b| &b.insts)
-        .filter_map(|i| {
-            if let Inst::Ret { val: Some(r) } = i {
-                Some(*r)
-            } else {
-                None
-            }
-        })
-        .collect();
     for (i, req) in func.requires.iter().enumerate() {
         let mut v = vec![];
         expr_regs(req, &mut v);
@@ -348,21 +346,25 @@ fn check_contract(func: &Func) -> Result<(), String> {
             ));
         }
     }
-    if func.ret_ty.is_some() && !func.ensures.is_empty() && rets.len() > 1 {
-        return Err("hàm có @ens nhưng các lệnh ret trả về nhiều thanh ghi khác nhau".into());
-    }
+    // @ens chỉ được nhắc tới tham số và (nhiều nhất) MỘT tên cho giá trị trả về; tên đó được gán lại ở từng `ret`.
+    let mut res: Vec<Reg> = vec![];
     for (i, ens) in func.ensures.iter().enumerate() {
         let mut v = vec![];
         expr_regs(ens, &mut v);
-        if let Some(r) = v
-            .iter()
-            .find(|r| !params.contains(r) && !(func.ret_ty.is_some() && rets.contains(r)))
-        {
-            return Err(format!(
-                "@ens #{} dùng %{} không phải tham số hay thanh ghi trả về",
-                i, r
-            ));
+        for r in v.into_iter().filter(|r| !params.contains(r)) {
+            if func.ret_ty.is_none() {
+                return Err(format!("@ens #{} dùng %{} không phải tham số (hàm không trả giá trị)", i, r));
+            }
+            if !res.contains(&r) {
+                res.push(r);
+            }
         }
+    }
+    if res.len() > 1 {
+        return Err(format!(
+            "@ens dùng nhiều thanh ghi ngoài tham số ({}); chỉ được một tên cho giá trị trả về",
+            res.iter().map(|r| format!("%{}", r)).collect::<Vec<_>>().join(", ")
+        ));
     }
     Ok(())
 }
@@ -1407,13 +1409,7 @@ impl<'ctx> Verifier<'ctx> {
                     }
                     let dbv = self.decl_reg(*d, rty)?;
                     if !callee.ensures.is_empty() {
-                        if let Some(r) = callee.blocks.iter().flat_map(|b| &b.insts).find_map(|i| {
-                            if let Inst::Ret { val: Some(r) } = i {
-                                Some(*r)
-                            } else {
-                                None
-                            }
-                        }) {
+                        if let Some(r) = result_reg(callee) {
                             env.insert(r, dbv);
                         }
                         for ens in &callee.ensures {
@@ -1515,9 +1511,14 @@ impl<'ctx> Verifier<'ctx> {
                         &format!("giá trị trả về %{}", r),
                     )?;
                 }
+                // @ens kiểm tại TỪNG ret: tên giá trị trả về trong @ens được gán bằng thanh ghi ret này
+                let mut env = self.regs.clone();
+                if let (Some(rr), Some(r)) = (result_reg(func), val) {
+                    env.insert(rr, self.get_reg(*r)?.clone());
+                }
                 for (i, ens) in func.ensures.iter().enumerate() {
                     self.check(
-                        &self.ev(ens)?,
+                        &self.eval_bool(ens, &env, None)?,
                         &format!(
                             "Vi phạm điều kiện đầu ra (@ens #{}) của hàm '{}'",
                             i, func.name
