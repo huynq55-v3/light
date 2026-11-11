@@ -122,6 +122,12 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    gõ `sys` (usb) trùng từng điểm ảnh với `main`, bảng cảnh: Terminal ở (360,140) và trên cùng; `cargo test`;
    stack-report 577 hàm.
    Giới hạn còn lại: cầu nối vẫn chạy trong kernel (chưa phải tiến trình riêng); cs_* tin con trỏ cầu nối đưa vào.
+6. Làm lại Dock + giao diện desktop (người dùng yêu cầu 2026-11-11: Dock hiện "xấu"): Dock hiện vẽ một lần lúc boot
+   bằng hình chữ nhật phẳng trong `dock_render_bar` (wm.lit), icon 52x52 do App tự vẽ, không có chỉ báo App đang chạy,
+   không có hiệu ứng hover, nền desktop một màu, dòng chẩn đoán BLK/PART/USB in ở góc trên-trái.
+   Hướng làm: tách Dock thành phần vẽ thuần (kiểu `cs_*`, không io) + cầu nối; nền bo góc / đổ bóng, icon có khoảng
+   đệm đều, chấm chỉ báo App đang chạy + App đang focus, làm sáng icon khi rê chuột, nhãn tên khi hover; nền desktop
+   gradient; ẩn dòng chẩn đoán (chỉ hiện khi bật chế độ debug); kiểm lại trên legacy/usb/uefi và RAM 320M.
 
 ## 📋 Tiếp theo
 
