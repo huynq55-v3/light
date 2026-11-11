@@ -1926,7 +1926,7 @@ func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<
         store %1 IPC_WIN_DRAWN %11
         %17 = const "TERMINAL" bv64
         %18 = const COL_RETRO_BG bv32
-        call ui_win_draw %0 %3 %6 %7 %8 %9 %17 %18
+        call ui_win_open %0 %3 %1 %6 %7 %8 %9 %17 %18
         %19 = const 1086 bv64
         %20 = const 606 bv64
         call ui_invalidate_rect %1 %6 %7 %19 %20

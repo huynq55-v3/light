@@ -136,9 +136,10 @@ layout CompZ 8 {
     0: bv64 s @inv ult val 8                # slot+1
 }
 
-layout CompWin 16 {
+layout CompWin 24 {
     0: bv64 x @inv ule val 394              # góc trên-trái cửa sổ trong khung nhìn
     8: bv64 y @inv ule val 590
+    16: bv64 title                          # tên cửa sổ đã vẽ trên khung (so với IpcChannel.title để biết khi đổi)
 }
 
 func comp_ctl ptr<CompCtl,1> %io:io<0,0xffff> {
@@ -199,6 +200,7 @@ func comp_scene_init void %io:io<0,0xffff> {
         %w = call comp_win %io %i
         store %w CompWin.x WIN_X0
         store %w CompWin.y WIN_Y0
+        store %w CompWin.title 0
         %i2 = add %i 1
         jmp @l %i2
     @done
@@ -250,6 +252,48 @@ func comp_has bv64 %io:io<0,0xffff> %slot:bv64 {
         ret 1
     @no
         ret 0
+}
+
+# Khung cửa sổ do compositor vẽ (trang trí phía server) thẳng vào surface của slot, quanh cửa sổ cố định (200,60) 880x540:
+# bóng đổ, viền, thanh tiêu đề + tên (IpcChannel.title), nút [X]. Cửa sổ đang focus và không focus khác màu.
+# Vẽ vào surface nên thứ tự chồng / cắt vùng do comp_draw_window lo như mọi điểm ảnh khác.
+func comp_frame void %io:io<0,0xffff> %slot:bv64 %active:bv64 {
+    @req ult %slot 7
+    @b0
+        %on = call comp_enabled %io
+        %yes = cmp ne %on 0
+        br %yes @go @done
+    @go
+        %s = call comp_surface %io %slot
+        %ch = call comp_chan %io %slot
+        %title = load %ch IpcChannel.title
+        %w = call comp_win %io %slot
+        store %w CompWin.title %title
+        %act = cmp ne %active 0
+        br %act @hot @cold
+    @hot
+        jmp @draw 0x334155:bv32 0x0f172a:bv32 0xffffff:bv32 0xef4444:bv32
+    @cold
+        jmp @draw 0x283040:bv32 0x1e2433:bv32 0x8b95a7:bv32 0x4b5563:bv32
+    @draw %border:bv32 %bar:bv32 %text:bv32 %xbtn:bv32
+        # bóng đổ phải và dưới
+        call gfx_fill_rect %s 1080 66 1086 606 0x05070a
+        call gfx_fill_rect %s 206 600 1080 606 0x05070a
+        # viền 2 điểm
+        call gfx_fill_rect %s 200 60 1080 62 %border
+        call gfx_fill_rect %s 200 598 1080 600 %border
+        call gfx_fill_rect %s 200 62 202 598 %border
+        call gfx_fill_rect %s 1078 62 1080 598 %border
+        # thanh tiêu đề + tên
+        call gfx_fill_rect %s 202 62 1078 92 %bar
+        %font = const 0x7c000 ptr<DiskQword,64>
+        call gfx_draw_str8 %s %font 214 68 %title %text
+        # nút [X]
+        call gfx_fill_rect %s 1042 64 1074 88 %xbtn
+        call gfx_fill_rect %s 1054 72 1062 80 0xffffff
+        ret
+    @done
+        ret
 }
 
 # Gỡ slot khỏi cảnh (dồn các phần tử còn lại xuống, giữ thứ tự)
@@ -491,6 +535,31 @@ func comp_repaint_all void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<Ip
         ret
 }
 
+# Focus đổi từ cửa sổ %old sang %new (slot+1, 0 = không có): vẽ lại khung của hai cửa sổ theo màu tương ứng
+func comp_refocus void %io:io<0,0xffff> %old:bv64 %new:bv64 {
+    @req ult %old 8
+    @req ult %new 8
+    @b0
+        %hasold = cmp ne %old 0
+        %diff = cmp ne %old %new
+        %both = and %hasold %diff
+        %dim = cmp ne %both 0
+        br %dim @off @on0
+    @off
+        %os = sub %old 1
+        call comp_frame %io %os 0
+        jmp @on0
+    @on0
+        %hasnew = cmp ne %new 0
+        br %hasnew @on @done
+    @on
+        %ns = sub %new 1
+        call comp_frame %io %ns 1
+        ret
+    @done
+        ret
+}
+
 # Dock chọn App slot: đưa cửa sổ lên trên (mở nếu chưa có) và vẽ lại cảnh. Đã ở trên cùng -> không làm gì.
 func comp_focus void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
     @req uge %view 0x10000
@@ -505,6 +574,7 @@ func comp_focus void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
         br %same @done @raise
     @raise
         call comp_raise %io %slot
+        call comp_refocus %io %top %me
         call comp_repaint_all %io %view %g
         ret
     @done
@@ -531,6 +601,7 @@ func comp_close void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
         ret
     @next
         %top = call comp_top %io
+        call comp_refocus %io 0 %top
         store %g IpcChannel.active_app %top
         %has = cmp ne %top 0
         br %has @redraw @paint
@@ -585,15 +656,32 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         %isfg = cmp eq %act %me
         br %isfg @dirty @done
     @dirty
+        # App vừa đặt/đổi tên cửa sổ -> vẽ lại khung (đang focus) và đưa cả cửa sổ ra màn hình
+        %nt = load %c IpcChannel.title
+        %wt = call comp_win %io %slot
+        %ot = load %wt CompWin.title
+        %retitle = cmp ne %nt %ot
+        br %retitle @reframe @chkd
+    @reframe
+        call comp_frame %io %slot 1
+        store %c IpcChannel.dirty 0
+        jmp @blit 200 60 1086 606
+    @chkd
         %d = load %c IpcChannel.dirty
         %has = cmp ne %d 0
-        br %has @blit @done
-    @blit
+        br %has @rect @done
+    @rect
         store %c IpcChannel.dirty 0
-        %x1 = load %c IpcChannel.dirty_x1
-        %y1 = load %c IpcChannel.dirty_y1
-        %x2 = load %c IpcChannel.dirty_x2
-        %y2 = load %c IpcChannel.dirty_y2
+        %rx1 = load %c IpcChannel.dirty_x1
+        %ry1 = load %c IpcChannel.dirty_y1
+        %rx2 = load %c IpcChannel.dirty_x2
+        %ry2 = load %c IpcChannel.dirty_y2
+        jmp @blit %rx1 %ry1 %rx2 %ry2
+    @blit %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64
+        @inv ule %x1 1280
+        @inv ule %y1 720
+        @inv ule %x2 1280
+        @inv ule %y2 720
         %w = call comp_win %io %slot
         %wx = load %w CompWin.x
         %wy = load %w CompWin.y
@@ -623,13 +711,14 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
 }
 
 # Nhấn chuột (không phải Dock): trúng cửa sổ dưới -> đưa lên trên; trúng thanh tiêu đề cửa sổ trên cùng (trừ nút
-# [X]) -> bắt đầu kéo. Trả 1 nếu compositor đã dùng cú nhấn (App không nhận), 0 để chuyển cho App trên cùng.
+# [X]) -> bắt đầu kéo; trúng nút [X] -> trả 2 (WM đóng App trên cùng). Trả 1 nếu compositor đã dùng cú nhấn (App
+# không nhận), 0 để chuyển cho App trên cùng.
 func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
-    @ens ule %r 1
+    @ens ule %r 2
     @b0
         %on = call comp_enabled %io
         %yes = cmp ne %on 0
@@ -681,7 +770,9 @@ func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
         %istop = cmp eq %k %n
         br %istop @title @raise
     @raise
+        %oldtop = call comp_top %io
         call comp_raise %io %slot
+        call comp_refocus %io %oldtop %s
         store %g IpcChannel.active_app %s
         %ch = call comp_chan %io %slot
         store %ch IpcChannel.win_drawn 0
@@ -695,7 +786,14 @@ func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
         %t2 = cmp ult %u WIN_DRAG_W
         %t12 = and %t1 %t2
         %ontitle = cmp ne %t12 0
-        br %ontitle @grab @pass
+        br %ontitle @grab @xbtn
+    @xbtn
+        # Nút [X] do compositor vẽ: 48 điểm cuối thanh tiêu đề -> trả 2 (WM đóng App trên cùng)
+        %onx = cmp ult %v WIN_TITLE_H
+        br %onx @close @pass
+    @close
+        store %g IpcChannel.click 0
+        ret 2
     @grab
         store %c CompCtl.drag %s
         store %c CompCtl.gx %u

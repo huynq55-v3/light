@@ -435,7 +435,7 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         store %1 112 %13
         %73 = const 0x2020524f54494445 bv64
         %74 = const 0xffffff bv32
-        call ui_win_draw %0 %3 %8 %9 %10 %11 %73 %74
+        call ui_win_open %0 %3 %1 %8 %9 %10 %11 %73 %74
         %75 = const 1086 bv64
         %76 = const 606 bv64
         call ui_invalidate_rect %1 %8 %9 %75 %76

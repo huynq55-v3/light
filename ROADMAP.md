@@ -87,8 +87,16 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    cửa sổ mới xếp tầng (+40, +16); đóng cửa sổ trên cùng -> cửa sổ kế tiếp nhận focus. Chỉ vẽ trong 1280 x 624 của khung
    nhìn (Dock không bị đè). Kiểm: 1 cửa sổ trùng từng điểm ảnh với bản trước; 2 cửa sổ: đưa lên, phím đúng cửa sổ, kéo,
    [X] trên cửa sổ đã dời (usb), ESC rồi focus về cửa sổ dưới; legacy/usb/uefi.
-   Chưa làm: khung cửa sổ do compositor vẽ (App vẫn tự gọi ui_win_draw — phải đổi App); cửa sổ dưới không chạy nên nội
-   dung của nó đứng yên tới khi được đưa lên; vùng kéo chỉ trong khung nhìn 1280x720 (x 0..394, y 0..590).
+   Chưa làm: cửa sổ dưới không chạy nên nội dung của nó đứng yên tới khi được đưa lên; vùng kéo chỉ trong khung nhìn
+   1280x720 (x 0..394, y 0..590).
+3b. ~~Khung cửa sổ do compositor vẽ~~ (xong): thỏa thuận kiểu xdg-decoration — `IpcChannel` 256 byte, thêm `title`
+   (App ghi, 8 ký tự) và `decor` (Kernel ghi 1 khi compositor bật). App gọi `ui_win_open`: decor = 1 -> chỉ tô vùng nội
+   dung; decor = 0 (compositor tắt, RAM < ~330MB) -> tự vẽ đủ khung như cũ. `comp_frame` vẽ khung vào surface (focus:
+   thanh tiêu đề đậm + [X] đỏ; không focus: xám), vẽ lại khi focus đổi hoặc App đổi tên; nút [X] do compositor bắt
+   (`comp_click` trả 2 -> WM đóng App). Kiểm: 1 cửa sổ trùng từng điểm ảnh với bản trước; 2 cửa sổ: màu focus đúng, [X]
+   của compositor đóng cửa sổ trên rồi focus về cửa sổ dưới (usb); uefi; RAM 320M -> đường App tự vẽ khung.
+   Còn lại: thanh trạng thái của Terminal vẫn vẽ trên thanh tiêu đề (vùng của compositor) -> bị xóa khi focus đổi, hiện
+   lại ở lần Terminal chạy kế tiếp; nên chuyển vào vùng nội dung.
 4. Surface động `(w, h, ptr)` + sự kiện `configure` khi đổi kích thước (đổi `check_app_abi` và test `app_abi_*`); toolkit trên `std/surface`.
 5. Tách quyền: compositor không giữ `io<0,0xffff>` (chỉ ptr màn hình + surface).
 

@@ -14,7 +14,7 @@ layout Byte 1 {
     0: bv8
 }
 
-layout IpcChannel 240 {
+layout IpcChannel 256 {
     0: bv64 key_ready                       # 1 = có phím ở `key`
     8: bv8 key @inv ult val 128             # mã ASCII của phím
     16: bv64 mouse_x @inv ult val 1260      # chuột X trong khung nhìn App (kernel quy đổi từ scr_x mỗi nhịp)
@@ -45,5 +45,7 @@ layout IpcChannel 240 {
     216: bv64 fs_sector                     # LightFS: sector trong vùng State của App
     224: bv64 fs_len                        # LightFS: độ dài byte / cờ
     232: bv64 fs_result                     # LightFS: kết quả (bit 63 = lỗi)
+    240: bv64 title                         # App ghi: tên cửa sổ, 8 ký tự ASCII (byte thấp = ký tự đầu)
+    248: bv64 decor @inv ule val 1          # Kernel ghi: 1 = compositor vẽ khung cửa sổ (App chỉ vẽ vùng nội dung)
 }
 

@@ -388,6 +388,21 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
     @b18
         # Compositor xử lý trước: đưa cửa sổ dưới lên trên / bắt đầu kéo (cú nhấn bị tiêu thụ)
         %cc = call comp_click %0 %911 %3
+        %ccx = cmp eq %cc 2
+        br %ccx @b18x @b18c
+
+    @b18x
+        # Nút [X] do compositor vẽ: đóng App trên cùng
+        %cxa = load %3 56 bv64
+        %cxok0 = cmp ne %cxa 0
+        br %cxok0 @b18y @b19
+
+    @b18y
+        %cxs = sub %cxa 1
+        call shell_close_and_reset_app %0 %911 %3 %95 %cxs
+        jmp @b19
+
+    @b18c
         %ccon = cmp ne %cc 0
         br %ccon @b19 @b18a
 
