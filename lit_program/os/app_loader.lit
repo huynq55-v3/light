@@ -825,15 +825,15 @@ func app_service_mem_req void %0:io<0,0xffff> %1:ptr<IpcChannel,1> %2:bv64 {
 # 4. CÁC HÀM ĐIỀU PHỐI TỔNG QUÁT THEO SLOT (0..6)
 # =============================================================================
 
-# Kênh IPC RIÊNG của slot App (0..6): 0x79100 + slot * 240 (cùng trang với kênh toàn cục 0x79000 của driver/WM).
+# Kênh IPC RIÊNG của slot App (0..6): 0x79200 + slot * 320 (cùng trang với kênh toàn cục 0x79000 của driver/WM).
 # App chỉ thấy kênh của mình: phím/click chỉ được chép vào kênh của App đang ở foreground, yêu cầu RAM / LightFS /
 # đóng cửa sổ / vùng bẩn được đọc từ đúng kênh của App đã gửi.
 func app_chan ptr<IpcChannel,1> %io:io<0,0xffff> %slot:bv64 {
     @req ult %slot 7
-    @ens uge %r 0x79100
+    @ens uge %r 0x79200
     @ens ult %r 0x7a000
     @b0
-        %all = const 0x79100 ptr<IpcChannel,7>
+        %all = const 0x79200 ptr<IpcChannel,7>
         %c = slice %all %slot ptr<IpcChannel,1>
         ret %c
 }

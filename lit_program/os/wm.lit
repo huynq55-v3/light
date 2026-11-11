@@ -472,7 +472,11 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         %98 = shl %14 %97
         %99 = and %96 %98
         %108 = cmp ne %99 %13
-        %109 = or %73 %108
+        %1090 = or %73 %108
+        # hoặc compositor vừa đề nghị kích thước mới (configure) cho App trên cùng
+        %cfgr = call comp_wants_run %0 %3
+        %cfgp = cmp ne %cfgr 0
+        %109 = or %1090 %cfgp
         br %109 @b8 @b6
 
     @b8

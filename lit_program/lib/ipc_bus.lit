@@ -119,6 +119,11 @@ func ipc_channel_init void %0:ptr<IpcChannel,1> {
         store %0 192 %6
         store %0 IpcChannel.title 0
         store %0 IpcChannel.decor 0
+        store %0 IpcChannel.cfg_w 0
+        store %0 IpcChannel.cfg_h 0
+        store %0 IpcChannel.win_w 0
+        store %0 IpcChannel.win_h 0
+        store %0 IpcChannel.configure 0
         ret
 }
 

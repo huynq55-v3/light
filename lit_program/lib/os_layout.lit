@@ -14,7 +14,7 @@ layout Byte 1 {
     0: bv8
 }
 
-layout IpcChannel 256 {
+layout IpcChannel 320 {
     0: bv64 key_ready                       # 1 = có phím ở `key`
     8: bv8 key @inv ult val 128             # mã ASCII của phím
     16: bv64 mouse_x @inv ult val 1260      # chuột X trong khung nhìn App (kernel quy đổi từ scr_x mỗi nhịp)
@@ -47,5 +47,10 @@ layout IpcChannel 256 {
     232: bv64 fs_result                     # LightFS: kết quả (bit 63 = lỗi)
     240: bv64 title                         # App ghi: tên cửa sổ, 8 ký tự ASCII (byte thấp = ký tự đầu)
     248: bv64 decor @inv ule val 1          # Kernel ghi: 1 = compositor vẽ khung cửa sổ (App chỉ vẽ vùng nội dung)
+    256: bv64 cfg_w @inv ule val 1074       # Kernel đề nghị kích thước cửa sổ (configure); 0 = chưa có đề nghị
+    264: bv64 cfg_h @inv ule val 558
+    272: bv64 win_w @inv ule val 1074       # App báo kích thước cửa sổ nó ĐÃ vẽ (ui_win_open); compositor dùng số này
+    280: bv64 win_h @inv ule val 558
+    288: bv64 configure @inv ule val 1      # 1 = có đề nghị kích thước mới chưa giao cho App (Kernel gọi App dù không có input)
 }
 

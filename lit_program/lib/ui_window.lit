@@ -110,6 +110,8 @@ func ui_win_open void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %ipc:ptr<IpcC
     @req ule %5 550
     @b0
         store %ipc IpcChannel.title %6
+        store %ipc IpcChannel.win_w %4      # báo compositor: kích thước cửa sổ đã vẽ (App cố định -> không đổi được)
+        store %ipc IpcChannel.win_h %5
         %d = load %ipc IpcChannel.decor
         %srv = cmp ne %d 0
         br %srv @client @full

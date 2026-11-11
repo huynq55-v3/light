@@ -1,0 +1,205 @@
+# File: lit_program/std/widget.lit
+# LIGHT STD — bộ widget tối thiểu cho App có cửa sổ ĐỔI KÍCH THƯỚC được (lát 4 GUI).
+#
+# Mô hình (kiểu Wayland, client quyết kích thước):
+#   1. Compositor đề nghị kích thước qua IpcChannel.cfg_w/cfg_h (configure) khi người dùng kéo góc dưới-phải.
+#   2. App chọn kích thước (wg_pick_size: kẹp theo min/max của App), vẽ lại và BÁO kích thước đã vẽ (wg_window_open
+#      ghi IpcChannel.win_w/win_h). Compositor chỉ dùng kích thước App báo.
+#   3. Compositor tắt (IpcChannel.decor = 0) -> không đổi kích thước: App dùng kích thước mặc định, tự vẽ khung.
+#
+# Vùng nội dung (client) của cửa sổ cỡ w x h: góc trên-trái (202, 92) trong khung nhìn App, cỡ (w-4) x (h-34).
+# wg_client trả surface của vùng đó: mọi tọa độ widget tính từ góc client, mọi điểm vẽ bị cắt trong client.
+
+include surface.lit
+include sys.lit
+include ../lib/ui_window.lit
+
+def WG_CLIENT_OFF 176842                    # 92 * 1920 + 202
+def WG_CLIENT_N 1205558                     # 1382400 - WG_CLIENT_OFF
+def WG_STRIDE 1920
+
+# Surface của vùng client (cùng bộ nhớ khung nhìn App, gốc dời tới (202, 92))
+func wg_client ptr<VgaCell,1205558> %fb:ptr<VgaCell,1382400> {
+    @b0
+        %c = slice %fb WG_CLIENT_OFF ptr<VgaCell,1205558>
+        ret %c
+}
+
+# Kích thước cửa sổ App sẽ dùng: đề nghị của compositor (nếu có) kẹp trong [minw,maxw] x [minh,maxh]; chưa có đề
+# nghị -> (dw, dh); compositor tắt -> (dw, dh) cố định.
+func wg_pick_w bv64 %ipc:ptr<IpcChannel,1> %dw:bv64 %minw:bv64 %maxw:bv64 {
+    @req uge %minw 300
+    @req ule %maxw 1074
+    @req ule %minw %maxw
+    @req uge %dw %minw
+    @req ule %dw %maxw
+    @ens uge %r %minw
+    @ens ule %r %maxw
+    @b0
+        %dec = load %ipc IpcChannel.decor
+        %srv = cmp ne %dec 0
+        br %srv @cfg @dflt
+    @cfg
+        %q = load %ipc IpcChannel.cfg_w
+        %none = cmp eq %q 0
+        br %none @dflt @clamp
+    @clamp
+        %a = call math_max %q %minw
+        %b = call math_min %a %maxw
+        ret %b
+    @dflt
+        ret %dw
+}
+
+func wg_pick_h bv64 %ipc:ptr<IpcChannel,1> %dh:bv64 %minh:bv64 %maxh:bv64 {
+    @req uge %minh 150
+    @req ule %maxh 558
+    @req ule %minh %maxh
+    @req uge %dh %minh
+    @req ule %dh %maxh
+    @ens uge %r %minh
+    @ens ule %r %maxh
+    @b0
+        %dec = load %ipc IpcChannel.decor
+        %srv = cmp ne %dec 0
+        br %srv @cfg @dflt
+    @cfg
+        %q = load %ipc IpcChannel.cfg_h
+        %none = cmp eq %q 0
+        br %none @dflt @clamp
+    @clamp
+        %a = call math_max %q %minh
+        %b = call math_min %a %maxh
+        ret %b
+    @dflt
+        ret %dh
+}
+
+# Mở / vẽ lại cửa sổ cỡ w x h ở (200, 60): ghi tên + kích thước đã vẽ cho compositor, tô nền client.
+# Compositor tắt: tự vẽ đủ khung bằng ui_win_open (khi đó w x h phải nằm trong giới hạn của ui_win_draw).
+func wg_window_open void %fb:ptr<VgaCell,1382400> %font:ptr<DiskQword,64> %ipc:ptr<IpcChannel,1> %w:bv64 %h:bv64 %title:bv64 %bg:bv32 {
+    @req uge %fb 0x10000
+    @req ult %fb 0x80000000
+    @req uge %font 0x10000
+    @req ult %font 0x80000000
+    @req uge %w 400
+    @req ule %w 1074
+    @req uge %h 200
+    @req ule %h 558
+    @b0
+        %dec = load %ipc IpcChannel.decor
+        %srv = cmp ne %dec 0
+        br %srv @server @client
+    @server
+        store %ipc IpcChannel.title %title
+        store %ipc IpcChannel.win_w %w
+        store %ipc IpcChannel.win_h %h
+        %xe = add %w 198
+        %ye = add %h 58
+        call gfx_fill_rect %fb 202 92 %xe %ye %bg
+        ret
+    @client
+        %fw = call math_min %w 890
+        %fh = call math_min %h 550
+        call ui_win_open %fb %font %ipc 200 60 %fw %fh %title %bg
+        ret
+}
+
+# Báo cả cửa sổ cần đưa lên màn hình
+func wg_damage_window void %ipc:ptr<IpcChannel,1> %w:bv64 %h:bv64 {
+    @req ule %w 1074
+    @req ule %h 558
+    @b0
+        %xe = add %w 206
+        %ye = add %h 66
+        call sys_damage %ipc 200 60 %xe %ye
+        ret
+}
+
+# Báo vùng client [x1,x2) x [y1,y2) (tọa độ client) cần đưa lên màn hình
+func wg_damage void %ipc:ptr<IpcChannel,1> %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
+    @b0
+        %a = add_sat %x1 202
+        %b = add_sat %y1 92
+        %c = add_sat %x2 202
+        %d = add_sat %y2 92
+        %a1 = call math_min %a 1280
+        %b1 = call math_min %b 720
+        %c1 = call math_min %c 1280
+        %d1 = call math_min %d 720
+        call sys_damage %ipc %a1 %b1 %c1 %d1
+        ret
+}
+
+# Chuột theo tọa độ client (bão hòa ở 0 khi nằm trái / trên client)
+func wg_mouse_x bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ult %r 1260
+    @b0
+        %x = call sys_mouse_x %ipc
+        %c = sub_sat %x 202
+        ret %c
+}
+
+func wg_mouse_y bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ult %r 700
+    @b0
+        %y = call sys_mouse_y %ipc
+        %c = sub_sat %y 92
+        ret %c
+}
+
+# Nhãn: chuỗi (len, s) tại (x, y) của client
+func wg_label void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %len:bv64 %s:ptr<Byte,%len> %fg:bv32 {
+    @req ule %cw 0x10000
+    @b0
+        call surf_text WG_CLIENT_N %px WG_STRIDE %cw %ch %x %y %len %s %fg
+        ret
+}
+
+# Hình chữ nhật đặc [x, x+w) x [y, y+h) của client
+func wg_box void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %c:bv32 {
+    @req ule %cw 0x10000
+    @b0
+        %xe = add_sat %x %w
+        %ye = add_sat %y %h
+        call surf_fill_rect WG_CLIENT_N %px WG_STRIDE %cw %ch %x %y %xe %ye %c
+        ret
+}
+
+# Nút: nền + viền 1 điểm + nhãn (cách lề 8, căn giữa dọc với chữ cao 16)
+func wg_button void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %len:bv64 %s:ptr<Byte,%len> %bg:bv32 %fg:bv32 {
+    @req ule %cw 0x10000
+    @req uge %w 2
+    @req uge %h 2
+    @req ule %w 0x10000
+    @req ule %h 0x10000
+    @req ule %x 0x10000
+    @req ule %y 0x10000
+    @b0
+        call wg_box %px %cw %ch %x %y %w %h %bg
+        %xe = add %x %w
+        %ye = add %y %h
+        call surf_frame WG_CLIENT_N %px WG_STRIDE %cw %ch %x %y %xe %ye %fg
+        %tx = add %x 8
+        %pad = sub_sat %h 16
+        %half = lshr %pad 1
+        %ty = add %y %half
+        call wg_label %px %cw %ch %tx %ty %len %s %fg
+        ret
+}
+
+# 1 nếu (mx, my) nằm trong [x, x+w) x [y, y+h)
+func wg_hit bv64 %mx:bv64 %my:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 {
+    @ens ule %r 1
+    @b0
+        %xe = add_sat %x %w
+        %ye = add_sat %y %h
+        %a = cmp uge %mx %x
+        %b = cmp ult %mx %xe
+        %c = cmp uge %my %y
+        %d = cmp ult %my %ye
+        %ab = and %a %b
+        %cd = and %c %d
+        %r1 = and %ab %cd
+        ret %r1
+}
