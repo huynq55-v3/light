@@ -1,0 +1,305 @@
+# File: lit_program/os/agent.lit
+# KÊNH AGENT qua COM1: máy host (MCP server tools/light_mcp.py) gửi lệnh, Kernel chạy bằng lõi shell std/shell.lit.
+#
+# Yêu cầu (host -> Light OS), một dòng ASCII:   <id> <lệnh>\n          (id thập phân, \r bị bỏ qua)
+# Trả lời (Light OS -> host), một dòng:         \n@@LR|<id>|<exit>|<trunc>|<stdout>|<stderr>\n
+#   stdout / stderr được thoát ký tự: \\ = '\'   \n = xuống dòng   \t = tab   \xHH = byte khác (kể cả '|')
+#   trunc: bit 0 stdout bị cắt (> AG_OUT), bit 1 stderr bị cắt. Dòng yêu cầu dài quá AG_RX -> exit 2.
+# Khởi động xong Kernel in "\n@@LREADY\n". Các dòng khác trên serial (chẩn đoán, SMP...) host bỏ qua.
+# Phiên shell (thư mục hiện tại) giữ qua các lệnh. Mỗi nhịp lịch Kernel đọc tối đa 256 byte và chạy tối đa 1 lệnh.
+
+include ../std/shell.lit
+include ../drivers/serial.lit
+include lightfs.lit
+
+layout AgState 24 {
+    0: bv64 rx_len                          # số byte đã nhận của dòng hiện tại
+    8: bv64 over                            # 1 = dòng hiện tại dài quá AG_RX
+    16: bv64 present                        # 1 = có UART ở COM1 (ag_init dò); 0 -> ag_tick không làm gì
+}
+
+data AG_RX Byte 1024 {
+}
+data AG_OUT Byte 8192 {
+}
+data AG_ERR Byte 1024 {
+}
+data AG_ST ShState 1 {
+}
+data AG_RS AgState 1 {
+}
+data AG_NUM Byte 24 {
+}
+data AG_HDR Byte {
+    "\n@@LR|"
+}
+data AG_READY Byte {
+    "\n@@LREADY\n"
+}
+data AG_M_LONG Byte {
+    "agent: line too long\n"
+}
+data AG_HEX Byte {
+    "0123456789abcdef"
+}
+
+# Gửi (n, s) nguyên văn (byte >= 128 -> '?')
+func ag_raw void %io:io<0x3f8,0x3ff> %n:bv64 %s:ptr<Byte,%n> {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @end
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %b = load %p 0 bv8
+        %ok = cmp ult %b 128
+        br %ok @send @q
+    @send
+        call drv_serial_putc_wait %io %b
+        jmp @next
+    @q
+        call drv_serial_putc_wait %io 63
+        jmp @next
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @end
+        ret
+}
+
+func ag_dec void %io:io<0x3f8,0x3ff> %v:bv64 {
+    @b0
+        %buf = addr AG_NUM
+        %k = call fmt_u64 AG_NUM.len %buf 0 %v
+        %s = slice %buf 0 ptr<Byte,%k>
+        call ag_raw %io %k %s
+        ret
+}
+
+func ag_bar void %io:io<0x3f8,0x3ff> {
+    @b0
+        call drv_serial_putc_wait %io 124
+        ret
+}
+
+# "\xHH"
+func ag_hexbyte void %io:io<0x3f8,0x3ff> %b:bv8 {
+    @b0
+        call drv_serial_putc_wait %io 92
+        call drv_serial_putc_wait %io 120
+        %v = call byte_u64 %b
+        %hi = lshr %v 4
+        %lo = and %v 15
+        %hx = addr AG_HEX
+        %ph = slice %hx %hi ptr<Byte,1>
+        %ch = load %ph 0 bv8
+        %pl = slice %hx %lo ptr<Byte,1>
+        %cl = load %pl 0 bv8
+        %okh = cmp ult %ch 128
+        %okl = cmp ult %cl 128
+        %ok = and %okh %okl
+        br %ok @send @end
+    @send
+        call drv_serial_putc_wait %io %ch
+        call drv_serial_putc_wait %io %cl
+        ret
+    @end
+        ret
+}
+
+# Gửi (n, s) có thoát ký tự
+func ag_esc void %io:io<0x3f8,0x3ff> %n:bv64 %s:ptr<Byte,%n> {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @end
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %b = load %p 0 bv8
+        %bs = cmp eq %b 92
+        br %bs @slash @t_nl
+    @slash
+        call drv_serial_putc_wait %io 92
+        call drv_serial_putc_wait %io 92
+        jmp @next
+    @t_nl
+        %nl = cmp eq %b 10
+        br %nl @newline @t_tab
+    @newline
+        call drv_serial_putc_wait %io 92
+        call drv_serial_putc_wait %io 110
+        jmp @next
+    @t_tab
+        %tb = cmp eq %b 9
+        br %tb @tab @t_print
+    @tab
+        call drv_serial_putc_wait %io 92
+        call drv_serial_putc_wait %io 116
+        jmp @next
+    @t_print
+        %ge = cmp uge %b 32
+        %le = cmp ule %b 126
+        %bar = cmp eq %b 124
+        %pr0 = and %ge %le
+        %nbar = cmp eq %bar 0
+        %pr = and %pr0 %nbar
+        %prn = cmp ne %pr 0
+        br %prn @plain @hex
+    @plain
+        call drv_serial_putc_wait %io %b
+        jmp @next
+    @hex
+        call ag_hexbyte %io %b
+        jmp @next
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @end
+        ret
+}
+
+# Khung trả lời cho yêu cầu %id
+func ag_reply void %io:io<0x3f8,0x3ff> %id:bv64 {
+    @b0
+        %st = addr AG_ST
+        %h = addr AG_HDR
+        call ag_raw %io AG_HDR.len %h
+        call ag_dec %io %id
+        call ag_bar %io
+        %rc = load %st ShState.exit
+        call ag_dec %io %rc
+        call ag_bar %io
+        %t = load %st ShState.trunc
+        call ag_dec %io %t
+        call ag_bar %io
+        %ol0 = load %st ShState.out_len
+        %ol = call math_min %ol0 AG_OUT.len
+        %ob = addr AG_OUT
+        %os = slice %ob 0 ptr<Byte,%ol>
+        call ag_esc %io %ol %os
+        call ag_bar %io
+        %el0 = load %st ShState.err_len
+        %el = call math_min %el0 AG_ERR.len
+        %eb = addr AG_ERR
+        %es = slice %eb 0 ptr<Byte,%el>
+        call ag_esc %io %el %es
+        call drv_serial_putc_wait %io 10
+        ret
+}
+
+# Một dòng yêu cầu đã nhận đủ trong AG_RX: tách id, chạy lệnh, trả lời
+func ag_line void %io:io<0,0xffff> {
+    @b0
+        %rs = addr AG_RS
+        %len0 = load %rs AgState.rx_len
+        %over = load %rs AgState.over
+        store %rs AgState.rx_len 0
+        store %rs AgState.over 0
+        %rx = addr AG_RX
+        %len = call math_min %len0 AG_RX.len
+        %line = slice %rx 0 ptr<Byte,%len>
+        %a = call str_skip_spaces %len %line 0
+        %id = call str_parse_u64 %len %line %a
+        %sp = call str_find %len %line %a 32
+        %c0 = add_sat %sp 1
+        %c = call math_min %c0 %len
+        %cn = sub %len %c
+        %cmd = slice %line %c ptr<Byte,%cn>
+        %st = addr AG_ST
+        store %st ShState.out_len 0
+        store %st ShState.err_len 0
+        store %st ShState.trunc 0
+        %out = addr AG_OUT
+        %err = addr AG_ERR
+        %long = cmp ne %over 0
+        br %long @toolong @run
+    @run
+        %tab = call lfs_tab %io
+        %rc = call sh_exec %st %cn %cmd %tab AG_OUT.len %out AG_ERR.len %err
+        call ag_reply %io %id
+        ret
+    @toolong
+        %m = addr AG_M_LONG
+        call sh_err %st AG_ERR.len %err AG_M_LONG.len %m
+        store %st ShState.exit 2
+        call ag_reply %io %id
+        ret
+}
+
+# Dò UART ở COM1 (máy thật thường không có: cổng trống đọc ra 0xFF), bật FIFO và báo sẵn sàng
+func ag_init void %io:io<0,0xffff> {
+    @b0
+        %rs = addr AG_RS
+        store %rs AgState.present 0
+        %lsr = hwio_r %io 0x3fd
+        %dead = cmp eq %lsr 0xff
+        br %dead @absent @scratch
+    @scratch
+        # thanh ghi nháp 0x3ff: ghi rồi đọc lại phải khớp
+        %t = const 0x5a bv8
+        hwio_w %io 0x3ff %t
+        %back = hwio_r %io 0x3ff
+        %same = cmp eq %back 0x5a
+        br %same @found @absent
+    @absent
+        ret
+    @found
+        store %rs AgState.present 1
+        %f = const 0xc7 bv8
+        hwio_w %io 0x3fa %f
+        %r = addr AG_READY
+        call ag_raw %io AG_READY.len %r
+        ret
+}
+
+# Mỗi nhịp lịch: nhận tối đa 256 byte; gặp '\n' thì chạy lệnh (tối đa 1 lệnh / nhịp)
+func ag_tick void %io:io<0,0xffff> {
+    @b0
+        %rs = addr AG_RS
+        %pr = load %rs AgState.present
+        %on = cmp ne %pr 0
+        br %on @start @out
+    @start
+        jmp @l 0
+    @l %k:bv64
+        @inv ule %k 256
+        %more = cmp ult %k 256
+        br %more @poll @out
+    @poll
+        %v = call drv_serial_getc %io
+        %none = cmp eq %v 0x100
+        br %none @out @got
+    @got
+        %nl = cmp eq %v 10
+        br %nl @line @t_cr
+    @line
+        call ag_line %io
+        ret
+    @t_cr
+        %cr = cmp eq %v 13
+        br %cr @next @app
+    @app
+        %len = load %rs AgState.rx_len
+        %full = cmp uge %len AG_RX.len
+        br %full @ovf @store
+    @store
+        %rx = addr AG_RX
+        %p = slice %rx %len ptr<Byte,1>
+        %b = narrow %v bv8
+        store %p 0 %b
+        %l2 = add %len 1
+        store %rs AgState.rx_len %l2
+        jmp @next
+    @ovf
+        store %rs AgState.over 1
+        jmp @next
+    @next
+        %k2 = add %k 1
+        jmp @l %k2
+    @out
+        ret
+}

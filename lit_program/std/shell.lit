@@ -1,0 +1,699 @@
+# File: lit_program/std/shell.lit
+# LIGHT STD — LÕI SHELL dùng chung (thuần, không io, không IPC): một dòng lệnh -> stdout, stderr, mã thoát.
+#
+#   %rc = call sh_exec %st %n %line %tab %oc %out %ec %err
+#
+# - %line (n byte, ASCII) là MỘT lệnh: từ đầu là tên lệnh, các từ sau cách nhau bằng dấu cách.
+# - %tab là bảng LightFS (256 mục x 16 qword, xem lib/lightfs_api.lit) — Kernel đưa bảng hiện hành, App đưa bản sao.
+#   Lõi CHỈ ĐỌC bảng; lệnh cần nội dung file / ghi đĩa sẽ do mặt tiền (Terminal / kênh Agent) thực hiện ở bước sau.
+# - Kết quả ghi NỐI vào %out (dung lượng %oc) và %err (dung lượng %ec) từ ShState.out_len / err_len; hết chỗ thì
+#   cắt bớt và bật ShState.trunc (bit 0 stdout, bit 1 stderr). Mặt tiền đặt out_len = err_len = trunc = 0 trước mỗi lệnh.
+# - ShState.cwd = id thư mục hiện tại, giữ qua các lệnh (giống một phiên shell). Mã thoát cũng ghi vào ShState.exit.
+#
+# Mã thoát: 0 thành công, 1 lỗi (không tìm thấy, sai loại...), 2 sai cú pháp, 127 không có lệnh.
+# Đường dẫn: "/a/b" tuyệt đối, "a/b" tương đối với cwd, "." và ".." như Unix.
+
+include fmt.lit
+include ../lib/lightfs_api.lit
+
+def SH_NONE 256
+def SH_MAX_DEPTH 32
+
+# Không có @inv để đặt được trong `data` tĩnh; lõi tự kẹp cwd khi đọc (sh_cwd).
+layout ShState 40 {
+    0: bv64 cwd                             # thư mục hiện tại (0 = gốc)
+    8: bv64 out_len                         # số byte đã ghi vào stdout
+    16: bv64 err_len                        # số byte đã ghi vào stderr
+    24: bv64 trunc                          # bit 0: stdout bị cắt, bit 1: stderr bị cắt
+    32: bv64 exit                           # mã thoát của lệnh vừa chạy (0..255)
+}
+
+data SH_NUM Byte 24 {
+}
+data SH_NAME Byte 64 {
+}
+data SH_CH Byte 4 {
+}
+
+data SH_C_HELP Byte {
+    "help"
+}
+data SH_C_ECHO Byte {
+    "echo"
+}
+data SH_C_PWD Byte {
+    "pwd"
+}
+data SH_C_LS Byte {
+    "ls"
+}
+data SH_C_CD Byte {
+    "cd"
+}
+data SH_C_STAT Byte {
+    "stat"
+}
+data SH_M_HELP Byte {
+    "commands:\n  help           this list\n  echo TEXT      print TEXT\n  pwd            current directory\n  ls [PATH]      list a directory (dirs end with /)\n  cd [PATH]      change directory (no PATH = /)\n  stat PATH      type, size and id of an entry\n"
+}
+data SH_M_NOTFOUND Byte {
+    ": command not found\n"
+}
+data SH_M_NOENT Byte {
+    ": no such file or directory: "
+}
+data SH_M_NOTDIR Byte {
+    ": not a directory: "
+}
+data SH_M_NEEDARG Byte {
+    ": missing operand\n"
+}
+data SH_M_TYPE Byte {
+    "type: "
+}
+data SH_M_DIR Byte {
+    "dir"
+}
+data SH_M_FILE Byte {
+    "file"
+}
+data SH_M_APP Byte {
+    "app"
+}
+data SH_M_SIZE Byte {
+    "\nsize: "
+}
+data SH_M_ID Byte {
+    "\nid: "
+}
+data SH_M_NAME Byte {
+    "\nname: "
+}
+
+# ---------------------------------------------------------------- ghi kết quả
+
+# Thư mục hiện tại (kẹp < 256; giá trị hỏng -> gốc)
+func sh_cwd bv64 %st:ptr<ShState,1> {
+    @ens ult %r 256
+    @b0
+        %c = load %st ShState.cwd
+        %ok = cmp ult %c 256
+        br %ok @y @n
+    @y
+        ret %c
+    @n
+        ret 0
+}
+
+# Nối (n, s) vào stdout; không đủ chỗ thì cắt và bật trunc bit 0
+func sh_out void %st:ptr<ShState,1> %oc:bv64 %out:ptr<Byte,%oc> %n:bv64 %s:ptr<Byte,%n> {
+    @b0
+        %p0 = load %st ShState.out_len
+        %p = call math_min %p0 %oc
+        %np = call fmt_str %oc %out %p %n %s
+        store %st ShState.out_len %np
+        %w = sub %np %p
+        %short = cmp ult %w %n
+        br %short @cut @ok
+    @cut
+        %t = load %st ShState.trunc
+        %t1 = or %t 1
+        store %st ShState.trunc %t1
+        ret
+    @ok
+        ret
+}
+
+# Nối (n, s) vào stderr; không đủ chỗ thì cắt và bật trunc bit 1
+func sh_err void %st:ptr<ShState,1> %ec:bv64 %err:ptr<Byte,%ec> %n:bv64 %s:ptr<Byte,%n> {
+    @b0
+        %p0 = load %st ShState.err_len
+        %p = call math_min %p0 %ec
+        %np = call fmt_str %ec %err %p %n %s
+        store %st ShState.err_len %np
+        %w = sub %np %p
+        %short = cmp ult %w %n
+        br %short @cut @ok
+    @cut
+        %t = load %st ShState.trunc
+        %t1 = or %t 2
+        store %st ShState.trunc %t1
+        ret
+    @ok
+        ret
+}
+
+# Một byte vào stdout
+func sh_out_byte void %st:ptr<ShState,1> %oc:bv64 %out:ptr<Byte,%oc> %b:bv8 {
+    @b0
+        %c = addr SH_CH
+        %p = slice %c 0 ptr<Byte,1>
+        store %p 0 %b
+        %one = slice %c 0 ptr<Byte,1>
+        call sh_out %st %oc %out 1 %one
+        ret
+}
+
+# Số thập phân vào stdout
+func sh_out_dec void %st:ptr<ShState,1> %oc:bv64 %out:ptr<Byte,%oc> %v:bv64 {
+    @b0
+        %buf = addr SH_NUM
+        %k = call fmt_u64 SH_NUM.len %buf 0 %v
+        %s = slice %buf 0 ptr<Byte,%k>
+        call sh_out %st %oc %out %k %s
+        ret
+}
+
+# ---------------------------------------------------------------- tên mục trong bảng LightFS
+
+# Byte thứ %i (0..63) trong tên của mục %id
+func sh_name_byte bv64 %tab:ptr<DiskQword,4096> %id:bv64 %i:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @req ult %i 64
+    @ens ule %r 255
+    @b0
+        %q = lshr %i 3
+        %qi = add %q 8
+        %w = call lfs_tget %tab %id %qi
+        %k = and %i 7
+        %sh = shl %k 3
+        %v = lshr %w %sh
+        %b = and %v 0xff
+        ret %b
+}
+
+# Chép tên của mục %id vào SH_NAME; trả độ dài (0..63)
+func sh_name_load bv64 %tab:ptr<DiskQword,4096> %id:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @ens ule %r 63
+    @b0
+        %buf = addr SH_NAME
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 63
+        %more = cmp ult %i 63
+        br %more @body @end
+    @body
+        %b = call sh_name_byte %tab %id %i
+        %z = cmp eq %b 0
+        br %z @end @put
+    @put
+        %p = slice %buf %i ptr<Byte,1>
+        %b8 = narrow %b bv8
+        store %p 0 %b8
+        %i2 = add %i 1
+        jmp @l %i2
+    @end
+        ret %i
+}
+
+# Tên của mục %id vào stdout
+func sh_out_name void %st:ptr<ShState,1> %oc:bv64 %out:ptr<Byte,%oc> %tab:ptr<DiskQword,4096> %id:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @b0
+        %k = call sh_name_load %tab %id
+        %buf = addr SH_NAME
+        %s = slice %buf 0 ptr<Byte,%k>
+        call sh_out %st %oc %out %k %s
+        ret
+}
+
+# 1 nếu tên của mục %id đúng bằng (k, c) (1..63 byte)
+func sh_name_is bv64 %tab:ptr<DiskQword,4096> %id:bv64 %k:bv64 %c:ptr<Byte,%k> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @ens ule %r 1
+    @b0
+        %e = cmp eq %k 0
+        %big = cmp ugt %k 63
+        %bad = or %e %big
+        br %bad @no @start
+    @start
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %k
+        @inv ule %k 63
+        %more = cmp ult %i %k
+        br %more @body @tail
+    @body
+        %nb = call sh_name_byte %tab %id %i
+        %p = slice %c %i ptr<Byte,1>
+        %cb = load %p 0 bv8
+        %cv = call byte_u64 %cb
+        %eq = cmp eq %nb %cv
+        br %eq @next @no
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @tail
+        %end = call sh_name_byte %tab %id %k
+        %z = cmp eq %end 0
+        br %z @yes @no
+    @yes
+        ret 1
+    @no
+        ret 0
+}
+
+# 1 nếu mục %id đang dùng và nằm trong thư mục %dir
+func sh_in_dir bv64 %tab:ptr<DiskQword,4096> %id:bv64 %dir:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @ens ule %r 1
+    @b0
+        %f = call lfs_tget %tab %id 0
+        %used = and %f 1
+        %u = cmp ne %used 0
+        br %u @par @no
+    @par
+        %pa = call lfs_tget %tab %id 1
+        %same = cmp eq %pa %dir
+        br %same @yes @no
+    @yes
+        ret 1
+    @no
+        ret 0
+}
+
+# Mục con tên (k, c) của thư mục %dir: id 1..255, hoặc 0 nếu không có
+func sh_child bv64 %tab:ptr<DiskQword,4096> %dir:bv64 %k:bv64 %c:ptr<Byte,%k> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ult %r 256
+    @b0
+        jmp @l 1
+    @l %i:bv64
+        @inv ule %i 256
+        %more = cmp ult %i 256
+        br %more @body @none
+    @body
+        %in = call sh_in_dir %tab %i %dir
+        %hit = cmp ne %in 0
+        br %hit @name @next
+    @name
+        %eq = call sh_name_is %tab %i %k %c
+        %found = cmp ne %eq 0
+        br %found @yes @next
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @yes
+        ret %i
+    @none
+        ret 0
+}
+
+# ---------------------------------------------------------------- đường dẫn
+
+# Đường dẫn (k, p) tính từ thư mục %cwd -> id mục (< 256), hoặc SH_NONE nếu không có. Đường dẫn rỗng = %cwd.
+func sh_resolve bv64 %tab:ptr<DiskQword,4096> %cwd:bv64 %k:bv64 %p:ptr<Byte,%k> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %cwd 256
+    @ens ule %r SH_NONE
+    @b0
+        %empty = cmp eq %k 0
+        br %empty @here @first
+    @here
+        ret %cwd
+    @first
+        %p0 = slice %p 0 ptr<Byte,1>
+        %c0 = load %p0 0 bv8
+        %abs = cmp eq %c0 47
+        br %abs @root @rel
+    @root
+        jmp @seg 0 0
+    @rel
+        jmp @seg 0 %cwd
+    @seg %i:bv64 %cur:bv64
+        @inv ule %i %k
+        @inv ult %cur 256
+        @dec sub %k %i
+        %more = cmp ult %i %k
+        br %more @cut @done
+    @cut
+        %j0 = call str_find %k %p %i 47
+        %j = call math_max %j0 %i
+        %len = sub %j %i
+        %comp = slice %p %i ptr<Byte,%len>
+        %j1 = add %j 1
+        %ni = call math_min %j1 %k
+        %z = cmp eq %len 0
+        br %z @skip @word
+    @skip
+        jmp @seg %ni %cur
+    @word
+        %c1p = slice %comp 0 ptr<Byte,1>
+        %c1 = load %c1p 0 bv8
+        %d1 = cmp eq %c1 46
+        br %d1 @dot @name
+    @dot
+        %one = cmp eq %len 1
+        br %one @skip @dot2
+    @dot2
+        %two = cmp eq %len 2
+        br %two @dot3 @name
+    @dot3
+        %c2p = slice %comp 1 ptr<Byte,1>
+        %c2 = load %c2p 0 bv8
+        %d2 = cmp eq %c2 46
+        br %d2 @up @name
+    @up
+        %par = call lfs_parent %tab %cur
+        jmp @seg %ni %par
+    @name
+        %ch = call sh_child %tab %cur %len %comp
+        %miss = cmp eq %ch 0
+        br %miss @fail @step
+    @step
+        jmp @seg %ni %ch
+    @done
+        ret %cur
+    @fail
+        ret SH_NONE
+}
+
+# Số cấp từ gốc tới %id (gốc = 0), tối đa SH_MAX_DEPTH
+func sh_depth bv64 %tab:ptr<DiskQword,4096> %id:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @ens ule %r SH_MAX_DEPTH
+    @b0
+        jmp @l %id 0
+    @l %cur:bv64 %d:bv64
+        @inv ult %cur 256
+        @inv ule %d SH_MAX_DEPTH
+        %top = cmp eq %cur 0
+        %deep = cmp eq %d SH_MAX_DEPTH
+        %stop = or %top %deep
+        br %stop @end @up
+    @up
+        %par = call lfs_parent %tab %cur
+        %d2 = add %d 1
+        jmp @l %par %d2
+    @end
+        ret %d
+}
+
+# Tổ tiên cách %id đúng %n cấp (dừng ở gốc)
+func sh_ancestor bv64 %tab:ptr<DiskQword,4096> %id:bv64 %n:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @ens ult %r 256
+    @b0
+        jmp @l %id 0
+    @l %cur:bv64 %i:bv64
+        @inv ult %cur 256
+        %more = cmp ult %i %n
+        br %more @up @end
+    @up
+        %par = call lfs_parent %tab %cur
+        %i2 = add_sat %i 1
+        jmp @l %par %i2
+    @end
+        ret %cur
+}
+
+# Đường dẫn tuyệt đối của %id vào stdout ("/" cho gốc)
+func sh_out_path void %st:ptr<ShState,1> %oc:bv64 %out:ptr<Byte,%oc> %tab:ptr<DiskQword,4096> %id:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @b0
+        %d = call sh_depth %tab %id
+        %top = cmp eq %d 0
+        br %top @root @start
+    @root
+        call sh_out_byte %st %oc %out 47
+        ret
+    @start
+        jmp @l %d
+    @l %i:bv64
+        @inv ule %i SH_MAX_DEPTH
+        %more = cmp ne %i 0
+        br %more @part @end
+    @part
+        %i1 = sub %i 1
+        %a = call sh_ancestor %tab %id %i1
+        call sh_out_byte %st %oc %out 47
+        call sh_out_name %st %oc %out %tab %a
+        jmp @l %i1
+    @end
+        ret
+}
+
+# ---------------------------------------------------------------- lệnh
+
+# "<cmd><msg><arg>\n" vào stderr
+func sh_fail3 void %st:ptr<ShState,1> %ec:bv64 %err:ptr<Byte,%ec> %cn:bv64 %cmd:ptr<Byte,%cn> %mn:bv64 %msg:ptr<Byte,%mn> %an:bv64 %arg:ptr<Byte,%an> {
+    @b0
+        call sh_err %st %ec %err %cn %cmd
+        call sh_err %st %ec %err %mn %msg
+        call sh_err %st %ec %err %an %arg
+        %nl = addr SH_CH
+        %p = slice %nl 0 ptr<Byte,1>
+        %c10 = const 10 bv8
+        store %p 0 %c10
+        %one = slice %nl 0 ptr<Byte,1>
+        call sh_err %st %ec %err 1 %one
+        ret
+}
+
+func sh_cmd_ls bv64 %st:ptr<ShState,1> %tab:ptr<DiskQword,4096> %an:bv64 %arg:ptr<Byte,%an> %cn:bv64 %cmd:ptr<Byte,%cn> %oc:bv64 %out:ptr<Byte,%oc> %ec:bv64 %err:ptr<Byte,%ec> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ule %r 255
+    @b0
+        %cwd = call sh_cwd %st
+        %id = call sh_resolve %tab %cwd %an %arg
+        %none = cmp eq %id SH_NONE
+        br %none @noent @found
+    @noent
+        %m = addr SH_M_NOENT
+        call sh_fail3 %st %ec %err %cn %cmd SH_M_NOENT.len %m %an %arg
+        ret 1
+    @found
+        %dir = call lfs_is_dir %tab %id
+        %isd = cmp ne %dir 0
+        br %isd @list @one
+    @one
+        call sh_out_name %st %oc %out %tab %id
+        call sh_out_byte %st %oc %out 10
+        ret 0
+    @list
+        jmp @l 1
+    @l %i:bv64
+        @inv ule %i 256
+        @inv ult %id 256
+        %more = cmp ult %i 256
+        br %more @body @end
+    @body
+        %in = call sh_in_dir %tab %i %id
+        %hit = cmp ne %in 0
+        br %hit @show @next
+    @show
+        call sh_out_name %st %oc %out %tab %i
+        %sd = call lfs_is_dir %tab %i
+        %sub = cmp ne %sd 0
+        br %sub @slash @eol
+    @slash
+        call sh_out_byte %st %oc %out 47
+        jmp @eol
+    @eol
+        call sh_out_byte %st %oc %out 10
+        jmp @next
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @end
+        ret 0
+}
+
+func sh_cmd_cd bv64 %st:ptr<ShState,1> %tab:ptr<DiskQword,4096> %an:bv64 %arg:ptr<Byte,%an> %cn:bv64 %cmd:ptr<Byte,%cn> %ec:bv64 %err:ptr<Byte,%ec> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ule %r 255
+    @b0
+        %e = cmp eq %an 0
+        br %e @home @go
+    @home
+        store %st ShState.cwd 0
+        ret 0
+    @go
+        %cwd = call sh_cwd %st
+        %id = call sh_resolve %tab %cwd %an %arg
+        %none = cmp eq %id SH_NONE
+        br %none @noent @found
+    @noent
+        %m = addr SH_M_NOENT
+        call sh_fail3 %st %ec %err %cn %cmd SH_M_NOENT.len %m %an %arg
+        ret 1
+    @found
+        %dir = call lfs_is_dir %tab %id
+        %root = cmp eq %id 0
+        %isd = cmp ne %dir 0
+        %ok = or %isd %root
+        br %ok @set @notdir
+    @set
+        store %st ShState.cwd %id
+        ret 0
+    @notdir
+        %m2 = addr SH_M_NOTDIR
+        call sh_fail3 %st %ec %err %cn %cmd SH_M_NOTDIR.len %m2 %an %arg
+        ret 1
+}
+
+func sh_cmd_stat bv64 %st:ptr<ShState,1> %tab:ptr<DiskQword,4096> %an:bv64 %arg:ptr<Byte,%an> %cn:bv64 %cmd:ptr<Byte,%cn> %oc:bv64 %out:ptr<Byte,%oc> %ec:bv64 %err:ptr<Byte,%ec> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ule %r 255
+    @b0
+        %e = cmp eq %an 0
+        br %e @need @go
+    @need
+        call sh_err %st %ec %err %cn %cmd
+        %mn = addr SH_M_NEEDARG
+        call sh_err %st %ec %err SH_M_NEEDARG.len %mn
+        ret 2
+    @go
+        %cwd = call sh_cwd %st
+        %id = call sh_resolve %tab %cwd %an %arg
+        %none = cmp eq %id SH_NONE
+        br %none @noent @found
+    @noent
+        %m = addr SH_M_NOENT
+        call sh_fail3 %st %ec %err %cn %cmd SH_M_NOENT.len %m %an %arg
+        ret 1
+    @found
+        %mt = addr SH_M_TYPE
+        call sh_out %st %oc %out SH_M_TYPE.len %mt
+        %f = call lfs_tget %tab %id 0
+        %dbit = and %f 2
+        %abit = and %f 4
+        %root = cmp eq %id 0
+        %isd0 = cmp ne %dbit 0
+        %isd = or %isd0 %root
+        br %isd @tdir @tf
+    @tdir
+        %md = addr SH_M_DIR
+        call sh_out %st %oc %out SH_M_DIR.len %md
+        jmp @size
+    @tf
+        %isa = cmp ne %abit 0
+        br %isa @tapp @tfile
+    @tapp
+        %ma = addr SH_M_APP
+        call sh_out %st %oc %out SH_M_APP.len %ma
+        jmp @size
+    @tfile
+        %mf = addr SH_M_FILE
+        call sh_out %st %oc %out SH_M_FILE.len %mf
+        jmp @size
+    @size
+        %ms = addr SH_M_SIZE
+        call sh_out %st %oc %out SH_M_SIZE.len %ms
+        %sz = call lfs_tget %tab %id 2
+        call sh_out_dec %st %oc %out %sz
+        %mi = addr SH_M_ID
+        call sh_out %st %oc %out SH_M_ID.len %mi
+        call sh_out_dec %st %oc %out %id
+        %mnm = addr SH_M_NAME
+        call sh_out %st %oc %out SH_M_NAME.len %mnm
+        call sh_out_path %st %oc %out %tab %id
+        call sh_out_byte %st %oc %out 10
+        ret 0
+}
+
+# Chạy một dòng lệnh; trả mã thoát (cũng ghi vào ShState.exit)
+func sh_exec bv64 %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %tab:ptr<DiskQword,4096> %oc:bv64 %out:ptr<Byte,%oc> %ec:bv64 %err:ptr<Byte,%ec> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ule %r 255
+    @b0
+        # tên lệnh = [a, w), phần còn lại = [b, n), đối số đầu = [b, e)
+        %a = call str_skip_spaces %n %s 0
+        %w = call str_find %n %s %a 32
+        %cl = sub_sat %w %a
+        %cmd = slice %s %a ptr<Byte,%cl>
+        %b = call str_skip_spaces %n %s %w
+        %rl = sub %n %b
+        %rest = slice %s %b ptr<Byte,%rl>
+        %e = call str_find %n %s %b 32
+        %al = sub_sat %e %b
+        %arg = slice %s %b ptr<Byte,%al>
+        %empty = cmp eq %cl 0
+        br %empty @ok0 @t_help
+    @t_help
+        %ch = addr SH_C_HELP
+        %ih = call str_eq %cl %cmd SH_C_HELP.len %ch
+        %bh = cmp ne %ih 0
+        br %bh @help @t_echo
+    @help
+        %mh = addr SH_M_HELP
+        call sh_out %st %oc %out SH_M_HELP.len %mh
+        jmp @fin 0
+    @t_echo
+        %ce = addr SH_C_ECHO
+        %ie = call str_eq %cl %cmd SH_C_ECHO.len %ce
+        %be = cmp ne %ie 0
+        br %be @echo @t_pwd
+    @echo
+        call sh_out %st %oc %out %rl %rest
+        call sh_out_byte %st %oc %out 10
+        jmp @fin 0
+    @t_pwd
+        %cp = addr SH_C_PWD
+        %ip = call str_eq %cl %cmd SH_C_PWD.len %cp
+        %bp = cmp ne %ip 0
+        br %bp @pwd @t_ls
+    @pwd
+        %cwd = call sh_cwd %st
+        call sh_out_path %st %oc %out %tab %cwd
+        call sh_out_byte %st %oc %out 10
+        jmp @fin 0
+    @t_ls
+        %cs = addr SH_C_LS
+        %il = call str_eq %cl %cmd SH_C_LS.len %cs
+        %bl = cmp ne %il 0
+        br %bl @ls @t_cd
+    @ls
+        %r1 = call sh_cmd_ls %st %tab %al %arg %cl %cmd %oc %out %ec %err
+        jmp @fin %r1
+    @t_cd
+        %cc = addr SH_C_CD
+        %ic = call str_eq %cl %cmd SH_C_CD.len %cc
+        %bc = cmp ne %ic 0
+        br %bc @cd @t_stat
+    @cd
+        %r2 = call sh_cmd_cd %st %tab %al %arg %cl %cmd %ec %err
+        jmp @fin %r2
+    @t_stat
+        %ct = addr SH_C_STAT
+        %it = call str_eq %cl %cmd SH_C_STAT.len %ct
+        %bt = cmp ne %it 0
+        br %bt @stat @unknown
+    @stat
+        %r3 = call sh_cmd_stat %st %tab %al %arg %cl %cmd %oc %out %ec %err
+        jmp @fin %r3
+    @unknown
+        call sh_err %st %ec %err %cl %cmd
+        %mu = addr SH_M_NOTFOUND
+        call sh_err %st %ec %err SH_M_NOTFOUND.len %mu
+        jmp @fin 127
+    @ok0
+        jmp @fin 0
+    @fin %rc:bv64
+        @inv ule %rc 255
+        store %st ShState.exit %rc
+        ret %rc
+}

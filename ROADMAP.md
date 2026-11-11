@@ -198,6 +198,14 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    F8 / F9 qua `IpcChannel.hotkey` (đổi tên từ diag_toggle: 1 F10, 2 F8, 3 F9), Kernel gọi `bl_tick` mỗi nhịp.
    Dòng chẩn đoán BL. QEMU (không có GPU Intel): BL = E0, phím không ảnh hưởng gì khác.
    Còn lại: phím Fn sáng/tối của HP (qua EC / ACPI), nhớ độ sáng qua lần khởi động, hiện mức % trên màn hình.
+13. Lõi shell + kênh Agent (2026-11-11, nhánh shell-core): `std/shell.lit` (`sh_exec`: `help echo pwd ls cd stat`, đường dẫn
+   tuyệt đối / tương đối / `..`, stdout + stderr + mã thoát + cờ cắt), `os/agent.lit` (COM1: `<id> <lệnh>` ->
+   `@@LR|...`), `drivers/serial.lit` thêm `drv_serial_getc` / `drv_serial_putc_wait`, `tools/light_mcp.py` (MCP stdio,
+   công cụ `run`), `qemu_run.sh --agent --headless`. Kernel dò UART lúc khởi động (máy không có COM1 -> kênh tắt).
+   Đã thử: lệnh qua kênh Agent trên QEMU legacy + usb (ca lỗi, dòng quá dài, cờ cắt stderr); desktop legacy / usb / uefi
+   vẫn chạy và in `@@LREADY`; `-serial none` desktop vẫn chạy. Chưa thử `claude -p` thật, chưa thử máy thật.
+   Tiếp: `cat` / ghi file từ kênh Agent (Kernel cần vùng đệm cho lfs_op_read), chuyển App Terminal sang lõi,
+   shell v2 (nháy kép, `|`, `>`, `&&`, biến, grep / wc / head...), trình thông dịch.
 
 ## 📋 Tiếp theo
 

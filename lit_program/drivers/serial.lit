@@ -13,3 +13,41 @@ func drv_serial_putc void %0:io<0x3f8,0x3ff> %1:bv8 {
         hwio_w %0 0x3f8 %1
         ret
 }
+
+# 2. Xuất 1 ký tự, chờ thanh ghi phát trống (LSR bit 5) tối đa ~100k lần đọc — máy thật cần, QEMU luôn sẵn sàng
+func drv_serial_putc_wait void %0:io<0x3f8,0x3ff> %1:bv8 {
+    @req ult %1 128
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 100000
+        %more = cmp ult %i 100000
+        br %more @poll @send
+    @poll
+        %lsr = hwio_r %0 0x3fd
+        %thre = and %lsr 0x20
+        %ready = cmp ne %thre 0
+        br %ready @send @next
+    @next
+        %i1 = add %i 1
+        jmp @l %i1
+    @send
+        hwio_w %0 0x3f8 %1
+        ret
+}
+
+# 3. Đọc 1 byte nếu có (LSR bit 0); trả byte 0..255, hoặc 0x100 nếu chưa có dữ liệu
+func drv_serial_getc bv64 %0:io<0x3f8,0x3ff> {
+    @ens ule %r 0x100
+    @b0
+        %lsr = hwio_r %0 0x3fd
+        %dr = and %lsr 1
+        %has = cmp ne %dr 0
+        br %has @get @none
+    @get
+        %v = hwio_r %0 0x3f8
+        %b = and %v 0xff
+        ret %b
+    @none
+        ret 0x100
+}

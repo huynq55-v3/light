@@ -1,0 +1,28 @@
+# Lõi shell std/shell.lit phải qua kiểm chứng: chạy một dòng lệnh trên bảng LightFS với bộ đệm stdout / stderr nhỏ.
+include ../../../lit_program/std/shell.lit
+
+data T_LINE Byte {
+    "ls /apps"
+}
+data T_OUT Byte 64 {
+}
+data T_ERR Byte 16 {
+}
+data T_ST ShState 1 {
+}
+
+func demo_main bv64 %tab:ptr<DiskQword,4096> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ule %r 255
+    @b0
+        %st = addr T_ST
+        store %st ShState.out_len 0
+        store %st ShState.err_len 0
+        store %st ShState.trunc 0
+        %l = addr T_LINE
+        %o = addr T_OUT
+        %e = addr T_ERR
+        %rc = call sh_exec %st T_LINE.len %l %tab T_OUT.len %o T_ERR.len %e
+        ret %rc
+}
