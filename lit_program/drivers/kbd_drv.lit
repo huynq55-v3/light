@@ -7,7 +7,189 @@ layout KeyMap 8 {
     0: bv64
 }
 
-func drv_kbd_init void %0:io<0x60,0x64> %1:ptr<KeyMap,8> {
+# ---------------------------------------------------------------------------------------------------------------
+# i8042 (bàn phím trong của laptop đi qua EC giả lập i8042). Máy ảo QEMU để sẵn mọi thứ (dịch mã bật, quét phím bật)
+# nên ghi bừa cũng chạy; máy thật sau UEFI thì firmware có thể đã TẮT cổng bàn phím / tắt dịch mã / tắt quét phím
+# -> phải khởi tạo đủ bước, và CHỜ bộ điều khiển sẵn sàng trước mỗi lần ghi / đọc.
+# Chờ có giới hạn (~200k lần đọc cổng, cỡ 0.2s) để không treo khi thiết bị không trả lời.
+# ---------------------------------------------------------------------------------------------------------------
+
+# 1 nếu bộ đệm vào trống (được ghi), 0 nếu hết giờ
+func i8042_wait_write bv64 %0:io<0x60,0x64> {
+    @ens ule %r 1
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 200000
+        %more = cmp ult %i 200000
+        br %more @poll @timeout
+    @poll
+        %st = hwio_r %0 0x64
+        %full = and %st 2
+        %busy = cmp ne %full 0
+        br %busy @next @ok
+    @next
+        %i1 = add %i 1
+        jmp @l %i1
+    @ok
+        ret 1
+    @timeout
+        ret 0
+}
+
+# Byte đọc được từ 0x60, hoặc 0x100 nếu hết giờ
+func i8042_read bv64 %0:io<0x60,0x64> {
+    @ens ule %r 0x100
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 200000
+        %more = cmp ult %i 200000
+        br %more @poll @timeout
+    @poll
+        %st = hwio_r %0 0x64
+        %has = and %st 1
+        %ready = cmp ne %has 0
+        br %ready @get @next
+    @next
+        %i1 = add %i 1
+        jmp @l %i1
+    @get
+        %v = hwio_r %0 0x60
+        %b = and %v 0xff
+        ret %b
+    @timeout
+        ret 0x100
+}
+
+func i8042_cmd void %0:io<0x60,0x64> %c:bv8 {
+    @b0
+        %ok = call i8042_wait_write %0
+        hwio_w %0 0x64 %c
+        ret
+}
+
+func i8042_data void %0:io<0x60,0x64> %d:bv8 {
+    @b0
+        %ok = call i8042_wait_write %0
+        hwio_w %0 0x60 %d
+        ret
+}
+
+# Gửi 1 byte cho bàn phím, trả byte trả lời (0xFA = ACK; 0x100 = hết giờ)
+func i8042_kbd_send bv64 %0:io<0x60,0x64> %d:bv8 {
+    @ens ule %r 0x100
+    @b0
+        call i8042_data %0 %d
+        %r1 = call i8042_read %0
+        ret %r1
+}
+
+# Gửi 1 byte cho chuột PS/2 (qua lệnh 0xD4), trả byte trả lời
+func i8042_aux_send bv64 %0:io<0x60,0x64> %d:bv8 {
+    @ens ule %r 0x100
+    @b0
+        call i8042_cmd %0 0xd4:bv8
+        call i8042_data %0 %d
+        %r1 = call i8042_read %0
+        ret %r1
+}
+
+# Đọc bỏ dữ liệu cũ còn trong bộ đệm ra (tối đa 32 byte)
+func i8042_flush void %0:io<0x60,0x64> {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 32
+        %more = cmp ult %i 32
+        br %more @poll @done
+    @poll
+        %st = hwio_r %0 0x64
+        %has = and %st 1
+        %ready = cmp ne %has 0
+        br %ready @drop @done
+    @drop
+        %v = hwio_r %0 0x60
+        %i1 = add %i 1
+        jmp @l %i1
+    @done
+        ret
+}
+
+# Byte thấp của trả lời (0xEE nếu hết giờ) để đóng gói chẩn đoán
+func i8042_b8 bv64 %v:bv64 {
+    @ens ule %r 0xff
+    @b0
+        %t = cmp eq %v 0x100
+        br %t @to @val
+    @to
+        ret 0xee
+    @val
+        %b = and %v 0xff
+        ret %b
+}
+
+# Khởi tạo đủ bước. Trả mã chẩn đoán (HW[300], dòng KBD):
+#   cấu hình cũ << 56 | cấu hình mới << 48 | trả lời F6 << 40 | F0 << 32 | 02 << 24 | F4 << 16 | chuột F4 << 8 | cờ
+#   cờ: 0x01 = không có i8042 (trạng thái 0xFF); trả lời 0xFA = ACK, 0xEE = hết giờ.
+func i8042_setup bv64 %0:io<0x60,0x64> {
+    @b0
+        %st = hwio_r %0 0x64
+        %none = cmp eq %st 0xff
+        br %none @absent @go
+    @absent
+        ret 1
+    @go
+        # tắt cả hai cổng trong lúc cấu hình, bỏ dữ liệu cũ
+        call i8042_cmd %0 0xad:bv8
+        call i8042_cmd %0 0xa7:bv8
+        call i8042_flush %0
+        # cấu hình: bật dịch mã set 2 -> set 1 (bit 6), bật xung clock 2 cổng (xóa bit 4, 5), tắt IRQ1/IRQ12 (bit 0, 1)
+        call i8042_cmd %0 0x20:bv8
+        %c0 = call i8042_read %0
+        %c0b = call i8042_b8 %c0
+        %c1 = or %c0b 0x40
+        %c2 = and %c1 0xcc
+        %c2b = narrow %c2 bv8
+        call i8042_cmd %0 0x60:bv8
+        call i8042_data %0 %c2b
+        # bật lại cổng bàn phím; bàn phím: mặc định, scancode set 2 (bộ điều khiển dịch ra set 1), bật quét phím
+        call i8042_cmd %0 0xae:bv8
+        call i8042_flush %0
+        %a1 = call i8042_kbd_send %0 0xf6:bv8
+        %a2 = call i8042_kbd_send %0 0xf0:bv8
+        %a3 = call i8042_kbd_send %0 0x02:bv8
+        %a4 = call i8042_kbd_send %0 0xf4:bv8
+        # cổng chuột PS/2 (máy ảo / máy có chuột PS/2; laptop touchpad I2C thì hết giờ, không sao)
+        call i8042_cmd %0 0xa8:bv8
+        %m1 = call i8042_aux_send %0 0xf4:bv8
+        call i8042_flush %0
+        # đọc lại cấu hình để kiểm
+        call i8042_cmd %0 0x20:bv8
+        %c3 = call i8042_read %0
+        %c3b = call i8042_b8 %c3
+        %b1 = call i8042_b8 %a1
+        %b2 = call i8042_b8 %a2
+        %b3 = call i8042_b8 %a3
+        %b4 = call i8042_b8 %a4
+        %b5 = call i8042_b8 %m1
+        %x0 = shl %c0b 56
+        %x1 = shl %c3b 48
+        %x2 = shl %b1 40
+        %x3 = shl %b2 32
+        %x4 = shl %b3 24
+        %x5 = shl %b4 16
+        %x6 = shl %b5 8
+        %y0 = or %x0 %x1
+        %y1 = or %y0 %x2
+        %y2 = or %y1 %x3
+        %y3 = or %y2 %x4
+        %y4 = or %y3 %x5
+        %y5 = or %y4 %x6
+        ret %y5
+}
+
+func drv_kbd_init bv64 %0:io<0x60,0x64> %1:ptr<KeyMap,8> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
 
@@ -52,14 +234,8 @@ func drv_kbd_init void %0:io<0x60,0x64> %1:ptr<KeyMap,8> {
         %25 = const 0x0000000000002000 bv64
         store %24 0 %25
 
-        %26 = const 0xa8 bv8
-        hwio_w %0 0x64 %26
-        %27 = const 0xd4 bv8
-        hwio_w %0 0x64 %27
-        %28 = const 0xf4 bv8
-        hwio_w %0 0x60 %28
-        %29 = hwio_r %0 0x60
-        ret
+        %r = call i8042_setup %0
+        ret %r
 }
 
 # Xử lý gói tin 3-byte của Chuột với phát hiện Sườn Lên (Rising-Edge Click)
@@ -461,6 +637,15 @@ func kbd_handle_scancode void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChanne
         ret
 
     @b56
+        # F10 (scancode 0x44) = hiện / ẩn dòng chẩn đoán phần cứng (Kernel xử lý trong nhịp WM)
+        %f10 = cmp eq %12 0x44
+        br %f10 @bf10 @b56a
+
+    @bf10
+        store %2 IpcChannel.diag_toggle 1
+        ret
+
+    @b56a
         # F12 (scancode 0x58) = khởi động lại: lệnh 0xFE của bộ điều khiển i8042 kéo chân RESET của CPU
         %332 = const 0x58 bv64
         %333 = cmp eq %12 %332

@@ -140,6 +140,16 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    đệm sau (gồm cả phần dưới khung nhìn cửa sổ) -> nên đệm sẵn icon lúc boot; nhãn tên chỉ lấy 8 byte đầu tên file.
    Đề xuất tiếp (chưa làm, cần người dùng chọn): nền desktop gradient/hình nền; ẩn dòng chẩn đoán BLK/PART/USB ở góc
    trên-trái (chỉ hiện ở chế độ debug); thanh trên cùng (đồng hồ / tên App focus); khung cửa sổ bo góc + bóng mềm.
+7. ~~Bàn phím máy thật~~ (2026-11-11; người dùng báo máy thật không nhận phím, QEMU vẫn chạy): driver i8042 cũ chỉ ghi
+   3 byte cho chuột (A8, D4 F4), không chờ bộ điều khiển, không bật lại cổng bàn phím, không đặt bit dịch mã. QEMU để sẵn
+   mọi thứ nên chạy; firmware UEFI có thể để cổng bàn phím tắt / dịch mã tắt / quét phím tắt. Nay `i8042_setup`
+   (drivers/kbd_drv.lit): chờ có giới hạn trước mỗi lần ghi / đọc; tắt 2 cổng + xả bộ đệm; cấu hình = bật dịch mã (bit 6),
+   bật clock 2 cổng, tắt IRQ (WM đọc kiểu thăm dò); bật cổng; bàn phím F6 (mặc định), F0 02 (set 2 -> dịch ra set 1), F4
+   (bật quét); chuột D4 F4; đọc lại cấu hình. Kết quả ghi HW[300] = dòng KBD của màn chẩn đoán.
+   Kiểm: QEMU legacy giả lập trạng thái xấu (F5 + cấu hình 0x10): bản cũ không nhận F2, bản mới nhận và gõ được
+   (KBD 3040FAFAFAFAFA00); legacy 7140FAFA..; uefi 7744FAFA..; usb (không có i8042) KBD = 1, bàn phím USB vẫn chạy.
+   CHƯA kiểm trên máy thật. Nếu vẫn không nhận phím: màn chẩn đoán sẽ TỰ HIỆN khi bàn phím không ACK lệnh F4 -> chụp dòng KBD.
+   Dòng chẩn đoán phần cứng: ẩn mặc định, F10 bật / tắt (`diag_tick`), tự hiện khi bàn phím i8042 lỗi.
 
 ## 📋 Tiếp theo
 

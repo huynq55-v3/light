@@ -54,5 +54,6 @@ layout IpcChannel 320 {
     288: bv64 configure @inv ule val 1      # 1 = có đề nghị kích thước mới chưa giao cho App (Kernel gọi App dù không có input)
     296: bv64 dock_x0 @inv ule val 1200     # Kernel ghi (kênh chung): x màn hình tâm ô Dock 0 (phím F1..F7 bấm ô Dock)
     304: bv64 kbd_pick @inv ule val 1       # driver bàn phím ghi 1 khi F1..F7 đặt chuột lên ô Dock (Dock không coi là rê chuột)
+    312: bv64 diag_toggle @inv ule val 1    # driver bàn phím ghi 1 khi bấm F10 (hiện / ẩn dòng chẩn đoán phần cứng)
 }
 

@@ -113,7 +113,7 @@ lit_program/
 - **MMIO**: Light không cho đổi số nguyên thành `ptr`, nên địa chỉ chỉ biết lúc chạy (framebuffer, BAR) được ánh xạ vào địa chỉ ảo cố định qua PML4[1]: `0x80_0000_0000` framebuffer (WC), `0x80_4000_0000` BAR NVMe (UC), `0x80_4200_0000` CFGBAR của Intel VMD (UC). Bảng HW ở `0x96000`.
 - **Đĩa** (`drivers/blk.lit`): NVMe nếu có, ngược lại ATA PIO. Driver NVMe (`drivers/nvme.lit`, viết bằng Light): tìm NVMe trên PCI hoặc phía sau **Intel VMD** (laptop Intel đời 11+), 1 cặp hàng đợi Admin + 1 cặp I/O, thăm dò completion, DMA qua bộ đệm bounce 64KB ở `0x80000`. Chỉ dùng phân vùng GPT tên **`lightos`** có header **LightFS** (`LIGHTFS1`; copy-on-write + checksum, xem ROADMAP bước 6; host: `light sync/fsck/pack`); mọi LBA được kiểm tra `< kích thước phân vùng` ngay trong driver. Đĩa không có GPT (ảnh thô trên QEMU) → cả namespace.
 - **Dòng trạng thái** góc trên trái (và serial): `BLK = backend<<48 | gpt<<40 | mã_lỗi_nvme<<32 | rộng<<16 | cao`, `PART` = LBA đầu phân vùng, `PLEN` = số sector. Backend 2 = NVMe, 1 = ATA, 0 = không có; gpt 1 = thấy `lightos`; mã lỗi NVMe xem đầu hàm `nvme_init_ctrl`.
-- **Phím**: F1..F7 mở App ở ô Dock tương ứng (touchpad I2C của laptop chưa có driver), F12 khởi động lại.
+- **Phím**: F1..F7 mở App ở ô Dock tương ứng (touchpad I2C của laptop chưa có driver), F10 hiện/ẩn dòng chẩn đoán phần cứng, F12 khởi động lại.
 
 ---
 
