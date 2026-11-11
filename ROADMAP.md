@@ -97,7 +97,17 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    của compositor đóng cửa sổ trên rồi focus về cửa sổ dưới (usb); uefi; RAM 320M -> đường App tự vẽ khung.
    Còn lại: thanh trạng thái của Terminal vẫn vẽ trên thanh tiêu đề (vùng của compositor) -> bị xóa khi focus đổi, hiện
    lại ở lần Terminal chạy kế tiếp; nên chuyển vào vùng nội dung.
-4. Surface động `(w, h, ptr)` + sự kiện `configure` khi đổi kích thước (đổi `check_app_abi` và test `app_abi_*`); toolkit trên `std/surface`.
+4. ~~Đổi kích thước + configure + toolkit~~ (xong, KHÔNG đổi ABI App): kéo góc dưới-phải (ô 16x16) -> compositor ghi
+   đề nghị `IpcChannel.cfg_w/cfg_h` + `configure = 1` (WM gọi App trên cùng dù không có input); App tự chọn kích thước
+   (`wg_pick_w/h`, kẹp theo min/max của nó), vẽ lại, báo `win_w/win_h`; compositor CHỈ dùng kích thước App báo (hợp lệ:
+   [300,1074] x [150,558], dời trái nếu tràn), vẽ khung mới, vẽ lại hợp vùng cũ + mới. Terminal/Editor báo cố định
+   880x540 qua `ui_win_open` -> kéo góc không đổi gì. `IpcChannel` 320 byte: kênh riêng dời về `0x79200`, bảng cảnh về
+   `0x79c00`. Toolkit `std/widget.lit` + App mẫu `apps/widgets.lit` (F3). Ban đầu định đổi `check_app_abi` sang surface
+   động `(w, h, ptr)`; không cần: surface vẫn là khung nhìn 1920-stride cũ, chỉ phần được vẽ thay đổi.
+   Kiểm: Terminal/Editor trùng từng điểm ảnh với `main`; Widgets lớn/nhỏ (bố cục theo kích thước, chụp ngay sau khi
+   nhả chuột), co trên cửa sổ khác (cửa sổ dưới hiện lại đúng), nút +1; thử kéo góc Terminal -> chỉ khác con trỏ
+   chuột; RAM 320M -> Widgets tự vẽ khung 600x400; legacy/usb/uefi; test must_pass/widget_all.
+   Chưa làm: con trỏ không đổi hình ở góc kéo; đổi kích thước chỉ theo góc dưới-phải; Terminal/Editor chưa dùng toolkit.
 5. Tách quyền: compositor không giữ `io<0,0xffff>` (chỉ ptr màn hình + surface).
 
 ## 📋 Tiếp theo
