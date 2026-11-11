@@ -280,6 +280,7 @@ func smp_selftest void %0:io<0,0xffff> %1:smp {
 #   BLK  = backend (0 không có, 1 ATA, 2 NVMe) << 48 | GPT (0 không có, 1 thấy lightos, 2 GPT thiếu lightos) << 40
 #          | mã nvme_init_ctrl (0 = OK, xem drivers/nvme.lit) << 32 | rộng << 16 | cao của framebuffer thật
 #   PART = LBA đầu phân vùng ; PLEN = số sector (0 = I/O bị chặn)
+#   USB2 = như USB nhưng cho controller xHCI thứ hai (HW[41]; 0 = không có)
 #   USB  = giai đoạn << 56 | dev PCI << 48 | số cổng << 40 | số slot << 32 | mã hoàn thành << 24 | bàn phím << 16
 #          | chuột << 8 | bước dò cuối (xem drivers/usb_xhci.lit)
 #          (giai đoạn: 0 OK, 1 không có xHCI, 2 BAR/thanh ghi, 4 không dừng, 5 không reset, 6 scratchpad, 7 không chạy, 8 không có HID)
@@ -343,9 +344,15 @@ func diag_boot_report void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
         %55 = const "USB     " bv64
         call diag_line %0 %51 %3 %54 %55 %53
 
+        %60 = const 41 bv64
+        %61 = call hw_get %0 %60
+        %62 = const 74 bv64
+        %63 = const "USB2    " bv64
+        call diag_line %0 %51 %3 %62 %63 %61
+
         %42 = const 0 bv64
         %43 = const 330 bv64
-        %44 = const 74 bv64
+        %44 = const 92 bv64
         call gfx_blit_rect %1 %2 %42 %42 %43 %44
         call fb_present_rect %0 %1 %42 %42 %43 %44
         ret

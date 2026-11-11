@@ -33,23 +33,71 @@ include kbd_drv.lit
 # ---------------------------------------------------------------------------------------------------------------
 # Bộ nhớ DMA + bảng trạng thái
 # ---------------------------------------------------------------------------------------------------------------
+# Controller đang thao tác (0/1) nằm ở HW[42]; mỗi controller có vùng DMA 2MB riêng:
+# 0 -> 0x1400000 (PD_0[10]), 1 -> 0x1800000 (PD_0[12]); cửa sổ MMIO: PD_MMIO[2..3] / PD_MMIO[4..5].
+func xh_sel bv64 %0:io<0,0xffff> {
+    @ens ule %4 1
+
+    @b0
+        %1 = const 42 bv64
+        %2 = call hw_get %0 %1
+        %3 = const 1 bv64
+        %4 = and %2 %3
+        ret %4
+}
+
+# Độ lệch địa chỉ DMA của controller đang chọn (0 hoặc 0x400000)
+func xm_off bv64 %0:io<0,0xffff> {
+    @ens ule %3 0x400000
+
+    @b0
+        %1 = call xh_sel %0
+        %2 = const 22 bv64
+        %3 = shl %1 %2
+        ret %3
+}
+
 func xm_get bv64 %0:io<0,0xffff> %1:bv64 {
     @req ult %1 262144
 
     @b0
-        %2 = const 0x1400000 ptr<DiskQword,262144>
-        %3 = slice %2 %1 ptr<DiskQword,1>
-        %4 = load %3 0 bv64
-        ret %4
+        %2 = call xh_sel %0
+        %3 = const 0 bv64
+        %4 = cmp eq %2 %3
+        br %4 @b1 @b2
+
+    @b1
+        %5 = const 0x1400000 ptr<DiskQword,262144>
+        %6 = slice %5 %1 ptr<DiskQword,1>
+        %7 = load %6 0 bv64
+        ret %7
+
+    @b2
+        %8 = const 0x1800000 ptr<DiskQword,262144>
+        %9 = slice %8 %1 ptr<DiskQword,1>
+        %10 = load %9 0 bv64
+        ret %10
 }
 
 func xm_set void %0:io<0,0xffff> %1:bv64 %2:bv64 {
     @req ult %1 262144
 
     @b0
-        %3 = const 0x1400000 ptr<DiskQword,262144>
-        %4 = slice %3 %1 ptr<DiskQword,1>
-        store %4 0 %2
+        %3 = call xh_sel %0
+        %4 = const 0 bv64
+        %5 = cmp eq %3 %4
+        br %5 @b1 @b2
+
+    @b1
+        %6 = const 0x1400000 ptr<DiskQword,262144>
+        %7 = slice %6 %1 ptr<DiskQword,1>
+        store %7 0 %2
+        ret
+
+    @b2
+        %8 = const 0x1800000 ptr<DiskQword,262144>
+        %9 = slice %8 %1 ptr<DiskQword,1>
+        store %9 0 %2
         ret
 }
 
@@ -59,9 +107,21 @@ func xm_zero_page void %0:io<0,0xffff> %1:bv64 {
     @b0
         %2 = const 512 bv64
         %3 = mul %1 %2
+        %6 = call xh_sel %0
+        %7 = const 0 bv64
+        %8 = cmp eq %6 %7
+        br %8 @b1 @b2
+
+    @b1
         %4 = const 0x1400000 ptr<DiskQword,262144>
         %5 = slice %4 %3 ptr<DiskQword,512>
         call page_zero %5
+        ret
+
+    @b2
+        %9 = const 0x1800000 ptr<DiskQword,262144>
+        %10 = slice %9 %3 ptr<DiskQword,512>
+        call page_zero %10
         ret
 }
 
@@ -139,9 +199,20 @@ func xh_reg ptr<Mmio32,1> %0:io<0,0xffff> %1:bv64 {
         %6 = const 2 bv64
         %7 = lshr %1 %6
         %8 = add %5 %7
+        %11 = call xh_sel %0
+        %12 = const 0 bv64
+        %13 = cmp eq %11 %12
+        br %13 @b1 @b2
+
+    @b1
         %9 = const 0x8040400000 ptr<Mmio32,1048576>
         %10 = slice %9 %8 ptr<Mmio32,1>
         ret %10
+
+    @b2
+        %14 = const 0x8040800000 ptr<Mmio32,1048576>
+        %15 = slice %14 %8 ptr<Mmio32,1>
+        ret %15
 }
 
 func xh_rd bv64 %0:io<0,0xffff> %1:bv64 {
@@ -349,7 +420,9 @@ func xh_ring_push void %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 %4:bv64 {
         %27 = add %13 %26
         %28 = const 4096 bv64
         %29 = mul %1 %28
-        %30 = const 0x1400000 bv64
+        %2030 = const 0x1400000 bv64
+        %2530 = call xm_off %0
+        %30 = add %2030 %2530
         %31 = add %30 %29
         call xm_set %0 %27 %31
         %32 = add %27 %8
@@ -406,7 +479,9 @@ func xh_evt_next bv64 %0:io<0,0xffff> {
         call xs_set %0 %2 %24
         %25 = const 16 bv64
         %26 = mul %20 %25
-        %27 = const 0x1402008 bv64          # gốc ring sự kiện | EHB (ghi 1 để xóa)
+        %2027 = const 0x1402008 bv64
+        %2527 = call xm_off %0
+        %27 = add %2027 %2527
         %28 = add %27 %26
         %29 = const 0x38 bv64
         call xh_rt_wr %0 %29 %28
@@ -577,7 +652,9 @@ func xh_ctrl bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 %3:bv64 {
         %27 = or %26 %25
         %28 = shl %27 %20
         %29 = or %28 %3
-        %30 = const 0x1407000 bv64
+        %2030 = const 0x1407000 bv64
+        %2530 = call xm_off %0
+        %30 = add %2030 %2530
         call xh_ring_push %0 %5 %9 %30 %29
         jmp @b10
 
@@ -636,7 +713,9 @@ func xh_int_queue void %0:io<0,0xffff> %1:bv64 {
         %21 = add %20 %19
         %22 = const 64 bv64
         %23 = mul %3 %22
-        %24 = const 0x1407800 bv64
+        %2024 = const 0x1407800 bv64
+        %2524 = call xm_off %0
+        %24 = add %2024 %2524
         %25 = add %24 %23
         %26 = const 0x424 bv64               # Normal (loại 1) | IOC | ISP
         %27 = const 32 bv64
@@ -717,7 +796,9 @@ func xh_address bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         call xs_set %0 %32 %9
         %33 = const 4096 bv64
         %34 = mul %25 %33
-        %35 = const 0x1400000 bv64
+        %2035 = const 0x1400000 bv64
+        %2535 = call xm_off %0
+        %35 = add %2035 %2535
         %36 = add %35 %34
         call xm_set %0 %8 %36                # DCBAA[slot] = output context
 
@@ -761,7 +842,9 @@ func xh_address bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         call xs_set %0 %65 %2                # tốc độ
         call xs_set %0 %59 %3                # loại = chưa có
 
-        %66 = const 0x1405000 bv64
+        %2066 = const 0x1405000 bv64
+        %2566 = call xm_off %0
+        %66 = add %2066 %2566
         %67 = const 0x00002C0000000000 bv64 # Address Device (loại 11)
         %68 = shl %8 %7
         %69 = or %67 %68
@@ -1026,7 +1109,9 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         %39 = const 32 bv64
         %40 = shl %38 %39
         call xh_ictx %0 %18 %2 %40
-        %41 = const 0x1405000 bv64
+        %2041 = const 0x1405000 bv64
+        %2541 = call xm_off %0
+        %41 = add %2041 %2541
         %42 = const 0x0000340000000000 bv64 # Evaluate Context (loại 13)
         %43 = const 56 bv64
         %44 = shl %1 %43
@@ -1158,7 +1243,9 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         call xh_ictx %0 %126 %2 %133
         %134 = const 4096 bv64
         %135 = mul %107 %134
-        %136 = const 0x1400000 bv64
+        %2136 = const 0x1400000 bv64
+        %2636 = call xm_off %0
+        %136 = add %2136 %2636
         %137 = add %136 %135
         %138 = or %137 %3
         call xh_ictx %0 %126 %3 %138         # TR Dequeue | DCS
@@ -1166,7 +1253,9 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         %140 = or %86 %139                   # Average TRB Length | Max ESIT Payload
         %141 = const 2 bv64
         call xh_ictx %0 %126 %141 %140
-        %142 = const 0x1405000 bv64
+        %2142 = const 0x1405000 bv64
+        %2642 = call xm_off %0
+        %142 = add %2142 %2642
         %143 = const 0x0000300000000000 bv64 # Configure Endpoint (loại 12)
         %144 = const 56 bv64
         %145 = shl %1 %144
@@ -1387,8 +1476,13 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         %27 = const 3 bv64
         %28 = const 0x200000 bv64
         %29 = add %21 %28
-        call mmio_map_2m %0 %26 %21
-        call mmio_map_2m %0 %27 %29
+        %260 = call xh_sel %0
+        %261 = const 1 bv64
+        %262 = shl %260 %261
+        %263 = add %26 %262
+        %264 = add %27 %262
+        call mmio_map_2m %0 %263 %21
+        call mmio_map_2m %0 %264 %29
         call mmu_flush %0
         %30 = const 0x1fffff bv64
         %31 = and %21 %30
@@ -1507,7 +1601,9 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         call xm_zero_page %0 %99
         %100 = const 4096 bv64
         %101 = mul %99 %100
-        %102 = const 0x1400000 bv64
+        %2102 = const 0x1400000 bv64
+        %2602 = call xm_off %0
+        %102 = add %2102 %2602
         %103 = add %102 %101
         %104 = const 2048 bv64
         %105 = add %104 %96
@@ -1520,7 +1616,9 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         br %107 @b15 @b16
 
     @b15
-        %108 = const 0x1404000 bv64
+        %2108 = const 0x1404000 bv64
+        %2608 = call xm_off %0
+        %108 = add %2108 %2608
         call xm_set %0 %3 %108               # DCBAA[0] = mảng scratchpad
         jmp @b16
 
@@ -1528,10 +1626,14 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         %109 = const 0x38 bv64
         call xh_op_wr %0 %109 %38            # CONFIG: MaxSlotsEn = 8
         %110 = const 0x30 bv64
-        %111 = const 0x1400000 bv64
+        %2111 = const 0x1400000 bv64
+        %2611 = call xm_off %0
+        %111 = add %2111 %2611
         call xh_op_wr64 %0 %110 %111         # DCBAAP
         %112 = const 0x18 bv64
-        %113 = const 0x1401001 bv64
+        %2113 = const 0x1401001 bv64
+        %2613 = call xm_off %0
+        %113 = add %2113 %2613
         call xh_op_wr64 %0 %112 %113         # CRCR = ring lệnh | RCS
         %114 = const 7 bv64
         %115 = const 9 bv64
@@ -1542,7 +1644,9 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         call xs_set %0 %116 %33
         %117 = const 1536 bv64
         %118 = const 1537 bv64
-        %119 = const 0x1402000 bv64
+        %2119 = const 0x1402000 bv64
+        %2619 = call xm_off %0
+        %119 = add %2119 %2619
         call xm_set %0 %117 %119             # ERST[0] = ring sự kiện, 256 TRB
         call xm_set %0 %118 %94
         %120 = const 0x20 bv64
@@ -1553,7 +1657,9 @@ func xh_setup bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         call xh_rt_wr %0 %122 %119           # ERDP
         %123 = const 0x3c bv64
         call xh_rt_wr %0 %123 %3
-        %124 = const 0x1403000 bv64          # ERSTBA ghi sau cùng (theo đặc tả)
+        %2124 = const 0x1403000 bv64
+        %2624 = call xm_off %0
+        %124 = add %2124 %2624
         %125 = const 0x30 bv64
         call xh_rt_wr %0 %125 %124
         %126 = const 0x34 bv64
@@ -1724,7 +1830,9 @@ func xh_try bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         %5 = const 48 bv64
         %6 = const 40 bv64
         %7 = shl %1 %5
-        %8 = const 40 bv64                   # HW[40]: chẩn đoán USB
+        %80 = const 40 bv64
+        %81 = call xh_sel %0
+        %8 = add %80 %81                     # HW[40 + controller]: chẩn đoán USB
         %9 = call xh_setup %0 %1 %2
         %10 = cmp eq %9 %3
         br %10 @b1 @b8
@@ -1785,8 +1893,8 @@ func xh_try bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
         ret %3
 }
 
-# Khởi tạo USB: quét PCI bus 0 tìm xHCI, thử lần lượt tới khi có controller chạy được thiết bị HID.
-func usb_init void %0:io<0,0xffff> {
+# Xóa vùng DMA của controller đang chọn (HW[42]) và nạp bảng HID usage -> scancode.
+func usb_prepare void %0:io<0,0xffff> {
     @b0
         %1 = const 0 bv64
         %2 = const 1 bv64
@@ -1833,9 +1941,24 @@ func usb_init void %0:io<0,0xffff> {
         %23 = const 408 bv64
         %24 = const 0x0000585744434241 bv64
         call xs_set %0 %23 %24
+        ret
+}
+
+# Khởi tạo USB: quét PCI bus 0 tìm xHCI; MỌI controller có thiết bị HID được giữ chạy (tối đa 2, HW[43] = số
+# controller đang chạy); controller không có HID bị dừng và vùng của nó dùng lại cho controller kế tiếp.
+func usb_init void %0:io<0,0xffff> {
+    @b0
+        %1 = const 0 bv64
+        %2 = const 1 bv64
         %25 = const 40 bv64
         %26 = const 0x0100000000000000 bv64  # giai đoạn 1: không thấy xHCI
         call hw_set %0 %25 %26
+        %250 = const 41 bv64
+        call hw_set %0 %250 %1
+        %251 = const 42 bv64
+        call hw_set %0 %251 %1
+        %252 = const 43 bv64
+        call hw_set %0 %252 %1
         jmp @b4 %1 %1
 
     @b4 %27:bv64 %28:bv64
@@ -1861,9 +1984,23 @@ func usb_init void %0:io<0,0xffff> {
         br %39 @b7 @b8
 
     @b7
+        %46 = const 43 bv64
+        %47 = call hw_get %0 %46
+        %48 = const 1 bv64
+        %49 = and %47 %48
+        %50 = const 42 bv64
+        call hw_set %0 %50 %49               # chọn controller (số đã giữ lại, 0 hoặc 1)
+        call usb_prepare %0
         %40 = call xh_try %0 %27 %28
         %41 = cmp ne %40 %1
-        br %41 @b9 @b8
+        br %41 @b70 @b8
+
+    @b70
+        %51 = add %49 %2
+        call hw_set %0 %46 %51
+        %52 = const 2 bv64
+        %53 = cmp uge %51 %52
+        br %53 @b9 @b8
 
     @b8
         %42 = add %28 %2
@@ -2069,7 +2206,7 @@ func usb_mouse_report void %0:ptr<IpcChannel,1> %1:bv64 {
         ret
 }
 
-func usb_poll void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
+func usb_poll_one void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
     @req uge %1 0x10000
     @req ult %1 0x80000000
     @req uge %2 0x10000
@@ -2161,5 +2298,37 @@ func usb_poll void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
         jmp @b2 %50
 
     @b9
+        ret
+}
+
+# Thăm dò mọi controller đang chạy
+func usb_poll void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<IpcChannel,1> {
+    @req uge %1 0x10000
+    @req ult %1 0x80000000
+    @req uge %2 0x10000
+    @req ult %2 0x80000000
+
+    @b0
+        %3 = const 43 bv64
+        %4 = call hw_get %0 %3
+        %5 = const 2 bv64
+        %6 = call std_min %4 %5
+        %7 = const 0 bv64
+        jmp @b1 %7
+
+    @b1 %8:bv64
+        @inv ule %8 2
+        %9 = cmp ult %8 %6
+        br %9 @b2 @b3
+
+    @b2
+        %10 = const 42 bv64
+        call hw_set %0 %10 %8
+        call usb_poll_one %0 %1 %2
+        %11 = const 1 bv64
+        %12 = add %8 %11
+        jmp @b1 %12
+
+    @b3
         ret
 }
