@@ -1,0 +1,43 @@
+# Bộ component kiểu macOS của std/widget.lit + danh sách LightFS std/widget_fs.lit phải qua kiểm chứng: một màn hình
+# nhỏ dùng toolbar, nút (thường / đang chọn), ô nhập, vùng văn bản, thanh trạng thái, danh sách file và phép bấm.
+include ../../../lit_program/std/widget_fs.lit
+
+data LBL Byte {
+    "OK"
+}
+
+func demo_main void %fb:ptr<VgaCell,1382400> %ipc:ptr<IpcChannel,1> %font:ptr<DiskQword,64> %text:ptr<DiskQword,64> %tab:ptr<DiskQword,4096> %dir:bv64 {
+    @req uge %fb 0x10000
+    @req ult %fb 0x80000000
+    @req uge %font 0x10000
+    @req ult %font 0x80000000
+    @req uge %text 0x10000
+    @req ult %text 0x10000000000
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %dir 256
+    @b0
+        %w = call wg_pick_w %ipc 500 400 900
+        %h = call wg_pick_h %ipc 300 200 500
+        call wg_window_open %fb %font %ipc %w %h 0x4f4d4544 0xffffff
+        %px = call wg_client %fb
+        %cw = sub %w 4
+        %ch = sub %h 34
+        %l = addr LBL
+        call wg_toolbar %px %cw %ch 52
+        call wg_pbutton %px %cw %ch 16 12 64 28 LBL.len %l 0
+        call wg_pbutton %px %cw %ch 88 12 64 28 LBL.len %l 1
+        call wg_button %px %cw %ch 160 12 64 28 LBL.len %l 0xffffff 0x1d1d1f
+        call wg_field %px %cw %ch 240 12 200 28
+        call wg_icon_doc %px %cw %ch 250 17
+        %sy = call wg_statusbar %px %cw %ch 28
+        %n = call std_str_len %text
+        %e = call wg_number %px %cw %ch 16 %sy %n 0x6e6e73
+        call wg_textarea %px %cw %ch 24 68 400 200 %text 0x1d1d1f 1
+        call wg_fs_list %px %cw %ch 24 64 400 %tab %dir
+        call wg_damage_window %ipc %w %h
+        %mx = call wg_mouse_x %ipc
+        %my = call wg_mouse_y %ipc
+        %hit = call wg_fs_hit %tab %mx %my 24 64 400 %dir
+        ret
+}

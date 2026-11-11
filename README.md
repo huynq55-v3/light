@@ -210,8 +210,9 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `str` | chuỗi = (độ dài, `ptr<Byte,%n>`): `str_eq`, `str_starts_with`, `str_find`, `str_skip_spaces`, `str_parse_u64`, `byte_lower` |
 | `fmt` | ghi vào bộ đệm, trả vị trí mới `<= cap`: `fmt_byte`, `fmt_str`, `fmt_u64`, `fmt_hex` |
 | `sys` | IPC theo tên trường: `sys_key_pop`, `sys_mouse_x/y`, `sys_click_take`, `sys_mem_request`, `sys_close`, `sys_damage` |
-| `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text` |
-| `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage` |
+| `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text`, `surf_round_inset`, `surf_round_rect` (hình bo góc dùng chung cho Dock / compositor / widget) |
+| `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
+| `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
 lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Terminal in số bằng `fmt_u64` (`term_append_dec`).

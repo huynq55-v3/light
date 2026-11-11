@@ -170,6 +170,23 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    mỗi byte 1 slot = tốc độ << 4 | kết quả (1 bàn phím, 2 chuột, 3 hub, 4 không có HID boot, 8+bước = hỏng).
    CHƯA kiểm trên máy thật. Còn thiếu: hub USB (bàn phím có hub bên trong / qua hub ngoài -> USBD báo 3), cắm nóng sau
    boot, phục hồi endpoint sau lỗi truyền.
+10. ~~Editor kiểu macOS + bộ component UI dùng lại~~ (2026-11-11):
+   - Hình bo góc dùng chung `surf_round_inset` / `surf_round_rect` (std/surface.lit); Dock (`dk_rrect`, icon tròn góc)
+     và compositor (`comp_inset8`) chuyển sang dùng nó, không còn bản sao riêng.
+   - std/widget.lit thêm component kiểu macOS (thuần, vẽ trên surface client): `wg_rbox`, `wg_rframe`, `wg_text_center`,
+     `wg_pbutton` (thường / đang chọn màu nhấn), `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_qtext`, `wg_number`,
+     `wg_textarea` (tự xuống dòng, '\n', con trỏ vạch xanh), `wg_list_row`, `wg_icon_doc`, `wg_icon_folder`; `wg_button`
+     cũ giữ chữ ký, vẽ bo góc (App Widgets đổi theo, không sửa App).
+   - std/widget_fs.lit (mới): `wg_fs_name`, `wg_fs_list` (danh sách kiểu Finder, "< Back" + tên thư mục), `wg_fs_hit`
+     (cùng mã trả về với `ui_fb_handle_click`).
+   - apps/editor.lit: chỉ thay phần vẽ + phép bấm (logic New / Open / Save / READ / CREATE / WRITE giữ nguyên): thanh
+     công cụ New / Open / Save, ô tên file ("Untitled" khi chưa lưu), vùng tài liệu trắng, thanh trạng thái (số ký tự,
+     "Plain Text"); icon Dock mới.
+   - Compositor: thanh tiêu đề sáng, tên căn giữa (chữ đầu hoa), 3 đèn đỏ / vàng / xanh; nút đóng = đèn đỏ (36 điểm
+     đầu thanh, `WIN_XBTN`), cửa sổ không focus đèn xám. Terminal đổi màu dòng trạng thái theo khung (sáng / tối).
+   Kiểm QEMU: gõ, Save -> data/note1.txt, New, Open -> data -> mở note.txt, đóng bằng đèn đỏ; RAM 320M (App tự vẽ khung
+   cũ) vẫn chạy; Terminal + Widgets; cargo test; stack-report 714 hàm.
+   Còn lại: đèn vàng / xanh chưa có chức năng (chưa có thu nhỏ / phóng to); chữ vẫn là font bitmap 8x16.
 
 ## 📋 Tiếp theo
 

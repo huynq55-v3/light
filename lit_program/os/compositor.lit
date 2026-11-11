@@ -45,7 +45,7 @@ def WIN_MIN_H 150
 def WIN_MAX_W 1074                          # 200 + 1074 + 6 = 1280 (gfx/khung nhìn)
 def WIN_MAX_H 558                           # 60 + 558 + 6 = 624 (đỉnh Dock)
 def WIN_TITLE_H 32
-def WIN_XBTN 48                             # nút [X] = 48 điểm cuối thanh tiêu đề
+def WIN_XBTN 36                             # nút đóng (đèn đỏ kiểu macOS) = 36 điểm đầu thanh tiêu đề
 def WIN_GRIP 16                             # góc kéo đổi kích thước = ô 16x16 góc dưới-phải
 def WIN_MAX_X 974                           # 1280 - (300 + 6)
 def WIN_MAX_Y 590
@@ -255,50 +255,80 @@ func cs_has bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf
 }
 # Tên cửa sổ: 8 ký tự ASCII trong một qword (byte thấp = ký tự đầu), cách nhau 9 điểm, tại (214, 68) của surface.
 # Dùng bảng font `data` (std/surface) nên không cần con trỏ font của Kernel.
-# Khoảng lõm của hàng j (0..7, tính từ mép) ở góc bo bán kính 8 của cửa sổ
+# Khoảng lõm của hàng j (0..7, tính từ mép) ở góc bo bán kính 8 của cửa sổ (hàm chung của std/surface.lit)
 func comp_inset8 bv64 %j:bv64 {
-    @ens ule %r 5
+    @req ult %j 8
+    @ens ule %r 8
     @b0
-        %a = cmp eq %j 0
-        br %a @r5 @c1
-    @c1
-        %b = cmp eq %j 1
-        br %b @r3 @c2
-    @c2
-        %c = cmp eq %j 2
-        br %c @r2 @c3
-    @c3
-        %d = cmp ult %j 5
-        br %d @r1 @r0
-    @r5
-        ret 5
-    @r3
-        ret 3
-    @r2
-        ret 2
-    @r1
-        ret 1
-    @r0
-        ret 0
+        %v = call surf_round_inset 8 %j
+        ret %v
 }
 
-func cs_title void %s:ptr<VgaCell,1382400> %title:bv64 %fg:bv32 {
+func cs_title void %s:ptr<VgaCell,1382400> %title:bv64 %fg:bv32 %ww:bv64 {
+    @req ule %ww 1074
     @b0
-        jmp @l 0
-    @l %i:bv64
+        # độ dài bỏ khoảng trắng / 0 ở cuối
+        jmp @n 0 0
+    @n %i:bv64 %len:bv64
         @inv ule %i 8
+        @inv ule %len %i
         %more = cmp ult %i 8
-        br %more @ch @done
-    @ch
+        br %more @nb @start
+    @nb
         %sh = shl %i 3
         %b = lshr %title %sh
         %c = and %b 0xff
-        %dx = mul %i 9
-        %x = add %dx 214
-        call surf_char 1382400 %s 1920 1280 720 %x 68 %c %fg
-        %i2 = add %i 1
-        jmp @l %i2
+        %i1 = add %i 1
+        %sp = cmp ule %c 32
+        br %sp @nskip @nset
+    @nskip
+        jmp @n %i1 %len
+    @nset
+        jmp @n %i1 %i1
+    @start
+        # căn giữa thanh tiêu đề: x = 200 + ww/2 - len*9/2
+        %tw = mul %len 9
+        %htw = lshr %tw 1
+        %hw = lshr %ww 1
+        %mid = add %hw 200
+        %x0 = sub_sat %mid %htw
+        jmp @l 0 %x0
+    @l %j:bv64 %x:bv64
+        @inv ule %j %len
+        %go = cmp ult %j %len
+        br %go @ch @done
+    @ch
+        %sh2 = shl %j 3
+        %b2 = lshr %title %sh2
+        %c2 = and %b2 0xff
+        # chữ đầu hoa, còn lại thường (kiểu tiêu đề macOS)
+        %first = cmp eq %j 0
+        %up = cmp uge %c2 65
+        %upz = cmp ule %c2 90
+        %isup = and %up %upz
+        %lowr = cmp eq %first 0
+        %mk = and %isup %lowr
+        br %mk @lower @put
+    @lower
+        %cl = add %c2 32
+        jmp @draw %cl
+    @put
+        jmp @draw %c2
+    @draw %cc:bv64
+        call surf_char 1382400 %s 1920 1280 720 %x 68 %cc %fg
+        %j1 = add %j 1
+        %x1 = add_sat %x 9
+        jmp @l %j1 %x1
     @done
+        ret
+}
+
+# Đèn tín hiệu tròn đường kính 12 tại (x, 70) trên thanh tiêu đề
+func cs_light void %s:ptr<VgaCell,1382400> %x:bv64 %c:bv32 {
+    @req ule %x 1280
+    @b0
+        %xe = add %x 12
+        call surf_round_rect 1382400 %s 1920 1280 720 %x 71 %xe 83 6 %c
         ret
 }
 
@@ -322,10 +352,10 @@ func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         %act = cmp ne %active 0
         br %act @hot @cold
     @hot
-        jmp @draw 0x334155:bv32 0x0f172a:bv32 0xffffff:bv32 0xef4444:bv32
+        jmp @draw 0xb4b4b8:bv32 0xe9e9eb:bv32 0x3a3a3c:bv32 0xff5f57:bv32 0xfebc2e:bv32 0x28c840:bv32
     @cold
-        jmp @draw 0x283040:bv32 0x1e2433:bv32 0x8b95a7:bv32 0x4b5563:bv32
-    @draw %border:bv32 %bar:bv32 %text:bv32 %xbtn:bv32
+        jmp @draw 0xc8c8cc:bv32 0xf4f4f5:bv32 0xa1a1a6:bv32 0xd0d0d3:bv32 0xd0d0d3:bv32 0xd0d0d3:bv32
+    @draw %border:bv32 %bar:bv32 %text:bv32 %xbtn:bv32 %ybtn:bv32 %gbtn:bv32
         %ww = load %w CompWin.w
         %wh = load %w CompWin.h
         %r = add %ww 200                    # mép phải (không kể bóng)
@@ -340,16 +370,14 @@ func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         call gfx_fill_rect %s 200 %bt2 %r %bt %border
         call gfx_fill_rect %s 200 62 202 %bt2 %border
         call gfx_fill_rect %s %r2 62 %r %bt2 %border
-        # thanh tiêu đề + tên
-        call gfx_fill_rect %s 202 62 %r2 92 %bar
-        call cs_title %s %title %text
-        # nút [X]
-        %xb1 = sub %r 38
-        %xb2 = sub %r 6
-        call gfx_fill_rect %s %xb1 64 %xb2 88 %xbtn
-        %xm1 = sub %r 26
-        %xm2 = sub %r 18
-        call gfx_fill_rect %s %xm1 72 %xm2 80 0xffffff
+        # thanh tiêu đề sáng kiểu macOS + đường kẻ mảnh dưới + tên căn giữa
+        call gfx_fill_rect %s 202 62 %r2 91 %bar
+        call gfx_fill_rect %s 202 91 %r2 92 0xd4d4d6
+        call cs_title %s %title %text %ww
+        # 3 đèn tín hiệu: đóng (đỏ, bấm được) / thu nhỏ / phóng to
+        call cs_light %s 212 %xbtn
+        call cs_light %s 232 %ybtn
+        call cs_light %s 252 %gbtn
         # cung viền ở 4 góc bo (bán kính 8): mỗi hàng góc tô 2 điểm viền ngay trong mép bo
         jmp @arc 2
     @arc %j:bv64
@@ -648,7 +676,7 @@ func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400>
     @flat
         jmp @copy 0
     @copy %in:bv64
-        @inv ule %in 5
+        @inv ule %in 8
         %cs = add %wx %in
         %ce = sub_sat %bx %in
         call comp_seg %surf %view %wx %wy %y %cs %ce %xa0 %xb
@@ -1087,14 +1115,13 @@ func cs_click bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         store %g IpcChannel.click 0
         ret 1
     @title2
-        %dragw = sub_sat %hw WIN_XBTN
         %t1 = cmp ult %v WIN_TITLE_H
-        %t2 = cmp ult %u %dragw
+        %t2 = cmp uge %u WIN_XBTN
         %t12 = and %t1 %t2
         %ontitle = cmp ne %t12 0
         br %ontitle @grab @xbtn
     @xbtn
-        # Nút [X] do compositor vẽ: 48 điểm cuối thanh tiêu đề -> trả 2 (WM đóng App trên cùng)
+        # Nút đóng do compositor vẽ (đèn đỏ, 36 điểm đầu thanh tiêu đề) -> trả 2 (WM đóng App trên cùng)
         %onx = cmp ult %v WIN_TITLE_H
         br %onx @close @pass
     @close

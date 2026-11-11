@@ -61,88 +61,13 @@ layout DockState 144 {
     136: bv64 ky
 }
 
-# Khoảng lõm vào của hàng y (0 = hàng trên cùng) trong góc bo bán kính r: số d nhỏ nhất sao cho tâm điểm
-# (d + 0.5, y + 0.5) nằm trong đường tròn tâm (r, r): (2r-2d-1)^2 + (2r-2y-1)^2 <= 4r^2.
-func dk_inset bv64 %r:bv64 %y:bv64 {
-    @req ule %r 32
-    @req ult %y %r
-    @ens ule %res %r
-    @b0
-        %r2 = add %r %r
-        %y2 = add %y %y
-        %ty = sub %r2 %y2
-        %ty1 = sub %ty 1
-        %yy = mul %ty1 %ty1
-        %lim = mul %r2 %r2
-        jmp @l 0
-    @l %d:bv64
-        @inv ule %d %r
-        %end = cmp eq %d %r
-        br %end @done @test
-    @test
-        %d2 = add %d %d
-        %tx = sub %r2 %d2
-        %tx1 = sub %tx 1
-        %xx = mul %tx1 %tx1
-        %s = add %xx %yy
-        %inside = cmp ule %s %lim
-        br %inside @found @next
-    @next
-        %d1 = add %d 1
-        jmp @l %d1
-    @found
-        ret %d
-    @done
-        ret %r
-}
-
-# Hình chữ nhật [x0,x1) x [y0,y1) bo 4 góc bán kính r (tự giảm khi hình quá nhỏ), tự cắt theo khung nhìn
+# Hình bo góc trên khung nhìn Dock (hàm chung surf_round_rect của std/surface.lit)
 func dk_rrect void %px:ptr<VgaCell,1382400> %x0:bv64 %y0:bv64 %x1:bv64 %y1:bv64 %r:bv64 %c:bv32 {
     @req ule %x1 0x10000
     @req ule %y1 0x10000
     @req ule %r 32
     @b0
-        %okx = cmp ult %x0 %x1
-        %oky = cmp ult %y0 %y1
-        %ok = and %okx %oky
-        br %ok @go @out
-    @go
-        %w = sub %x1 %x0
-        %h = sub %y1 %y0
-        %hw = lshr %w 1
-        %hh = lshr %h 1
-        %ra = call math_min %r %hw
-        %rr = call math_min %ra %hh
-        jmp @l 0
-    @l %j:bv64
-        @inv ule %j %h
-        %more = cmp ult %j %h
-        br %more @row @out
-    @row
-        %top = cmp ult %j %rr
-        br %top @intop @chkbot
-    @intop
-        %it = call dk_inset %rr %j
-        jmp @fill %it
-    @chkbot
-        %last = sub %h 1
-        %fromb = sub %last %j
-        %bot = cmp ult %fromb %rr
-        br %bot @inbot @flat
-    @inbot
-        %ib = call dk_inset %rr %fromb
-        jmp @fill %ib
-    @flat
-        jmp @fill 0
-    @fill %in:bv64
-        %xa = add_sat %x0 %in
-        %xb = sub_sat %x1 %in
-        %ya = add %y0 %j
-        %yb = add %ya 1
-        call surf_fill_rect DK_N %px DK_STRIDE DK_W DK_H %xa %ya %xb %yb %c
-        %j1 = add %j 1
-        jmp @l %j1
-    @out
+        call surf_round_rect DK_N %px DK_STRIDE DK_W DK_H %x0 %y0 %x1 %y1 %r %c
         ret
 }
 
@@ -159,7 +84,7 @@ func dk_round_icon void %px:ptr<VgaCell,1382400> %x:bv64 %y:bv64 %c:bv32 {
         %more = cmp ult %j 8
         br %more @row @out
     @row
-        %in = call dk_inset 8 %j
+        %in = call surf_round_inset 8 %j
         %xl = add %x %in
         %xs = sub %xr %in
         %ya = add %y %j

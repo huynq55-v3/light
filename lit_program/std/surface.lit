@@ -192,3 +192,92 @@ func surf_text void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x:
     @done
         ret
 }
+
+# ---------------------------------------------------------------------------------------------------------------
+# Hình bo góc (dùng chung cho Dock, compositor, widget). Góc bán kính r: hàng y (0 = hàng sát mép) lõm vào d điểm,
+# d nhỏ nhất sao cho tâm điểm (d + 0.5, y + 0.5) nằm trong đường tròn tâm (r, r): (2r-2d-1)^2 + (2r-2y-1)^2 <= 4r^2.
+# ---------------------------------------------------------------------------------------------------------------
+func surf_round_inset bv64 %r:bv64 %y:bv64 {
+    @req ule %r 32
+    @req ult %y %r
+    @ens ule %res %r
+    @b0
+        %r2 = add %r %r
+        %y2 = add %y %y
+        %ty = sub %r2 %y2
+        %ty1 = sub %ty 1
+        %yy = mul %ty1 %ty1
+        %lim = mul %r2 %r2
+        jmp @l 0
+    @l %d:bv64
+        @inv ule %d %r
+        %end = cmp eq %d %r
+        br %end @done @test
+    @test
+        %d2 = add %d %d
+        %tx = sub %r2 %d2
+        %tx1 = sub %tx 1
+        %xx = mul %tx1 %tx1
+        %s = add %xx %yy
+        %inside = cmp ule %s %lim
+        br %inside @found @next
+    @next
+        %d1 = add %d 1
+        jmp @l %d1
+    @found
+        ret %d
+    @done
+        ret %r
+}
+
+# Tô [x0,x1) x [y0,y1) bo 4 góc bán kính r (tự giảm khi hình quá nhỏ), tự cắt theo surface
+func surf_round_rect void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x0:bv64 %y0:bv64 %x1:bv64 %y1:bv64 %r:bv64 %c:bv32 {
+    @req ule %stride 0x10000
+    @req ule %w 0x10000
+    @req ule %x1 0x10000
+    @req ule %y1 0x10000
+    @req ule %r 32
+    @b0
+        %okx = cmp ult %x0 %x1
+        %oky = cmp ult %y0 %y1
+        %ok = and %okx %oky
+        br %ok @go @out
+    @go
+        %rw = sub %x1 %x0
+        %rh = sub %y1 %y0
+        %hw = lshr %rw 1
+        %hh = lshr %rh 1
+        %ra = call math_min %r %hw
+        %rr = call math_min %ra %hh
+        jmp @l 0
+    @l %j:bv64
+        @inv ule %j %rh
+        %more = cmp ult %j %rh
+        br %more @row @out
+    @row
+        %top = cmp ult %j %rr
+        br %top @intop @chkbot
+    @intop
+        %it = call surf_round_inset %rr %j
+        jmp @fill %it
+    @chkbot
+        %last = sub %rh 1
+        %fromb = sub %last %j
+        %bot = cmp ult %fromb %rr
+        br %bot @inbot @flat
+    @inbot
+        %ib = call surf_round_inset %rr %fromb
+        jmp @fill %ib
+    @flat
+        jmp @fill 0
+    @fill %in:bv64
+        %xa = add_sat %x0 %in
+        %xb = sub_sat %x1 %in
+        %ya = add %y0 %j
+        %yb = add %ya 1
+        call surf_fill_rect %n %px %stride %w %h %xa %ya %xb %yb %c
+        %j1 = add %j 1
+        jmp @l %j1
+    @out
+        ret
+}

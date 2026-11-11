@@ -1862,9 +1862,19 @@ func term_status_bar void %fb:ptr<VgaCell,1382400> %ipc:ptr<IpcChannel,1> {
         %fr = call sys_mem_free %ipc
         %p6 = call fmt_hex TERM_STATUS.len %buf %p5 %fr 4
         %t = slice %buf 0 ptr<Byte,%p6>
-        call surf_fill_rect 1382400 %fb 1920 1280 720 640 66 1030 88 0x0f172a
-        call surf_text 1382400 %fb 1920 1280 720 646 70 %p6 %t 0x94a3b8
-        call sys_damage %ipc 640 66 1030 88
+        # góc phải thanh tiêu đề, tránh tên cửa sổ căn giữa; màu theo khung: compositor (sáng, kiểu macOS) hoặc
+        # khung App tự vẽ khi compositor tắt (tối)
+        %dec = load %ipc IpcChannel.decor
+        %srv = cmp ne %dec 0
+        br %srv @light @dark
+    @light
+        jmp @draw 0xe9e9eb:bv32 0x8e8e93:bv32
+    @dark
+        jmp @draw 0x0f172a:bv32 0x94a3b8:bv32
+    @draw %bg:bv32 %fg:bv32
+        call surf_fill_rect 1382400 %fb 1920 1280 720 780 66 1032 88 %bg
+        call surf_text 1382400 %fb 1920 1280 720 790 70 %p6 %t %fg
+        call sys_damage %ipc 780 66 1032 88
         ret
 }
 

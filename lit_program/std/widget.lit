@@ -13,6 +13,7 @@
 include surface.lit
 include sys.lit
 include ../lib/ui_window.lit
+include ../lib/std_lib.lit
 
 def WG_CLIENT_OFF 176842                    # 92 * 1920 + 202
 def WG_CLIENT_N 1205558                     # 1382400 - WG_CLIENT_OFF
@@ -166,28 +167,6 @@ func wg_box void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:b
         ret
 }
 
-# Nút: nền + viền 1 điểm + nhãn (cách lề 8, căn giữa dọc với chữ cao 16)
-func wg_button void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %len:bv64 %s:ptr<Byte,%len> %bg:bv32 %fg:bv32 {
-    @req ule %cw 0x10000
-    @req uge %w 2
-    @req uge %h 2
-    @req ule %w 0x10000
-    @req ule %h 0x10000
-    @req ule %x 0x10000
-    @req ule %y 0x10000
-    @b0
-        call wg_box %px %cw %ch %x %y %w %h %bg
-        %xe = add %x %w
-        %ye = add %y %h
-        call surf_frame WG_CLIENT_N %px WG_STRIDE %cw %ch %x %y %xe %ye %fg
-        %tx = add %x 8
-        %pad = sub_sat %h 16
-        %half = lshr %pad 1
-        %ty = add %y %half
-        call wg_label %px %cw %ch %tx %ty %len %s %fg
-        ret
-}
-
 # 1 nếu (mx, my) nằm trong [x, x+w) x [y, y+h)
 func wg_hit bv64 %mx:bv64 %my:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 {
     @ens ule %r 1
@@ -202,4 +181,306 @@ func wg_hit bv64 %mx:bv64 %my:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 {
         %cd = and %c %d
         %r1 = and %ab %cd
         ret %r1
+}
+
+# ===============================================================================================================
+# Bộ component kiểu macOS (sáng, bo góc, viền mảnh, màu nhấn xanh). Tất cả THUẦN (không io), vẽ lên surface client
+# (px, cw, ch) như các widget trên; tọa độ tính từ góc client, mọi điểm bị cắt trong client.
+# ===============================================================================================================
+
+def WG_ACCENT 0x007aff                      # màu nhấn (nút chọn, con trỏ soạn thảo)
+def WG_INK 0x1d1d1f                         # chữ chính
+def WG_INK2 0x6e6e73                        # chữ phụ
+def WG_PAPER 0xffffff                       # nền tài liệu
+def WG_BAR 0xf6f6f6                         # nền thanh công cụ / thanh trạng thái
+def WG_HAIR 0xdcdcdc                        # đường kẻ mảnh
+def WG_CTRL_LINE 0xc8c8cc                   # viền nút / ô nhập
+def WG_CTRL_SHADOW 0xe2e2e6                 # bóng 1 điểm dưới nút
+def WG_ROW_ALT 0xf4f5f7                     # hàng chẵn của danh sách
+def WG_LINE_H 22                            # chiều cao dòng văn bản
+
+# Ô bo góc đặc [x, x+w) x [y, y+h), bán kính r (tự giảm khi ô nhỏ)
+func wg_rbox void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %r:bv64 %c:bv32 {
+    @req ule %cw 0x10000
+    @req ule %r 32
+    @b0
+        %xe0 = add_sat %x %w
+        %ye0 = add_sat %y %h
+        %xe = call math_min %xe0 0x10000
+        %ye = call math_min %ye0 0x10000
+        call surf_round_rect WG_CLIENT_N %px WG_STRIDE %cw %ch %x %y %xe %ye %r %c
+        ret
+}
+
+# Ô bo góc có viền 1 điểm: viền %line, ruột %fill
+func wg_rframe void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %r:bv64 %line:bv32 %fill:bv32 {
+    @req ule %cw 0x10000
+    @req ule %r 32
+    @b0
+        call wg_rbox %px %cw %ch %x %y %w %h %r %line
+        %x1 = add_sat %x 1
+        %y1 = add_sat %y 1
+        %w1 = sub_sat %w 2
+        %h1 = sub_sat %h 2
+        %r1 = sub_sat %r 1
+        call wg_rbox %px %cw %ch %x1 %y1 %w1 %h1 %r1 %fill
+        ret
+}
+
+# Chuỗi (len, s) căn giữa trong ô [x, x+w) x [y, y+h) (chữ 8x16, bước 9)
+func wg_text_center void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %len:bv64 %s:ptr<Byte,%len> %fg:bv32 {
+    @req ule %cw 0x10000
+    @b0
+        %tw0 = mul_sat %len 9
+        %tw = sub_sat %tw0 1
+        %padx = sub_sat %w %tw
+        %hx = lshr %padx 1
+        %tx = add_sat %x %hx
+        %pady = sub_sat %h 16
+        %hy = lshr %pady 1
+        %ty = add_sat %y %hy
+        call wg_label %px %cw %ch %tx %ty %len %s %fg
+        ret
+}
+
+# Nút bấm kiểu macOS: trắng, viền mảnh, bóng 1 điểm; %on = 1 -> nền màu nhấn, chữ trắng (nút đang chọn)
+func wg_pbutton void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %len:bv64 %s:ptr<Byte,%len> %on:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        %y1 = add_sat %y 1
+        call wg_rbox %px %cw %ch %x %y1 %w %h 6 WG_CTRL_SHADOW
+        %sel = cmp ne %on 0
+        br %sel @hi @lo
+    @hi
+        call wg_rbox %px %cw %ch %x %y %w %h 6 WG_ACCENT
+        call wg_text_center %px %cw %ch %x %y %w %h %len %s WG_PAPER
+        ret
+    @lo
+        call wg_rframe %px %cw %ch %x %y %w %h 6 WG_CTRL_LINE WG_PAPER
+        call wg_text_center %px %cw %ch %x %y %w %h %len %s WG_INK
+        ret
+}
+
+# Ô nhập / ô hiển thị: trắng, viền mảnh, bo góc 6
+func wg_field void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        call wg_rframe %px %cw %ch %x %y %w %h 6 WG_CTRL_LINE WG_PAPER
+        ret
+}
+
+# Thanh công cụ trên cùng của client: cao h, nền WG_BAR, đường kẻ mảnh ở đáy
+func wg_toolbar void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %h:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        %hl = sub_sat %h 1
+        call wg_box %px %cw %ch 0 0 %cw %hl WG_BAR
+        call wg_box %px %cw %ch 0 %hl %cw 1 WG_HAIR
+        ret
+}
+
+# Thanh trạng thái dưới cùng: cao h, đường kẻ mảnh ở đỉnh. Trả y đỉnh của thanh.
+func wg_statusbar bv64 %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %h:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        %y = sub_sat %ch %h
+        call wg_box %px %cw %ch 0 %y %cw 1 WG_HAIR
+        %y1 = add_sat %y 1
+        call wg_box %px %cw %ch 0 %y1 %cw %h WG_BAR
+        ret %y
+}
+
+# Chuỗi 8 byte đóng gói (byte thấp = ký tự đầu, dừng ở byte 0) tại (x, y). Trả x sau ký tự cuối.
+func wg_qtext bv64 %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %q:bv64 %fg:bv32 {
+    @req ule %cw 0x10000
+    @b0
+        jmp @l 0 %x
+    @l %i:bv64 %cx:bv64
+        @inv ule %i 8
+        %more = cmp ult %i 8
+        br %more @ch @done
+    @ch
+        %sh = shl %i 3
+        %b = lshr %q %sh
+        %c = and %b 0xff
+        %end = cmp eq %c 0
+        br %end @done @draw
+    @draw
+        call surf_char WG_CLIENT_N %px WG_STRIDE %cw %ch %cx %y %c %fg
+        %i1 = add %i 1
+        %x1 = add_sat %cx 9
+        jmp @l %i1 %x1
+    @done
+        ret %cx
+}
+
+# Số thập phân v tại (x, y). Trả x sau chữ số cuối.
+func wg_number bv64 %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %v:bv64 %fg:bv32 {
+    @req ule %cw 0x10000
+    @b0
+        %v10 = udiv %v 10
+        jmp @p 1 0
+    @p %pw:bv64 %k:bv64
+        @inv ule %k 19
+        %lim = cmp ult %k 19
+        br %lim @pchk @emit0
+    @pchk
+        %big = cmp ule %pw %v10
+        br %big @pmul @emit0
+    @pmul
+        %pw1 = mul_sat %pw 10
+        %k1 = add %k 1
+        jmp @p %pw1 %k1
+    @emit0
+        jmp @e %pw %x 0
+    @e %d:bv64 %cx:bv64 %j:bv64
+        @inv ule %j 20
+        %go0 = cmp ne %d 0
+        %go1 = cmp ult %j 20
+        %go = and %go0 %go1
+        br %go @dig @done
+    @dig
+        %q = udiv %v %d
+        %u = urem %q 10
+        %c = add %u 48
+        call surf_char WG_CLIENT_N %px WG_STRIDE %cw %ch %cx %y %c %fg
+        %d1 = udiv %d 10
+        %x1 = add_sat %cx 9
+        %j1 = add %j 1
+        jmp @e %d1 %x1 %j1
+    @done
+        ret %cx
+}
+
+# Vùng văn bản: chuỗi kết thúc bằng 0 trong bộ đệm 512 byte, tự xuống dòng ở mép phải, '\n' sang dòng mới,
+# dòng cao WG_LINE_H; con trỏ soạn thảo (vạch dọc 2 điểm màu nhấn) sau ký tự cuối khi %caret = 1.
+func wg_textarea void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %text:ptr<DiskQword,64> %fg:bv32 %caret:bv64 {
+    @req ule %cw 0x10000
+    @req uge %text 0x10000
+    @req ult %text 0x10000000000
+    @b0
+        %xr = add_sat %x %w
+        %yb = add_sat %y %h
+        jmp @l 0 %x %y
+    @l %i:bv64 %cx:bv64 %cy:bv64
+        @inv ule %i 511
+        %more = cmp ult %i 511
+        br %more @get @tail
+    @get
+        %b = call std_mem_get_byte %text %i
+        %end = cmp eq %b 0
+        br %end @tail @kind
+    @kind
+        %i1 = add %i 1
+        %nl = cmp eq %b 10
+        br %nl @newline @cr
+    @newline
+        %ny = add_sat %cy WG_LINE_H
+        jmp @l %i1 %x %ny
+    @cr
+        %isr = cmp eq %b 13
+        br %isr @skip @wrapchk
+    @skip
+        jmp @l %i1 %cx %cy
+    @wrapchk
+        %ce = add_sat %cx 8
+        %over = cmp ugt %ce %xr
+        br %over @wrap @nowrap
+    @wrap
+        %wy = add_sat %cy WG_LINE_H
+        jmp @put %x %wy
+    @nowrap
+        jmp @put %cx %cy
+    @put %px0:bv64 %py0:bv64
+        %pb = add_sat %py0 16
+        %fits = cmp ule %pb %yb
+        br %fits @draw @stop
+    @draw
+        call surf_char WG_CLIENT_N %px WG_STRIDE %cw %ch %px0 %py0 %b %fg
+        %nx = add_sat %px0 9
+        jmp @l %i1 %nx %py0
+    @stop
+        ret
+    @tail
+        %want = cmp ne %caret 0
+        br %want @cwrap @out
+    @cwrap
+        %ke = add_sat %cx 2
+        %kover = cmp ugt %ke %xr
+        br %kover @cnext @cput0
+    @cnext
+        %ky = add_sat %cy WG_LINE_H
+        jmp @cput %x %ky
+    @cput0
+        jmp @cput %cx %cy
+    @cput %kx:bv64 %ky0:bv64
+        %kb = add_sat %ky0 18
+        %kfit = cmp ule %kb %yb
+        br %kfit @kdraw @out
+    @kdraw
+        %kt = sub_sat %ky0 1
+        call wg_box %px %cw %ch %kx %kt 2 18 WG_ACCENT
+        ret
+    @out
+        ret
+}
+
+# Hàng thứ i của danh sách: nền xen kẽ trắng / xám rất nhạt, bo góc 6
+func wg_list_row void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %i:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        %odd = and %i 1
+        %alt = cmp ne %odd 0
+        br %alt @a @b
+    @a
+        call wg_rbox %px %cw %ch %x %y %w %h 6 WG_ROW_ALT
+        ret
+    @b
+        call wg_rbox %px %cw %ch %x %y %w %h 6 WG_PAPER
+        ret
+}
+
+# Biểu tượng tài liệu 14x18 tại (x, y): trang trắng viền xám, góc gấp, 3 dòng chữ
+func wg_icon_doc void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        call wg_rframe %px %cw %ch %x %y 14 18 2 0xa8a8ad WG_PAPER
+        %fx = add_sat %x 9
+        call wg_box %px %cw %ch %fx %y 5 5 0xd6d6db
+        %lx = add_sat %x 3
+        %l1 = add_sat %y 7
+        %l2 = add_sat %y 10
+        %l3 = add_sat %y 13
+        call wg_box %px %cw %ch %lx %l1 8 1 0xc4c4c9
+        call wg_box %px %cw %ch %lx %l2 8 1 0xc4c4c9
+        call wg_box %px %cw %ch %lx %l3 5 1 0xc4c4c9
+        ret
+}
+
+# Biểu tượng thư mục 20x16 tại (x, y): tai thư mục + thân xanh nhạt
+func wg_icon_folder void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 {
+    @req ule %cw 0x10000
+    @b0
+        call wg_rbox %px %cw %ch %x %y 9 6 2 0x4f9fe3
+        %by = add_sat %y 3
+        call wg_rbox %px %cw %ch %x %by 20 13 2 0x67b1ee
+        %ty = add_sat %y 5
+        %tx = add_sat %x 1
+        call wg_box %px %cw %ch %tx %ty 18 1 0x8cc6f5
+        ret
+}
+
+# Nút (kiểu cũ, giữ chữ ký): ô bo góc nền %bg, viền mảnh WG_CTRL_LINE, nhãn màu %fg căn giữa
+func wg_button void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %h:bv64 %len:bv64 %s:ptr<Byte,%len> %bg:bv32 %fg:bv32 {
+    @req ule %cw 0x10000
+    @req uge %w 2
+    @req uge %h 2
+    @req ule %w 0x10000
+    @req ule %h 0x10000
+    @req ule %x 0x10000
+    @req ule %y 0x10000
+    @b0
+        call wg_rframe %px %cw %ch %x %y %w %h 6 WG_CTRL_LINE %bg
+        call wg_text_center %px %cw %ch %x %y %w %h %len %s %fg
+        ret
 }
