@@ -2,14 +2,16 @@
 # App TERMINAL: mặt tiền cho người của lõi shell std/shell.lit (cùng bộ lệnh với kênh Agent của Claude).
 #
 # - Cửa sổ đổi kích thước được (std/widget), chữ xanh trên nền tối, tự xuống dòng, cuộn bằng nút ^ / v bên phải.
-# - Bộ đệm cuộn 32KB là stdout của lõi shell (ShState.out_len = độ dài); trước mỗi lệnh, nếu đã dùng quá nửa thì bỏ
+# - Bộ đệm cuộn 32KB là stdout của lõi shell (ShState.so_len = độ dài); trước mỗi lệnh, nếu đã dùng quá nửa thì bỏ
 #   phần cũ (giữ ~8KB cuối, cắt ở đầu dòng).
-# - Lệnh đụng đĩa: lõi lập kế hoạch, Terminal thực hiện bằng yêu cầu IPC LightFS (mỗi yêu cầu = một lượt Kernel gọi lại
-#   App): TABLE -> [CREATE | READ] -> [WRITE] -> sh_fs_done. Trong lúc chờ không đọc phím.
+# - Lõi chạy từng bước: Enter -> TABLE (bảng LightFS mới) -> sh_step ... Mỗi thao tác LightFS lõi xin là một yêu cầu IPC
+#   (Kernel phục vụ ngay sau lượt gọi App, rồi chép bảng mới). Trong lúc bận: IpcChannel.run_req = 1 để Kernel gọi App
+#   mỗi nhịp dù không có phím; không đọc phím; chỉ vẽ lại khi xong lệnh hoặc cửa sổ phải vẽ lại.
 # - Lệnh riêng của Terminal (cần IPC / smp / heap, nằm ngoài lõi): clear, sys, mem, memup, memdown, memtest.
 #
-# State của App (qword):  0 TermSt   16 ShState   64 dòng lệnh (512 byte)   128 bộ đệm cuộn (32KB)   4224 stderr (1KB)
-#   sector 68 tên mục sẽ tạo   sector 128.. nội dung file (1MB)   LFS_TAB_Q bảng LightFS (Kernel chép sau mỗi yêu cầu)
+# State của App (qword):  0 TermSt   16 ShState (384 byte)   64 dòng lệnh (512 byte)   128 bộ đệm cuộn (32KB)
+#   4224 stderr (1KB)   sector 68 tên mục sẽ tạo   sector 128.. nội dung file (1MB)
+#   262144 (2MB) vùng làm việc của lõi shell (448KB)   LFS_TAB_Q bảng LightFS (Kernel chép sau mỗi yêu cầu)
 
 include ../lib/ui_window.lit
 include ../lib/std_lib.lit
@@ -38,23 +40,23 @@ def T_NAME_SEC 68
 def T_DATA_SEC 128
 def T_DATA_B 1048576
 
-def P_TABLE 1
-def P_CAT 2
-def P_WNEW 3
-def P_WREAD 4
-def P_FINAL 5
+def T_WS_Q 262144
+
+def P_TABLE 1                              # chờ bảng LightFS đầu dòng lệnh
+def P_OP 2                                 # chờ kết quả thao tác lõi shell xin
+def P_RUN 3                                # lõi chưa xong, chạy tiếp ở lượt sau
 
 def T_LINE_H 18
 def T_SBW 20
 
 layout TermSt 128 {
     0: bv64 init                            # 1 = đã in lời chào
-    8: bv64 phase                           # P_*: đang chờ Kernel phục vụ yêu cầu LightFS (0 = rảnh)
+    8: bv64 phase                           # P_*: đang chạy một dòng lệnh shell (0 = rảnh)
     16: bv64 ow                             # kích thước cửa sổ đã vẽ
     24: bv64 oh
     32: bv64 scroll                         # số dòng đang cuộn lên khỏi đáy
     40: bv64 line_len                       # độ dài dòng lệnh đang gõ
-    48: bv64 spare0
+    48: bv64 redraw                         # 1 = cửa sổ vừa vẽ lại khung: phải vẽ nội dung dù đang bận
     56: bv64 spare1
 }
 
@@ -178,7 +180,7 @@ func t_ts ptr<TermSt,1> %st:ptr<DiskQword,3932160> {
 
 func t_sh ptr<ShState,1> %st:ptr<DiskQword,3932160> {
     @b0
-        %q = slice %st T_SH_Q ptr<DiskQword,16>
+        %q = slice %st T_SH_Q ptr<DiskQword,48>
         %v = view %q ptr<ShState,1>
         ret %v
 }
@@ -204,6 +206,13 @@ func t_err ptr<Byte,1024> %st:ptr<DiskQword,3932160> {
         ret %v
 }
 
+func t_ws ptr<Byte,458752> %st:ptr<DiskQword,3932160> {
+    @b0
+        %q = slice %st T_WS_Q ptr<DiskQword,57344>
+        %v = view %q ptr<Byte,458752>
+        ret %v
+}
+
 func t_data ptr<Byte,1048576> %st:ptr<DiskQword,3932160> {
     @b0
         %q0 = shl T_DATA_SEC 6
@@ -218,7 +227,7 @@ func t_puts void %st:ptr<DiskQword,3932160> %n:bv64 %s:ptr<Byte,%n> {
     @b0
         %sh = call t_sh %st
         %sb = call t_sb %st
-        call sh_out %sh T_SB_CAP %sb %n %s
+        call sh_so_put %sh T_SB_CAP %sb %n %s
         ret
 }
 
@@ -230,12 +239,18 @@ func t_prompt void %st:ptr<DiskQword,3932160> {
         %sh = call t_sh %st
         %sb = call t_sb %st
         %p1 = addr T_P1
-        call sh_out %sh T_SB_CAP %sb T_P1.len %p1
+        call sh_so_put %sh T_SB_CAP %sb T_P1.len %p1
         %tab = slice %st LFS_TAB_Q ptr<DiskQword,4096>
         %cwd = call sh_cwd %sh
+        # sh_out_path ghi theo out_len (bộ đệm OUT của lõi, đang rảnh): mượn nó để nối vào bộ đệm cuộn
+        %so = load %sh ShState.so_len
+        store %sh ShState.out_len %so
         call sh_out_path %sh T_SB_CAP %sb %tab %cwd
+        %so2 = load %sh ShState.out_len
+        store %sh ShState.so_len %so2
+        store %sh ShState.out_len 0
         %p2 = addr T_P2
-        call sh_out %sh T_SB_CAP %sb T_P2.len %p2
+        call sh_so_put %sh T_SB_CAP %sb T_P2.len %p2
         ret
 }
 
@@ -244,7 +259,7 @@ func t_make_room void %st:ptr<DiskQword,3932160> {
     @b0
         %sh = call t_sh %st
         %sb = call t_sb %st
-        %l0 = load %sh ShState.out_len
+        %l0 = load %sh ShState.so_len
         %len = call math_min %l0 T_SB_CAP
         %big = cmp ugt %len 16384
         br %big @cut @keep
@@ -259,7 +274,7 @@ func t_make_room void %st:ptr<DiskQword,3932160> {
         %k = sub %len %c
         %src = slice %sb %c ptr<Byte,%k>
         call mem_copy_b T_SB_CAP %sb %k %src %k
-        store %sh ShState.out_len %k
+        store %sh ShState.so_len %k
         ret
 }
 
@@ -370,7 +385,7 @@ func t_render void %fb:ptr<VgaCell,1382400> %ipc:ptr<IpcChannel,1> %st:ptr<DiskQ
         %ts = call t_ts %st
         %sh = call t_sh %st
         %sb = call t_sb %st
-        %l0 = load %sh ShState.out_len
+        %l0 = load %sh ShState.so_len
         %len = call math_min %l0 T_SB_CAP
         %r = call t_walk %px %cw %ch %sb %len %cols %rows 0 0
         %lastline = lshr %r 8
@@ -433,7 +448,7 @@ func t_ensure_nl void %st:ptr<DiskQword,3932160> {
     @b0
         %sh = call t_sh %st
         %sb = call t_sb %st
-        %l0 = load %sh ShState.out_len
+        %l0 = load %sh ShState.so_len
         %len = call math_min %l0 T_SB_CAP
         %empty = cmp eq %len 0
         br %empty @out @chk
@@ -533,12 +548,19 @@ func t_builtin bv64 %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %
         %w = call str_find %n %s %a 32
         %cl = sub_sat %w %a
         %cmd = slice %s %a ptr<Byte,%cl>
+        # lệnh riêng chỉ khi là CẢ dòng (một từ); "sys | wc" ... đi qua lõi shell
+        %e = call str_skip_spaces %n %s %w
+        %alone = cmp eq %e %n
+        br %alone @t_clear @notbi
+    @notbi
+        ret 0
+    @t_clear
         %k1 = addr T_C_CLEAR
         %is1 = call str_eq %cl %cmd T_C_CLEAR.len %k1
         %b1 = cmp ne %is1 0
         br %b1 @clear @t_sys
     @clear
-        store %sh ShState.out_len 0
+        store %sh ShState.so_len 0
         ret 1
     @t_sys
         %k2 = addr T_C_SYS
@@ -549,11 +571,11 @@ func t_builtin bv64 %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %
         %l1 = addr T_L_WORKERS
         call t_puts %st T_L_WORKERS.len %l1
         %wk = smp_workers %smp
-        call sh_out_dec %sh T_SB_CAP %sb %wk
+        call sh_so_dec %sh T_SB_CAP %sb %wk
         %l2 = addr T_L_BG
         call t_puts %st T_L_BG.len %l2
         %bg = load %ipc IpcChannel.bg_mask
-        call sh_out_dec %sh T_SB_CAP %sb %bg
+        call sh_so_dec %sh T_SB_CAP %sb %bg
         jmp @nl
     @t_mem
         %k3 = addr T_C_MEM
@@ -564,12 +586,12 @@ func t_builtin bv64 %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %
         %l3 = addr T_L_HEAP
         call t_puts %st T_L_HEAP.len %l3
         %mb = lshr %hn 17                   # qword -> MB
-        call sh_out_dec %sh T_SB_CAP %sb %mb
+        call sh_so_dec %sh T_SB_CAP %sb %mb
         %l4 = addr T_L_FREE
         call t_puts %st T_L_FREE.len %l4
         %fr = call sys_mem_free %ipc
         %frm = shl %fr 1                    # khung 2MB -> MB
-        call sh_out_dec %sh T_SB_CAP %sb %frm
+        call sh_so_dec %sh T_SB_CAP %sb %frm
         jmp @nl
     @t_up
         %k4 = addr T_C_MEMUP
@@ -598,7 +620,7 @@ func t_builtin bv64 %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %
         %l5 = addr T_L_MEMREQ
         call t_puts %st T_L_MEMREQ.len %l5
         %rmb = shl %chunks 1
-        call sh_out_dec %sh T_SB_CAP %sb %rmb
+        call sh_so_dec %sh T_SB_CAP %sb %rmb
         jmp @nl
     @t_test
         %k6 = addr T_C_MEMTEST
@@ -610,10 +632,10 @@ func t_builtin bv64 %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %
         %pages = lshr %hn 9
         %l6 = addr T_L_PAGES
         call t_puts %st T_L_PAGES.len %l6
-        call sh_out_dec %sh T_SB_CAP %sb %pages
+        call sh_so_dec %sh T_SB_CAP %sb %pages
         %l7 = addr T_L_ERRS
         call t_puts %st T_L_ERRS.len %l7
-        call sh_out_dec %sh T_SB_CAP %sb %errs
+        call sh_so_dec %sh T_SB_CAP %sb %errs
         jmp @nl
     @nl
         %nl = addr T_NL
@@ -623,52 +645,43 @@ func t_builtin bv64 %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %
         ret 0
 }
 
-# Bước cuối: lõi ghi lỗi / mã thoát cho mã kết quả %code, rồi kết thúc lệnh
-func t_fs_done void %st:ptr<DiskQword,3932160> %code:bv64 {
-    @req uge %st 0x10000
-    @req ult %st 0x10000000000
-    @b0
-        %ts = call t_ts %st
-        %sh = call t_sh %st
-        %ln0 = load %ts TermSt.line_len
-        %ln = call math_min %ln0 T_LINE_CAP
-        %lb = call t_line %st
-        %line = slice %lb 0 ptr<Byte,%ln>
-        %tab = slice %st LFS_TAB_Q ptr<DiskQword,4096>
-        %eb = call t_err %st
-        %rc = call sh_fs_done %sh %tab %ln %line %code T_ERR_CAP %eb
-        call t_finish %st
-        ret
-}
-
-# Ghi văn bản của write / append vào vùng dữ liệu từ %base rồi xin Kernel WRITE vào file %target
-func t_do_write void %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %target:bv64 %base:bv64 {
+# Gửi Kernel thao tác LightFS lõi shell vừa xin (ShState.op)
+func t_request void %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> {
     @req uge %st 0x10000
     @req ult %st 0x10000000000
     @req uge %ipc 0x10000
     @req ult %ipc 0x80000000
     @b0
-        %ts = call t_ts %st
         %sh = call t_sh %st
-        %ln0 = load %ts TermSt.line_len
-        %ln = call math_min %ln0 T_LINE_CAP
-        %lb = call t_line %st
-        %line = slice %lb 0 ptr<Byte,%ln>
-        %data = call t_data %st
-        %pos = call sh_fill_data %sh %ln %line T_DATA_B %data %base
-        %e = lshr %pos 63
-        %bad = cmp ne %e 0
-        br %bad @fail @dowrite
-    @fail
-        call t_fs_done %st %pos
+        %op = load %sh ShState.op
+        %id = load %sh ShState.op_id
+        %len = load %sh ShState.op_len
+        %is_r = cmp eq %op SH_OP_READ
+        br %is_r @read @t_w
+    @read
+        call lfs_request %ipc 2 %id T_DATA_SEC 0
         ret
-    @dowrite
-        store %ts TermSt.phase P_FINAL
-        call lfs_request %ipc 3 %target T_DATA_SEC %pos
+    @t_w
+        %is_w = cmp eq %op SH_OP_WRITE
+        br %is_w @write @t_c
+    @write
+        call lfs_request %ipc 3 %id T_DATA_SEC %len
+        ret
+    @t_c
+        %is_c = cmp eq %op SH_OP_CREATE
+        br %is_c @create @delete
+    @create
+        %ws = call t_ws %st
+        %name = slice %st 4352 ptr<DiskQword,8>
+        call sh_op_name %ws %name
+        call lfs_request %ipc 4 %id T_NAME_SEC %len
+        ret
+    @delete
+        call lfs_request %ipc 5 %id 0 0
         ret
 }
 
-# Kernel vừa phục vụ yêu cầu LightFS của bước %phase: chạy bước tiếp theo
+# Đang chạy một dòng lệnh: nhận kết quả yêu cầu trước (nếu Kernel đã phục vụ) rồi chạy lõi tới thao tác kế tiếp / hết
 func t_step void %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> {
     @req uge %st 0x10000
     @req ult %st 0x10000000000
@@ -677,116 +690,53 @@ func t_step void %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> {
     @b0
         %ts = call t_ts %st
         %sh = call t_sh %st
+        # yêu cầu chưa được phục vụ (Kernel xóa fs_op khi phục vụ): chờ lượt sau
+        %pend = load %ipc IpcChannel.fs_op
+        %waiting = cmp ne %pend 0
+        br %waiting @out @go
+    @go
         %phase = load %ts TermSt.phase
+        %is_op = cmp eq %phase P_OP
+        br %is_op @result @run
+    @result
         %res = call lfs_result %ipc
-        %err = call lfs_is_err %res
-        %bad = cmp ne %err 0
+        call sh_op_done %sh %res
+        jmp @run
+    @run
+        store %ts TermSt.phase P_RUN
         %ln0 = load %ts TermSt.line_len
         %ln = call math_min %ln0 T_LINE_CAP
         %lb = call t_line %st
         %line = slice %lb 0 ptr<Byte,%ln>
         %tab = slice %st LFS_TAB_Q ptr<DiskQword,4096>
-        %is_t = cmp eq %phase P_TABLE
-        br %is_t @exec @t_cat
-    @exec
-        # bảng đã mới (nếu chưa gắn hệ tệp thì bảng rỗng; help / echo vẫn chạy)
+        %ws = call t_ws %st
+        %data = call t_data %st
         %sb = call t_sb %st
         %eb = call t_err %st
-        %rc = call sh_exec %sh %ln %line %tab T_SB_CAP %sb T_ERR_CAP %eb
-        %op = load %sh ShState.op
-        %none = cmp eq %op 0
-        br %none @fin @plan
+        jmp @l 0
+    @l %k:bv64
+        @inv ule %k 16
+        @dec sub 16 %k
+        %more = cmp ult %k 16
+        br %more @s @out
+    @s
+        %k1 = add %k 1
+        %r = call sh_step %sh %ws %ln %line %tab T_DATA_B %data T_SB_CAP %sb T_ERR_CAP %eb
+        %done = cmp eq %r 0
+        br %done @fin @t_op
     @fin
         call t_finish %st
         ret
-    @plan
-        %id = load %sh ShState.op_id
-        %new = load %sh ShState.op_new
-        %isnew = cmp ne %new 0
-        %name = slice %st 4352 ptr<DiskQword,8>
-        %o_cat = cmp eq %op SH_OP_CAT
-        br %o_cat @cat @p_mk
-    @cat
-        store %ts TermSt.phase P_CAT
-        call lfs_request %ipc 2 %id T_DATA_SEC 0
+    @t_op
+        %isop = cmp eq %r 1
+        br %isop @op @again
+    @again
+        jmp @l %k1
+    @op
+        call t_request %st %ipc
+        store %ts TermSt.phase P_OP
         ret
-    @p_mk
-        %o_mk = cmp eq %op SH_OP_MKDIR
-        br %o_mk @mkdir @p_touch
-    @mkdir
-        call sh_pack_name %sh %ln %line %name
-        store %ts TermSt.phase P_FINAL
-        call lfs_request %ipc 4 %id T_NAME_SEC 2
-        ret
-    @p_touch
-        %o_t = cmp eq %op SH_OP_TOUCH
-        br %o_t @touch @p_rm
-    @touch
-        call sh_pack_name %sh %ln %line %name
-        store %ts TermSt.phase P_FINAL
-        call lfs_request %ipc 4 %id T_NAME_SEC 0
-        ret
-    @p_rm
-        %o_rm = cmp eq %op SH_OP_RM
-        br %o_rm @rm @p_w
-    @rm
-        store %ts TermSt.phase P_FINAL
-        call lfs_request %ipc 5 %id 0 0
-        ret
-    @p_w
-        br %isnew @wnew @wold
-    @wnew
-        call sh_pack_name %sh %ln %line %name
-        store %ts TermSt.phase P_WNEW
-        call lfs_request %ipc 4 %id T_NAME_SEC 0
-        ret
-    @wold
-        %o_a = cmp eq %op SH_OP_APPEND
-        br %o_a @wread @wtrunc
-    @wread
-        store %ts TermSt.phase P_WREAD
-        call lfs_request %ipc 2 %id T_DATA_SEC 0
-        ret
-    @wtrunc
-        call t_do_write %st %ipc %id 0
-        ret
-    @t_cat
-        br %bad @done_err @t_cat2
-    @done_err
-        call t_fs_done %st %res
-        ret
-    @t_cat2
-        %is_c = cmp eq %phase P_CAT
-        br %is_c @show @t_wnew
-    @show
-        %sz = call math_min %res T_DATA_B
-        %data = call t_data %st
-        %bytes = slice %data 0 ptr<Byte,%sz>
-        call t_puts %st %sz %bytes
-        call t_fs_done %st 0
-        ret
-    @t_wnew
-        %is_wn = cmp eq %phase P_WNEW
-        br %is_wn @created @t_wread
-    @created
-        call t_do_write %st %ipc %res 0
-        ret
-    @t_wread
-        %is_wr = cmp eq %phase P_WREAD
-        br %is_wr @readold @final
-    @readold
-        # file cũ lớn hơn vùng dữ liệu 1MB: không ghi lại (sẽ làm mất phần đuôi)
-        %over = cmp ugt %res T_DATA_B
-        br %over @toobig @appendok
-    @toobig
-        call t_fs_done %st SH_E_TOOBIG
-        ret
-    @appendok
-        %tid = load %sh ShState.op_id
-        call t_do_write %st %ipc %tid %res
-        ret
-    @final
-        call t_fs_done %st %res
+    @out
         ret
 }
 
@@ -815,6 +765,7 @@ func t_enter void %st:ptr<DiskQword,3932160> %ipc:ptr<IpcChannel,1> %smp:smp %hn
         call t_finish %st
         ret
     @shell
+        call sh_begin %sh
         store %ts TermSt.phase P_TABLE
         call lfs_request %ipc 1 0 0 0
         ret
@@ -835,9 +786,9 @@ func t_key void %st:ptr<DiskQword,3932160> %k:bv8 {
     @del
         %ln1 = sub %ln 1
         store %ts TermSt.line_len %ln1
-        %o0 = load %sh ShState.out_len
+        %o0 = load %sh ShState.so_len
         %o1 = sub_sat %o0 1
-        store %sh ShState.out_len %o1
+        store %sh ShState.so_len %o1
         ret
     @t_pr
         %ge = cmp uge %k 32
@@ -881,6 +832,10 @@ func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<
         br %fresh @hello @phase
     @hello
         store %ts TermSt.init 1
+        # Kernel chỉ xóa 2 sector đầu của State khi đóng App: vùng biến / bảng đối số của lõi shell phải bắt đầu bằng 0
+        %ws = call t_ws %2
+        %wh = slice %ws 0 ptr<Byte,8192>
+        call mem_fill_b 8192 %wh 0
         %b = addr T_BANNER
         call t_puts %2 T_BANNER.len %b
         call t_prompt %2
@@ -908,6 +863,7 @@ func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<
         store %ts TermSt.oh %h
         call wg_window_open %0 %3 %1 %w %h TERM_TITLE COL_RETRO_BG
         call wg_damage_window %1 %w %h
+        store %ts TermSt.redraw 1
         jmp @input
     @input
         # đang chờ Kernel: chưa đọc phím (phím nằm lại trong kênh)
@@ -965,6 +921,19 @@ func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<
         store %ts TermSt.scroll %s3
         jmp @draw
     @draw
+        # bận: Kernel gọi lại mỗi nhịp (run_req); chỉ vẽ khi rảnh (vừa xong lệnh / có phím, chuột) hoặc khung vừa vẽ lại
+        %ph3 = load %ts TermSt.phase
+        %busy3 = cmp ne %ph3 0
+        store %1 IpcChannel.run_req %ph3
+        %rd = load %ts TermSt.redraw
+        %rdn = cmp ne %rd 0
+        %idle = cmp eq %busy3 0
+        %paint = or %idle %rdn
+        br %paint @paint @skip
+    @paint
+        store %ts TermSt.redraw 0
         call t_render %0 %1 %2 %w %h
+        ret
+    @skip
         ret
 }

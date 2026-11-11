@@ -7,10 +7,12 @@
 #   trunc: bit 0 stdout bị cắt (> 64KB), bit 1 stderr bị cắt (> 1KB). Dòng yêu cầu dài quá AG_RX_CAP -> exit 2.
 # Khởi động xong Kernel in "\n@@LREADY\n". Các dòng khác trên serial (chẩn đoán, SMP...) host bỏ qua.
 # Phiên shell (thư mục hiện tại) giữ qua các lệnh. Mỗi nhịp lịch Kernel đọc tối đa AG_RX_TICK byte và chạy tối đa 1 lệnh.
-# Lệnh đụng đĩa (cat write append mkdir touch rm): lõi lập kế hoạch, ag_do_plan thực hiện ĐỒNG BỘ bằng LightFS của Kernel.
+# Lõi chạy từng bước; mỗi thao tác LightFS lõi xin (READ / WRITE / CREATE / DELETE) được ag_op làm ĐỒNG BỘ bằng
+# LightFS của Kernel, nên cả dòng lệnh chạy xong trong một nhịp.
 #
 # Bộ nhớ (vùng Kernel PD_0[11], phần LightFS không dùng — xem os/lightfs.lit):
-#   0x1660000  tên mục sẽ tạo (8 qword)     0x1680000  stdout (64KB)     0x1690000  dòng yêu cầu (448KB)
+#   0x1650200  tên mục sẽ tạo (8 qword)     0x1660000  stdout (64KB)     0x1670000  dòng yêu cầu (128KB)
+#   0x1690000  vùng làm việc của lõi shell (448KB: biến, đối số, bộ đệm ống)
 #   0x1700000  nội dung file (1MB = file lớn nhất)
 
 include ../std/shell.lit
@@ -31,7 +33,8 @@ data AG_RS AgState 1 {
 }
 data AG_NUM Byte 24 {
 }
-def AG_RX_CAP 458752
+def AG_RX_CAP 131072
+def AG_STEPS 1000000
 def AG_RX_TICK 8192
 def AG_OUT_CAP 65536
 def AG_FILE_Q 131072
@@ -39,11 +42,17 @@ def AG_FILE_B 1048576
 
 func ag_out ptr<Byte,65536> %io:io<0,0xffff> {
     @b0
-        %p = const 0x1680000 ptr<Byte,65536>
+        %p = const 0x1660000 ptr<Byte,65536>
         ret %p
 }
 
-func ag_rx ptr<Byte,458752> %io:io<0,0xffff> {
+func ag_rx ptr<Byte,131072> %io:io<0,0xffff> {
+    @b0
+        %p = const 0x1670000 ptr<Byte,131072>
+        ret %p
+}
+
+func ag_ws ptr<Byte,458752> %io:io<0,0xffff> {
     @b0
         %p = const 0x1690000 ptr<Byte,458752>
         ret %p
@@ -61,7 +70,7 @@ func ag_nbuf ptr<DiskQword,8> %io:io<0,0xffff> {
     @ens uge %r 0x10000
     @ens ult %r 0x10000000000
     @b0
-        %p = const 0x1660000 ptr<DiskQword,8>
+        %p = const 0x1650200 ptr<DiskQword,8>
         ret %p
 }
 
@@ -73,6 +82,9 @@ data AG_READY Byte {
 }
 data AG_M_LONG Byte {
     "agent: line too long\n"
+}
+data AG_M_STEPS Byte {
+    "agent: command did not finish (step limit)\n"
 }
 data AG_HEX Byte {
     "0123456789abcdef"
@@ -211,7 +223,7 @@ func ag_reply void %io:io<0,0xffff> %id:bv64 {
         %t = load %st ShState.trunc
         call ag_dec %io %t
         call ag_bar %io
-        %ol0 = load %st ShState.out_len
+        %ol0 = load %st ShState.so_len
         %ol = call math_min %ol0 AG_OUT_CAP
         %ob = call ag_out %io
         %os = slice %ob 0 ptr<Byte,%ol>
@@ -226,124 +238,54 @@ func ag_reply void %io:io<0,0xffff> %id:bv64 {
         ret
 }
 
-# Tạo mục tên = name_off / name_len (trong dòng lệnh %s) trong thư mục %parent; %flags bit 1 = thư mục. Trả id hoặc lỗi.
-func ag_create bv64 %io:io<0,0xffff> %n:bv64 %s:ptr<Byte,%n> %parent:bv64 %flags:bv64 {
-    @b0
-        %st = addr AG_ST
-        %q = call ag_nbuf %io
-        call sh_pack_name %st %n %s %q
-        %r = call lfs_create_name %io %parent %q %flags
-        ret %r
-}
-
-# Thực hiện kế hoạch lõi shell để lại (nếu có) cho dòng lệnh (n, s) rồi để lõi ghi kết quả
-func ag_do_plan void %io:io<0,0xffff> %n:bv64 %s:ptr<Byte,%n> {
+# Làm thao tác LightFS lõi shell xin (ShState.op), trả kết quả theo quy ước LightFS
+func ag_op bv64 %io:io<0,0xffff> {
     @b0
         %st = addr AG_ST
         %op = load %st ShState.op
-        %has = cmp ne %op 0
-        br %has @mnt @out
-    @mnt
+        %id = load %st ShState.op_id
+        %len = load %st ShState.op_len
         # hệ tệp chưa gắn được (không có đĩa / bảng hỏng): không đụng bảng, báo lỗi 1
         %m = call lfs_sget %io 0
         %mounted = cmp ne %m 0
         br %mounted @go @unmounted
     @unmounted
         %e1 = call lfs_err 1
-        jmp @done %e1
+        ret %e1
     @go
-        %id = load %st ShState.op_id
-        %new = load %st ShState.op_new
         %fb = call ag_fbuf %io
-        %bytes = view %fb ptr<Byte,1048576>
-        %is_cat = cmp eq %op SH_OP_CAT
-        br %is_cat @cat @t_mk
-    @cat
-        %rc = call lfs_read_buf %io AG_FILE_Q %fb %id
-        %ec = lshr %rc 63
-        %bad = cmp ne %ec 0
-        br %bad @done_c @show
-    @done_c
-        jmp @done %rc
-    @show
-        %sz = call math_min %rc AG_FILE_B
-        %data = slice %bytes 0 ptr<Byte,%sz>
-        %out = call ag_out %io
-        call sh_out %st AG_OUT_CAP %out %sz %data
-        jmp @done 0
-    @t_mk
-        %is_mk = cmp eq %op SH_OP_MKDIR
-        br %is_mk @mkdir @t_touch
-    @mkdir
-        %rm1 = call ag_create %io %n %s %id 2
-        jmp @done %rm1
-    @t_touch
-        %is_t = cmp eq %op SH_OP_TOUCH
-        br %is_t @touch @t_rm
-    @touch
-        %rt = call ag_create %io %n %s %id 0
-        jmp @done %rt
-    @t_rm
-        %is_rm = cmp eq %op SH_OP_RM
-        br %is_rm @rm @t_wr
-    @rm
-        %rr = call lfs_op_delete %io %id
-        jmp @done %rr
-    @t_wr
+        %is_r = cmp eq %op SH_OP_READ
+        br %is_r @read @t_w
+    @read
+        %rr = call lfs_read_buf %io AG_FILE_Q %fb %id
+        ret %rr
+    @t_w
         %is_w = cmp eq %op SH_OP_WRITE
-        %is_a = cmp eq %op SH_OP_APPEND
-        %wr = or %is_w %is_a
-        br %wr @write @unknown
+        br %is_w @write @t_c
+    @write
+        %rw = call lfs_write_buf %io AG_FILE_Q %fb %id %len
+        ret %rw
+    @t_c
+        %is_c = cmp eq %op SH_OP_CREATE
+        br %is_c @create @t_d
+    @create
+        %q = call ag_nbuf %io
+        %ws = call ag_ws %io
+        call sh_op_name %ws %q
+        %rc = call lfs_create_name %io %id %q %len
+        ret %rc
+    @t_d
+        %is_d = cmp eq %op SH_OP_DELETE
+        br %is_d @delete @unknown
+    @delete
+        %rd = call lfs_op_delete %io %id
+        ret %rd
     @unknown
         %ex = call lfs_err 10
-        jmp @done %ex
-    @write
-        %isnew = cmp ne %new 0
-        br %isnew @create @old
-    @create
-        %cid = call ag_create %io %n %s %id 0
-        %ce = lshr %cid 63
-        %cbad = cmp ne %ce 0
-        br %cbad @done_cr @fresh
-    @done_cr
-        jmp @done %cid
-    @fresh
-        jmp @fill %cid 0
-    @old
-        br %is_a @readold @trunc
-    @trunc
-        jmp @fill %id 0
-    @readold
-        %r0 = call lfs_read_buf %io AG_FILE_Q %fb %id
-        %re = lshr %r0 63
-        %rbad = cmp ne %re 0
-        br %rbad @done_ro @have
-    @done_ro
-        jmp @done %r0
-    @have
-        %base0 = call math_min %r0 AG_FILE_B
-        jmp @fill %id %base0
-    @fill %target:bv64 %base:bv64
-        @inv ule %base AG_FILE_B
-        %pos = call sh_fill_data %st %n %s AG_FILE_B %bytes %base
-        %pe = lshr %pos 63
-        %pbad = cmp ne %pe 0
-        br %pbad @done_big @wfile
-    @done_big
-        jmp @done %pos
-    @wfile
-        %rw = call lfs_write_buf %io AG_FILE_Q %fb %target %pos
-        jmp @done %rw
-    @done %code:bv64
-        %tab = call lfs_tab %io
-        %err = addr AG_ERR
-        %x = call sh_fs_done %st %tab %n %s %code AG_ERR.len %err
-        ret
-    @out
-        ret
+        ret %ex
 }
 
-# Một dòng yêu cầu đã nhận đủ trong ag_rx: tách id, chạy lệnh, trả lời
+# Một dòng yêu cầu đã nhận đủ trong ag_rx: tách id, chạy lệnh đến hết, trả lời
 func ag_line void %io:io<0,0xffff> {
     @b0
         %rs = addr AG_RS
@@ -362,17 +304,43 @@ func ag_line void %io:io<0,0xffff> {
         %cn = sub %len %c
         %cmd = slice %line %c ptr<Byte,%cn>
         %st = addr AG_ST
-        store %st ShState.out_len 0
-        store %st ShState.err_len 0
-        store %st ShState.trunc 0
+        call sh_begin %st
+        store %st ShState.so_len 0
         %out = call ag_out %io
         %err = addr AG_ERR
         %long = cmp ne %over 0
         br %long @toolong @run
     @run
         %tab = call lfs_tab %io
-        %rc = call sh_exec %st %cn %cmd %tab AG_OUT_CAP %out AG_ERR.len %err
-        call ag_do_plan %io %cn %cmd
+        %ws = call ag_ws %io
+        %fbq = call ag_fbuf %io
+        %fb = view %fbq ptr<Byte,1048576>
+        jmp @l 0
+    @l %k:bv64
+        @inv ule %k AG_STEPS
+        @dec sub AG_STEPS %k
+        %more = cmp ult %k AG_STEPS
+        br %more @step @limit
+    @step
+        %k1 = add %k 1
+        %r = call sh_step %st %ws %cn %cmd %tab AG_FILE_B %fb AG_OUT_CAP %out AG_ERR.len %err
+        %done = cmp eq %r 0
+        br %done @reply @t_op
+    @t_op
+        %isop = cmp eq %r 1
+        br %isop @op @again
+    @op
+        %res = call ag_op %io
+        call sh_op_done %st %res
+        jmp @l %k1
+    @again
+        jmp @l %k1
+    @limit
+        %ml = addr AG_M_STEPS
+        call sh_err %st AG_ERR.len %err AG_M_STEPS.len %ml
+        store %st ShState.exit 1
+        jmp @reply
+    @reply
         call ag_reply %io %id
         ret
     @toolong
@@ -388,6 +356,13 @@ func ag_init void %io:io<0,0xffff> {
     @b0
         %rs = addr AG_RS
         store %rs AgState.present 0
+        # vùng nhớ này không được xóa lúc boot: vùng biến / bảng đối số của lõi shell phải bắt đầu bằng 0
+        %ws = call ag_ws %io
+        %hd = slice %ws 0 ptr<Byte,8192>
+        call mem_fill_b 8192 %hd 0
+        %st = addr AG_ST
+        store %st ShState.cwd 0
+        store %st ShState.exit 0
         %lsr = hwio_r %io 0x3fd
         %dead = cmp eq %lsr 0xff
         br %dead @absent @scratch

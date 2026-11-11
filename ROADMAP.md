@@ -217,7 +217,23 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    font thêm \ | ~ ` $ ^ (font nay đủ mọi ký tự in được). tools/qt.py gõ được ký hiệu.
    Đã thử: legacy / usb / uefi, cat 900KB (hiện phần đầu tới khi đầy + "[output truncated]"), Agent sửa đĩa thì
    Terminal thấy ngay, xóa thư mục đang đứng -> về /, đổi kích thước, đóng / mở lại.
-   Tiếp: shell v2 (nháy kép, `|`, `>`, `&&`, biến, grep / wc / head...), trình thông dịch.
+   Shell v2 (cùng ngày): lõi thành bộ thông dịch chạy từng bước (`sh_begin` / `sh_step` / `sh_op_done`), xin mặt tiền
+   thao tác LightFS mức thấp (READ / WRITE / CREATE / DELETE); mỗi lệnh ghi vào bộ đệm OUT rồi mới chuyển tới lệnh sau /
+   file / stdout. Bộ tách từ: nháy ' ", `\` trước ký tự đặc biệt, `$VAR ${VAR} $?`, `TÊN=giá_trị`, `env`, `unset`,
+   `; && || | > >> <`, lỗi cú pháp báo trước khi chạy. Lệnh mới: grep wc head tail sort uniq find true false, `cat`
+   đọc stdin / `-`, `echo -n -e`. Đầu ra bị cắt không bao giờ được ghi vào file. Kernel chia lại vùng PD_0[11]
+   (dòng lệnh 448KB -> 128KB, thêm vùng làm việc 448KB), MCP `write_file` gửi `write 'PATH' '...'` (khối 120000).
+   Kernel: `IpcChannel.run_req` (thay trường cũ disk_req) — App xin được gọi lại mỗi nhịp, `app_sync_out` chép thành bit
+   của slot trong `bg_mask`; Terminal dùng khi đang chạy lệnh (trước đây lệnh > 3 thao tác đĩa đứng chờ phím tiếp).
+   Đã thử (QEMU legacy): bộ lệnh v1 cho kết quả giống hệt bản cũ (trừ `ls` trên đĩa trống không còn in dòng trống, và số
+   lệnh chia khối khi ghi 1MB), khứ hồi `write_file` đúng từng byte (rỗng, `'`, `\` cuối, `\n` chữ, đủ 256 giá trị byte,
+   300KB), ống / chuyển hướng / `&&` `||` / biến / lỗi cú pháp, file 1MB (grep / wc ~1,2s, phần lớn là đọc đĩa), sort
+   6144 dòng ~40ms, 6145 dòng báo lỗi, ống tràn bị chặn khi ghi file, Terminal gõ lệnh có ống / chuyển hướng,
+   `light fsck` 0 lỗi, stack-report OK; UEFI / NVMe và bàn phím USB: Agent + Terminal (ống, `<`, `>`, biến) chạy đúng.
+   Chưa thử: máy thật, `claude -p` thật.
+   Còn mở: một dòng lệnh Agent chạy hết trong MỘT nhịp Kernel (đọc file 1MB ~1,2s -> desktop đứng trong lúc đó; lõi đã
+   chạy từng bước nên thêm hạn mức thao tác / nhịp là dễ); Terminal in stderr sau toàn bộ stdout của dòng; lệnh riêng
+   của Terminal (sys, mem...) chỉ nhận khi là cả dòng, không đi qua ống được.
 
 ## 📋 Tiếp theo
 

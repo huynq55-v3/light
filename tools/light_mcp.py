@@ -25,7 +25,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOCK = os.environ.get("LIGHT_SERIAL", os.path.join(REPO, "target", "light_serial.sock"))
 PROTOCOL = "2025-06-18"
-MAX_LINE = 450000  # AG_RX_CAP (os/agent.lit) is 458752 bytes including "<id> "
+MAX_LINE = 131000  # AG_RX_CAP (os/agent.lit) is 131072 bytes including "<id> "
 
 
 def log(*a):
@@ -115,10 +115,12 @@ class Channel:
 
 
 def escape_bytes(data):
-    """Bytes -> tokens for the Light shell TEXT syntax (\\n \\t \\\\ \\xHH)."""
+    """Bytes -> tokens for the Light shell TEXT syntax (\\n \\t \\\\ \\xHH), safe inside single quotes."""
     out = []
     for b in data:
-        if b == 0x5C:
+        if b == 0x27:
+            out.append("\\x27")
+        elif b == 0x5C:
             out.append("\\\\")
         elif b == 0x0A:
             out.append("\\n")
@@ -132,8 +134,9 @@ def escape_bytes(data):
 
 
 def check_path(path):
-    if not isinstance(path, str) or not path or not path.isascii() or any(c in path for c in " \t\r\n"):
-        raise ValueError("path must be non-empty ASCII without spaces")
+    if (not isinstance(path, str) or not path or not path.isascii() or "'" in path
+            or any(ord(c) < 32 or ord(c) == 127 for c in path)):
+        raise ValueError("path must be non-empty printable ASCII without single quotes")
 
 
 def write_file(ch, path, content, timeout):
@@ -147,7 +150,7 @@ def write_file(ch, path, content, timeout):
         cur.append(t); size += len(t)
     chunks.append("".join(cur))
     for i, c in enumerate(chunks):
-        r = ch.run(f"{'write' if i == 0 else 'append'} {path} {c}", timeout)
+        r = ch.run(f"{'write' if i == 0 else 'append'} '{path}' '{c}'", timeout)
         if r["exit"] != 0:
             r["stderr"] += f"(failed at chunk {i + 1}/{len(chunks)})\n"
             return r
@@ -155,17 +158,22 @@ def write_file(ch, path, content, timeout):
             "stderr": "", "truncated": {"stdout": False, "stderr": False}}
 
 
-WRITE_CHUNK = 256 * 1024  # escaped bytes per write/append command (each append re-reads and rewrites the file)
+WRITE_CHUNK = 120000  # escaped bytes per write/append command (<= MAX_LINE; each append re-reads and rewrites the file)
 
 TOOLS = [{
     "name": "run",
     "description": (
         "Run one shell command inside Light OS (running in QEMU) and return its exit code, stdout and stderr. "
         "The shell session (current directory) persists between calls. Commands are ASCII, one line. "
-        "Same shell as the Light OS Terminal app. Commands: help, echo, pwd, ls, cd, stat, cat, write, append, mkdir, touch, rm (run `help` for usage). "
-        "No quoting, pipes or redirection yet; paths cannot contain spaces. TEXT of write/append uses escapes "
-        "\\n \\t \\\\ \\xHH (prefer the write_file tool for file content). "
-        "Exit codes: 0 ok, 1 error, 2 usage, 127 unknown command. stdout is capped at 64 KiB, stderr at 1 KiB."),
+        "Same shell as the Light OS Terminal app (run `help` for usage). Commands: help echo pwd cd ls stat cat write "
+        "append mkdir touch rm grep wc head tail sort uniq find env unset true false. "
+        "Syntax: 'single' and \"double\" quotes, $VAR ${VAR} $? (exit code), NAME=value, pipes a | b, "
+        "redirection > >> <, sequences a ; b, a && b, a || b. No globbing (find -name takes * ?), no subshells, "
+        "no $(...), no 2>. A backslash only escapes shell special characters; other backslash sequences reach the "
+        "command unchanged. TEXT of write/append and echo -e uses escapes \\n \\t \\\\ \\xHH (prefer the write_file "
+        "tool for file content). grep matches a fixed string (^ and $ anchor it). Each command's output (pipes, "
+        "> and >>) is limited to 128 KiB; a cut pipeline is never written to a file. "
+        "Exit codes: 0 ok, 1 error, 2 usage/syntax, 127 unknown command. stdout is capped at 64 KiB, stderr at 1 KiB."),
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -192,7 +200,7 @@ def call_tool(ch, name, args):
     timeout = max(0.5, min(float(args.get("timeout_s", 10)), 120))
     if name == "read_file":
         check_path(args.get("path"))
-        return ch.run(f"cat {args['path']}", timeout)
+        return ch.run(f"cat '{args['path']}'", timeout)
     if name == "write_file":
         content = args.get("content")
         if not isinstance(content, str):

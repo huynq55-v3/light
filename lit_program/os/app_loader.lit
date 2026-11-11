@@ -893,6 +893,22 @@ func app_sync_out void %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
     @req ult %g 0x80000000
     @req ult %slot 7
     @b0
+        # App xin chạy tiếp (run_req) -> bật/tắt bit của chính slot trong bg_mask kênh chung (đóng App xóa bit)
+        %rr = load %c IpcChannel.run_req
+        %bit = shl 1 %slot
+        %gm = load %g IpcChannel.bg_mask
+        %nbit = xor %bit 0xffffffffffffffff
+        %gm0 = and %gm %nbit
+        %gm1 = or %gm %bit
+        %want = cmp ne %rr 0
+        br %want @bgon @bgoff
+    @bgon
+        store %g IpcChannel.bg_mask %gm1
+        jmp @sync
+    @bgoff
+        store %g IpcChannel.bg_mask %gm0
+        jmp @sync
+    @sync
         %act = load %g IpcChannel.active_app
         %me = add %slot 1
         %fg = cmp eq %act %me

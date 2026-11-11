@@ -1,4 +1,5 @@
-# Lõi shell std/shell.lit phải qua kiểm chứng: chạy một dòng lệnh trên bảng LightFS với bộ đệm stdout / stderr nhỏ.
+# Lõi shell std/shell.lit phải qua kiểm chứng: chạy một dòng lệnh (không có đĩa: thao tác LightFS nào cũng báo lỗi 1)
+# với bộ đệm stdout / stderr / file nhỏ. Trả mã thoát, hoặc 255 nếu không xong sau 1000 bước.
 include ../../../lit_program/std/shell.lit
 
 data T_LINE Byte {
@@ -8,21 +9,46 @@ data T_OUT Byte 64 {
 }
 data T_ERR Byte 16 {
 }
+data T_FILE Byte 32 {
+}
 data T_ST ShState 1 {
 }
 
-func demo_main bv64 %tab:ptr<DiskQword,4096> {
+func demo_main bv64 %tab:ptr<DiskQword,4096> %ws:ptr<Byte,458752> {
     @req uge %tab 0x10000
     @req ult %tab 0x10000000000
     @ens ule %r 255
     @b0
         %st = addr T_ST
-        store %st ShState.out_len 0
-        store %st ShState.err_len 0
-        store %st ShState.trunc 0
+        call sh_begin %st
+        store %st ShState.so_len 0
         %l = addr T_LINE
         %o = addr T_OUT
         %e = addr T_ERR
-        %rc = call sh_exec %st T_LINE.len %l %tab T_OUT.len %o T_ERR.len %e
-        ret %rc
+        %f = addr T_FILE
+        jmp @l 0
+    @l %k:bv64
+        @inv ule %k 1000
+        @dec sub 1000 %k
+        %more = cmp ult %k 1000
+        br %more @step @limit
+    @step
+        %k1 = add %k 1
+        %r = call sh_step %st %ws T_LINE.len %l %tab T_FILE.len %f T_OUT.len %o T_ERR.len %e
+        %done = cmp eq %r 0
+        br %done @fin @t_op
+    @t_op
+        %isop = cmp eq %r 1
+        br %isop @op @again
+    @op
+        call sh_op_done %st 0x8000000000000001
+        jmp @l %k1
+    @again
+        jmp @l %k1
+    @fin
+        %rc = load %st ShState.exit
+        %r8 = and %rc 0xff
+        ret %r8
+    @limit
+        ret 255
 }
