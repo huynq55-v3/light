@@ -6,3 +6,4 @@ repo-to-text*
 /gemma_local_model
 /models
 *.gguf
+.light-cache/

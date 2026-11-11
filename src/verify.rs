@@ -1531,7 +1531,8 @@ impl<'ctx> Verifier<'ctx> {
     }
 }
 
-pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
+/// Trả số lệnh `assume` (tiên đề không được chứng minh)
+pub fn verify_func(module: &Module, func: &Func) -> Result<u32, String> {
     verify_inner(module, func).map_err(|e| {
         if e.starts_with("[Z3 ") {
             e
@@ -1541,7 +1542,7 @@ pub fn verify_func(module: &Module, func: &Func) -> Result<(), String> {
     })
 }
 
-fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
+fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
     let cfg = build_cfg(func)?;
     check_ssa(func, &cfg)?;
     check_dyn_scopes(func)?;
@@ -1619,5 +1620,5 @@ fn verify_inner(module: &Module, func: &Func) -> Result<(), String> {
             func.name, v.n_assume
         );
     }
-    Ok(())
+    Ok(v.n_assume as u32)
 }

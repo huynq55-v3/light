@@ -137,3 +137,13 @@ bash tools/qemu_uefi_nvme.sh
 2. `cargo run --release` (tạo `kernel.elf` + `disk.img`), rồi chạy thử `sudo bash tools/install_lightos.sh` để xem kế hoạch, sau đó `sudo bash tools/install_lightos.sh --yes`. Script dùng lại phân vùng `rustos` (nvme0n1p2): sao lưu nội dung vào `~/lightos_backup_<ngày>/`, ghi `disk.img`, đổi tên GPT thành `lightos`, cài `EFI/lightos/{kernel.elf,lightos.efi}`, thêm mục UEFI "Light OS" ở **cuối** BootOrder (Ubuntu vẫn là mặc định).
 3. Khởi động vào Light OS một lần: `sudo efibootmgr -n <số mục Light OS>` rồi reboot (hoặc F9 lúc bật máy). F12 trong Light OS để quay lại.
 4. Cập nhật sau này: `--kernel-only --yes` (giữ dữ liệu trên phân vùng) hoặc `--disk-only --yes` (ghi lại `disk.img`).
+
+## Công cụ cho người và AI
+
+- `light check <file.lit> [--json]` — kiểm chứng MỌI hàm trong file (không dừng ở hàm lỗi đầu tiên). Với `--json`, stdout chỉ có một đối tượng
+  `{"ok":false,"errors":[{"kind","func","block","inst","message","counterexample":[{"reg","value"}],"origin":"file:dòng","source","hint"}]}`
+  hoặc `{"ok":true,"verified":N,"cache_hits":M}`; tiến trình nằm ở stderr/bị tắt.
+- `light doc [TRUY_VẤN] [--brief] [--defs] [--file F]... [--json]` — chữ ký, `@req/@ens` và chú thích của hàm (và `def` với `--defs`) trong
+  `lit_program/`; tra theo tên, chú thích hoặc đường dẫn. Dùng thay cho việc đọc cả file thư viện.
+- Cache Z3: kết quả chứng minh lưu ở `.light-cache/z3.keys` (khóa = băm mã verifier + layouts + hàm + hợp đồng của hàm được gọi).
+  Build lại không đổi gì mất ~0,06s thay vì ~7s. `--no-cache` hoặc `LIGHT_NO_CACHE=1` để tắt; xóa thư mục để làm mới.

@@ -425,6 +425,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     requires: Vec::new(),
                     ensures: Vec::new(),
                     blocks: Vec::new(),
+                    origin: loc.clone(),
                 });
             }
             "@req" => m

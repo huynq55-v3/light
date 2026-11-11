@@ -250,6 +250,7 @@ pub struct Func {
     pub requires: Vec<Z3Expr>, // Hợp đồng đầu vào (@req)
     pub ensures: Vec<Z3Expr>,  // Hợp đồng đầu ra (@ens)
     pub blocks: Vec<Block>,
+    pub origin: String,        // "file:dòng" nơi khai báo hàm (chỉ để báo lỗi/ tài liệu, không tham gia kiểm chứng)
 }
 
 #[derive(Debug, Clone, Default)]

@@ -5,17 +5,20 @@ mod parser;
 mod verify;
 mod x86;
 mod lightfs;
+#[macro_use]
+mod tooling;
 
 use std::path::Path;
 use std::{env, fs, process};
 
 fn compile_and_verify_app(path: &str) -> Result<Vec<u8>, String> {
     let m = parser::parse_file(path)?;
+    tooling::register_module(&m);
     verify::check_module(&m)?;
     for f in &m.funcs {
-        verify::verify_func(&m, f)?;
+        tooling::verify_cached(&m, f)?;
     }
-    println!("  ✓ Z3 Verified & Compiled App: '{}'", path);
+    say!("  ✓ Z3 Verified & Compiled App: '{}'", path);
     elf64::compile_app_bin(&m)
 }
 
@@ -69,12 +72,12 @@ pub fn build_disk_img(total: u64) -> Result<(), String> {
 
     // 1. Tự động duyệt và biên dịch toàn bộ apps
     let app_count = compile_all_apps("lit_program/apps", "storage/apps")?;
-    println!("  ✓ Compiled {} app(s) into 'storage/apps/'", app_count);
+    say!("  ✓ Compiled {} app(s) into 'storage/apps/'", app_count);
 
     // 2. Đóng gói storage/ vào disk.img (LightFS)
     let lfs = lightfs::pack(Path::new("storage"), Path::new("disk.img"), total)?;
     let used = lfs.used_blocks().iter().filter(|&&u| u).count();
-    println!(
+    say!(
         "[4/4] LightFS 'disk.img': {} MB, {} mục, {} / {} khối 4KB đã dùng",
         total / 2048,
         lfs.table.iter().filter(|e| e.used()).count(),
@@ -88,27 +91,35 @@ pub fn build_disk_img(total: u64) -> Result<(), String> {
 fn cmd_fsck(img: &str) -> Result<(), String> {
     let r = lightfs::fsck(lightfs::Dev::open(Path::new(img), false)?);
     for n in &r.notes {
-        println!("  {}", n);
+        say!("  {}", n);
     }
     for e in &r.errors {
-        println!("  LỖI: {}", e);
+        say!("  LỖI: {}", e);
     }
-    println!("{}: {} file, {} thư mục, {} khối dữ liệu, {} lỗi", img, r.files, r.dirs, r.used_blocks, r.errors.len());
+    say!("{}: {} file, {} thư mục, {} khối dữ liệu, {} lỗi", img, r.files, r.dirs, r.used_blocks, r.errors.len());
     if r.errors.is_empty() { Ok(()) } else { Err(format!("fsck: {} lỗi", r.errors.len())) }
 }
 
 fn run() -> Result<(), String> {
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
+    let json = args.iter().any(|a| a == "--json");
+    let no_cache = args.iter().any(|a| a == "--no-cache");
+    args.retain(|a| a != "--json" && a != "--no-cache");
+    tooling::set_flags(json, no_cache);
+
+    if args.len() > 1 && args[1] == "doc" {
+        return tooling::cmd_doc(&args[2..]);
+    }
 
     if args.len() > 1 && args[1] == "sync" {
         // light sync [ảnh hoặc phân vùng, mặc định disk.img]
         let img = args.get(2).map(|s| s.as_str()).unwrap_or("disk.img");
-        println!("🔄 Đang đồng bộ ngược từ '{}' về 'storage/'...", img);
+        say!("🔄 Đang đồng bộ ngược từ '{}' về 'storage/'...", img);
         let (n, bad) = lightfs::sync(lightfs::Dev::open(Path::new(img), false)?, Path::new("storage"))?;
         for b in &bad {
-            println!("  bỏ qua: {}", b);
+            say!("  bỏ qua: {}", b);
         }
-        println!("✓ Hoàn tất đồng bộ: {} file", n);
+        say!("✓ Hoàn tất đồng bộ: {} file", n);
         return Ok(());
     }
 
@@ -118,23 +129,41 @@ fn run() -> Result<(), String> {
 
     if args.len() > 2 && args[1] == "check" {
         let m = parser::parse_file(&args[2])?;
+        tooling::register_module(&m);
         verify::check_module(&m)?;
+        // Báo MỌI hàm hỏng trong một lượt (không dừng ở hàm đầu tiên)
         for f in &m.funcs {
-            verify::verify_func(&m, f)?;
+            if let Err(e) = tooling::verify_cached(&m, f) {
+                tooling::push_error(e);
+            }
         }
-        println!("OK: {} hàm đã qua kiểm chứng", m.funcs.len());
+        let bad = tooling::take_errors();
+        if !bad.is_empty() {
+            let n = bad.len();
+            if tooling::json_mode() {
+                for e in bad {
+                    tooling::push_error(e);
+                }
+            } else {
+                for e in &bad {
+                    eprintln!("{}\n", e);
+                }
+            }
+            return Err(format!("{} hàm không qua kiểm chứng", n));
+        }
+        say!("OK: {} hàm đã qua kiểm chứng ({})", m.funcs.len(), tooling::cache_summary());
         return Ok(());
     }
 
     if args.len() > 2 && args[1] == "check-app" {
         // Kiểm chứng + kiểm tra ABI App (giống lúc pack) nhưng không ghi file
         compile_and_verify_app(&args[2])?;
-        println!("OK: App hợp lệ");
+        say!("OK: App hợp lệ");
         return Ok(());
     }
 
     if args.len() > 1 && args[1] == "pack" {
-        println!("📦 Đang đóng gói 'storage/' vào 'disk.img'...");
+        say!("📦 Đang đóng gói 'storage/' vào 'disk.img'...");
         return build_disk_img(size_arg(&args)?);
     }
 
@@ -146,7 +175,8 @@ fn run() -> Result<(), String> {
         .unwrap_or_else(|| "kernel.elf".to_string());
 
     let module = parser::parse_file(in_path)?;
-    println!(
+    tooling::register_module(&module);
+    say!(
         "[1/4] Parsed '{}' ({} layouts, {} funcs)",
         in_path,
         module.layouts.len(),
@@ -155,10 +185,10 @@ fn run() -> Result<(), String> {
 
     verify::check_module(&module)?;
     for func in &module.funcs {
-        verify::verify_func(&module, func)?;
-        println!("  ✓ Z3 Verified: func '{}'", func.name);
+        let hit = tooling::verify_cached(&module, func)?;
+        say!("  ✓ Z3 Verified{}: func '{}'", if hit { " (cache)" } else { "" }, func.name);
     }
-    println!("[2/4] All Kernel functions passed Z3 formal verification!");
+    say!("[2/4] All Kernel functions passed Z3 formal verification! ({})", tooling::cache_summary());
 
     let elf_bytes = elf64::compile_elf64(&module)?;
     fs::write(&out_path, &elf_bytes).map_err(|e| format!("Không thể ghi '{}': {}", out_path, e))?;
@@ -169,7 +199,7 @@ fn run() -> Result<(), String> {
         let _ = fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755));
     }
 
-    println!(
+    say!(
         "[3/4] Emitted ELF64 binary: '{}' ({} bytes)",
         out_path,
         elf_bytes.len()
@@ -180,8 +210,19 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
-    if let Err(err) = run() {
-        eprintln!("\n❌ LỖI BIÊN DỊCH:\n{}", err);
-        process::exit(1);
+    match run() {
+        Ok(()) => {
+            if tooling::json_mode() && !env::args().any(|a| a == "doc") {
+                println!("{}", tooling::ok_json());
+            }
+        }
+        Err(err) => {
+            if tooling::json_mode() {
+                println!("{}", tooling::error_json(&err));
+            } else {
+                eprintln!("\n❌ LỖI BIÊN DỊCH:\n{}", err);
+            }
+            process::exit(1);
+        }
     }
 }
