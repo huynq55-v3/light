@@ -3,6 +3,7 @@ mod elf64;
 mod ir;
 mod parser;
 mod verify;
+mod x86;
 pub mod vfs;
 
 use std::path::Path;

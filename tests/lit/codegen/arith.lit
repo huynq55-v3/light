@@ -1,0 +1,3865 @@
+func t_add bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_self bv64 %0:bv64 {
+    @b0
+        %2 = add %0 %0
+        ret %2
+}
+func t_add_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = add %0 %1
+        ret %2
+}
+func t_add_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = add %1 %0
+        ret %2
+}
+func t_add_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = add %0 %1
+        %4 = add %2 %3
+        %5 = add %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_sub bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_self bv64 %0:bv64 {
+    @b0
+        %2 = sub %0 %0
+        ret %2
+}
+func t_sub_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = sub %0 %1
+        ret %2
+}
+func t_sub_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = sub %1 %0
+        ret %2
+}
+func t_sub_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = sub %0 %1
+        %4 = sub %2 %3
+        %5 = sub %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_mul bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_self bv64 %0:bv64 {
+    @b0
+        %2 = mul %0 %0
+        ret %2
+}
+func t_mul_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = mul %0 %1
+        ret %2
+}
+func t_mul_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = mul %1 %0
+        ret %2
+}
+func t_mul_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = mul %0 %1
+        %4 = mul %2 %3
+        %5 = mul %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_udiv bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_self bv64 %0:bv64 {
+    @b0
+        %2 = udiv %0 %0
+        ret %2
+}
+func t_udiv_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = udiv %0 %1
+        ret %2
+}
+func t_udiv_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = udiv %1 %0
+        ret %2
+}
+func t_udiv_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = udiv %0 %1
+        %4 = udiv %2 %3
+        %5 = udiv %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_sdiv bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_self bv64 %0:bv64 {
+    @b0
+        %2 = sdiv %0 %0
+        ret %2
+}
+func t_sdiv_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = sdiv %0 %1
+        ret %2
+}
+func t_sdiv_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = sdiv %1 %0
+        ret %2
+}
+func t_sdiv_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = sdiv %0 %1
+        %4 = sdiv %2 %3
+        %5 = sdiv %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_urem bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_self bv64 %0:bv64 {
+    @b0
+        %2 = urem %0 %0
+        ret %2
+}
+func t_urem_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = urem %0 %1
+        ret %2
+}
+func t_urem_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = urem %1 %0
+        ret %2
+}
+func t_urem_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = urem %0 %1
+        %4 = urem %2 %3
+        %5 = urem %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_srem bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_self bv64 %0:bv64 {
+    @b0
+        %2 = srem %0 %0
+        ret %2
+}
+func t_srem_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = srem %0 %1
+        ret %2
+}
+func t_srem_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = srem %1 %0
+        ret %2
+}
+func t_srem_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = srem %0 %1
+        %4 = srem %2 %3
+        %5 = srem %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_and bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_self bv64 %0:bv64 {
+    @b0
+        %2 = and %0 %0
+        ret %2
+}
+func t_and_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = and %0 %1
+        ret %2
+}
+func t_and_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = and %1 %0
+        ret %2
+}
+func t_and_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = and %0 %1
+        %4 = and %2 %3
+        %5 = and %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_or bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_self bv64 %0:bv64 {
+    @b0
+        %2 = or %0 %0
+        ret %2
+}
+func t_or_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = or %0 %1
+        ret %2
+}
+func t_or_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = or %1 %0
+        ret %2
+}
+func t_or_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = or %0 %1
+        %4 = or %2 %3
+        %5 = or %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_xor bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_self bv64 %0:bv64 {
+    @b0
+        %2 = xor %0 %0
+        ret %2
+}
+func t_xor_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = xor %0 %1
+        ret %2
+}
+func t_xor_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = xor %1 %0
+        ret %2
+}
+func t_xor_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = xor %0 %1
+        %4 = xor %2 %3
+        %5 = xor %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_shl bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_self bv64 %0:bv64 {
+    @b0
+        %2 = shl %0 %0
+        ret %2
+}
+func t_shl_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = shl %0 %1
+        ret %2
+}
+func t_shl_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = shl %1 %0
+        ret %2
+}
+func t_shl_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = shl %0 %1
+        %4 = shl %2 %3
+        %5 = shl %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_lshr bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_self bv64 %0:bv64 {
+    @b0
+        %2 = lshr %0 %0
+        ret %2
+}
+func t_lshr_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = lshr %0 %1
+        ret %2
+}
+func t_lshr_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = lshr %1 %0
+        ret %2
+}
+func t_lshr_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = lshr %0 %1
+        %4 = lshr %2 %3
+        %5 = lshr %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_ashr bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_self bv64 %0:bv64 {
+    @b0
+        %2 = ashr %0 %0
+        ret %2
+}
+func t_ashr_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = ashr %0 %1
+        ret %2
+}
+func t_ashr_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = ashr %1 %0
+        ret %2
+}
+func t_ashr_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = ashr %0 %1
+        %4 = ashr %2 %3
+        %5 = ashr %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_fxmul bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_self bv64 %0:bv64 {
+    @b0
+        %2 = fxmul %0 %0
+        ret %2
+}
+func t_fxmul_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = fxmul %0 %1
+        ret %2
+}
+func t_fxmul_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = fxmul %1 %0
+        ret %2
+}
+func t_fxmul_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = fxmul %0 %1
+        %4 = fxmul %2 %3
+        %5 = fxmul %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_fxdiv bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_self bv64 %0:bv64 {
+    @b0
+        %2 = fxdiv %0 %0
+        ret %2
+}
+func t_fxdiv_ri0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li6 bv64 %0:bv64 {
+    @b0
+        %1 = const 4294967295 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li7 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744071562067968 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li8 bv64 %0:bv64 {
+    @b0
+        %1 = const 18446744073709551614 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_ri9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = fxdiv %0 %1
+        ret %2
+}
+func t_fxdiv_li9 bv64 %0:bv64 {
+    @b0
+        %1 = const 81985529216486895 bv64
+        %2 = fxdiv %1 %0
+        ret %2
+}
+func t_fxdiv_chain bv64 %0:bv64 %1:bv64 %2:bv64 {
+    @b0
+        %3 = fxdiv %0 %1
+        %4 = fxdiv %2 %3
+        %5 = fxdiv %4 %0
+        %6 = xor %5 %1
+        %7 = add %6 %3
+        ret %7
+}
+func t_ceq bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp eq %0 %1
+        ret %2
+}
+func t_ceq_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp eq %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp eq %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp eq %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp eq %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp eq %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp eq %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp eq %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp eq %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_ceq_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp eq %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_cne bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ne %0 %1
+        ret %2
+}
+func t_cne_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ne %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ne %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ne %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ne %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ne %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ne %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ne %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ne %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cne_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ne %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_cult bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ult %0 %1
+        ret %2
+}
+func t_cult_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ult %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ult %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ult %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ult %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ult %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ult %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ult %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ult %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cult_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ult %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_cule bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ule %0 %1
+        ret %2
+}
+func t_cule_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ule %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ule %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ule %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ule %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ule %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ule %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ule %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ule %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cule_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ule %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_cugt bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ugt %0 %1
+        ret %2
+}
+func t_cugt_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ugt %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp ugt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp ugt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp ugt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp ugt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp ugt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ugt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp ugt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cugt_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp ugt %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_cuge bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp uge %0 %1
+        ret %2
+}
+func t_cuge_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp uge %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp uge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp uge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp uge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp uge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp uge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp uge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp uge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cuge_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp uge %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_cslt bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp slt %0 %1
+        ret %2
+}
+func t_cslt_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp slt %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp slt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp slt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp slt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp slt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp slt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp slt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp slt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_cslt_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp slt %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_csle bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sle %0 %1
+        ret %2
+}
+func t_csle_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sle %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sle %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp sle %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp sle %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp sle %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp sle %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp sle %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp sle %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csle_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sle %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_csgt bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sgt %0 %1
+        ret %2
+}
+func t_csgt_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sgt %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sgt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp sgt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp sgt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp sgt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp sgt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp sgt %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp sgt %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csgt_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sgt %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}
+func t_csge bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sge %0 %1
+        ret %2
+}
+func t_csge_br bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_br2 bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sge %0 %1
+        br %2 @b2 @b1
+    @b1
+        %3 = const 11 bv64
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_i0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_li0 bv64 %0:bv64 {
+    @b0
+        %1 = const 0 bv64
+        %2 = cmp sge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_i1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_li1 bv64 %0:bv64 {
+    @b0
+        %1 = const 1 bv64
+        %2 = cmp sge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_i2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_li2 bv64 %0:bv64 {
+    @b0
+        %1 = const 5 bv64
+        %2 = cmp sge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_i3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_li3 bv64 %0:bv64 {
+    @b0
+        %1 = const 63 bv64
+        %2 = cmp sge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_i4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_li4 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483647 bv64
+        %2 = cmp sge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_i5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp sge %0 %1
+        br %2 @b1 @b2
+    @b1
+        %3 = add %0 %2
+        ret %3
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_li5 bv64 %0:bv64 {
+    @b0
+        %1 = const 2147483648 bv64
+        %2 = cmp sge %1 %0
+        br %2 @b1 @b2
+    @b1
+        ret %0
+    @b2
+        %4 = const 22 bv64
+        ret %4
+}
+func t_csge_multi bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = cmp sge %0 %1
+        %5 = const 1 bv64
+        br %5 @b1 @b2
+    @b1
+        br %2 @b2 @b3
+    @b2
+        %3 = add %2 %0
+        ret %3
+    @b3
+        ret %2
+}

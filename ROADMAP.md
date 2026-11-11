@@ -51,6 +51,20 @@ của xHCI PCH 00:14.0 (8086:a0ed). Touchpad Synaptics trên I2C (00:15.1) chưa
 - [ ] Thử trên laptop (dòng `USB` trên màn hình). Chưa hỗ trợ: hub USB, thiết bị không có boot protocol, bàn phím tự lặp
       phím khi giữ, đèn Caps Lock, phím mũi tên. Touchpad I2C: để sau.
 
+### Bước 5c — Tối ưu mã máy (xong, đã test QEMU)
+Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên stack + 5 thanh ghi nóng" (≈ `gcc -O0`).
+- [x] Liveness theo block + cấp phát thanh ghi linear scan trên 11 thanh ghi: rbx r12–r15 cho biến sống qua lời gọi,
+      rsi rdi r8–r11 cho biến còn lại; thiếu thì tràn ra stack. Prologue chỉ lưu thanh ghi callee-saved thật sự dùng.
+- [x] Hằng số làm toán hạng tức thời (không chiếm thanh ghi); `cmp` + `br` → `cmp` + `jcc`; bỏ `jmp` tới block kế tiếp;
+      nhảy lùi gần dùng rel8; `slice` + `load/store` → một lệnh `[base + idx*sz + off]`; ghép đối số `jmp` với tham số
+      block (biến vòng lặp ở yên một thanh ghi, không còn `mov` trước mỗi cạnh lùi).
+- [x] **Sửa lỗi cũ**: đối số `jmp` được chép tuần tự → sai khi tham số block bị hoán vị (`jmp @b1 %y %x`). Nay chép song
+      song (phá chu trình qua rax), đúng ngữ nghĩa SSA mà verifier giả định.
+- [x] `cargo run --bin cgtest` (cũng chạy trong `cargo test`): chạy mã máy thật trên host so với trình thông dịch tham
+      chiếu, trên `tests/lit/codegen/*.lit` + chương trình ngẫu nhiên; đã thử cài lỗi giả để chắc nó bắt được.
+- Kết quả: vòng lặp load/and/add nhanh gấp 4.8×, nhân ma trận 64×64 gấp 3.9×; kernel.elf 134 KB → 43.5 KB, Terminal
+  61 KB → 17 KB. QEMU: desktop, Terminal (`ls/sys/memup/memtest`), Editor, chuột/bàn phím USB, đường OVMF/NVMe.
+
 ## 📋 Tiếp theo
 
 ### Bước 3b — Giải phóng riêng lẻ (`free`)
@@ -83,8 +97,8 @@ của xHCI PCH 00:14.0 (8086:a0ed). Touchpad Synaptics trên I2C (00:15.1) chưa
 
 - **Vòng lặp AI tự sửa lỗi**: verifier xuất phản ví dụ Z3 dạng JSON (hàm, lệnh, giá trị các biến); CLI đẩy ngược cho
   LLM để bổ sung `@req/@inv` và sinh lại.
-- **Tối ưu mã máy**: hiện ≈ `gcc -O0` (chậm ~4.6× so với `-O2`). Cấp phát thanh ghi linear-scan cho biến SSA nóng,
-  bỏ load/store thừa qua stack.
+- **Tối ưu mã máy tiếp**: inline hàm nhỏ, xoay vòng lặp (bỏ `jmp` đầu vòng), khoảng sống có lỗ (linear scan hiện dùng
+  một khoảng bảo thủ cho mỗi biến).
 - **Thư viện tensor** (`lib/tensor.lit`): GEMM/dot/ReLU trên `vxxx256` + `parallel`, chạy một mạng nhỏ bare-metal.
 - **Self-hosting**: đưa verifier + codegen vào Light OS, nạp module `.lit` đã kiểm chứng lúc chạy.
 - **Mạng**: driver NIC (Wi-Fi AX201 rất khó; ưu tiên USB-Ethernet hoặc virtio-net trên QEMU).
