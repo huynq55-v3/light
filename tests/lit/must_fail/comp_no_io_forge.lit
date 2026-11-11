@@ -1,0 +1,12 @@
+# Lát 5 GUI: phần compositor không giữ io (cs_*) không thể tự tạo con trỏ tới bảng trang PD_0 (0x12000).
+# Chỉ các hàm cầu nối có io<0,0xffff> mới được const ra con trỏ; hàm thuần phải nhận con trỏ qua tham số.
+# EXPECT: không giữ thẻ gốc io<0,0xffff> để ánh xạ RAM
+layout DiskQword 8 {
+    0: bv64
+}
+func cs_forge void %k:ptr<DiskQword,1> {
+    @b0
+        %pd = const 0x12000 ptr<DiskQword,512>
+        store %pd 144 0
+        ret
+}

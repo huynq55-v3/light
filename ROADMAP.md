@@ -108,7 +108,20 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    nhả chuột), co trên cửa sổ khác (cửa sổ dưới hiện lại đúng), nút +1; thử kéo góc Terminal -> chỉ khác con trỏ
    chuột; RAM 320M -> Widgets tự vẽ khung 600x400; legacy/usb/uefi; test must_pass/widget_all.
    Chưa làm: con trỏ không đổi hình ở góc kéo; đổi kích thước chỉ theo góc dưới-phải; Terminal/Editor chưa dùng toolkit.
-5. Tách quyền: compositor không giữ `io<0,0xffff>` (chỉ ptr màn hình + surface).
+5. ~~Tách quyền~~ (xong): toàn bộ logic compositor (`cs_*`: cảnh, z-order, đưa lên, kéo, đổi kích thước, khung, nút
+   [X], vẽ lại, blit vùng bẩn) là hàm THUẦN — không có `io`, không `const` ra con trỏ, không `hwio`; verifier tự giam
+   chúng ("Bảo mật"), chỉ được đụng con trỏ nhận qua tham số: `CompCtl` (0x79c00), `CompWin`×7 (0x79c80), kênh App
+   `IpcChannel`×7 (0x79200), bảng `CompSlot`×7 (surface, cận < 1GB),
+   cộng khung nhìn màn hình và kênh IPC chung/riêng do vỏ cầu nối truyền vào. Lớp "cầu nối kernel" còn 16 hàm giữ io: 4 hàm
+   tạo con trỏ trên + các vỏ giữ tên cũ (`comp_present`, `comp_click`...) để WM/app_loader không đổi, và `comp_init`
+   (hàm DUY NHẤT ghi `PD_0`). Kéo theo: cờ `CompCtl.enabled` thay cho đọc PD_0 (bỏ luôn mẹo che bit A/D); bảng thứ tự
+   chồng `CompZ` gộp vào trường `CompWin.z`; tên cửa sổ vẽ qua `surf_char` (std/surface) thay cho gfx cần io.
+   Test `must_fail/comp_no_io_forge.lit`: hàm không io tạo con trỏ tới PD_0 (0x12000) để ghi bảng trang bị từ chối.
+   Kiểm: mọi ảnh chụp của lát 4 (mở, lớn, nhỏ, co trên cửa sổ khác, +1, RAM 320M, uefi) trùng từng điểm ảnh; [X] của
+   compositor đóng Terminal (usb) -> `CompCtl.count = 1`, Editor còn lại; đưa Terminal lên trên + kéo thanh tiêu đề +
+   gõ `sys` (usb) trùng từng điểm ảnh với `main`, bảng cảnh: Terminal ở (360,140) và trên cùng; `cargo test`;
+   stack-report 577 hàm.
+   Giới hạn còn lại: cầu nối vẫn chạy trong kernel (chưa phải tiến trình riêng); cs_* tin con trỏ cầu nối đưa vào.
 
 ## 📋 Tiếp theo
 
