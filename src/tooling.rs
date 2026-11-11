@@ -140,6 +140,10 @@ fn hint_for(msg: &str, kind: &str) -> &'static str {
     let m = msg;
     if kind == "z3_timeout" {
         "Z3 hết giờ: chia hàm thành các hàm nhỏ có @req/@ens rõ ràng (kiểm chứng theo hợp đồng), hoặc đơn giản biểu thức nhiều phép nhân/chia."
+    } else if m.contains("vòng lặp") && m.contains("dừng") || m.contains("không chắc dừng") {
+        "Vòng lặp phải dừng (hàm không giữ thẻ io): đưa bộ đếm thành tham số block có cận (@inv ule %i %n + cmp ult %i %n) để verifier tự suy, \
+         hoặc ghi @dec <biểu_thức> ở đầu vòng — giá trị không dấu giảm ngặt mỗi vòng (vd @dec sub %n %i, @dec add %a %b). \
+         Vòng chờ ô nhớ đổi: thay bằng trả về và kiểm lại ở nhịp sau."
     } else if m.contains("Tràn số cộng index") || m.contains("Tràn biên mảng khi slice") || m.contains("Tràn vùng nhớ") || m.contains("vượt độ dài động") {
         "Chỉ số/offset có thể vượt vùng ptr: thêm @req ult %idx <kích thước> cho tham số, hoặc kẹp bằng std_min(%idx, N-1) trước khi slice/load/store."
     } else if m.contains("Tràn số") {
@@ -153,7 +157,7 @@ fn hint_for(msg: &str, kind: &str) -> &'static str {
     } else if m.contains("chia cho 0") {
         "Thêm @req ne %d 0 hoặc kiểm tra bằng cmp/br trước khi chia."
     } else if m.contains("stack") && m.contains("ngân sách") {
-        "Kích thước frame tính từ SỐ SSA LỚN NHẤT (không phải số giá trị): đừng đặt tên kiểu %70000; đánh số liên tục từ nhỏ, và tránh chuỗi gọi hàm quá sâu."
+        "Cận stack = số biến của hàm × 8 byte + khung các hàm được gọi: tách hàm lớn thành hàm nhỏ, tránh chuỗi gọi quá sâu."
     } else if m.contains("br không được nhảy") {
         "br không nhảy được tới block có tham số: thêm block trung gian (không tham số) rồi jmp kèm đối số."
     } else if m.contains("bị định nghĩa") {

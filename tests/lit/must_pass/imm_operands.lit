@@ -1,0 +1,49 @@
+# Hằng làm toán hạng trực tiếp (parser hạ thành const) + trường layout có tên (Layout.tên, load không cần kiểu)
+layout Pt 16 {
+    0: bv64 x @inv ult val 1000
+    8: bv32 color
+}
+
+func paint void %c:bv32 %n:bv64 {
+    @req ult %n 10
+    @b0
+        ret
+}
+
+func clamp_add bv64 %a:bv64 {
+    @req ult %a 100
+    @ens ult %r 200
+    @b0
+        %s = add %a 6
+        %big = cmp ugt %s 0x50
+        br %big @hi @lo
+    @hi
+        ret 80
+    @lo
+        ret %s
+}
+
+func walk bv64 %p:ptr<Pt,4> {
+    @b0
+        store %p Pt.x 999
+        store %p Pt.color 0x22d3ee
+        %c = load %p Pt.color
+        call paint %c 3
+        call paint 0xff 9
+        %x = load %p Pt.x
+        %q = slice %p 1 ptr<Pt,3>
+        store %q 0 %x
+        jmp @loop 0 0
+    @loop %i:bv64 %acc:bv64
+        @inv ule %i 4
+        @inv eq %acc %i
+        %more = cmp ult %i 4
+        br %more @body @done
+    @body
+        %i2 = add %i 1
+        %a2 = add %acc 1
+        jmp @loop %i2 %a2
+    @done
+        %t = add %acc 1:bv64
+        ret %t
+}

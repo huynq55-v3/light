@@ -1,0 +1,7 @@
+# EXPECT: không có @inv
+layout Ascii 1 {
+    0: bv8 @inv ult val 128
+}
+data T Ascii {
+    200
+}

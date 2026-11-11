@@ -1,0 +1,16 @@
+# EXPECT: @dec không giảm ngặt
+func f bv64 %n:bv64 {
+    @req ult %n 100
+    @b0
+        jmp @loop 0
+    @loop %i:bv64
+        @inv ule %i %n
+        @dec %i
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %i2 = add %i 1
+        jmp @loop %i2
+    @done
+        ret %i
+}

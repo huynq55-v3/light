@@ -1,0 +1,14 @@
+# EXPECT: Không chứng minh được vòng lặp
+# Vòng lặp không tiến: i không đổi -> treo cả máy (App chạy hợp tác ở Ring 0)
+func spin bv64 %n:bv64 {
+    @b0
+        jmp @loop 0
+    @loop %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        jmp @loop %i
+    @done
+        ret %i
+}

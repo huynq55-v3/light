@@ -65,6 +65,22 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
 - Kết quả: vòng lặp load/and/add nhanh gấp 4.8×, nhân ma trận 64×64 gấp 3.9×; kernel.elf 134 KB → 43.5 KB, Terminal
   61 KB → 17 KB. QEMU: desktop, Terminal (`ls/sys/memup/memtest`), Editor, chuột/bàn phím USB, đường OVMF/NVMe.
 
+### Bước 7 — Ngôn ngữ cho AI + stdlib + GUI lát 1 (2026-11-11, chưa commit)
+- [x] Hằng làm toán hạng (`add %x 6`, `call f %p 0xff`), trường Layout có tên (`load %ipc IpcChannel.mouse_x`).
+- [x] `view` (đổi Layout trên cùng vùng nhớ), `data`/`addr` (dữ liệu tĩnh sau mã máy); font chuyển sang bảng `data`.
+- [x] Chứng minh vòng lặp dừng cho mọi hàm không giữ `io` (`@dec`, tự suy `n - i`, `i`, `p - X`).
+- [x] `lit_program/std/` (core, mem, str, fmt, sys, surface); Terminal in số bằng `fmt_u64`.
+- [x] Kênh IPC riêng cho từng App (phím/click chỉ tới App foreground, mem/LightFS/đóng/vùng bẩn theo kênh).
+- [x] Sửa: `entry_offset` lấy hàm cuối (trước đây sẽ lấy offset của `data` cuối -> kernel không boot).
+
+### GUI kiểu Wayland — các lát tiếp theo
+1. ~~Kênh riêng mỗi App~~ (xong).
+2. Surface ngoài màn hình: App vẽ vào bộ đệm riêng (cùng kiểu `ptr<VgaCell,1382400>` bước 1920 để không đổi ABI), compositor
+   blit theo z-order + vùng bẩn của từng kênh. Cần chỗ RAM vật lý cho 7 × 5,5MB (cấp từ bể khung, map vào cửa sổ của App).
+3. Quản lý cửa sổ: focus, đưa lên trên, kéo; khung cửa sổ do compositor vẽ (App không vẽ ui_win_draw nữa).
+4. Surface động `(w, h, ptr)` + sự kiện `configure` khi đổi kích thước (đổi `check_app_abi` và test `app_abi_*`); toolkit trên `std/surface`.
+5. Tách quyền: compositor không giữ `io<0,0xffff>` (chỉ ptr màn hình + surface).
+
 ## 📋 Tiếp theo
 
 ### Bước 3b — Giải phóng riêng lẻ (`free`)
@@ -80,7 +96,9 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
 - Còn lại: file chỉ 1 extent (ghi lại = cấp extent mới), bảng cố định 256 mục, installer vẫn ghi ảnh 64MB (không giãn theo phân vùng).
 
 ### Các lỗi/thiếu sót còn mở
-- [ ] IPC dùng chung cho mọi App: yêu cầu đĩa của App chạy ngầm có thể bị tính cho App foreground.
+- [x] IPC dùng chung cho mọi App — đã thay bằng kênh riêng mỗi slot (bước 7). Đã thử: chuyển Terminal ↔ Editor, LightFS,
+      đóng bằng [X] và ESC. CHƯA thử App chạy ngầm: không code nào bật bit `bg_mask` (đường `shell_bg_tick_apps` là code
+      chết từ trước bước 7).
 - [ ] `smp_selftest` đếm worker khi AP còn đang boot (có lúc in `WORKERS=5` thay vì 7).
 - [ ] Chưa có IST/TSS cho double fault; exception trên AP làm BSP treo chờ.
 - [ ] Header App còn jmp thứ 3 (worker_offset) không dùng.

@@ -1,0 +1,15 @@
+# EXPECT: Không chứng minh được vòng lặp
+# Chờ một ô nhớ đổi giá trị (App không giữ io): có thể treo mãi
+layout Q 8 {
+    0: bv64
+}
+func f void %p:ptr<Q,1> {
+    @b0
+        jmp @poll
+    @poll
+        %v = load %p 0 bv64
+        %z = cmp eq %v 0
+        br %z @poll @done
+    @done
+        ret
+}

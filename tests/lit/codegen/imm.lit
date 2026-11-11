@@ -1,0 +1,41 @@
+# Hằng trực tiếp ở mọi vị trí toán hạng (parser hạ thành const): chạy mã máy thật so với thông dịch
+layout P 16 {
+    0: bv64 a
+    8: bv32 c
+    12: bv8 b
+}
+func helper bv64 %x:bv64 %y:bv32 %z:bv8 {
+    @b0
+        %y64 = add_wrap %x 3
+        ret %y64
+}
+func t_imm bv64 %p:ptr<P,4> %x:bv64 {
+    @b0
+        %k = and %x 3
+        %q = slice %p %k ptr<P,1>
+        store %q P.a 0x1234567890
+        store %q P.c 0xdeadbeef
+        store %q P.b 200
+        %s = add_wrap %x 0xffffffffffff
+        %t = sub_wrap 100 %x
+        %u = xor %s %t
+        %h = call helper %u 7 9
+        %big = cmp ugt %h 1000
+        br %big @hi @lo
+    @hi
+        jmp @join 1 %h
+    @lo
+        jmp @join 2 77
+    @join %tag:bv64 %v:bv64
+        %w = add_wrap %tag %v
+        %la = load %q P.a
+        %lc = load %q P.c
+        %m = add_wrap %w %la
+        %e = cmp eq %x 5
+        br %e @five @other
+    @five
+        ret 5
+    @other
+        %n = add_wrap %m %lc
+        ret %n
+}

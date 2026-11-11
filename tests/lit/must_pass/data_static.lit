@@ -1,0 +1,31 @@
+# data: dữ liệu tĩnh khởi tạo sẵn; addr trả ptr<L,số_phần_tử>; TÊN.len là số phần tử
+layout Byte 1 {
+    0: bv8
+}
+data GREETING Byte {
+    "Xin chao" 0
+}
+data COUNTER Byte 8 {
+}
+func greet_at bv8 %i:bv64 {
+    @req ult %i GREETING.len
+    @b0
+        %g = addr GREETING
+        %c = slice %g %i ptr<Byte,1>
+        %v = load %c 0 bv8
+        ret %v
+}
+func bump void {
+    @b0
+        %p = addr COUNTER
+        %v = load %p 0 bv8
+        %big = cmp uge %v 200
+        br %big @done @inc
+    @inc
+        %w = add %v 1
+        %n = narrow %w bv8
+        store %p 0 %n
+        ret
+    @done
+        ret
+}

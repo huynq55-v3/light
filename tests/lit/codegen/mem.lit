@@ -126,3 +126,52 @@ func t_ptrarith bv64 %0:ptr<T,16> %1:bv64 {
         %5 = sub %4 %0
         ret %5
 }
+layout Q 8 {
+    0: bv64
+}
+func t_view bv64 %0:ptr<Q,4> %1:bv64 %2:bv64 {
+    @b0
+        %3 = view %0 ptr<B,32>
+        %4 = and %1 31
+        %5 = slice %3 %4 ptr<B,1>
+        %6 = load %5 0 bv8
+        %7 = and %2 0xff
+        %8 = narrow %7 bv8
+        store %5 0 %8
+        %9 = load %0 0 bv64
+        %10 = add_wrap %9 %6
+        ret %10
+}
+layout W 4 {
+    0: bv16
+    2: bv16
+}
+data TBL Q {
+    1 2 3 0xffffffffffffffff
+    "abcdefgh"
+}
+data TXT B 40 {
+    "Hello, Light!" 10 0
+}
+data PAIRS W {
+    7 8 9 0xffff
+}
+func t_data bv64 %0:bv64 {
+    @b0
+        %1 = addr TBL
+        %2 = and %0 3
+        %3 = add %2 1
+        %4 = slice %1 %3 ptr<Q,1>
+        %5 = load %4 0 bv64
+        %6 = addr TXT
+        %7 = urem %0 TXT.len
+        %8 = slice %6 %7 ptr<B,1>
+        %9 = load %8 0 bv8
+        %10 = addr PAIRS
+        %11 = and %0 1
+        %12 = slice %10 %11 ptr<W,1>
+        %13 = load %12 2 bv16
+        %14 = add_wrap %5 %9
+        %15 = add_wrap %14 %13
+        ret %15
+}

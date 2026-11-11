@@ -1,0 +1,12 @@
+# EXPECT: Đệ quy
+# Gọi tới hàm đứng sau bằng id số (call 1) tạo chu trình a -> b -> a: phải bị chặn (đảm bảo dừng dựa vào điều này)
+func a void {
+    @b0
+        call 1
+        ret
+}
+func b void {
+    @b0
+        call a
+        ret
+}

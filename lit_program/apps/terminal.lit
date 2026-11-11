@@ -7,6 +7,9 @@ include ../lib/ipc_bus.lit
 include ../lib/ui_canvas.lit
 include ../lib/cap_mem.lit
 include ../lib/lightfs_api.lit
+include ../std/fmt.lit
+include ../std/sys.lit
+include ../std/surface.lit
 include ../lib/ui_text_view.lit
 
 # Định danh Hằng số & Offset có tên (Named Constants)
@@ -456,56 +459,30 @@ func term_append_prompt void %0:ptr<DiskQword,64> %1:ptr<DiskQword,4096> {
 }
 
 # 12. In số nguyên u64 (dạng thập phân) vào Screen Buffer
+data TERM_NUMBUF Byte 24 {
+}
+
+# In số thập phân: định dạng bằng std/fmt vào bộ đệm tĩnh rồi đẩy từng ký tự vào màn hình Terminal
 func term_append_dec void %0:ptr<DiskQword,64> %1:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x10000000000
 
     @b0
-        %2 = const 0 bv64
-        %3 = cmp eq %1 %2
-        br %3 @b1 @b2
-
-    @b1
-        %4 = const 48 bv64
-        call term_append_char %0 %4
-        ret
-
-    @b2
-        %5 = const 1000000000000000000 bv64
-        jmp @b3 %1 %5 %2
-
-    @b3 %6:bv64 %7:bv64 %8:bv64
-        @inv ule %8 1
-        %9 = const 0 bv64
-        %10 = cmp ugt %7 %9
-        br %10 @b4 @b6
-
-    @b4
-        %11 = udiv %6 %7
-        %12 = cmp ugt %11 %9
-        %13 = or %12 %8
-        br %13 @b5 @b51
-
-    @b5
-        %14 = const 9 bv64
-        %15 = call std_min %11 %14
-        %16 = const 48 bv64
-        %17 = add %15 %16
-        call term_append_char %0 %17
-        %18 = const 1 bv64
-        jmp @b52 %18
-
-    @b51
-        jmp @b52 %8
-
-    @b52 %19:bv64
-        @inv ule %19 1
-        %20 = urem %6 %7
-        %21 = const 10 bv64
-        %22 = udiv %7 %21
-        jmp @b3 %20 %22 %19
-
-    @b6
+        %buf = addr TERM_NUMBUF
+        %len = call fmt_u64 TERM_NUMBUF.len %buf 0 %1
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %len
+        %more = cmp ult %i %len
+        br %more @body @done
+    @body
+        %p = slice %buf %i ptr<Byte,1>
+        %c = load %p 0 bv8
+        %c64 = call byte_u64 %c
+        call term_append_char %0 %c64
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
         ret
 }
 
@@ -1858,6 +1835,39 @@ func term_render_retro_view void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2
 }
 
 # 24. Vòng lặp chính của Shell App (app_terminal_main)
+data TERM_STATUS Byte 64 {
+}
+data TERM_LBL_MOUSE Byte {
+    "mouse "
+}
+data TERM_LBL_FREE Byte {
+    " free=0x"
+}
+
+# Thanh trạng thái trên thanh tiêu đề (vẽ bằng std/: fmt + sys + surface): "mouse X,Y free=0x<số khung 2MB trống>"
+func term_status_bar void %fb:ptr<VgaCell,1382400> %ipc:ptr<IpcChannel,1> {
+    @req uge %ipc 0x10000
+    @req ult %ipc 0x80000000
+    @b0
+        %buf = addr TERM_STATUS
+        %l1 = addr TERM_LBL_MOUSE
+        %l2 = addr TERM_LBL_FREE
+        %p1 = call fmt_str TERM_STATUS.len %buf 0 TERM_LBL_MOUSE.len %l1
+        %mx = call sys_mouse_x %ipc
+        %p2 = call fmt_u64 TERM_STATUS.len %buf %p1 %mx
+        %p3 = call fmt_byte TERM_STATUS.len %buf %p2 44
+        %my = call sys_mouse_y %ipc
+        %p4 = call fmt_u64 TERM_STATUS.len %buf %p3 %my
+        %p5 = call fmt_str TERM_STATUS.len %buf %p4 TERM_LBL_FREE.len %l2
+        %fr = call sys_mem_free %ipc
+        %p6 = call fmt_hex TERM_STATUS.len %buf %p5 %fr 4
+        %t = slice %buf 0 ptr<Byte,%p6>
+        call surf_fill_rect 1382400 %fb 1920 1280 720 640 66 1030 88 0x0f172a
+        call surf_text 1382400 %fb 1920 1280 720 646 70 %p6 %t 0x94a3b8
+        call sys_damage %ipc 640 66 1030 88
+        ret
+}
+
 func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<DiskQword,3932160> %3:ptr<DiskQword,64> %4:ptr<DiskQword,64> %5:smp %900:bv64 %901:ptr<DiskQword,%900> {
     @req uge %0 0x10000
     @req ult %0 0x80000000
@@ -2002,6 +2012,7 @@ func app_terminal_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<
         # Render Screen Buffer (theo scroll_line) + Cursor + Thanh Cuộn
         call term_render_retro_view %0 %3 %902
         call canvas_invalidate_rect %1 %67 %69 %68 %70
+        call term_status_bar %0 %1
         ret
 
     @b8

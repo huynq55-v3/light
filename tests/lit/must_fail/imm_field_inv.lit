@@ -1,0 +1,11 @@
+# EXPECT: Vi phạm bất biến Layout
+# Hằng trực tiếp vẫn bị kiểm @inv của trường có tên
+layout Pt 16 {
+    0: bv64 x @inv ult val 1000
+    8: bv32 color
+}
+func f void %p:ptr<Pt,1> {
+    @b0
+        store %p Pt.x 1000
+        ret
+}

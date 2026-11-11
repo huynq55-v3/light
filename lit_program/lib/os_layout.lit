@@ -6,36 +6,44 @@ layout DiskQword 8 {
     0: bv64
 }
 
+layout VgaCell 4 {
+    0: bv32                                 # Mã màu 32-bit TrueColor (0x00RRGGBB)
+}
+
+layout Byte 1 {
+    0: bv8
+}
+
 layout IpcChannel 240 {
-    0: bv64
-    8: bv8 @inv ult val 128
-    16: bv64 @inv ult val 1260              # chuột X trong khung nhìn App (kernel quy đổi từ 184 mỗi nhịp)
-    24: bv64 @inv ult val 700               # chuột Y trong khung nhìn App (từ 192)
-    32: bv64
-    40: bv64 @inv ult val 4
-    48: bv64
-    56: bv64 @inv ult val 8
-    64: bv64 @inv ult val 1900              # vị trí con trỏ đã vẽ (tọa độ màn hình, kernel)
-    72: bv64 @inv ult val 1060
-    80: bv64
-    88: bv64                                # ipc_win_cmd: 0 = Normal, 1 = App requested Shell to close & reset
-    96: bv64 @inv ule val 0xffffffffffffffff   # disk_read_req: lba[0..23]|n[24..39]|dst[40..55] (xem app_dispatch_disk_io_old)
-    104: bv64 @inv ult val 268435456
-    112: bv64 @inv ule val 1
-    120: bv64 @inv ule val 1280
-    128: bv64 @inv ule val 720
-    136: bv64 @inv ule val 1280
-    144: bv64 @inv ule val 720
-    152: bv64                               # ipc_bg_mask: Bitmask of apps running in background (bit i = 1 << slot)
-    160: bv64                               # Trạng thái giữ phím Shift (1 = đang giữ Shift, 0 = nhả)
-    168: bv64 @inv ule val 16383             # dự trữ (chunk_req của allocator cũ đã gỡ; sẽ thay bằng sys_mem_commit)
-    176: bv64 @inv ule val 0xffffffff       # dự trữ (chunk_state của allocator cũ đã gỡ)
-    184: bv64 @inv ult val 1900             # chuột X trên màn hình 1920x1080 (driver chuột / phím F ghi)
-    192: bv64 @inv ult val 1060             # chuột Y trên màn hình
-    200: bv64                               # LightFS: mã lệnh (0 = không có yêu cầu), xem lib/lightfs_api.lit
-    208: bv64                               # LightFS: id mục
-    216: bv64                               # LightFS: sector trong vùng State của App
-    224: bv64                               # LightFS: độ dài byte / cờ
-    232: bv64                               # LightFS: kết quả (bit 63 = lỗi)
+    0: bv64 key_ready                       # 1 = có phím ở `key`
+    8: bv8 key @inv ult val 128             # mã ASCII của phím
+    16: bv64 mouse_x @inv ult val 1260      # chuột X trong khung nhìn App (kernel quy đổi từ scr_x mỗi nhịp)
+    24: bv64 mouse_y @inv ult val 700       # chuột Y trong khung nhìn App (từ scr_y)
+    32: bv64 click                          # 1 = vừa nhấn chuột trái (sườn lên), App xóa sau khi xử lý
+    40: bv64 mouse_phase @inv ult val 4     # driver chuột PS/2: byte thứ mấy của gói 3 byte
+    48: bv64 mouse_btn                      # driver chuột: byte trạng thái nút của gói hiện tại
+    56: bv64 active_app @inv ult val 8      # App đang ở foreground (1..7), 0 = desktop
+    64: bv64 cursor_x @inv ult val 1900     # vị trí con trỏ đã vẽ (tọa độ màn hình, kernel)
+    72: bv64 cursor_y @inv ult val 1060
+    80: bv64 dirty                          # 1 = đã có vùng bẩn (dirty_*) trong khung hình này
+    88: bv64 win_cmd                        # 0 = bình thường, 1 = App xin Shell đóng & reset
+    96: bv64 disk_req @inv ule val 0xffffffffffffffff   # cũ: lba[0..23]|n[24..39]|dst[40..55]
+    104: bv64 disk_lba @inv ult val 268435456
+    112: bv64 win_drawn @inv ule val 1      # 1 = App đã vẽ khung cửa sổ / Kernel vừa phục vụ yêu cầu LightFS
+    120: bv64 dirty_x1 @inv ule val 1280    # vùng bẩn (tọa độ khung nhìn App)
+    128: bv64 dirty_y1 @inv ule val 720
+    136: bv64 dirty_x2 @inv ule val 1280
+    144: bv64 dirty_y2 @inv ule val 720
+    152: bv64 bg_mask                       # bit i = App ở slot i đang chạy ngầm
+    160: bv64 shift                         # 1 = đang giữ Shift
+    168: bv64 mem_req @inv ule val 16383    # App ghi số chunk 2MB mong muốn (15..16383); 0 = không yêu cầu
+    176: bv64 mem_free @inv ule val 0xffffffff  # Kernel ghi: số khung 2MB còn trống trong bể
+    184: bv64 scr_x @inv ult val 1900       # chuột X trên màn hình 1920x1080 (driver chuột / phím F ghi)
+    192: bv64 scr_y @inv ult val 1060       # chuột Y trên màn hình
+    200: bv64 fs_op                         # LightFS: mã lệnh (0 = không có yêu cầu), xem lib/lightfs_api.lit
+    208: bv64 fs_id                         # LightFS: id mục
+    216: bv64 fs_sector                     # LightFS: sector trong vùng State của App
+    224: bv64 fs_len                        # LightFS: độ dài byte / cờ
+    232: bv64 fs_result                     # LightFS: kết quả (bit 63 = lỗi)
 }
 

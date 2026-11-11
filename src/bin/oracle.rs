@@ -418,6 +418,15 @@ enum CallMode {
     Mixed,    // mỗi lời gọi chọn ngẫu nhiên
 }
 
+/// Địa chỉ mô phỏng của dữ liệu tĩnh thứ k (vùng riêng gần đỉnh RAM mô hình)
+fn data_addr(m: &Module, k: usize) -> u64 {
+    let mut a = RAM_TOP / 2;
+    for d in &m.datas[..k] {
+        a += (d.bytes.len() as u64 + 15) & !15;
+    }
+    a
+}
+
 struct Vm<'a> {
     m: &'a Module,
     ram: BTreeMap<u64, u8>,
@@ -441,9 +450,15 @@ impl<'a> Vm<'a> {
         mode: CallMode,
         mem_mode: u8,
     ) -> Self {
+        let mut ram = BTreeMap::new();
+        for (k, d) in m.datas.iter().enumerate() {
+            for (i, &b) in d.bytes.iter().enumerate() {
+                ram.insert(data_addr(m, k) + i as u64, b);
+            }
+        }
         Vm {
             m,
-            ram: BTreeMap::new(),
+            ram,
             env: Rng::new(env_seed),
             steps: 0,
             max_steps,
@@ -766,6 +781,30 @@ impl<'a> Vm<'a> {
                         let addr = ba + iv * sz;
                         self.set_reg(&mut regs, *dst, addr, cty)
                             .map_err(|w| bad(cur, format!("slice %{}: {}", dst, w)))?;
+                    }
+                    Inst::Addr { dst, data_id, ty } => {
+                        self.set_reg(&mut regs, *dst, data_addr(m, *data_id as usize), *ty)
+                            .map_err(|w| bad(cur, w))?;
+                    }
+                    Inst::View { dst, src, ty } => {
+                        let (ba, bt) = get(&regs, *src, cur)?;
+                        let Type::Ptr { layout_id: l1, max_elems: m_old } = bt else {
+                            return Err(bad(cur, "view trên biến không phải Ptr".into()));
+                        };
+                        let cty = conc(*ty, &regs).map_err(|w| bad(cur, w))?;
+                        let Type::Ptr { layout_id: l2, max_elems: m_new } = cty else {
+                            return Err(bad(cur, "view sai kiểu đích".into()));
+                        };
+                        if [l1, l2].iter().any(|&l| m.layouts[l as usize].fields.iter().any(|f| f.inv.is_some())) {
+                            return Err(bad(cur, "view trên Layout có @inv".into()));
+                        }
+                        let b_old = m_old.checked_mul(m.layouts[l1 as usize].size as u64);
+                        let b_new = m_new.checked_mul(m.layouts[l2 as usize].size as u64);
+                        if b_old.zip(b_new).is_none_or(|(o, n)| n > o) {
+                            return Err(bad(cur, format!("view %{}: vùng đích lớn hơn nguồn", dst)));
+                        }
+                        self.set_reg(&mut regs, *dst, ba, cty)
+                            .map_err(|w| bad(cur, format!("view %{}: {}", dst, w)))?;
                     }
                     Inst::Load {
                         dst,

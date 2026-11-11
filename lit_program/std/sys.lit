@@ -1,0 +1,113 @@
+# File: lit_program/std/sys.lit
+# LIGHT STD — giao tiếp App <-> Kernel qua IpcChannel bằng TÊN trường (không còn offset thô như `load %ipc 112`).
+# Mọi lời gọi đều không chặn: App ghi yêu cầu, Kernel phục vụ ở nhịp sau.
+
+include core.lit
+
+# Phím đang chờ (mã ASCII 1..127), 0 nếu không có. Lấy xong thì xóa.
+func sys_key_pop bv8 %ipc:ptr<IpcChannel,1> {
+    @ens ult %r 128
+    @b0
+        %ready = load %ipc IpcChannel.key_ready
+        %has = cmp ne %ready 0
+        br %has @take @none
+    @take
+        store %ipc IpcChannel.key_ready 0
+        %k = load %ipc IpcChannel.key
+        ret %k
+    @none
+        ret 0:bv8
+}
+
+# 1 nếu đang giữ Shift
+func sys_shift bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ule %r 1
+    @b0
+        %s = load %ipc IpcChannel.shift
+        %on = cmp ne %s 0
+        %r1 = or %on 0
+        ret %r1
+}
+
+# Tọa độ chuột trong khung nhìn của App
+func sys_mouse_x bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ult %r 1260
+    @b0
+        %x = load %ipc IpcChannel.mouse_x
+        ret %x
+}
+
+func sys_mouse_y bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ult %r 700
+    @b0
+        %y = load %ipc IpcChannel.mouse_y
+        ret %y
+}
+
+# 1 nếu vừa có cú nhấn chuột trái (sườn lên); lấy xong thì xóa
+func sys_click_take bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ule %r 1
+    @b0
+        %c = load %ipc IpcChannel.click
+        store %ipc IpcChannel.click 0
+        %on = cmp ne %c 0
+        %r1 = or %on 0
+        ret %r1
+}
+
+# Xin Kernel đổi heap thành %chunks khối 2MB (15..16383). Lần gọi main sau, heap có độ dài mới.
+func sys_mem_request void %ipc:ptr<IpcChannel,1> %chunks:bv64 {
+    @req uge %chunks 15
+    @req ule %chunks 16383
+    @b0
+        store %ipc IpcChannel.mem_req %chunks
+        ret
+}
+
+# Số khối 2MB còn trống trong bể RAM của Kernel
+func sys_mem_free bv64 %ipc:ptr<IpcChannel,1> {
+    @ens ule %r 0xffffffff
+    @b0
+        %f = load %ipc IpcChannel.mem_free
+        ret %f
+}
+
+# Xin Shell đóng App (như bấm nút [X])
+func sys_close void %ipc:ptr<IpcChannel,1> {
+    @b0
+        store %ipc IpcChannel.win_cmd 1
+        ret
+}
+
+# Báo vùng [x1,x2) x [y1,y2) (tọa độ khung nhìn App) cần vẽ lại; gộp với vùng bẩn đã có trong khung hình này
+func sys_damage void %ipc:ptr<IpcChannel,1> %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
+    @req ule %x1 1280
+    @req ule %y1 720
+    @req ule %x2 1280
+    @req ule %y2 720
+    @b0
+        %has = load %ipc IpcChannel.dirty
+        %first = cmp eq %has 0
+        br %first @set @merge
+    @set
+        store %ipc IpcChannel.dirty 1
+        store %ipc IpcChannel.dirty_x1 %x1
+        store %ipc IpcChannel.dirty_y1 %y1
+        store %ipc IpcChannel.dirty_x2 %x2
+        store %ipc IpcChannel.dirty_y2 %y2
+        ret
+    @merge
+        %ox1 = load %ipc IpcChannel.dirty_x1
+        %oy1 = load %ipc IpcChannel.dirty_y1
+        %ox2 = load %ipc IpcChannel.dirty_x2
+        %oy2 = load %ipc IpcChannel.dirty_y2
+        %nx1 = call math_min %ox1 %x1
+        %ny1 = call math_min %oy1 %y1
+        %nx2 = call math_max %ox2 %x2
+        %ny2 = call math_max %oy2 %y2
+        store %ipc IpcChannel.dirty_x1 %nx1
+        store %ipc IpcChannel.dirty_y1 %ny1
+        store %ipc IpcChannel.dirty_x2 %nx2
+        store %ipc IpcChannel.dirty_y2 %ny2
+        ret
+}

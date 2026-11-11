@@ -1,0 +1,122 @@
+# File: lit_program/std/mem.lit
+# LIGHT STD — bộ nhớ: tô / chép / so sánh trên mảng độ dài động. Phiên bản _q (qword), _b (byte), _px (điểm ảnh).
+# Nhìn bộ đệm qword như mảng byte: `%b = view %q ptr<Byte,%m>` với m <= 8 * độ dài qword.
+
+include core.lit
+
+# p[0..n) = v
+func mem_fill_q void %n:bv64 %p:ptr<DiskQword,%n> %v:bv64 {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %m = cmp ult %i %n
+        br %m @body @done
+    @body
+        %c = slice %p %i ptr<DiskQword,1>
+        store %c 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+
+func mem_fill_b void %n:bv64 %p:ptr<Byte,%n> %v:bv8 {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %m = cmp ult %i %n
+        br %m @body @done
+    @body
+        %c = slice %p %i ptr<Byte,1>
+        store %c 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+
+func mem_fill_px void %n:bv64 %p:ptr<VgaCell,%n> %v:bv32 {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %m = cmp ult %i %n
+        br %m @body @done
+    @body
+        %c = slice %p %i ptr<VgaCell,1>
+        store %c 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+
+# dst[0..k) = src[0..k)   (k <= n, k <= m; hai vùng không được chồng nhau nếu muốn kết quả như memcpy)
+func mem_copy_q void %n:bv64 %dst:ptr<DiskQword,%n> %m:bv64 %src:ptr<DiskQword,%m> %k:bv64 {
+    @req ule %k %n
+    @req ule %k %m
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %k
+        %more = cmp ult %i %k
+        br %more @body @done
+    @body
+        %s = slice %src %i ptr<DiskQword,1>
+        %v = load %s 0 bv64
+        %d = slice %dst %i ptr<DiskQword,1>
+        store %d 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+
+func mem_copy_b void %n:bv64 %dst:ptr<Byte,%n> %m:bv64 %src:ptr<Byte,%m> %k:bv64 {
+    @req ule %k %n
+    @req ule %k %m
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %k
+        %more = cmp ult %i %k
+        br %more @body @done
+    @body
+        %s = slice %src %i ptr<Byte,1>
+        %v = load %s 0 bv8
+        %d = slice %dst %i ptr<Byte,1>
+        store %d 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+
+# 1 nếu a[0..k) == b[0..k), ngược lại 0
+func mem_eq_b bv64 %n:bv64 %a:ptr<Byte,%n> %m:bv64 %b:ptr<Byte,%m> %k:bv64 {
+    @req ule %k %n
+    @req ule %k %m
+    @ens ule %r 1
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %k
+        %more = cmp ult %i %k
+        br %more @body @same
+    @body
+        %pa = slice %a %i ptr<Byte,1>
+        %va = load %pa 0 bv8
+        %pb = slice %b %i ptr<Byte,1>
+        %vb = load %pb 0 bv8
+        %eq = cmp eq %va %vb
+        br %eq @next @diff
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @same
+        ret 1
+    @diff
+        ret 0
+}

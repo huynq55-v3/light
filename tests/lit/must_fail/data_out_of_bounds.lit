@@ -1,0 +1,14 @@
+# EXPECT: Tràn biên mảng khi slice
+layout Byte 1 {
+    0: bv8
+}
+data GREETING Byte {
+    "Xin chao"
+}
+func f bv8 {
+    @b0
+        %g = addr GREETING
+        %c = slice %g 8 ptr<Byte,1>
+        %v = load %c 0 bv8
+        ret %v
+}

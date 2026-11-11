@@ -1,0 +1,12 @@
+# EXPECT: vùng đích lớn hơn vùng nguồn
+layout DiskQword 8 {
+    0: bv64
+}
+layout Byte 1 {
+    0: bv8
+}
+func f void %q:ptr<DiskQword,64> {
+    @b0
+        %b = view %q ptr<Byte,513>
+        ret
+}

@@ -1,0 +1,14 @@
+# EXPECT: Bảo mật
+# Hằng truyền vào tham số ptr: parser tạo `const 0x100000 ptr<Q,1>` -> verifier chặn (rèn con trỏ)
+layout Q 8 {
+    0: bv64
+}
+func g void %p:ptr<Q,1> {
+    @b0
+        ret
+}
+func f void {
+    @b0
+        call g 0x100000
+        ret
+}

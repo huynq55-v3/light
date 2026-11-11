@@ -1,0 +1,23 @@
+# view: nhìn bộ đệm qword như mảng byte (cả tĩnh lẫn động), không cần dịch bit/che mặt nạ
+layout DiskQword 8 {
+    0: bv64
+}
+layout Byte 1 {
+    0: bv8
+}
+func get_byte bv8 %q:ptr<DiskQword,64> %i:bv64 {
+    @req ult %i 512
+    @b0
+        %b = view %q ptr<Byte,512>
+        %c = slice %b %i ptr<Byte,1>
+        %v = load %c 0 bv8
+        ret %v
+}
+func set_byte void %n:bv64 %q:ptr<DiskQword,%n> %i:bv64 %v:bv8 {
+    @req ult %i %n
+    @b0
+        %b = view %q ptr<Byte,%n>
+        %c = slice %b %i ptr<Byte,1>
+        store %c 0 %v
+        ret
+}
