@@ -129,8 +129,8 @@ sudo apt update && sudo apt install -y libz3-dev clang libclang-dev qemu-system-
 # 1. Phân tích cú pháp, kiểm chứng hình thức Z3 và xuất tệp thực thi ELF64 bare-metal
 cargo run --release   # kernel.elf (lit_program/os/kernel.lit) + storage/apps/*.bin + disk.img
 
-# 2. Khởi động Hệ điều hành với cửa sổ đồ họa VGA và cổng Serial
-qemu-system-x86_64 -kernel kernel.elf -serial stdio
+# 2. Khởi động trên QEMU có cửa sổ (gắn đĩa LightFS chứa App, 4G RAM, KVM; serial in ra terminal)
+bash tools/qemu_run.sh            # --fresh: chép lại đĩa sạch, --usb: bàn phím/chuột USB
 
 # 3. Giống hệt máy thật: OVMF (UEFI) -> GRUB lightos.efi -> multiboot, đĩa NVMe có GPT (ESP / lightos / ubuntu)
 bash tools/qemu_uefi_nvme.sh
