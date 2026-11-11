@@ -45,7 +45,7 @@ def WIN_MIN_H 150
 def WIN_MAX_W 1074                          # 200 + 1074 + 6 = 1280 (gfx/khung nhìn)
 def WIN_MAX_H 558                           # 60 + 558 + 6 = 624 (đỉnh Dock)
 def WIN_TITLE_H 32
-def WIN_XBTN 36                             # nút đóng (đèn đỏ kiểu macOS) = 36 điểm đầu thanh tiêu đề
+def WIN_XBTN 28                             # nút đóng (đèn đỏ kiểu macOS, u 12..23) = 28 điểm đầu thanh tiêu đề
 def WIN_GRIP 16                             # góc kéo đổi kích thước = ô 16x16 góc dưới-phải
 def WIN_MAX_X 974                           # 1280 - (300 + 6)
 def WIN_MAX_Y 590
@@ -333,7 +333,8 @@ func cs_light void %s:ptr<VgaCell,1382400> %x:bv64 %c:bv32 {
 }
 
 # Khung cửa sổ do compositor vẽ (trang trí phía server) thẳng vào surface của slot, quanh cửa sổ (200,60) cỡ CompWin.w x h:
-# bóng đổ, viền, thanh tiêu đề + tên (IpcChannel.title), nút [X]. Cửa sổ đang focus và không focus khác màu.
+# viền, thanh tiêu đề sáng + tên căn giữa (IpcChannel.title), 3 đèn đỏ / vàng / xanh (đèn đỏ = đóng). Cửa sổ không focus:
+# đèn xám, chữ nhạt (nền thanh giữ nguyên để phần App tự vẽ trên thanh, như dòng trạng thái Terminal, luôn khớp màu).
 # Vẽ vào surface nên thứ tự chồng / cắt vùng do comp_draw_window lo như mọi điểm ảnh khác.
 func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %slot:bv64 %active:bv64 {
     @req ult %slot 7
@@ -354,7 +355,7 @@ func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
     @hot
         jmp @draw 0xb4b4b8:bv32 0xe9e9eb:bv32 0x3a3a3c:bv32 0xff5f57:bv32 0xfebc2e:bv32 0x28c840:bv32
     @cold
-        jmp @draw 0xc8c8cc:bv32 0xf4f4f5:bv32 0xa1a1a6:bv32 0xd0d0d3:bv32 0xd0d0d3:bv32 0xd0d0d3:bv32
+        jmp @draw 0xc8c8cc:bv32 0xe9e9eb:bv32 0xa1a1a6:bv32 0xd0d0d3:bv32 0xd0d0d3:bv32 0xd0d0d3:bv32
     @draw %border:bv32 %bar:bv32 %text:bv32 %xbtn:bv32 %ybtn:bv32 %gbtn:bv32
         %ww = load %w CompWin.w
         %wh = load %w CompWin.h
@@ -1026,7 +1027,7 @@ func cs_present void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7>
         ret
 }
 # Nhấn chuột (không phải Dock): trúng cửa sổ dưới -> đưa lên trên; trúng thanh tiêu đề cửa sổ trên cùng (trừ nút
-# [X]) -> bắt đầu kéo; trúng nút [X] -> trả 2 (WM đóng App trên cùng). Trả 1 nếu compositor đã dùng cú nhấn (App
+# đèn đỏ) -> bắt đầu kéo; trúng đèn đỏ (WIN_XBTN điểm đầu thanh) -> trả 2 (WM đóng App trên cùng). Trả 1 nếu compositor đã dùng cú nhấn (App
 # không nhận), 0 để chuyển cho App trên cùng.
 func cs_click bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
     @req uge %view 0x10000
@@ -1121,7 +1122,7 @@ func cs_click bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %
         %ontitle = cmp ne %t12 0
         br %ontitle @grab @xbtn
     @xbtn
-        # Nút đóng do compositor vẽ (đèn đỏ, 36 điểm đầu thanh tiêu đề) -> trả 2 (WM đóng App trên cùng)
+        # Nút đóng do compositor vẽ (đèn đỏ, 28 điểm đầu thanh tiêu đề) -> trả 2 (WM đóng App trên cùng)
         %onx = cmp ult %v WIN_TITLE_H
         br %onx @close @pass
     @close

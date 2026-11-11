@@ -182,9 +182,10 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    - apps/editor.lit: chỉ thay phần vẽ + phép bấm (logic New / Open / Save / READ / CREATE / WRITE giữ nguyên): thanh
      công cụ New / Open / Save, ô tên file ("Untitled" khi chưa lưu), vùng tài liệu trắng, thanh trạng thái (số ký tự,
      "Plain Text"); icon Dock mới.
-   - Compositor: thanh tiêu đề sáng, tên căn giữa (chữ đầu hoa), 3 đèn đỏ / vàng / xanh; nút đóng = đèn đỏ (36 điểm
-     đầu thanh, `WIN_XBTN`), cửa sổ không focus đèn xám. Terminal đổi màu dòng trạng thái theo khung (sáng / tối).
-   Kiểm QEMU: gõ, Save -> data/note1.txt, New, Open -> data -> mở note.txt, đóng bằng đèn đỏ; RAM 320M (App tự vẽ khung
+   - Compositor: thanh tiêu đề sáng, tên căn giữa (chữ đầu hoa), 3 đèn đỏ / vàng / xanh; nút đóng = đèn đỏ (28 điểm
+     đầu thanh, `WIN_XBTN`; đèn vàng không đóng), cửa sổ không focus đèn xám. Terminal đổi màu dòng trạng thái theo khung (sáng / tối).
+   Kiểm QEMU (một phiên): gõ, Save -> data/note1.txt, New, Open -> data -> note1.txt (đúng nội dung), sửa + Save
+   (WRITE) -> mở lại thấy bản mới, "< Back", đèn vàng không đóng, kéo thanh tiêu đề, đèn đỏ đóng; uefi + usb; RAM 320M (App tự vẽ khung
    cũ) vẫn chạy; Terminal + Widgets; cargo test; stack-report 714 hàm.
    Còn lại: đèn vàng / xanh chưa có chức năng (chưa có thu nhỏ / phóng to); chữ vẫn là font bitmap 8x16.
 
