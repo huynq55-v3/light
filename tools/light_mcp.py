@@ -25,7 +25,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOCK = os.environ.get("LIGHT_SERIAL", os.path.join(REPO, "target", "light_serial.sock"))
 PROTOCOL = "2025-06-18"
-MAX_LINE = 1000  # AG_RX is 1024 bytes including "<id> "
+MAX_LINE = 450000  # AG_RX_CAP (os/agent.lit) is 458752 bytes including "<id> "
 
 
 def log(*a):
@@ -114,13 +114,58 @@ class Channel:
             self.buf += chunk
 
 
+def escape_bytes(data):
+    """Bytes -> tokens for the Light shell TEXT syntax (\\n \\t \\\\ \\xHH)."""
+    out = []
+    for b in data:
+        if b == 0x5C:
+            out.append("\\\\")
+        elif b == 0x0A:
+            out.append("\\n")
+        elif b == 0x09:
+            out.append("\\t")
+        elif 0x20 <= b <= 0x7E:
+            out.append(chr(b))
+        else:
+            out.append(f"\\x{b:02x}")
+    return out
+
+
+def check_path(path):
+    if not isinstance(path, str) or not path or not path.isascii() or any(c in path for c in " \t\r\n"):
+        raise ValueError("path must be non-empty ASCII without spaces")
+
+
+def write_file(ch, path, content, timeout):
+    check_path(path)
+    tokens = escape_bytes(content.encode("utf-8"))
+    room = WRITE_CHUNK
+    chunks, cur, size = [], [], 0
+    for t in tokens:
+        if size + len(t) > room:
+            chunks.append("".join(cur)); cur, size = [], 0
+        cur.append(t); size += len(t)
+    chunks.append("".join(cur))
+    for i, c in enumerate(chunks):
+        r = ch.run(f"{'write' if i == 0 else 'append'} {path} {c}", timeout)
+        if r["exit"] != 0:
+            r["stderr"] += f"(failed at chunk {i + 1}/{len(chunks)})\n"
+            return r
+    return {"exit": 0, "stdout": f"wrote {len(content.encode('utf-8'))} bytes to {path} in {len(chunks)} command(s)\n",
+            "stderr": "", "truncated": {"stdout": False, "stderr": False}}
+
+
+WRITE_CHUNK = 256 * 1024  # escaped bytes per write/append command (each append re-reads and rewrites the file)
+
 TOOLS = [{
     "name": "run",
     "description": (
         "Run one shell command inside Light OS (running in QEMU) and return its exit code, stdout and stderr. "
         "The shell session (current directory) persists between calls. Commands are ASCII, one line. "
-        "Available now: help, echo TEXT, pwd, ls [PATH], cd [PATH], stat PATH. Run `help` for the current list. "
-        "Exit codes: 0 ok, 1 error, 2 usage, 127 unknown command. stdout is capped at 8192 bytes."),
+        "Available now: help, echo, pwd, ls, cd, stat, cat, write, append, mkdir, touch, rm (run `help` for usage). "
+        "No quoting, pipes or redirection yet; paths cannot contain spaces. TEXT of write/append uses escapes "
+        "\\n \\t \\\\ \\xHH (prefer the write_file tool for file content). "
+        "Exit codes: 0 ok, 1 error, 2 usage, 127 unknown command. stdout is capped at 64 KiB, stderr at 1 KiB."),
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -129,10 +174,30 @@ TOOLS = [{
         },
         "required": ["command"],
     },
+}, {
+    "name": "read_file",
+    "description": "Read a file from the Light OS disk (LightFS) and return its content as text (UTF-8, invalid bytes "
+                   "replaced). Same as `cat PATH`. Content over 64 KiB is truncated.",
+    "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+}, {
+    "name": "write_file",
+    "description": "Create or replace a file on the Light OS disk with the given text (UTF-8). The parent directory "
+                   "must exist; app files under /apps are read-only. Maximum file size 1 MiB.",
+    "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                    "required": ["path", "content"]},
 }]
 
 
 def call_tool(ch, name, args):
+    timeout = max(0.5, min(float(args.get("timeout_s", 10)), 120))
+    if name == "read_file":
+        check_path(args.get("path"))
+        return ch.run(f"cat {args['path']}", timeout)
+    if name == "write_file":
+        content = args.get("content")
+        if not isinstance(content, str):
+            raise ValueError("'content' must be a string")
+        return write_file(ch, args.get("path"), content, timeout)
     if name != "run":
         raise ValueError(f"unknown tool: {name}")
     cmd = args.get("command")

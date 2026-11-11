@@ -158,8 +158,11 @@ bash tools/qemu_uefi_nvme.sh
 Lõi shell `std/shell.lit` (thuần, không io) chạy một dòng lệnh trên bảng LightFS -> stdout, stderr, mã thoát (0 / 1 lỗi /
 2 cú pháp / 127 không có lệnh), cắt bớt khi tràn bộ đệm. Kernel (`os/agent.lit`) đọc lệnh từ COM1 mỗi nhịp, chạy bằng lõi
 này và trả một dòng `@@LR|id|exit|trunc|stdout|stderr` (thoát ký tự `\\ \n \t \xHH`); khởi động xong in `@@LREADY`.
-Phiên giữ thư mục hiện tại giữa các lệnh. Lệnh hiện có: `help echo pwd ls cd stat` (chỉ đọc; `cat`/ghi file ở bước sau).
+Phiên giữ thư mục hiện tại giữa các lệnh. Lệnh: `help echo pwd ls cd stat cat write append mkdir touch rm`. Văn bản của
+`write`/`append` hiểu `\n \t \\ \xHH`. Lệnh đụng đĩa: lõi chỉ lập kế hoạch (`ShState.op`), mặt tiền thực hiện bằng
+LightFS rồi gọi `sh_fs_done` — Kernel làm đồng bộ (`ag_do_plan`, file tối đa 1MB, stdout 64KB, dòng lệnh tối đa 448KB).
 App Terminal vẫn dùng bộ lệnh cũ của nó cho tới khi được chuyển sang lõi này.
+MCP server có 3 công cụ: `run` (một dòng lệnh), `read_file`, `write_file` (tự thoát ký tự, chia thành `write` + `append`).
 
 ```bash
 bash tools/qemu_run.sh --agent             # cửa sổ QEMU + socket target/light_serial.sock
@@ -230,7 +233,7 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text`, `surf_round_inset`, `surf_round_rect` (hình bo góc dùng chung cho Dock / compositor / widget) |
 | `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
 | `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
-| `shell` | lõi shell dùng chung: `sh_exec` (một dòng lệnh -> stdout / stderr / mã thoát, `ShState` giữ cwd), `sh_resolve` (đường dẫn `/a/../b`) |
+| `shell` | lõi shell dùng chung: `sh_exec` (một dòng lệnh -> stdout / stderr / mã thoát, `ShState` giữ cwd và kế hoạch thao tác đĩa), `sh_fs_done`, `sh_unescape`, `sh_resolve` (đường dẫn `/a/../b`) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
 lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Terminal in số bằng `fmt_u64` (`term_append_dec`).

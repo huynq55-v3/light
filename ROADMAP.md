@@ -204,7 +204,14 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    công cụ `run`), `qemu_run.sh --agent --headless`. Kernel dò UART lúc khởi động (máy không có COM1 -> kênh tắt).
    Đã thử: lệnh qua kênh Agent trên QEMU legacy + usb (ca lỗi, dòng quá dài, cờ cắt stderr); desktop legacy / usb / uefi
    vẫn chạy và in `@@LREADY`; `-serial none` desktop vẫn chạy. Chưa thử `claude -p` thật, chưa thử máy thật.
-   Tiếp: `cat` / ghi file từ kênh Agent (Kernel cần vùng đệm cho lfs_op_read), chuyển App Terminal sang lõi,
+   Thêm (cùng ngày): `cat write append mkdir touch rm` — lõi lập kế hoạch, Kernel thực hiện; LightFS tách
+   `lfs_read_buf / lfs_write_buf / lfs_create_name` (App vẫn qua lớp bọc lfs_op_*); MCP `read_file` / `write_file`.
+   Đã thử: ghi / đọc lại UTF-8 6KB, file 920KB (4 lệnh, ~21s — nút cổ chai là nhận serial từng byte), cat bị cắt ở 64KB,
+   append vượt 1MB báo "file too large", đĩa trống (chưa gắn) chặn ghi, khởi động lại vẫn còn, `light fsck` 0 lỗi,
+   Terminal cũ vẫn ghi / đọc được ở legacy / usb / uefi (NVMe), desktop vẫn phản hồi khi Agent ghi file lớn.
+   Còn mở: Agent xóa / tạo lại mục trong khi App (Editor) còn giữ id cũ -> App có thể ghi nhầm vào mục id đó được dùng lại;
+   append đọc lại + ghi lại cả file (O(kích thước)); chưa thử `claude -p` thật.
+   Tiếp: chuyển App Terminal sang lõi,
    shell v2 (nháy kép, `|`, `>`, `&&`, biến, grep / wc / head...), trình thông dịch.
 
 ## 📋 Tiếp theo

@@ -6,6 +6,10 @@
 # - %line (n byte, ASCII) là MỘT lệnh: từ đầu là tên lệnh, các từ sau cách nhau bằng dấu cách.
 # - %tab là bảng LightFS (256 mục x 16 qword, xem lib/lightfs_api.lit) — Kernel đưa bảng hiện hành, App đưa bản sao.
 #   Lõi CHỈ ĐỌC bảng; lệnh cần nội dung file / ghi đĩa sẽ do mặt tiền (Terminal / kênh Agent) thực hiện ở bước sau.
+# - Lệnh đụng nội dung file / ghi đĩa (cat write append mkdir touch rm): sh_exec chỉ LẬP KẾ HOẠCH vào ShState.op (đã tìm
+#   đường dẫn, kiểm tên, báo lỗi cú pháp). Mặt tiền thấy ShState.op != 0 thì thực hiện thao tác LightFS rồi gọi
+#   sh_fs_done với mã kết quả (bit 63 = lỗi) để lõi ghi thông báo lỗi và mã thoát. Văn bản của write / append được giải
+#   thoát ký tự bằng sh_unescape: \n \t \\ \xHH.
 # - Kết quả ghi NỐI vào %out (dung lượng %oc) và %err (dung lượng %ec) từ ShState.out_len / err_len; hết chỗ thì
 #   cắt bớt và bật ShState.trunc (bit 0 stdout, bit 1 stderr). Mặt tiền đặt out_len = err_len = trunc = 0 trước mỗi lệnh.
 # - ShState.cwd = id thư mục hiện tại, giữ qua các lệnh (giống một phiên shell). Mã thoát cũng ghi vào ShState.exit.
@@ -20,13 +24,31 @@ def SH_NONE 256
 def SH_MAX_DEPTH 32
 
 # Không có @inv để đặt được trong `data` tĩnh; lõi tự kẹp cwd khi đọc (sh_cwd).
-layout ShState 40 {
+layout ShState 128 {
     0: bv64 cwd                             # thư mục hiện tại (0 = gốc)
     8: bv64 out_len                         # số byte đã ghi vào stdout
     16: bv64 err_len                        # số byte đã ghi vào stderr
     24: bv64 trunc                          # bit 0: stdout bị cắt, bit 1: stderr bị cắt
     32: bv64 exit                           # mã thoát của lệnh vừa chạy (0..255)
+    40: bv64 op                             # kế hoạch đang chờ mặt tiền thực hiện: SH_OP_* (0 = không có)
+    48: bv64 op_id                          # mục đích; khi op_new = 1 thì là thư mục cha của mục sẽ tạo
+    56: bv64 op_new                         # 1 = mục chưa có, tạo trước (tên = name_off / name_len trong dòng lệnh)
+    64: bv64 name_off
+    72: bv64 name_len
+    80: bv64 data_off                       # văn bản (đã thoát ký tự) của write / append trong dòng lệnh
+    88: bv64 data_len
+    96: bv64 path_off                       # đường dẫn như người dùng gõ (cho thông báo lỗi)
+    104: bv64 path_len
+    112: bv64 cmd_off                       # tên lệnh như người dùng gõ
+    120: bv64 cmd_len
 }
+
+def SH_OP_CAT 1
+def SH_OP_WRITE 2
+def SH_OP_APPEND 3
+def SH_OP_MKDIR 4
+def SH_OP_TOUCH 5
+def SH_OP_RM 6
 
 data SH_NUM Byte 24 {
 }
@@ -54,7 +76,70 @@ data SH_C_STAT Byte {
     "stat"
 }
 data SH_M_HELP Byte {
-    "commands:\n  help           this list\n  echo TEXT      print TEXT\n  pwd            current directory\n  ls [PATH]      list a directory (dirs end with /)\n  cd [PATH]      change directory (no PATH = /)\n  stat PATH      type, size and id of an entry\n"
+    "commands:\n  help           this list\n  echo TEXT      print TEXT\n  pwd            current directory\n  ls [PATH]      list a directory (dirs end with /)\n  cd [PATH]      change directory (no PATH = /)\n  stat PATH      type, size and id of an entry\n  cat PATH       print a file\n  write PATH TEXT   replace file content with TEXT (creates the file)\n  append PATH TEXT  add TEXT at the end of a file (creates the file)\n  mkdir PATH     create a directory\n  touch PATH     create an empty file if missing\n  rm PATH        remove a file or an empty directory\nTEXT escapes: \\\\n newline, \\\\t tab, \\\\\\\\ backslash, \\\\xHH any byte\n"
+}
+data SH_C_CAT Byte {
+    "cat"
+}
+data SH_C_WRITE Byte {
+    "write"
+}
+data SH_C_APPEND Byte {
+    "append"
+}
+data SH_C_MKDIR Byte {
+    "mkdir"
+}
+data SH_C_TOUCH Byte {
+    "touch"
+}
+data SH_C_RM Byte {
+    "rm"
+}
+data SH_M_ISDIR Byte {
+    ": is a directory: "
+}
+data SH_M_EXISTS Byte {
+    ": file exists: "
+}
+data SH_M_BADNAME Byte {
+    ": invalid name (1..63 bytes, no '/'): "
+}
+data SH_M_ROOT Byte {
+    ": cannot remove the root directory\n"
+}
+data SH_M_SEP Byte {
+    ": "
+}
+data SH_E_1 Byte {
+    "file system not mounted"
+}
+data SH_E_2 Byte {
+    "no such entry"
+}
+data SH_E_3 Byte {
+    "wrong type (apps are read-only)"
+}
+data SH_E_4 Byte {
+    "file too large"
+}
+data SH_E_5 Byte {
+    "no space left on disk"
+}
+data SH_E_6 Byte {
+    "file table full (256 entries)"
+}
+data SH_E_7 Byte {
+    "invalid or duplicate name"
+}
+data SH_E_8 Byte {
+    "data corrupt (checksum)"
+}
+data SH_E_9 Byte {
+    "directory not empty"
+}
+data SH_E_X Byte {
+    "file system error"
 }
 data SH_M_NOTFOUND Byte {
     ": command not found\n"
@@ -614,6 +699,417 @@ func sh_cmd_stat bv64 %st:ptr<ShState,1> %tab:ptr<DiskQword,4096> %an:bv64 %arg:
         ret 0
 }
 
+# ---------------------------------------------------------------- lệnh đụng đĩa: lập kế hoạch, mặt tiền thực hiện
+
+# Vị trí '/' cuối cùng trong (k, p), hoặc %k nếu không có
+func sh_last_slash bv64 %k:bv64 %p:ptr<Byte,%k> {
+    @ens ule %r %k
+    @b0
+        jmp @l 0 %k
+    @l %i:bv64 %last:bv64
+        @inv ule %i %k
+        @inv ule %last %k
+        %more = cmp ult %i %k
+        br %more @body @end
+    @body
+        %q = slice %p %i ptr<Byte,1>
+        %c = load %q 0 bv8
+        %sl = cmp eq %c 47
+        %i2 = add %i 1
+        br %sl @hit @l2
+    @hit
+        %here = or %i 0
+        jmp @l %i2 %here
+    @l2
+        jmp @l %i2 %last
+    @end
+        ret %last
+}
+
+# Thư mục cha của mục cuối trong đường dẫn (k, p): id (< 256) hoặc SH_NONE nếu không có / không phải thư mục
+func sh_parent_of bv64 %tab:ptr<DiskQword,4096> %cwd:bv64 %k:bv64 %p:ptr<Byte,%k> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %cwd 256
+    @ens ule %r SH_NONE
+    @b0
+        %l = call sh_last_slash %k %p
+        %none = cmp eq %l %k
+        br %none @here @pre
+    @here
+        ret %cwd
+    @pre
+        %pl = call math_max %l 1
+        %pre = slice %p 0 ptr<Byte,%pl>
+        %d = call sh_resolve %tab %cwd %pl %pre
+        %miss = cmp eq %d SH_NONE
+        br %miss @no @chk
+    @chk
+        %isd = call lfs_is_dir %tab %d
+        %root = cmp eq %d 0
+        %okd = cmp ne %isd 0
+        %ok = or %okd %root
+        br %ok @yes @no
+    @yes
+        ret %d
+    @no
+        ret SH_NONE
+}
+
+# Ghi kế hoạch vào ShState
+func sh_plan void %st:ptr<ShState,1> %op:bv64 %id:bv64 %new:bv64 %no:bv64 %nl:bv64 %do:bv64 %dl:bv64 %po:bv64 %pl:bv64 %co:bv64 %cl:bv64 {
+    @b0
+        store %st ShState.op %op
+        store %st ShState.op_id %id
+        store %st ShState.op_new %new
+        store %st ShState.name_off %no
+        store %st ShState.name_len %nl
+        store %st ShState.data_off %do
+        store %st ShState.data_len %dl
+        store %st ShState.path_off %po
+        store %st ShState.path_len %pl
+        store %st ShState.cmd_off %co
+        store %st ShState.cmd_len %cl
+        ret
+}
+
+# Lập kế hoạch cho lệnh %op với đường dẫn s[b, e) và văn bản s[d, n). Trả mã thoát (0 = đã lập kế hoạch).
+func sh_cmd_fs bv64 %st:ptr<ShState,1> %tab:ptr<DiskQword,4096> %op:bv64 %n:bv64 %s:ptr<Byte,%n> %a:bv64 %w:bv64 %b:bv64 %e:bv64 %d:bv64 %ec:bv64 %err:ptr<Byte,%ec> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ule %a %w
+    @req ule %w %n
+    @req ule %b %e
+    @req ule %e %n
+    @req ule %d %n
+    @ens ule %r 255
+    @b0
+        %cl = sub %w %a
+        %cmd = slice %s %a ptr<Byte,%cl>
+        %an = sub %e %b
+        %arg = slice %s %b ptr<Byte,%an>
+        %dl = sub %n %d
+        %cwd = call sh_cwd %st
+        %empty = cmp eq %an 0
+        br %empty @usage @look
+    @usage
+        call sh_err %st %ec %err %cl %cmd
+        %mn = addr SH_M_NEEDARG
+        call sh_err %st %ec %err SH_M_NEEDARG.len %mn
+        ret 2
+    @look
+        %id = call sh_resolve %tab %cwd %an %arg
+        %miss = cmp eq %id SH_NONE
+        br %miss @absent @present
+    @present
+        %isd0 = call lfs_is_dir %tab %id
+        %root = cmp eq %id 0
+        %isd1 = cmp ne %isd0 0
+        %isd = or %isd1 %root
+        %is_rm = cmp eq %op SH_OP_RM
+        br %is_rm @rm @p_mk
+    @rm
+        br %root @rmroot @plan_old
+    @rmroot
+        call sh_err %st %ec %err %cl %cmd
+        %mr = addr SH_M_ROOT
+        call sh_err %st %ec %err SH_M_ROOT.len %mr
+        ret 1
+    @p_mk
+        %is_mk = cmp eq %op SH_OP_MKDIR
+        br %is_mk @exists @p_touch
+    @exists
+        %mx = addr SH_M_EXISTS
+        call sh_fail3 %st %ec %err %cl %cmd SH_M_EXISTS.len %mx %an %arg
+        ret 1
+    @p_touch
+        %is_t = cmp eq %op SH_OP_TOUCH
+        br %is_t @nothing @p_file
+    @nothing
+        ret 0
+    @p_file
+        # cat / write / append: phải là file
+        br %isd @isdir @plan_old
+    @isdir
+        %md = addr SH_M_ISDIR
+        call sh_fail3 %st %ec %err %cl %cmd SH_M_ISDIR.len %md %an %arg
+        ret 1
+    @plan_old
+        call sh_plan %st %op %id 0 0 0 %d %dl %b %an %a %cl
+        ret 0
+    @absent
+        %is_cat = cmp eq %op SH_OP_CAT
+        %is_rm2 = cmp eq %op SH_OP_RM
+        %need = or %is_cat %is_rm2
+        br %need @noent @mkparent
+    @noent
+        %m = addr SH_M_NOENT
+        call sh_fail3 %st %ec %err %cl %cmd SH_M_NOENT.len %m %an %arg
+        ret 1
+    @mkparent
+        %par = call sh_parent_of %tab %cwd %an %arg
+        %nopar = cmp eq %par SH_NONE
+        br %nopar @noent @name
+    @name
+        %ls = call sh_last_slash %an %arg
+        %top = cmp eq %ls %an
+        br %top @n0 @n1
+    @n0
+        jmp @nm 0
+    @n1
+        %ls1 = add %ls 1
+        jmp @nm %ls1
+    @nm %ns:bv64
+        @inv ule %ns %an
+        %nl = sub %an %ns
+        %z = cmp eq %nl 0
+        %big = cmp ugt %nl 63
+        %bad = or %z %big
+        br %bad @badname @plan_new
+    @badname
+        %mb = addr SH_M_BADNAME
+        call sh_fail3 %st %ec %err %cl %cmd SH_M_BADNAME.len %mb %an %arg
+        ret 1
+    @plan_new
+        %no = add %b %ns
+        call sh_plan %st %op %par 1 %no %nl %d %dl %b %an %a %cl
+        ret 0
+}
+
+# Đoạn s[off, off+len) (kẹp trong n) vào stderr
+func sh_err_seg void %st:ptr<ShState,1> %ec:bv64 %err:ptr<Byte,%ec> %n:bv64 %s:ptr<Byte,%n> %off:bv64 %len:bv64 {
+    @b0
+        %o = call math_min %off %n
+        %room = sub %n %o
+        %l = call math_min %len %room
+        %seg = slice %s %o ptr<Byte,%l>
+        call sh_err %st %ec %err %l %seg
+        ret
+}
+
+# Thông báo cho mã lỗi LightFS %k (xem lib/lightfs_api.lit)
+func sh_err_code void %st:ptr<ShState,1> %ec:bv64 %err:ptr<Byte,%ec> %k:bv64 {
+    @b0
+        %c1 = cmp eq %k 1
+        br %c1 @e1 @t2
+    @e1
+        %m1 = addr SH_E_1
+        call sh_err %st %ec %err SH_E_1.len %m1
+        ret
+    @t2
+        %c2 = cmp eq %k 2
+        br %c2 @e2 @t3
+    @e2
+        %m2 = addr SH_E_2
+        call sh_err %st %ec %err SH_E_2.len %m2
+        ret
+    @t3
+        %c3 = cmp eq %k 3
+        br %c3 @e3 @t4
+    @e3
+        %m3 = addr SH_E_3
+        call sh_err %st %ec %err SH_E_3.len %m3
+        ret
+    @t4
+        %c4 = cmp eq %k 4
+        br %c4 @e4 @t5
+    @e4
+        %m4 = addr SH_E_4
+        call sh_err %st %ec %err SH_E_4.len %m4
+        ret
+    @t5
+        %c5 = cmp eq %k 5
+        br %c5 @e5 @t6
+    @e5
+        %m5 = addr SH_E_5
+        call sh_err %st %ec %err SH_E_5.len %m5
+        ret
+    @t6
+        %c6 = cmp eq %k 6
+        br %c6 @e6 @t7
+    @e6
+        %m6 = addr SH_E_6
+        call sh_err %st %ec %err SH_E_6.len %m6
+        ret
+    @t7
+        %c7 = cmp eq %k 7
+        br %c7 @e7 @t8
+    @e7
+        %m7 = addr SH_E_7
+        call sh_err %st %ec %err SH_E_7.len %m7
+        ret
+    @t8
+        %c8 = cmp eq %k 8
+        br %c8 @e8 @t9
+    @e8
+        %m8 = addr SH_E_8
+        call sh_err %st %ec %err SH_E_8.len %m8
+        ret
+    @t9
+        %c9 = cmp eq %k 9
+        br %c9 @e9 @ex
+    @e9
+        %m9 = addr SH_E_9
+        call sh_err %st %ec %err SH_E_9.len %m9
+        ret
+    @ex
+        %mx = addr SH_E_X
+        call sh_err %st %ec %err SH_E_X.len %mx
+        ret
+}
+
+# Mặt tiền đã thực hiện kế hoạch: %code = kết quả LightFS của bước cuối (bit 63 = lỗi, mã ở 8 bit thấp).
+# %n, %s = CÙNG dòng lệnh đã đưa cho sh_exec. Ghi thông báo lỗi, sửa cwd nếu thư mục hiện tại vừa bị xóa, trả mã thoát.
+func sh_fs_done bv64 %st:ptr<ShState,1> %tab:ptr<DiskQword,4096> %n:bv64 %s:ptr<Byte,%n> %code:bv64 %ec:bv64 %err:ptr<Byte,%ec> {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @ens ule %r 255
+    @b0
+        store %st ShState.op 0
+        %cwd = call sh_cwd %st
+        %f = call lfs_tget %tab %cwd 0
+        %used = and %f 1
+        %gone0 = cmp eq %used 0
+        %notroot = cmp ne %cwd 0
+        %gone = and %gone0 %notroot
+        br %gone @reset @chk
+    @reset
+        store %st ShState.cwd 0
+        jmp @chk
+    @chk
+        %e = lshr %code 63
+        %bad = cmp ne %e 0
+        br %bad @fail @ok
+    @ok
+        store %st ShState.exit 0
+        ret 0
+    @fail
+        %co = load %st ShState.cmd_off
+        %cl = load %st ShState.cmd_len
+        call sh_err_seg %st %ec %err %n %s %co %cl
+        %sep = addr SH_M_SEP
+        call sh_err %st %ec %err SH_M_SEP.len %sep
+        %k = and %code 0xff
+        call sh_err_code %st %ec %err %k
+        call sh_err %st %ec %err SH_M_SEP.len %sep
+        %po = load %st ShState.path_off
+        %pl = load %st ShState.path_len
+        call sh_err_seg %st %ec %err %n %s %po %pl
+        %nl = addr SH_CH
+        %p = slice %nl 0 ptr<Byte,1>
+        %c10 = const 10 bv8
+        store %p 0 %c10
+        %one = slice %nl 0 ptr<Byte,1>
+        call sh_err %st %ec %err 1 %one
+        store %st ShState.exit 1
+        ret 1
+}
+
+# Giá trị chữ số hex của byte %b (0..15), hoặc 16 nếu không phải chữ số hex
+func sh_hexval bv64 %b:bv8 {
+    @ens ule %r 16
+    @b0
+        %v = call byte_u64 %b
+        %d0 = cmp uge %v 48
+        %d1 = cmp ule %v 57
+        %isd = and %d0 %d1
+        br %isd @dig @lo
+    @dig
+        %r0 = sub %v 48
+        ret %r0
+    @lo
+        %l0 = cmp uge %v 97
+        %l1 = cmp ule %v 102
+        %isl = and %l0 %l1
+        br %isl @low @up
+    @low
+        %r1 = sub %v 87
+        ret %r1
+    @up
+        %u0 = cmp uge %v 65
+        %u1 = cmp ule %v 70
+        %isu = and %u0 %u1
+        br %isu @upper @none
+    @upper
+        %r2 = sub %v 55
+        ret %r2
+    @none
+        ret 16
+}
+
+# Giải thoát ký tự (n, src) vào %dst từ %pos: \n \t \\ \xHH; dấu '\' khác giữ nguyên. Trả vị trí mới (<= cap).
+func sh_unescape bv64 %n:bv64 %src:ptr<Byte,%n> %cap:bv64 %dst:ptr<Byte,%cap> %pos:bv64 {
+    @req ule %pos %cap
+    @ens ule %r %cap
+    @b0
+        jmp @l 0 %pos
+    @l %i:bv64 %at:bv64
+        @inv ule %i %n
+        @inv ule %at %cap
+        @dec sub %n %i
+        %more = cmp ult %i %n
+        br %more @body @end
+    @body
+        %p = slice %src %i ptr<Byte,1>
+        %c = load %p 0 bv8
+        %i1 = add %i 1
+        %bs = cmp eq %c 92
+        %has2 = cmp ult %i1 %n
+        %esc = and %bs %has2
+        br %esc @escape @plain
+    @plain
+        %a1 = call fmt_byte %cap %dst %at %c
+        jmp @l %i1 %a1
+    @escape
+        %p2 = slice %src %i1 ptr<Byte,1>
+        %c2 = load %p2 0 bv8
+        %i2 = add %i 2
+        %isn = cmp eq %c2 110
+        br %isn @nl @t_t
+    @nl
+        %a2 = call fmt_byte %cap %dst %at 10
+        jmp @l %i2 %a2
+    @t_t
+        %ist = cmp eq %c2 116
+        br %ist @tab @t_b
+    @tab
+        %a3 = call fmt_byte %cap %dst %at 9
+        jmp @l %i2 %a3
+    @t_b
+        %isb = cmp eq %c2 92
+        br %isb @bsl @t_x
+    @bsl
+        %a4 = call fmt_byte %cap %dst %at 92
+        jmp @l %i2 %a4
+    @t_x
+        %isx = cmp eq %c2 120
+        %i4 = add %i 4
+        %fit = cmp ule %i4 %n
+        %hx = and %isx %fit
+        br %hx @hex @plain
+    @hex
+        %i3 = add %i 3
+        %p3 = slice %src %i2 ptr<Byte,1>
+        %h1 = load %p3 0 bv8
+        %p4 = slice %src %i3 ptr<Byte,1>
+        %h2 = load %p4 0 bv8
+        %v1 = call sh_hexval %h1
+        %v2 = call sh_hexval %h2
+        %ok1 = cmp ult %v1 16
+        %ok2 = cmp ult %v2 16
+        %ok = and %ok1 %ok2
+        br %ok @hexok @plain
+    @hexok
+        %hi = shl %v1 4
+        %v = or %hi %v2
+        %b = narrow %v bv8
+        %a5 = call fmt_byte %cap %dst %at %b
+        jmp @l %i4 %a5
+    @end
+        ret %at
+}
+
+
 # Chạy một dòng lệnh; trả mã thoát (cũng ghi vào ShState.exit)
 func sh_exec bv64 %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %tab:ptr<DiskQword,4096> %oc:bv64 %out:ptr<Byte,%oc> %ec:bv64 %err:ptr<Byte,%ec> {
     @req uge %tab 0x10000
@@ -631,6 +1127,10 @@ func sh_exec bv64 %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %tab:ptr<DiskQword,
         %e = call str_find %n %s %b 32
         %al = sub_sat %e %b
         %arg = slice %s %b ptr<Byte,%al>
+        # văn bản của write / append: sau đường dẫn và đúng một dấu cách
+        %e1 = add_sat %e 1
+        %d = call math_min %e1 %n
+        store %st ShState.op 0
         %empty = cmp eq %cl 0
         br %empty @ok0 @t_help
     @t_help
@@ -681,10 +1181,58 @@ func sh_exec bv64 %st:ptr<ShState,1> %n:bv64 %s:ptr<Byte,%n> %tab:ptr<DiskQword,
         %ct = addr SH_C_STAT
         %it = call str_eq %cl %cmd SH_C_STAT.len %ct
         %bt = cmp ne %it 0
-        br %bt @stat @unknown
+        br %bt @stat @t_cat
     @stat
         %r3 = call sh_cmd_stat %st %tab %al %arg %cl %cmd %oc %out %ec %err
         jmp @fin %r3
+    @t_cat
+        %cc1 = addr SH_C_CAT
+        %i1 = call str_eq %cl %cmd SH_C_CAT.len %cc1
+        %b1 = cmp ne %i1 0
+        br %b1 @o_cat @t_write
+    @o_cat
+        jmp @fsop SH_OP_CAT
+    @t_write
+        %cc2 = addr SH_C_WRITE
+        %i2 = call str_eq %cl %cmd SH_C_WRITE.len %cc2
+        %b2 = cmp ne %i2 0
+        br %b2 @o_write @t_append
+    @o_write
+        jmp @fsop SH_OP_WRITE
+    @t_append
+        %cc3 = addr SH_C_APPEND
+        %i3 = call str_eq %cl %cmd SH_C_APPEND.len %cc3
+        %b3 = cmp ne %i3 0
+        br %b3 @o_append @t_mkdir
+    @o_append
+        jmp @fsop SH_OP_APPEND
+    @t_mkdir
+        %cc4 = addr SH_C_MKDIR
+        %i4 = call str_eq %cl %cmd SH_C_MKDIR.len %cc4
+        %b4 = cmp ne %i4 0
+        br %b4 @o_mkdir @t_touch
+    @o_mkdir
+        jmp @fsop SH_OP_MKDIR
+    @t_touch
+        %cc5 = addr SH_C_TOUCH
+        %i5 = call str_eq %cl %cmd SH_C_TOUCH.len %cc5
+        %b5 = cmp ne %i5 0
+        br %b5 @o_touch @t_rm
+    @o_touch
+        jmp @fsop SH_OP_TOUCH
+    @t_rm
+        %cc6 = addr SH_C_RM
+        %i6 = call str_eq %cl %cmd SH_C_RM.len %cc6
+        %b6 = cmp ne %i6 0
+        br %b6 @o_rm @unknown
+    @o_rm
+        jmp @fsop SH_OP_RM
+    @fsop %op:bv64
+        @inv ule %op SH_OP_RM
+        %wa = call math_max %w %a
+        %eb = call math_max %e %b
+        %r4 = call sh_cmd_fs %st %tab %op %n %s %a %wa %b %eb %d %ec %err
+        jmp @fin %r4
     @unknown
         call sh_err %st %ec %err %cl %cmd
         %mu = addr SH_M_NOTFOUND
