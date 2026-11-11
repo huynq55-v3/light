@@ -1,5 +1,5 @@
 # tools/qt.py <tiền_tố_ra> <chế độ legacy|uefi|usb|usb2> <lệnh...>: chạy QEMU không màn hình, điều khiển qua QMP
-# Lệnh: wait:S  key:QCODE  type:TEXT (dùng $'..\n' để gõ Enter)  shot:TÊN  mouse:DX,DY  click  quit
+# Lệnh: wait:S  key:QCODE  type:TEXT (dùng $'..\n' để gõ Enter)  shot:TÊN  mouse:DX,DY  click  down  up (giữ/nhả nút trái, để kéo)  mon:LỆNH_MONITOR (vd 'xp /4gx 0x79800')  quit
 # Thư mục ra (serial, ảnh, ảnh đĩa tạm): $QT_OUT (mặc định /tmp/lightqt). RAM: $QT_MEM (mặc định 4G). Chuột PS/2/USB tương đối: 1 đơn vị = 2 pixel.
 # usb = 1 xHCI (bàn phím + chuột); usb2 = 2 xHCI (chuột ở controller 1, bàn phím ở controller 2).
 import json, socket, subprocess, sys, time, os
@@ -56,6 +56,10 @@ for c in cmds:
         dx, dy = map(int, arg.split(','))
         cmd('input-send-event', events=[{'type': 'rel', 'data': {'axis': 'x', 'value': dx}}, {'type': 'rel', 'data': {'axis': 'y', 'value': dy}}])
         time.sleep(0.1)
+    elif op == 'mon':
+        print(arg, '=>', cmd('human-monitor-command', **{'command-line': arg}).get('return', '').strip())
+    elif op in ('down', 'up'):
+        cmd('input-send-event', events=[{'type': 'btn', 'data': {'down': op == 'down', 'button': 'left'}}]); time.sleep(0.2)
     elif op == 'click':
         cmd('input-send-event', events=[{'type': 'btn', 'data': {'down': True, 'button': 'left'}}]); time.sleep(0.1)
         cmd('input-send-event', events=[{'type': 'btn', 'data': {'down': False, 'button': 'left'}}]); time.sleep(0.2)

@@ -856,15 +856,13 @@ func app_chan_init_all void %io:io<0,0xffff> {
 }
 
 # Trước khi gọi App: chép trạng thái chuột/Shift/bg_mask; phím và click CHỈ cho App foreground
-func app_sync_in void %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
+func app_sync_in void %io:io<0,0xffff> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
     @req ult %slot 7
     @b0
         %act = load %g IpcChannel.active_app
         store %c IpcChannel.active_app %act
-        %mx = load %g IpcChannel.mouse_x
-        store %c IpcChannel.mouse_x %mx
-        %my = load %g IpcChannel.mouse_y
-        store %c IpcChannel.mouse_y %my
+        # Chuột theo vị trí cửa sổ của slot trong cảnh (compositor)
+        call comp_mouse_in %io %g %c %slot
         %sh = load %g IpcChannel.shift
         store %c IpcChannel.shift %sh
         %bg = load %g IpcChannel.bg_mask
@@ -962,7 +960,7 @@ func app_dispatch_entry void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:ptr<IpcC
         %15 = const 0xffffffff bv64
         %16 = call std_min %14 %15
         store %ch IpcChannel.mem_free %16
-        call app_sync_in %2 %ch %6
+        call app_sync_in %0 %2 %ch %6
 
         # App vẽ vào surface riêng của slot (compositor bật) hoặc thẳng vào khung nhìn Backbuffer %1
         %fbt = call comp_target %0 %1 %6
