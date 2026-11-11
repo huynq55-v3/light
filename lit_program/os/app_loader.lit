@@ -863,6 +863,9 @@ func app_sync_in void %io:io<0,0xffff> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1>
         store %c IpcChannel.active_app %act
         # Chuột theo vị trí cửa sổ của slot trong cảnh (compositor)
         call comp_mouse_in %io %g %c %slot
+        # Thỏa thuận trang trí: compositor bật -> nó vẽ khung, App chỉ vẽ vùng nội dung (ui_win_open)
+        %dec = call comp_enabled %io
+        store %c IpcChannel.decor %dec
         %sh = load %g IpcChannel.shift
         store %c IpcChannel.shift %sh
         %bg = load %g IpcChannel.bg_mask
