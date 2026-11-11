@@ -1050,6 +1050,89 @@ func xh_parse_cfg void %0:io<0,0xffff> %1:bv64 {
 }
 
 # Đọc descriptor, cấu hình HID boot cho slot %1. Trả loại thiết bị (0 không dùng, 1 bàn phím, 2 chuột).
+# Khôi phục EP0 của slot sau 1 control transfer hỏng (STALL / babble / lỗi đường truyền làm endpoint Halted, hoặc hết
+# giờ khi TD còn treo): Reset Endpoint (Halted -> Stopped), Stop Endpoint (Running -> Stopped), rồi Set TR Dequeue
+# Pointer tới ô enqueue hiện tại của ring EP0 (bỏ các TRB còn sót của transfer hỏng). Lệnh nào không hợp trạng thái
+# chỉ trả Context State Error, vô hại.
+func xh_ep0_recover void %0:io<0,0xffff> %1:bv64 {
+    @req uge %1 1
+    @req ule %1 8
+    @b0
+        %sl = shl %1 56
+        %rst0 = or 0x0001380000000000 %sl        # Reset Endpoint (loại 14), EP 1
+        %e1 = call xh_cmd %0 0 %rst0
+        %stp0 = or 0x00013c0000000000 %sl        # Stop Endpoint (loại 15), EP 1
+        %e2 = call xh_cmd %0 0 %stp0
+        %two = mul %1 2
+        %ei = add %two 80
+        %enq0 = call xs_get %0 %ei
+        %enq = call std_min %enq0 62
+        %ci = add %ei 1
+        %cy0 = call xs_get %0 %ci
+        %cy = and %cy0 1
+        %pg = add %1 15
+        %pgo = mul %pg 4096
+        %eo = mul %enq 16
+        %base0 = const 0x1400000 bv64
+        %off = call xm_off %0
+        %base = add %base0 %off
+        %a1 = add %base %pgo
+        %a2 = add %a1 %eo
+        %dq = or %a2 %cy
+        %sdq0 = or 0x0001400000000000 %sl        # Set TR Dequeue Pointer (loại 16), EP 1
+        %e3 = call xh_cmd %0 %dq %sdq0
+        call xh_delay %0 10000
+        ret
+}
+
+# Đọc descriptor cấu hình %2 byte vào 0x1407000, có thử lại: lần 1 hỏng -> khôi phục EP0, thử lại đủ %2 byte; lần 2
+# hỏng -> khôi phục, chỉ đọc 64 byte đầu (đủ chứa interface + HID + endpoint của bàn phím boot, thường là interface 0).
+# Trả số byte đã đọc (0 = hỏng cả 3 lần). XS[13] = mã hoàn thành của lần hỏng ĐẦU TIÊN (cho dòng USBC) nếu hỏng hết.
+func xh_get_cfg bv64 %0:io<0,0xffff> %1:bv64 %2:bv64 {
+    @req uge %1 1
+    @req ule %1 8
+    @req uge %2 9
+    @req ule %2 256
+    @ens ule %r 256
+    @b0
+        %ln = shl %2 48
+        %su = or 0x0000000002000680 %ln
+        %c1 = call xh_ctrl %0 %1 %su %2
+        %ok1 = call xh_ok %c1
+        %g1 = cmp ne %ok1 0
+        br %g1 @full @r1
+    @r1
+        call xh_ep0_recover %0 %1
+        %c2 = call xh_ctrl %0 %1 %su %2
+        %ok2 = call xh_ok %c2
+        %g2 = cmp ne %ok2 0
+        br %g2 @full @r2
+    @r2
+        call xh_ep0_recover %0 %1
+        %l64 = call std_min %2 64
+        %ln3 = shl %l64 48
+        %su3 = or 0x0000000002000680 %ln3
+        %c3 = call xh_ctrl %0 %1 %su3 %l64
+        %ok3 = call xh_ok %c3
+        %g3 = cmp ne %ok3 0
+        br %g3 @part @bad
+    @full
+        ret %2
+    @part
+        ret %l64
+    @bad
+        call xh_ep0_recover %0 %1
+        %c18 = and %c1 0xff
+        %nz = cmp ne %c18 0
+        br %nz @rec @tmo
+    @rec
+        call xs_set %0 13 %c18
+        ret 0
+    @tmo
+        call xs_set %0 13 0xff               # hết giờ (không có sự kiện)
+        ret 0
+}
+
 func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
     @req uge %1 1
     @req ule %1 8
@@ -1150,29 +1233,25 @@ func xh_probe bv64 %0:io<0,0xffff> %1:bv64 {
         %60 = call std_min %58 %59
         %61 = const 9 bv64
         %62 = call std_max %60 %61
-        %63 = const 0x0000000002000680 bv64
-        %64 = const 48 bv64
-        %65 = shl %62 %64
-        %66 = or %63 %65
-        %67 = call xh_ctrl %0 %1 %66 %62
+        %67 = call xh_get_cfg %0 %1 %62
         %903 = const 3 bv64
         %923 = const 12 bv64
         call xs_set %0 %923 %903
-        %943 = const 13 bv64
-        call xs_set %0 %943 %67
-        %68 = call xh_ok %67
-        %69 = cmp ne %68 %2
-        br %69 @b5 @b90
+        %69 = cmp ne %67 %2
+        br %69 @b41 @b90
+
+    @b41
+        jmp @b5
 
     @b5
         %70 = const 5 bv64
         %71 = call xh_bb %0 %70              # bConfigurationValue
-        call xh_parse_cfg %0 %62
+        call xh_parse_cfg %0 %67
         %904 = const 4 bv64
         %924 = const 12 bv64
         call xs_set %0 %924 %904
         %944 = const 13 bv64
-        call xs_set %0 %944 %62
+        call xs_set %0 %944 %67
         %72 = const 200 bv64
         %73 = call xs_get %0 %72
         %74 = const 2 bv64
@@ -1739,6 +1818,11 @@ func usb_note void %0:io<0,0xffff> %slot:bv64 %speed:bv64 %res:bv64 {
     @noboot
         jmp @set 4
     @fail
+        # mã hoàn thành của bước hỏng (XS[13]) -> XS[230 + slot] cho dòng USBC
+        %fcc = call xs_get %0 13
+        %fc8 = and %fcc 0xff
+        %ci2 = add %slot 230
+        call xs_set %0 %ci2 %fc8
         %f = or %s7 8
         jmp @set %f
     @set %code:bv64
@@ -1895,6 +1979,25 @@ func usb_pack_notes void %0:io<0,0xffff> {
         %sel = call xh_sel %0
         %hi = add %sel 44
         call hw_set %0 %hi %acc
+        jmp @c 1 0
+    @c %j:bv64 %cacc:bv64
+        @inv uge %j 1
+        @inv ule %j 9
+        %cm = cmp ule %j 8
+        br %cm @cone @cdone
+    @cone
+        %cxi = add %j 230
+        %cv = call xs_get %0 %cxi
+        %cb = and %cv 0xff
+        %ck = sub %j 1
+        %csh = shl %ck 3
+        %cbs = shl %cb %csh
+        %ca2 = or %cacc %cbs
+        %cj2 = add %j 1
+        jmp @c %cj2 %ca2
+    @cdone
+        %chi = add %sel 46
+        call hw_set %0 %chi %cacc
         ret
 }
 
@@ -2042,6 +2145,8 @@ func usb_init void %0:io<0,0xffff> {
         call hw_set %0 %252 %1
         call hw_set %0 44 %1
         call hw_set %0 45 %1
+        call hw_set %0 46 %1
+        call hw_set %0 47 %1
         jmp @b4 %1 %1
 
     @b4 %27:bv64 %28:bv64
