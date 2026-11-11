@@ -1,0 +1,154 @@
+# File: lit_program/std/widget_fs.lit
+# LIGHT STD — component duyệt LightFS kiểu Finder (thuần, không io), dựa trên std/widget.lit và bảng file do Kernel
+# chép vào State của App (lib/lightfs_api.lit).
+#   wg_fs_name : tên (24 byte) của mục id
+#   wg_fs_list : danh sách mục con của thư mục dir (tối đa WG_FS_ROWS) + nút "< Back" khi không phải thư mục gốc
+#   wg_fs_hit  : click trong danh sách -> (1 << 32) | cha (Back)   (2 << 32) | id (thư mục)   (3 << 32) | id (file)
+#                0 = trượt. Cùng mã với ui_fb_handle_click của lib/ui_file_browser.lit.
+# Bố cục (từ góc (x, y) của danh sách): nút Back (x, y, 84 x 26), hàng r ở y + WG_FS_TOP + r * WG_FS_ROW_H, cao 32.
+
+include widget.lit
+include ../lib/lightfs_api.lit
+
+def WG_FS_ROWS 9
+def WG_FS_TOP 38
+def WG_FS_ROW_H 34
+
+data WGF_BACK Byte {
+    "< Back"
+}
+data WGF_ROOT Byte {
+    "Light Disk"
+}
+
+func wg_fs_name bv64 %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %tab:ptr<DiskQword,4096> %id:bv64 %fg:bv32 {
+    @req ule %cw 0x10000
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %id 256
+    @b0
+        %q0 = call lfs_tget %tab %id 8
+        %q1 = call lfs_tget %tab %id 9
+        %q2 = call lfs_tget %tab %id 10
+        %x1 = call wg_qtext %px %cw %ch %x %y %q0 %fg
+        %x2 = call wg_qtext %px %cw %ch %x1 %y %q1 %fg
+        %x3 = call wg_qtext %px %cw %ch %x2 %y %q2 %fg
+        ret %x3
+}
+
+func wg_fs_list void %px:ptr<VgaCell,1205558> %cw:bv64 %ch:bv64 %x:bv64 %y:bv64 %w:bv64 %tab:ptr<DiskQword,4096> %dir:bv64 {
+    @req ule %cw 0x10000
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %dir 256
+    @b0
+        %sub = cmp ne %dir 0
+        br %sub @back @root
+    @root
+        %ry0 = add_sat %y 5
+        call wg_icon_folder %px %cw %ch %x %ry0
+        %rx = add_sat %x 28
+        %lr = addr WGF_ROOT
+        call wg_label %px %cw %ch %rx %ry0 WGF_ROOT.len %lr WG_INK2
+        jmp @rows0
+    @back
+        %lb = addr WGF_BACK
+        call wg_pbutton %px %cw %ch %x %y 84 26 WGF_BACK.len %lb 0
+        %nx = add_sat %x 100
+        %ny = add_sat %y 5
+        call wg_icon_folder %px %cw %ch %nx %ny
+        %tx = add_sat %x 128
+        %ty = add_sat %y 5
+        %e = call wg_fs_name %px %cw %ch %tx %ty %tab %dir WG_INK2
+        jmp @rows0
+    @rows0
+        %y0 = add_sat %y WG_FS_TOP
+        jmp @l 0 %y0
+    @l %r:bv64 %ry:bv64
+        @inv ule %r WG_FS_ROWS
+        %more = cmp ult %r WG_FS_ROWS
+        br %more @get @done
+    @get
+        %id = call lfs_nth_child %tab %dir %r
+        %none = cmp eq %id 0
+        br %none @done @row
+    @row
+        call wg_list_row %px %cw %ch %x %ry %w 32 %r
+        %ix = add_sat %x 12
+        %nameX = add_sat %x 42
+        %nameY = add_sat %ry 8
+        %isd = call lfs_is_dir %tab %id
+        %d = cmp ne %isd 0
+        br %d @dir @file
+    @dir
+        %fy = add_sat %ry 8
+        call wg_icon_folder %px %cw %ch %ix %fy
+        %e1 = call wg_fs_name %px %cw %ch %nameX %nameY %tab %id WG_INK
+        # mũi tên ">" bên phải: vào thư mục
+        %ax0 = add_sat %x %w
+        %ax = sub_sat %ax0 22
+        call surf_char WG_CLIENT_N %px WG_STRIDE %cw %ch %ax %nameY 62 WG_INK2
+        jmp @next
+    @file
+        %iy = add_sat %ry 7
+        %ix2 = add_sat %x 15
+        call wg_icon_doc %px %cw %ch %ix2 %iy
+        %e2 = call wg_fs_name %px %cw %ch %nameX %nameY %tab %id WG_INK
+        jmp @next
+    @next
+        %r1 = add %r 1
+        %ry1 = add_sat %ry WG_FS_ROW_H
+        jmp @l %r1 %ry1
+    @done
+        ret
+}
+
+func wg_fs_hit bv64 %tab:ptr<DiskQword,4096> %mx:bv64 %my:bv64 %x:bv64 %y:bv64 %w:bv64 %dir:bv64 {
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
+    @req ult %dir 256
+    @b0
+        %sub = cmp ne %dir 0
+        br %sub @bk @rows
+    @bk
+        %hb = call wg_hit %mx %my %x %y 84 26
+        %isb = cmp ne %hb 0
+        br %isb @goback @rows
+    @goback
+        %p = call lfs_parent %tab %dir
+        %r1 = or 0x100000000 %p
+        ret %r1
+    @rows
+        %top = add_sat %y WG_FS_TOP
+        %xe = add_sat %x %w
+        %a = cmp uge %my %top
+        %b = cmp uge %mx %x
+        %c = cmp ult %mx %xe
+        %ab = and %a %b
+        %abc = and %ab %c
+        br %abc @row @miss
+    @row
+        %dy = sub %my %top
+        %n = udiv %dy WG_FS_ROW_H
+        %m = urem %dy WG_FS_ROW_H
+        %inr = cmp ult %m 32
+        %inn = cmp ult %n WG_FS_ROWS
+        %ok = and %inr %inn
+        br %ok @pick @miss
+    @pick
+        %id = call lfs_nth_child %tab %dir %n
+        %none = cmp eq %id 0
+        br %none @miss @kind
+    @kind
+        %isd = call lfs_is_dir %tab %id
+        %d = cmp ne %isd 0
+        br %d @rd @rf
+    @rd
+        %v2 = or 0x200000000 %id
+        ret %v2
+    @rf
+        %v3 = or 0x300000000 %id
+        ret %v3
+    @miss
+        ret 0
+}

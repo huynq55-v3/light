@@ -1,7 +1,8 @@
 # tools/qt.py <tiền_tố_ra> <chế độ legacy|uefi|usb|usb2> <lệnh...>: chạy QEMU không màn hình, điều khiển qua QMP
 # Lệnh: wait:S  key:QCODE  type:TEXT (dùng $'..\n' để gõ Enter)  shot:TÊN  mouse:DX,DY  click  down  up (giữ/nhả nút trái, để kéo)  mon:LỆNH_MONITOR (vd 'xp /4gx 0x79800')  quit
 # Thư mục ra (serial, ảnh, ảnh đĩa tạm): $QT_OUT (mặc định /tmp/lightqt). RAM: $QT_MEM (mặc định 4G). Chuột PS/2/USB tương đối: 1 đơn vị = 2 pixel.
-# usb = 1 xHCI (bàn phím + chuột); usb2 = 2 xHCI (chuột ở controller 1, bàn phím ở controller 2).
+# usb = 1 xHCI (bàn phím + chuột); usb2 = 2 xHCI (chuột ở controller 1, bàn phím ở controller 2);
+# usbx = 1 xHCI + thiết bị theo $QT_DEV (vd 'usb-hub,bus=xhci.0,port=1 usb-kbd,bus=xhci.0,port=1.1'), máy theo $QT_MACHINE.
 import json, socket, subprocess, sys, time, os
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 S = os.environ.get('QT_OUT', '/tmp/lightqt'); os.makedirs(S, exist_ok=True)
@@ -9,11 +10,16 @@ out, mode, cmds = sys.argv[1], sys.argv[2], sys.argv[3:]
 q = f'{S}/qmp.sock'
 if os.path.exists(q): os.remove(q)
 base = ['qemu-system-x86_64', '-enable-kvm', '-cpu', 'host', '-m', os.environ.get('QT_MEM', '4G'), '-smp', '8', '-display', 'none', '-qmp', f'unix:{q},server,nowait', '-serial', f'file:{S}/{out}_serial.txt']
-if mode in ('legacy', 'usb', 'usb2'):
+if mode in ('legacy', 'usb', 'usb2', 'usbx'):
     subprocess.run(['cp', f'{R}/disk.img', f'{S}/disk64.img']); subprocess.run(['truncate', '-s', '64M', f'{S}/disk64.img'])
     base += ['-kernel', f'{R}/kernel.elf', '-drive', f'file={S}/disk64.img,format=raw,if=ide']
     if mode == 'usb':
         base += ['-machine', 'pc,i8042=off,vmport=off', '-device', 'qemu-xhci,id=xhci', '-device', 'usb-kbd,bus=xhci.0', '-device', 'usb-mouse,bus=xhci.0']
+    if mode == 'usbx':
+        # thiết bị USB tùy chọn: $QT_MACHINE (mặc định pc,i8042=off,vmport=off), $QT_DEV = các tham số -device cách nhau bởi dấu cách
+        base += ['-machine', os.environ.get('QT_MACHINE', 'pc,i8042=off,vmport=off'), '-device', 'qemu-xhci,id=xhci']
+        for d in os.environ.get('QT_DEV', '').split():
+            base += ['-device', d]
     if mode == 'usb2':
         base += ['-machine', 'pc,i8042=off,vmport=off', '-device', 'qemu-xhci,id=xhci', '-device', 'usb-mouse,bus=xhci.0', '-device', 'qemu-xhci,id=xhci2', '-device', 'usb-kbd,bus=xhci2.0']
 else:

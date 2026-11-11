@@ -280,6 +280,10 @@ func smp_selftest void %0:io<0,0xffff> %1:smp {
 #   BLK  = backend (0 không có, 1 ATA, 2 NVMe) << 48 | GPT (0 không có, 1 thấy lightos, 2 GPT thiếu lightos) << 40
 #          | mã nvme_init_ctrl (0 = OK, xem drivers/nvme.lit) << 32 | rộng << 16 | cao của framebuffer thật
 #   PART = LBA đầu phân vùng ; PLEN = số sector (0 = I/O bị chặn)
+#   KBD  = i8042: cấu hình cũ << 56 | cấu hình mới << 48 | trả lời F6/F0/02/F4 của bàn phím << 40..16 | chuột F4 << 8 | cờ
+#          (0xFA = ACK, 0xEE = hết giờ, cờ 1 = không có i8042). Xem drivers/kbd_drv.lit (i8042_setup).
+#   USBD = mỗi byte 1 slot USB (slot 1 = byte thấp): tốc độ << 4 | kết quả: 1 bàn phím, 2 chuột, 3 hub (chưa hỗ trợ),
+#          4 không có interface HID boot, 8 + bước = hỏng ở bước dò. USBD2 = controller thứ hai.
 #   USB2 = như USB nhưng cho controller xHCI thứ hai (HW[41]; 0 = không có)
 #   USB  = giai đoạn << 56 | dev PCI << 48 | số cổng << 40 | số slot << 32 | mã hoàn thành << 24 | bàn phím << 16
 #          | chuột << 8 | bước dò cuối (xem drivers/usb_xhci.lit)
@@ -320,7 +324,7 @@ func diag_boot_report void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
         %28 = or %27 %19
         %29 = or %28 %23
         %30 = or %29 %26
-        %31 = const 2 bv64
+        %31 = const 42 bv64
         %32 = const "BLK     " bv64
         %50 = const 0 bv64
         %51 = slice %2 %50 ptr<VgaCell,1382400>
@@ -328,32 +332,103 @@ func diag_boot_report void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
 
         %33 = const 17 bv64
         %34 = call hw_get %0 %33
-        %35 = const 20 bv64
+        %35 = const 60 bv64
         %36 = const "PART    " bv64
         call diag_line %0 %51 %3 %35 %36 %34
 
         %37 = const 18 bv64
         %38 = call hw_get %0 %37
-        %39 = const 38 bv64
+        %39 = const 78 bv64
         %40 = const "PLEN    " bv64
         call diag_line %0 %51 %3 %39 %40 %38
 
         %52 = const 40 bv64
         %53 = call hw_get %0 %52
-        %54 = const 56 bv64
+        %54 = const 96 bv64
         %55 = const "USB     " bv64
         call diag_line %0 %51 %3 %54 %55 %53
 
         %60 = const 41 bv64
         %61 = call hw_get %0 %60
-        %62 = const 74 bv64
+        %62 = const 114 bv64
         %63 = const "USB2    " bv64
         call diag_line %0 %51 %3 %62 %63 %61
 
+        %kd = call hw_get %0 300
+        %kdl = const "KBD     " bv64
+        call diag_line %0 %51 %3 132 %kdl %kd
+        %ud = call hw_get %0 44
+        %udl = const "USBD    " bv64
+        call diag_line %0 %51 %3 150 %udl %ud
+        %ud2 = call hw_get %0 45
+        %udl2 = const "USBD2   " bv64
+        call diag_line %0 %51 %3 168 %udl2 %ud2
+
         %42 = const 0 bv64
-        %43 = const 330 bv64
-        %44 = const 92 bv64
-        call gfx_blit_rect %1 %2 %42 %42 %43 %44
-        call fb_present_rect %0 %1 %42 %42 %43 %44
+        %43 = const 320 bv64
+        %44 = const 188 bv64
+        %45 = const 34 bv64
+        call gfx_blit_rect %1 %2 %42 %45 %43 %44
+        call fb_present_rect %0 %1 %42 %45 %43 %44
+        ret
+}
+
+# Xóa vùng dòng chẩn đoán (góc trên-trái) về màu nền desktop
+func diag_hide void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,2073600> {
+    @req uge %1 0x10000
+    @req ult %1 0x40000000
+    @req uge %2 0x10000
+    @req ult %2 0x40000000
+    @b0
+        call gfx_fill_rect_scr %2 0 34 320 188 0x161b26:bv32
+        call gfx_blit_rect %1 %2 0 34 320 188
+        call fb_present_rect %0 %1 0 34 320 188
+        ret
+}
+
+# 1 nếu nên tự hiện chẩn đoán lúc boot: có i8042 nhưng bàn phím không ACK lệnh bật quét phím (F4)
+func diag_kbd_bad bv64 %0:io<0,0xffff> {
+    @ens ule %r 1
+    @b0
+        %kd = call hw_get %0 300
+        %flag = and %kd 0xff
+        %absent = cmp eq %flag 1
+        br %absent @no @chk
+    @chk
+        %a = lshr %kd 16
+        %ack = and %a 0xff
+        %bad = cmp ne %ack 0xfa
+        br %bad @yes @no
+    @yes
+        ret 1
+    @no
+        ret 0
+}
+
+# Mỗi nhịp WM: F10 -> đảo hiện / ẩn (trạng thái ở HW[301])
+func diag_tick void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,2073600> %g:ptr<IpcChannel,1> {
+    @req uge %1 0x10000
+    @req ult %1 0x40000000
+    @req uge %2 0x10000
+    @req ult %2 0x40000000
+    @b0
+        %3 = const 0x7c000 ptr<DiskQword,64>
+        %t = load %g IpcChannel.diag_toggle
+        %req = cmp ne %t 0
+        br %req @flip @out
+    @flip
+        store %g IpcChannel.diag_toggle 0
+        %v = call hw_get %0 301
+        %on = cmp ne %v 0
+        br %on @hide @show
+    @hide
+        call hw_set %0 301 0
+        call diag_hide %0 %1 %2
+        ret
+    @show
+        call hw_set %0 301 1
+        call diag_boot_report %0 %1 %2 %3
+        ret
+    @out
         ret
 }

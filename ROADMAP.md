@@ -140,6 +140,54 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    đệm sau (gồm cả phần dưới khung nhìn cửa sổ) -> nên đệm sẵn icon lúc boot; nhãn tên chỉ lấy 8 byte đầu tên file.
    Đề xuất tiếp (chưa làm, cần người dùng chọn): nền desktop gradient/hình nền; ẩn dòng chẩn đoán BLK/PART/USB ở góc
    trên-trái (chỉ hiện ở chế độ debug); thanh trên cùng (đồng hồ / tên App focus); khung cửa sổ bo góc + bóng mềm.
+7. ~~Bàn phím máy thật~~ (2026-11-11; người dùng báo máy thật không nhận phím, QEMU vẫn chạy): driver i8042 cũ chỉ ghi
+   3 byte cho chuột (A8, D4 F4), không chờ bộ điều khiển, không bật lại cổng bàn phím, không đặt bit dịch mã. QEMU để sẵn
+   mọi thứ nên chạy; firmware UEFI có thể để cổng bàn phím tắt / dịch mã tắt / quét phím tắt. Nay `i8042_setup`
+   (drivers/kbd_drv.lit): chờ có giới hạn trước mỗi lần ghi / đọc; tắt 2 cổng + xả bộ đệm; cấu hình = bật dịch mã (bit 6),
+   bật clock 2 cổng, tắt IRQ (WM đọc kiểu thăm dò); bật cổng; bàn phím F6 (mặc định), F0 02 (set 2 -> dịch ra set 1), F4
+   (bật quét); chuột D4 F4; đọc lại cấu hình. Kết quả ghi HW[300] = dòng KBD của màn chẩn đoán.
+   Kiểm: QEMU legacy giả lập trạng thái xấu (F5 + cấu hình 0x10): bản cũ không nhận F2, bản mới nhận và gõ được
+   (KBD 3040FAFAFAFAFA00); legacy 7140FAFA..; uefi 7744FAFA..; usb (không có i8042) KBD = 1, bàn phím USB vẫn chạy.
+   CHƯA kiểm trên máy thật. Nếu vẫn không nhận phím: màn chẩn đoán sẽ TỰ HIỆN khi bàn phím không ACK lệnh F4 -> chụp dòng KBD.
+   Dòng chẩn đoán phần cứng: ẩn mặc định, F10 bật / tắt (`diag_tick`), tự hiện khi bàn phím i8042 lỗi.
+8. ~~Thanh trên cùng + cửa sổ bo góc, bóng mềm~~ (2026-11-11, người dùng chọn đề xuất 2, 3, 4 của lát 6):
+   - Thanh trên cùng (`os/topbar.lit` vẽ thuần `tb_*` + cầu nối `topbar_tick`/`rtc_read` trong wm.lit): logo + "Light OS"
+     | tên App focus (hoặc "Desktop") | "dd/mm/yyyy  hh:mm" từ RTC (cổng 0x70/0x71, BCD/nhị phân, 12/24h). Cộng
+     `TB_TZ_HOURS` = 7 (RTC theo UTC như Ubuntu đặt; máy dùng chung Windows thì đặt 0). Chỉ vẽ lại khi đổi phút / đổi
+     App focus. Dòng chẩn đoán (F10) dời xuống dưới thanh (y 42..150).
+   - Cửa sổ: 4 góc bo bán kính 8 (`comp_draw_window` không vẽ điểm ngoài góc -> lộ cảnh dưới; `cs_frame` vẽ cung viền),
+     bóng đổ mềm = làm tối cảnh bên dưới 3 mức (25% / 12% / 6%, `comp_shade`) thay cho dải đen 6 điểm vẽ trong surface.
+     Bóng chỉ vẽ khi vẽ lại cảnh từ nền; đưa vùng bẩn của App lên (cs_present) không đụng bóng -> không tối dồn (kiểm:
+     điểm ảnh bóng giữ nguyên sau 10 lệnh gõ trong Terminal).
+   Kiểm: usb/legacy/uefi, RAM 320M (App tự vẽ khung vuông như cũ), giờ khớp đồng hồ máy chủ.
+   Còn lại (đề xuất 1, chưa làm): nền desktop gradient / hình nền.
+9. ~~Bàn phím USB ngoài~~ (2026-11-11; người dùng: bàn phím laptop nhận, bàn phím USB cắm thẳng cổng USB-A thì không,
+   chuột USB cùng máy chạy): lỗi chồng lấn bảng XS của driver xHCI — kết quả phân tích descriptor ghi tạm ở XS[30..35],
+   trùng bản ghi slot 2 (+6/+7) và slot 3 (+0..+3: loại/DCI/MPS/báo cáo trước). Dò thiết bị thứ 4 ghi đè slot 3 -> nếu
+   bàn phím rơi vào slot 3 (laptop có webcam / Bluetooth / vân tay gắn trong chiếm slot 1-2) thì bàn phím chết, chuột
+   (slot 4) vẫn chạy. Dời sang XS[200..204]. Tái hiện QEMU (`qt.py usbx`, QT_DEV = tablet, usb-net, kbd, mouse): bản cũ
+   không gõ được, bản mới gõ + chuột đều chạy. Thêm: SET_IDLE(0) cho bàn phím; dòng chẩn đoán USBD/USBD2 (HW[44/45]):
+   mỗi byte 1 slot = tốc độ << 4 | kết quả (1 bàn phím, 2 chuột, 3 hub, 4 không có HID boot, 8+bước = hỏng).
+   CHƯA kiểm trên máy thật. Còn thiếu: hub USB (bàn phím có hub bên trong / qua hub ngoài -> USBD báo 3), cắm nóng sau
+   boot, phục hồi endpoint sau lỗi truyền.
+10. ~~Editor kiểu macOS + bộ component UI dùng lại~~ (2026-11-11):
+   - Hình bo góc dùng chung `surf_round_inset` / `surf_round_rect` (std/surface.lit); Dock (`dk_rrect`, icon tròn góc)
+     và compositor (`comp_inset8`) chuyển sang dùng nó, không còn bản sao riêng.
+   - std/widget.lit thêm component kiểu macOS (thuần, vẽ trên surface client): `wg_rbox`, `wg_rframe`, `wg_text_center`,
+     `wg_pbutton` (thường / đang chọn màu nhấn), `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_qtext`, `wg_number`,
+     `wg_textarea` (tự xuống dòng, '\n', con trỏ vạch xanh), `wg_list_row`, `wg_icon_doc`, `wg_icon_folder`; `wg_button`
+     cũ giữ chữ ký, vẽ bo góc (App Widgets đổi theo, không sửa App).
+   - std/widget_fs.lit (mới): `wg_fs_name`, `wg_fs_list` (danh sách kiểu Finder, "< Back" + tên thư mục), `wg_fs_hit`
+     (cùng mã trả về với `ui_fb_handle_click`).
+   - apps/editor.lit: chỉ thay phần vẽ + phép bấm (logic New / Open / Save / READ / CREATE / WRITE giữ nguyên): thanh
+     công cụ New / Open / Save, ô tên file ("Untitled" khi chưa lưu), vùng tài liệu trắng, thanh trạng thái (số ký tự,
+     "Plain Text"); icon Dock mới.
+   - Compositor: thanh tiêu đề sáng, tên căn giữa (chữ đầu hoa), 3 đèn đỏ / vàng / xanh; nút đóng = đèn đỏ (28 điểm
+     đầu thanh, `WIN_XBTN`; đèn vàng không đóng), cửa sổ không focus đèn xám. Terminal đổi màu dòng trạng thái theo khung (sáng / tối).
+   Kiểm QEMU (một phiên): gõ, Save -> data/note1.txt, New, Open -> data -> note1.txt (đúng nội dung), sửa + Save
+   (WRITE) -> mở lại thấy bản mới, "< Back", đèn vàng không đóng, kéo thanh tiêu đề, đèn đỏ đóng; uefi + usb; RAM 320M (App tự vẽ khung
+   cũ) vẫn chạy; Terminal + Widgets; cargo test; stack-report 714 hàm.
+   Còn lại: đèn vàng / xanh chưa có chức năng (chưa có thu nhỏ / phóng to); chữ vẫn là font bitmap 8x16.
 
 ## 📋 Tiếp theo
 

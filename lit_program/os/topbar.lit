@@ -1,0 +1,228 @@
+# File: lit_program/os/topbar.lit
+# LIGHT OS — thanh trên cùng (GUI): logo + "Light OS" | tên App đang focus | ngày giờ.
+# Phần VẼ THUẦN (tb_*, không io) vẽ thẳng vào bộ đệm sau toàn màn hình (surface 2073600, 1920, 1920 x 1080), hàng [0, 32).
+# Phần cần io (đọc đồng hồ RTC qua cổng 0x70/0x71, đưa lên màn hình) nằm trong wm.lit (topbar_tick).
+#
+# Giờ: RTC của PC giữ giờ theo hệ điều hành đã đặt nó. Ubuntu (mặc định) đặt RTC = UTC -> cộng TB_TZ_HOURS (giờ Việt
+# Nam UTC+7). Nếu máy dùng chung với Windows (RTC = giờ địa phương) thì đặt TB_TZ_HOURS = 0.
+
+include dock.lit
+
+def TB_N 2073600
+def TB_STRIDE 1920
+def TB_W 1920
+def TB_H 1080
+def TB_BAR_H 32
+def TB_TZ_HOURS 7
+def TB_BG 0x0d1119
+def TB_LINE 0x232b3b
+def TB_LOGO 0x38bdf8
+def TB_TEXT 0xe2e8f0
+def TB_DIM 0x94a3b8
+
+# Trạng thái ở 0x79f00
+layout TopState 32 {
+    0: bv64 drawn @inv ule val 1
+    8: bv64 stamp                           # phút | giờ << 8 | ngày << 16 | tháng << 24 | năm << 32 (đã vẽ)
+    16: bv64 focus @inv ule val 7           # ô App focus đã vẽ, 7 = desktop
+}
+
+# Đổi số BCD 1 byte sang nhị phân
+func tb_bcd bv64 %v:bv64 {
+    @ens ule %r 165
+    @b0
+        %b = and %v 0xff
+        %hi = lshr %b 4
+        %lo = and %b 15
+        %t = mul %hi 10
+        %r1 = add %t %lo
+        ret %r1
+}
+
+# Số ngày của tháng m (1..12) năm y (00..99 = 2000..2099)
+func tb_days bv64 %m:bv64 %y:bv64 {
+    @ens ule %r 31
+    @ens uge %r 28
+    @b0
+        %feb = cmp eq %m 2
+        br %feb @f @o
+    @f
+        %l = and %y 3
+        %leap = cmp eq %l 0
+        br %leap @f29 @f28
+    @f29
+        ret 29
+    @f28
+        ret 28
+    @o
+        %a = cmp eq %m 4
+        %b = cmp eq %m 6
+        %c = cmp eq %m 9
+        %d = cmp eq %m 11
+        %ab = or %a %b
+        %cd = or %c %d
+        %t = or %ab %cd
+        %th = cmp ne %t 0
+        br %th @d30 @d31
+    @d30
+        ret 30
+    @d31
+        ret 31
+}
+
+# Cộng múi giờ vào dấu thời gian đóng gói (phút | giờ << 8 | ngày << 16 | tháng << 24 | năm << 32), kẹp giá trị lạ
+func tb_localize bv64 %p:bv64 {
+    @b0
+        %mi0 = and %p 0xff
+        %h1 = lshr %p 8
+        %h0 = and %h1 0xff
+        %d1 = lshr %p 16
+        %d0 = and %d1 0xff
+        %m1 = lshr %p 24
+        %m0 = and %m1 0xff
+        %y1 = lshr %p 32
+        %y0 = and %y1 0xff
+        %mi = call math_min %mi0 59
+        %h = call math_min %h0 23
+        %m2 = call math_min %m0 12
+        %m = call math_max %m2 1
+        %y = call math_min %y0 99
+        %dim = call tb_days %m %y
+        %d2 = call math_min %d0 %dim
+        %d = call math_max %d2 1
+        %hl = add %h TB_TZ_HOURS
+        %next = cmp uge %hl 24
+        br %next @roll @same
+    @same
+        jmp @pack %mi %hl %d %m %y
+    @roll
+        %hn = sub %hl 24
+        %dn = add %d 1
+        %over = cmp ugt %dn %dim
+        br %over @mon @pack0
+    @pack0
+        jmp @pack %mi %hn %dn %m %y
+    @mon
+        %mn = add %m 1
+        %yr = cmp ugt %mn 12
+        br %yr @year @pack1
+    @pack1
+        jmp @pack %mi %hn 1 %mn %y
+    @year
+        %yn = add %y 1
+        %yw = call math_min %yn 99
+        jmp @pack %mi %hn 1 1 %yw
+    @pack %a:bv64 %b:bv64 %c:bv64 %e:bv64 %f:bv64
+        %b8 = and %b 0xff
+        %c8 = and %c 0xff
+        %e8 = and %e 0xff
+        %f8 = and %f 0xff
+        %a8 = and %a 0xff
+        %s1 = shl %b8 8
+        %s2 = shl %c8 16
+        %s3 = shl %e8 24
+        %s4 = shl %f8 32
+        %o1 = or %a8 %s1
+        %o2 = or %o1 %s2
+        %o3 = or %o2 %s3
+        %o4 = or %o3 %s4
+        ret %o4
+}
+
+func tb_char void %px:ptr<VgaCell,2073600> %x:bv64 %c:bv64 %fg:bv32 {
+    @b0
+        call surf_char TB_N %px TB_STRIDE TB_W TB_H %x 8 %c %fg
+        ret
+}
+
+# 2 chữ số của v (0..99) tại x
+func tb_2d void %px:ptr<VgaCell,2073600> %x:bv64 %v:bv64 %fg:bv32 {
+    @b0
+        %v1 = call math_min %v 99
+        %t = udiv %v1 10
+        %u = urem %v1 10
+        %ct = add %t 48
+        %cu = add %u 48
+        call tb_char %px %x %ct %fg
+        %x2 = add_sat %x 9
+        call tb_char %px %x2 %cu %fg
+        ret
+}
+
+# Chuỗi 8 byte đóng gói (byte thấp = ký tự đầu) tại x
+func tb_str8 void %px:ptr<VgaCell,2073600> %x:bv64 %s:bv64 %fg:bv32 {
+    @b0
+        jmp @l 0 %x
+    @l %i:bv64 %cx:bv64
+        @inv ule %i 8
+        %more = cmp ult %i 8
+        br %more @ch @done
+    @ch
+        %sh = shl %i 3
+        %b = lshr %s %sh
+        %c = and %b 0xff
+        call tb_char %px %cx %c %fg
+        %i1 = add %i 1
+        %x1 = add_sat %cx 9
+        jmp @l %i1 %x1
+    @done
+        ret
+}
+
+# Vẽ cả thanh: %name = 8 byte đầu tên file App focus (0 = desktop), %t = dấu thời gian đã cộng múi giờ
+func tb_draw void %px:ptr<VgaCell,2073600> %name:bv64 %t:bv64 {
+    @b0
+        call surf_fill_rect TB_N %px TB_STRIDE TB_W TB_H 0 0 TB_W 31 TB_BG
+        call surf_fill_rect TB_N %px TB_STRIDE TB_W TB_H 0 31 TB_W 32 TB_LINE
+        # logo: ô vuông bo góc xanh + ô nhỏ tối bên trong, chữ "Light OS"
+        call surf_fill_rect TB_N %px TB_STRIDE TB_W TB_H 17 8 31 24 TB_LOGO
+        call surf_fill_rect TB_N %px TB_STRIDE TB_W TB_H 16 9 32 23 TB_LOGO
+        call surf_fill_rect TB_N %px TB_STRIDE TB_W TB_H 20 12 24 20 TB_BG
+        call surf_fill_rect TB_N %px TB_STRIDE TB_W TB_H 20 16 28 20 TB_BG
+        %lo = const "Light OS" bv64
+        call tb_str8 %px 42 %lo TB_TEXT
+        # tên App focus ở giữa
+        %has = cmp ne %name 0
+        br %has @app @desk
+    @desk
+        %dk = const "Desktop " bv64
+        call tb_str8 %px 924 %dk TB_DIM
+        jmp @clock
+    @app
+        %len = call dk_name_len %name
+        %tw = mul %len 9
+        %hw = lshr %tw 1
+        %x0 = sub 960 %hw
+        jmp @nl 0 %x0
+    @nl %i:bv64 %cx:bv64
+        @inv ule %i 8
+        %more = cmp ult %i %len
+        br %more @nc @clock
+    @nc
+        %c = call dk_name_char %name %i
+        call tb_char %px %cx %c TB_TEXT
+        %i1 = add %i 1
+        %x1 = add_sat %cx 9
+        jmp @nl %i1 %x1
+    @clock
+        # "dd/mm/20yy  hh:mm" (17 ký tự) canh phải tại 1904
+        %mi = and %t 0xff
+        %a1 = lshr %t 8
+        %hh = and %a1 0xff
+        %a2 = lshr %t 16
+        %dd = and %a2 0xff
+        %a3 = lshr %t 24
+        %mm = and %a3 0xff
+        %a4 = lshr %t 32
+        %yy = and %a4 0xff
+        call tb_2d %px 1751 %dd TB_DIM
+        call tb_char %px 1769 47 TB_DIM
+        call tb_2d %px 1778 %mm TB_DIM
+        call tb_char %px 1796 47 TB_DIM
+        call tb_2d %px 1805 20 TB_DIM
+        call tb_2d %px 1823 %yy TB_DIM
+        call tb_2d %px 1859 %hh TB_TEXT
+        call tb_char %px 1877 58 TB_TEXT
+        call tb_2d %px 1886 %mi TB_TEXT
+        ret
+}

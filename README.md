@@ -88,7 +88,7 @@ Mỗi biến được định danh bằng số thứ tự (`%0`, `%1`, `%2`...) 
 
 ```text
 lit_program/
-├── os/        kernel.lit (vòng lặp scheduler), init.lit, wm.lit (desktop, cầu nối Dock), dock.lit (vẽ Dock thuần: bảng bo góc, hover, chỉ báo App), compositor.lit (surface riêng mỗi App, xếp chồng/kéo cửa sổ, vẽ khung), app_loader.lit (VMM, nạp App),
+├── os/        kernel.lit (vòng lặp scheduler), init.lit, wm.lit (desktop, cầu nối Dock), dock.lit (vẽ Dock thuần: bảng bo góc, hover, chỉ báo App), topbar.lit (thanh trên cùng: tên App, ngày giờ RTC), compositor.lit (surface riêng mỗi App, xếp chồng/kéo cửa sổ, vẽ khung), app_loader.lit (VMM, nạp App),
 │              lightfs.lit (LightFS phía Kernel), hw.lit (framebuffer, PCI, MMIO), diag.lit (panic, selftest)
 ├── drivers/   blk, nvme, ata_disk, pci, usb_xhci, kbd_drv (PS/2 + chuột), vga_drv, serial
 ├── lib/       std_lib, os_layout (Layout dùng chung), gfx, font, ipc_bus, cap_mem, lightfs_api, ui_* (window, button,
@@ -113,7 +113,7 @@ lit_program/
 - **MMIO**: Light không cho đổi số nguyên thành `ptr`, nên địa chỉ chỉ biết lúc chạy (framebuffer, BAR) được ánh xạ vào địa chỉ ảo cố định qua PML4[1]: `0x80_0000_0000` framebuffer (WC), `0x80_4000_0000` BAR NVMe (UC), `0x80_4200_0000` CFGBAR của Intel VMD (UC). Bảng HW ở `0x96000`.
 - **Đĩa** (`drivers/blk.lit`): NVMe nếu có, ngược lại ATA PIO. Driver NVMe (`drivers/nvme.lit`, viết bằng Light): tìm NVMe trên PCI hoặc phía sau **Intel VMD** (laptop Intel đời 11+), 1 cặp hàng đợi Admin + 1 cặp I/O, thăm dò completion, DMA qua bộ đệm bounce 64KB ở `0x80000`. Chỉ dùng phân vùng GPT tên **`lightos`** có header **LightFS** (`LIGHTFS1`; copy-on-write + checksum, xem ROADMAP bước 6; host: `light sync/fsck/pack`); mọi LBA được kiểm tra `< kích thước phân vùng` ngay trong driver. Đĩa không có GPT (ảnh thô trên QEMU) → cả namespace.
 - **Dòng trạng thái** góc trên trái (và serial): `BLK = backend<<48 | gpt<<40 | mã_lỗi_nvme<<32 | rộng<<16 | cao`, `PART` = LBA đầu phân vùng, `PLEN` = số sector. Backend 2 = NVMe, 1 = ATA, 0 = không có; gpt 1 = thấy `lightos`; mã lỗi NVMe xem đầu hàm `nvme_init_ctrl`.
-- **Phím**: F1..F7 mở App ở ô Dock tương ứng (touchpad I2C của laptop chưa có driver), F12 khởi động lại.
+- **Phím**: F1..F7 mở App ở ô Dock tương ứng (touchpad I2C của laptop chưa có driver), F10 hiện/ẩn dòng chẩn đoán phần cứng, F12 khởi động lại.
 
 ---
 
@@ -210,8 +210,9 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `str` | chuỗi = (độ dài, `ptr<Byte,%n>`): `str_eq`, `str_starts_with`, `str_find`, `str_skip_spaces`, `str_parse_u64`, `byte_lower` |
 | `fmt` | ghi vào bộ đệm, trả vị trí mới `<= cap`: `fmt_byte`, `fmt_str`, `fmt_u64`, `fmt_hex` |
 | `sys` | IPC theo tên trường: `sys_key_pop`, `sys_mouse_x/y`, `sys_click_take`, `sys_mem_request`, `sys_close`, `sys_damage` |
-| `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text` |
-| `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage` |
+| `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text`, `surf_round_inset`, `surf_round_rect` (hình bo góc dùng chung cho Dock / compositor / widget) |
+| `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
+| `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
 lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Terminal in số bằng `fmt_u64` (`term_append_dec`).

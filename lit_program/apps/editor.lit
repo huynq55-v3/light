@@ -7,72 +7,178 @@ include ../lib/std_lib.lit
 include ../lib/ipc_bus.lit
 include ../lib/ui_canvas.lit
 include ../lib/cap_mem.lit
-include ../lib/ui_text_view.lit
 include ../lib/lightfs_api.lit
+include ../std/widget_fs.lit
 
-# 1. Render văn bản streaming đa dòng qua thư viện dùng chung ui_text_view
-func editor_render_text void %0:ptr<VgaCell,1382400> %1:ptr<DiskQword,64> %2:ptr<DiskQword,64> {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req uge %2 0x10000
-    @req ult %2 0x10000000000
+# Bố cục (tọa độ client 876 x 506 của cửa sổ 880 x 540): thanh công cụ cao 52 (New / Open / Save + ô tên file),
+# vùng tài liệu trắng, thanh trạng thái cao 28 (số ký tự, loại file). Khi duyệt file, vùng tài liệu là danh sách
+# kiểu Finder (std/widget_fs.lit). Mọi hình vẽ đi qua bộ component std/widget.lit.
+def ED_CW 876
+def ED_CH 506
+def ED_TB_H 52
+def ED_SB_H 28
+def ED_BTN_Y 12
+def ED_BTN_H 28
+def ED_NEW_X 16
+def ED_NEW_W 64
+def ED_OPEN_X 88
+def ED_OPEN_W 72
+def ED_SAVE_X 168
+def ED_SAVE_W 64
+def ED_FIELD_X 248
+def ED_DOC_X 24
+def ED_DOC_Y 68
+def ED_TITLE 0x2020524f54494445         # "EDITOR  " (tên cửa sổ, compositor vẽ thanh tiêu đề)
 
+data ED_L_NEW Byte {
+    "New"
+}
+data ED_L_OPEN Byte {
+    "Open"
+}
+data ED_L_SAVE Byte {
+    "Save"
+}
+data ED_L_UNTITLED Byte {
+    "Untitled"
+}
+data ED_L_CHARS Byte {
+    "characters"
+}
+data ED_L_PLAIN Byte {
+    "Plain Text"
+}
+data ED_L_PICK Byte {
+    "Choose a file to open"
+}
+
+# 1. Vẽ lại toàn bộ client. %browse = 0 (soạn thảo) hoặc id thư mục + 1, %fid = id file đang mở (0 = chưa lưu)
+func editor_draw void %fb:ptr<VgaCell,1382400> %text:ptr<DiskQword,64> %tab:ptr<DiskQword,4096> %browse:bv64 %fid:bv64 {
+    @req uge %text 0x10000
+    @req ult %text 0x10000000000
+    @req uge %tab 0x10000
+    @req ult %tab 0x10000000000
     @b0
-        %3 = const 220 bv64
-        %4 = const 148 bv64
-        %5 = const 1020 bv64
-        %6 = const 520 bv64
-        %7 = const 0x0f172a bv32
-        %8 = const 1 bv64
-        call ui_text_view_render %0 %1 %2 %3 %4 %5 %6 %7 %8
+        %px = call wg_client %fb
+        call wg_box %px ED_CW ED_CH 0 0 ED_CW ED_CH WG_PAPER
+        # thanh công cụ
+        call wg_toolbar %px ED_CW ED_CH ED_TB_H
+        %ln = addr ED_L_NEW
+        call wg_pbutton %px ED_CW ED_CH ED_NEW_X ED_BTN_Y ED_NEW_W ED_BTN_H ED_L_NEW.len %ln 0
+        %lo = addr ED_L_OPEN
+        %isb = cmp ne %browse 0
+        call wg_pbutton %px ED_CW ED_CH ED_OPEN_X ED_BTN_Y ED_OPEN_W ED_BTN_H ED_L_OPEN.len %lo %browse
+        %ls = addr ED_L_SAVE
+        call wg_pbutton %px ED_CW ED_CH ED_SAVE_X ED_BTN_Y ED_SAVE_W ED_BTN_H ED_L_SAVE.len %ls 0
+        # ô tên file: biểu tượng tài liệu + tên (hoặc "Untitled")
+        %fw = sub ED_CW ED_FIELD_X
+        %fw1 = sub %fw 16
+        call wg_field %px ED_CW ED_CH ED_FIELD_X ED_BTN_Y %fw1 ED_BTN_H
+        call wg_icon_doc %px ED_CW ED_CH 258 17
+        %ok1 = cmp ne %fid 0
+        %ok2 = cmp ult %fid 256
+        %ok = and %ok1 %ok2
+        br %ok @named @untitled
+    @named
+        %id = call math_min %fid 255
+        %e = call wg_fs_name %px ED_CW ED_CH 282 18 %tab %id WG_INK
+        jmp @body
+    @untitled
+        %lu = addr ED_L_UNTITLED
+        call wg_label %px ED_CW ED_CH 282 18 ED_L_UNTITLED.len %lu WG_INK2
+        jmp @body
+    @body
+        # thanh trạng thái
+        %sy = call wg_statusbar %px ED_CW ED_CH ED_SB_H
+        %ty = add_sat %sy 7
+        %dw = sub ED_CW 48
+        br %isb @browser @editor
+    @browser
+        %dir0 = sub_sat %browse 1
+        %dir = call math_min %dir0 255
+        call wg_fs_list %px ED_CW ED_CH ED_DOC_X 64 %dw %tab %dir
+        %lp = addr ED_L_PICK
+        call wg_label %px ED_CW ED_CH 16 %ty ED_L_PICK.len %lp WG_INK2
+        ret
+    @editor
+        %dh0 = sub_sat %sy ED_DOC_Y
+        %dh = sub_sat %dh0 8
+        call wg_textarea %px ED_CW ED_CH ED_DOC_X ED_DOC_Y %dw %dh %text WG_INK 1
+        %n = call std_str_len %text
+        %nx = call wg_number %px ED_CW ED_CH 16 %ty %n WG_INK2
+        %cx = add_sat %nx 9
+        %lc = addr ED_L_CHARS
+        call wg_label %px ED_CW ED_CH %cx %ty ED_L_CHARS.len %lc WG_INK2
+        %px2 = sub ED_CW 106
+        %lpl = addr ED_L_PLAIN
+        call wg_label %px ED_CW ED_CH %px2 %ty ED_L_PLAIN.len %lpl WG_INK2
         ret
 }
 
-# 2. Hàm bắt buộc của mọi App: Tự vẽ Icon 52x52 của App lên Thanh Dock
+# 2. Hàm bắt buộc của mọi App: icon 52x52 trên Dock (Dock tự bo góc): nền xanh nhạt, trang giấy trắng có dòng chữ,
+#    bút chì vàng chéo góc
 func app_draw_icon void %0:ptr<VgaCell,1382400> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
     @req ult %0 0x80000000
     @req ule %1 1200
     @req ule %2 650
-
     @b0
-        %3 = const 52 bv64
-        %4 = add %1 %3
-        %5 = add %2 %3
-        %6 = const 0xf8fafc bv32
-        call gfx_fill_rect %0 %1 %2 %4 %5 %6
-
-        %7 = const 14 bv64
-        %8 = add %2 %7
-        %9 = const 0x3b82f6 bv32
-        call gfx_fill_rect %0 %1 %2 %4 %8 %9
-
-        %10 = const 8 bv64
-        %11 = const 44 bv64
-        %12 = add %1 %10
-        %13 = add %1 %11
-
-        %14 = const 22 bv64
-        %15 = const 26 bv64
-        %16 = add %2 %14
-        %17 = add %2 %15
-        %18 = const 0x64748b bv32
-        call gfx_fill_rect %0 %12 %16 %13 %17 %18
-
-        %19 = const 32 bv64
-        %20 = const 36 bv64
-        %21 = add %2 %19
-        %22 = add %2 %20
-        call gfx_fill_rect %0 %12 %21 %13 %22 %18
-
-        %23 = const 42 bv64
-        %24 = const 46 bv64
-        %25 = add %2 %23
-        %26 = add %2 %24
-        call gfx_fill_rect %0 %12 %25 %13 %26 %18
-
+        %xe = add %1 52
+        %ye = add %2 52
+        call gfx_fill_rect %0 %1 %2 %xe %ye 0xdbeafe
+        # trang giấy
+        %px0 = add %1 12
+        %py0 = add %2 7
+        %px1 = add %1 40
+        %py1 = add %2 45
+        call gfx_fill_rect %0 %px0 %py0 %px1 %py1 0xffffff
+        %sx0 = add %1 40
+        %sy0 = add %2 9
+        %sx1 = add %1 42
+        %sy1 = add %2 47
+        call gfx_fill_rect %0 %sx0 %sy0 %sx1 %sy1 0x93c5fd
+        %bx0 = add %1 14
+        %by0 = add %2 45
+        call gfx_fill_rect %0 %bx0 %by0 %sx1 %sy1 0x93c5fd
+        # dòng chữ
+        %lx0 = add %1 17
+        %lx1 = add %1 35
+        %lx2 = add %1 29
+        %a0 = add %2 14
+        %a1 = add %2 16
+        call gfx_fill_rect %0 %lx0 %a0 %lx1 %a1 0x007aff
+        %b0 = add %2 21
+        %b1 = add %2 23
+        call gfx_fill_rect %0 %lx0 %b0 %lx1 %b1 0x9ca3af
+        %c0 = add %2 27
+        %c1 = add %2 29
+        call gfx_fill_rect %0 %lx0 %c0 %lx1 %c1 0x9ca3af
+        %d0 = add %2 33
+        %d1 = add %2 35
+        call gfx_fill_rect %0 %lx0 %d0 %lx2 %d1 0x9ca3af
+        # bút chì chéo (bậc thang 3x3) ở góc dưới phải
+        jmp @pen 0
+    @pen %k:bv64
+        @inv ule %k 7
+        %more = cmp ult %k 7
+        br %more @step @tip
+    @step
+        %k3 = mul %k 3
+        %qx = add %1 26
+        %qx0 = add %qx %k3
+        %qy = add %2 44
+        %qy0 = sub %qy %k3
+        %qx1 = add %qx0 5
+        %qy1 = add %qy0 5
+        call gfx_fill_rect %0 %qx0 %qy0 %qx1 %qy1 0xf59e0b
+        %k1 = add %k 1
+        jmp @pen %k1
+    @tip
+        %tx0 = add %1 23
+        %ty0 = add %2 46
+        %tx1 = add %1 27
+        %ty1 = add %2 50
+        call gfx_fill_rect %0 %tx0 %ty0 %tx1 %ty1 0x374151
         ret
 }
 
@@ -260,12 +366,9 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         ret
 
     @b3
-        %20 = const 96 bv64
-        %21 = const 28 bv64
-
-        %22 = const 240 bv64
-        %23 = const 80 bv64
-        %24 = call ui_btn_hit %500 %6 %7 %22 %20 %23 %21
+        %20 = call wg_mouse_x %1            # tọa độ client
+        %21 = call wg_mouse_y %1
+        %24 = call wg_hit %20 %21 ED_NEW_X ED_BTN_Y ED_NEW_W ED_BTN_H
         %25 = cmp ne %24 %12
         br %25 @b4 @b5
 
@@ -276,9 +379,7 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         jmp @b36
 
     @b5
-        %27 = const 340 bv64
-        %28 = const 110 bv64
-        %29 = call ui_btn_hit %500 %6 %7 %27 %20 %28 %21
+        %29 = call wg_hit %20 %21 ED_OPEN_X ED_BTN_Y ED_OPEN_W ED_BTN_H
         %30 = cmp ne %29 %12
         br %30 @b6 @b7
 
@@ -290,8 +391,7 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         ret
 
     @b7
-        %32 = const 470 bv64
-        %33 = call ui_btn_hit %500 %6 %7 %32 %20 %23 %21
+        %33 = call wg_hit %20 %21 ED_SAVE_X ED_BTN_Y ED_SAVE_W ED_BTN_H
         %34 = cmp ne %33 %12
         br %34 @b8 @b10
 
@@ -358,9 +458,8 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         %43 = sub %41 %13
         %44 = const 255 bv64
         %45 = call std_min %43 %44
-        %50 = const 230 bv64
-        %51 = const 140 bv64
-        %52 = call ui_fb_handle_click %214 %500 %6 %7 %50 %51 %45
+        %51 = sub ED_CW 48
+        %52 = call wg_fs_hit %214 %20 %21 ED_DOC_X 64 %51 %45
 
         %53 = const 32 bv64
         %54 = lshr %52 %53
@@ -421,19 +520,11 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
 
     @b331
         call std_str_push_or_bs %212 %61
-        %64 = const 14 bv64
-        %65 = const 82 bv64
-        %66 = const 862 bv64
-        %67 = const 502 bv64
-        %68 = const 0xffffff bv32
-        call canvas_fill_rect %0 %64 %65 %66 %67 %68
-        call editor_render_text %0 %3 %212
-        call canvas_invalidate_rect %1 %64 %65 %66 %67
-        ret
+        jmp @b36
 
     @b35
         store %1 112 %13
-        %73 = const 0x2020524f54494445 bv64
+        %73 = const ED_TITLE bv64
         %74 = const 0xffffff bv32
         call ui_win_open %0 %3 %1 %8 %9 %10 %11 %73 %74
         %75 = const 1086 bv64
@@ -446,87 +537,9 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
 
     @b36
         %77 = call cap_state_get %211 %200
-        %79 = cmp ugt %77 %12
-
-        %80 = const 96 bv64
-        %81 = const 28 bv64
-        %82 = const 0x2563eb bv32
-        %83 = const 0x334155 bv32
-        %84 = const 0xffffff bv32
-        %85 = const 3 bv64
-        %86 = const 6 bv64
-        %87 = const 4 bv64
-
-        %88 = const 240 bv64
-        %89 = const 80 bv64
-        %90 = const 0x57454e bv64
-        call ui_btn_draw_text %0 %3 %88 %80 %89 %81 %83 %84 %90 %85 %12
-
-        %91 = const 340 bv64
-        %92 = const 110 bv64
-        %93 = const 0x4553574f5242 bv64
-        br %79 @b361 @b362
-
-    @b361
-        call ui_btn_draw_text %0 %3 %91 %80 %92 %81 %82 %84 %93 %86 %12
-        jmp @b37
-
-    @b362
-        call ui_btn_draw_text %0 %3 %91 %80 %92 %81 %83 %84 %93 %86 %12
-        jmp @b37
-
-    @b37
-        %94 = const 470 bv64
-        %95 = const 0x45564153 bv64
-        call ui_btn_draw_text %0 %3 %94 %80 %89 %81 %83 %84 %95 %87 %12
-
-        # Tên file đang mở bên phải nút SAVE
-        %270 = const 570 bv64
-        %271 = const 280 bv64
-        %272 = const 900 bv64
-        %273 = const 124 bv64
-        %274 = const 0x0f172a bv32
-        call gfx_fill_rect %0 %270 %80 %272 %273 %274
         %275 = call cap_state_get %211 %201
-        %276 = const 256 bv64
-        %277 = cmp ult %275 %276
-        %278 = cmp ne %275 %12
-        %279 = and %277 %278
-        br %279 @b371 @b372
-
-    @b371
-        %280 = const 255 bv64
-        %281 = call std_min %275 %280
-        %282 = const 584 bv64
-        %283 = const 102 bv64
-        %284 = const 0x94a3b8 bv32
-        call ui_fb_draw_name %0 %3 %214 %281 %282 %283 %284
-        jmp @b372
-
-    @b372
-        %96 = const 0 bv64
-        %97 = const 876 bv64
-        %98 = const 70 bv64
-        %99 = const 536 bv64
-        %103 = const 34 bv64
-        br %79 @b40 @b50
-
-    @b40
-        %100 = const 0x0f172a bv32
-        call canvas_fill_rect %0 %96 %98 %97 %99 %100
-        %101 = const 230 bv64
-        %102 = const 140 bv64
-        %290 = sub %77 %13
-        %111 = const 255 bv64
-        %116 = call std_min %290 %111
-        call ui_fb_render %0 %3 %214 %101 %102 %116
-        call canvas_invalidate_rect %1 %96 %103 %97 %99
-        ret
-
-    @b50
-        call canvas_fill_rect %0 %96 %98 %97 %99 %84
-        call editor_render_text %0 %3 %212
-        call canvas_invalidate_rect %1 %96 %103 %97 %99
+        call editor_draw %0 %212 %214 %77 %275
+        call wg_damage %1 0 0 ED_CW ED_CH
         ret
 
     @b99

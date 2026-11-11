@@ -9,7 +9,7 @@ include ../lib/ipc_bus.lit
 include ../lib/std_lib.lit
 include hw.lit
 include app_loader.lit
-include dock.lit
+include topbar.lit
 
 func gfx_draw_cursor void %0:ptr<VgaCell,2073600> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
@@ -464,6 +464,156 @@ func dock_tick void %io:io<0,0xffff> %front:ptr<VgaCell,2073600> %back:ptr<VgaCe
 }
 
 # =============================================================================
+# THANH TRÊN CÙNG: cầu nối (đọc RTC, đưa lên màn hình). Phần vẽ thuần ở os/topbar.lit
+# =============================================================================
+func tb_state ptr<TopState,1> %io:io<0,0xffff> {
+    @b0
+        %t = const 0x79f00 ptr<TopState,1>
+        ret %t
+}
+
+func rtc_reg bv64 %io:io<0,0xffff> %r:bv8 {
+    @b0
+        hwio_w %io 0x70 %r
+        %v = hwio_r %io 0x71
+        %b = and %v 0xff
+        ret %b
+}
+
+# Đọc RTC (chờ hết chu kỳ cập nhật, có giới hạn). Trả phút | giờ << 8 | ngày << 16 | tháng << 24 | năm << 32 (nhị phân, 24h)
+func rtc_read bv64 %io:io<0,0xffff> {
+    @b0
+        jmp @w 0
+    @w %i:bv64
+        @inv ule %i 100000
+        %more = cmp ult %i 100000
+        br %more @poll @read
+    @poll
+        %a = call rtc_reg %io 0x0a:bv8
+        %uip = and %a 0x80
+        %busy = cmp ne %uip 0
+        br %busy @next @read
+    @next
+        %i1 = add %i 1
+        jmp @w %i1
+    @read
+        %mi0 = call rtc_reg %io 0x02:bv8
+        %h0 = call rtc_reg %io 0x04:bv8
+        %d0 = call rtc_reg %io 0x07:bv8
+        %m0 = call rtc_reg %io 0x08:bv8
+        %y0 = call rtc_reg %io 0x09:bv8
+        %fb = call rtc_reg %io 0x0b:bv8
+        %pm = and %h0 0x80
+        %h7 = and %h0 0x7f
+        %bin0 = and %fb 4
+        %bin = cmp ne %bin0 0
+        br %bin @raw @bcd
+    @bcd
+        %mi1 = call tb_bcd %mi0
+        %h1 = call tb_bcd %h7
+        %d1 = call tb_bcd %d0
+        %m1 = call tb_bcd %m0
+        %y1 = call tb_bcd %y0
+        jmp @h12 %mi1 %h1 %d1 %m1 %y1
+    @raw
+        jmp @h12 %mi0 %h7 %d0 %m0 %y0
+    @h12 %mi:bv64 %h:bv64 %d:bv64 %m:bv64 %y:bv64
+        # chế độ 12 giờ (bit 1 của thanh ghi B = 0): bit 7 của giờ = chiều
+        %f24 = and %fb 2
+        %is24 = cmp ne %f24 0
+        br %is24 @h24 @t12
+    @h24
+        jmp @pack %h
+    @t12
+        %h12 = urem %h 12
+        %ispm = cmp ne %pm 0
+        br %ispm @addpm @am
+    @addpm
+        %hp = add %h12 12
+        jmp @pack %hp
+    @am
+        jmp @pack %h12
+    @pack %hh:bv64
+        %a8 = and %mi 0xff
+        %b8 = and %hh 0xff
+        %c8 = and %d 0xff
+        %e8 = and %m 0xff
+        %f8 = and %y 0xff
+        %s1 = shl %b8 8
+        %s2 = shl %c8 16
+        %s3 = shl %e8 24
+        %s4 = shl %f8 32
+        %o1 = or %a8 %s1
+        %o2 = or %o1 %s2
+        %o3 = or %o2 %s3
+        %o4 = or %o3 %s4
+        ret %o4
+}
+
+# Mỗi nhịp WM: vẽ lại thanh trên cùng khi đổi phút hoặc đổi App focus
+func topbar_tick void %io:io<0,0xffff> %front:ptr<VgaCell,2073600> %back:ptr<VgaCell,2073600> %g:ptr<IpcChannel,1> {
+    @req uge %front 0x10000
+    @req ult %front 0x40000000
+    @req uge %back 0x10000
+    @req ult %back 0x40000000
+    @b0
+        %ts = call tb_state %io
+        %ds = call dock_ds %io
+        # phút trước: chỉ đọc thanh ghi phút (rẻ); đổi phút / chưa vẽ -> đọc đủ
+        %mi = call rtc_reg %io 0x02:bv8
+        %act = load %g IpcChannel.active_app
+        %fg = cmp ne %act 0
+        br %fg @fa @fn
+    @fa
+        %f = sub %act 1
+        jmp @st %f
+    @fn
+        jmp @st 7
+    @st %foc:bv64
+        @inv ule %foc 7
+        %od = load %ts TopState.drawn
+        %of = load %ts TopState.focus
+        %os = load %ts TopState.stamp
+        %omr = and %os 0xff
+        %c0 = cmp eq %od 0
+        %c1 = cmp ne %of %foc
+        %c2 = cmp ne %omr %mi
+        %c01 = or %c0 %c1
+        %ch = or %c01 %c2
+        br %ch @draw @same
+    @draw
+        %raw = call rtc_read %io
+        %t = call tb_localize %raw
+        %rmin = and %raw 0xff
+        %keep0 = and %t 0xffffffffffffff00
+        %stamp = or %keep0 %rmin            # phút thô (để so lần sau) — phút không đổi khi cộng múi giờ
+        store %ts TopState.stamp %stamp
+        store %ts TopState.focus %foc
+        store %ts TopState.drawn 1
+        %isd = cmp eq %foc 7
+        br %isd @nm0 @nm
+    @nm0
+        jmp @paint 0
+    @nm
+        %f6 = call math_min %foc 6
+        %n = call dk_name %ds %f6
+        jmp @paint %n
+    @paint %name:bv64
+        call tb_draw %back %name %t
+        call gfx_blit_rect %front %back 0 0 1920 32
+        call fb_present_rect %io %front 0 0 1920 32
+        %cx = load %g IpcChannel.cursor_x
+        %cy = load %g IpcChannel.cursor_y
+        call gfx_draw_cursor %front %cx %cy
+        %cx2 = add %cx 12
+        %cy2 = add %cy 18
+        call fb_present_rect %io %front %cx %cy %cx2 %cy2
+        ret
+    @same
+        ret
+}
+
+# =============================================================================
 # IPC VÀ ĐIỀU PHỐI CỬA SỔ DESKTOP KHÔNG CÒN HARDCODE APP
 # =============================================================================
 func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCell,2073600> %3:ptr<IpcChannel,1> %4:ptr<DiskQword,64> {
@@ -692,5 +842,6 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
     @b12
         # Dock: chỉ báo App đang mở / focus, hiệu ứng rê chuột
         call dock_tick %0 %1 %2 %3
+        call topbar_tick %0 %1 %2 %3
         ret
 }
