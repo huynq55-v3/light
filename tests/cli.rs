@@ -96,3 +96,20 @@ fn named_registers_work_and_errors_use_names() {
     let (b, _, _) = light(&d, &["check", "b.lit", "--json"]);
     assert!(b.contains("\"verified\":0,\"cache_hits\":1") || b.contains("\"verified\":1"), "{}", b);
 }
+
+#[test]
+fn named_labels_work_and_errors_use_them() {
+    let d = scratch("labels");
+    let ok = "func f bv64 %n:bv64 {\n    @req ule %n 9\n    @entry\n        %z = const 0 bv64\n        jmp @loop %z\n\n    @loop %i:bv64\n        @inv ule %i %n\n        %c = cmp ult %i %n\n        br %c @body @done\n\n    @body\n        %o = const 1 bv64\n        %j = add %i %o\n        jmp @loop %j\n\n    @done\n        ret %i\n}\n";
+    std::fs::write(d.join("l.lit"), ok).unwrap();
+    let (out, _, good) = light(&d, &["check", "l.lit", "--json"]);
+    assert!(good, "{}", out);
+    // phá @inv: lỗi phải nêu @loop chứ không phải @bN
+    std::fs::write(d.join("m.lit"), ok.replace("@inv ule %i %n", "@inv ult %i %n")).unwrap();
+    let (out, _, good) = light(&d, &["check", "m.lit", "--json", "--no-cache"]);
+    assert!(!good && out.contains("@loop"), "{}", out);
+    // nhãn trùng
+    std::fs::write(d.join("n.lit"), ok.replace("@body\n", "@loop\n")).unwrap();
+    let (out, _, good) = light(&d, &["check", "n.lit", "--json", "--no-cache"]);
+    assert!(!good && out.contains("hai lần"), "{}", out);
+}

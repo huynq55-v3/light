@@ -160,3 +160,9 @@ bash tools/qemu_uefi_nvme.sh
 
 `*_sat` và `*_ovf` được parser hạ thành các lệnh bv64 thuần (không rẽ nhánh), nên verifier và bộ sinh mã không đổi; ngữ nghĩa được kiểm trên
 mã máy thật với số học của Rust (`cgtest`, `tests/lit/codegen/ovf.lit`).
+
+## Tên biến và nhãn block
+
+Thay cho số SSA/nhãn số, có thể viết `%tổng`, `%i`, `@loop`, `@done` (bắt đầu bằng chữ hoặc `_`). Parser đổi chúng thành số trước khi kiểm chứng
+nên dùng được ở mọi vị trí (tham số, `@req/@ens/@inv`, kiểu `ptr<L,%n>`, đích `br/jmp`, tham chiếu tới trước); `%<số>` và `@b<số>` vẫn hợp lệ và
+có thể dùng lẫn. Thông báo lỗi và `--json` in lại bằng tên. Tên nhãn không được là `req`, `ens`, `inv`; block đầu tiên trong văn bản là entry.

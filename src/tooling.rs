@@ -12,7 +12,8 @@ use std::sync::{Mutex, OnceLock};
 static JSON: OnceLock<bool> = OnceLock::new();
 static NO_CACHE: OnceLock<bool> = OnceLock::new();
 static ORIGINS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
-static NAMES: Mutex<Option<HashMap<String, Vec<(u32, String)>>>> = Mutex::new(None);
+type FnNames = (Vec<(u32, String)>, Vec<(u32, String)>);
+static NAMES: Mutex<Option<HashMap<String, FnNames>>> = Mutex::new(None);
 static STATS: Mutex<(u32, u32)> = Mutex::new((0, 0)); // (trúng cache, kiểm chứng mới)
 static CACHE: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
 static ERRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -48,30 +49,34 @@ pub fn register_module(m: &Module) {
     let mut g2 = NAMES.lock().unwrap();
     let nm = g2.get_or_insert_with(HashMap::new);
     for f in &m.funcs {
-        if !f.names.is_empty() {
-            nm.insert(f.name.clone(), f.names.clone());
+        if !f.names.is_empty() || !f.block_names.is_empty() {
+            nm.insert(f.name.clone(), (f.names.clone(), f.block_names.clone()));
         }
     }
 }
 
-/// Thay `%<số>` bằng `%tên` theo bảng tên của hàm (nếu hàm dùng tên biến)
+/// Thay `%<số>` bằng `%tên` và `@b<số>` bằng `@tên` theo bảng tên của hàm (nếu hàm dùng tên)
 fn with_names(s: &str, func: &str) -> String {
     let g = NAMES.lock().unwrap();
-    let Some(t) = g.as_ref().and_then(|m| m.get(func)) else { return s.to_string() };
+    let Some((rt, bt)) = g.as_ref().and_then(|m| m.get(func)) else { return s.to_string() };
     let cs: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < cs.len() {
-        if cs[i] == '%' && i + 1 < cs.len() && cs[i + 1].is_ascii_digit() {
-            let mut j = i + 1;
+        let sg = cs[i];
+        // `%<số>` hoặc `@b<số>`; ký tự đứng trước phải không phải chữ/số (tránh cắt giữa từ như "Block b3")
+        let st = if sg == '%' { i + 1 } else if sg == '@' && cs.get(i + 1) == Some(&'b') { i + 2 } else { usize::MAX };
+        if st != usize::MAX && st < cs.len() && cs[st].is_ascii_digit() {
+            let mut j = st;
             while j < cs.len() && cs[j].is_ascii_digit() {
                 j += 1;
             }
-            let num: String = cs[i + 1..j].iter().collect();
-            match num.parse::<u32>().ok().and_then(|n| t.binary_search_by_key(&n, |e| e.0).ok()) {
+            let num: String = cs[st..j].iter().collect();
+            let tab = if sg == '%' { rt } else { bt };
+            match num.parse::<u32>().ok().and_then(|n| tab.binary_search_by_key(&n, |e| e.0).ok()) {
                 Some(k) => {
-                    out.push('%');
-                    out.push_str(&t[k].1);
+                    out.push(sg);
+                    out.push_str(&tab[k].1);
                 }
                 None => out.extend(&cs[i..j]),
             }
@@ -227,6 +232,9 @@ pub fn parse_err(s: &str) -> Diag {
     if !d.func.is_empty() {
         d.message = with_names(&d.message, &d.func);
         d.inst = with_names(&d.inst, &d.func);
+        if let Some(b) = d.block.strip_prefix('b') {
+            d.block = with_names(&format!("@b{}", b), &d.func).trim_start_matches('@').to_string();
+        }
         let f = d.func.clone();
         for c in &mut d.counterexample {
             c.0 = with_names(&c.0, &f);
@@ -290,6 +298,7 @@ fn func_key(module: &Module, func: &Func) -> u64 {
     let mut f = func.clone();
     f.origin.clear();
     f.names.clear(); // tên chỉ để báo lỗi: không làm mất cache khi đổi tên biến
+    f.block_names.clear();
     let mut callees: Vec<u32> = Vec::new();
     for b in &mut f.blocks {
         for i in &mut b.insts {

@@ -456,6 +456,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     blocks: Vec::new(),
                     origin: loc.clone(),
                     names: Vec::new(),
+                    block_names: Vec::new(),
                 });
             }
             "@req" => m
@@ -690,8 +691,9 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
             format!("{}\n    > {}", e, raw_line.trim())
         })?;
     }
-    for (f, t) in m.funcs.iter_mut().zip(name_tables) {
+    for (f, (t, bt)) in m.funcs.iter_mut().zip(name_tables) {
         f.names = t;
+        f.block_names = bt;
     }
     for f in &mut m.funcs {
         lower_func(f);
@@ -822,9 +824,9 @@ fn lower_func(f: &mut Func) {
     }
 }
 
-/// Duyệt phần MÃ của một dòng (bỏ chuỗi "..." và chú thích #), gọi `f` cho mỗi token `%định_danh`;
-/// `f` trả Some(thay thế không gồm dấu %) để đổi, None để giữ nguyên.
-fn scan_line(line: &str, mut f: impl FnMut(&str) -> Option<String>) -> String {
+/// Duyệt phần MÃ của một dòng (bỏ chuỗi "..." và chú thích #), gọi `f(dấu, định_danh)` cho mỗi token `%định_danh` hoặc `@định_danh`;
+/// `f` trả Some(thay thế không gồm dấu) để đổi, None để giữ nguyên.
+fn scan_line(line: &str, mut f: impl FnMut(char, &str) -> Option<String>) -> String {
     let cs: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
     let (mut i, mut in_str) = (0, false);
@@ -850,15 +852,15 @@ fn scan_line(line: &str, mut f: impl FnMut(&str) -> Option<String>) -> String {
                 out.extend(&cs[i..]);
                 break;
             }
-            '%' => {
+            '%' | '@' => {
                 let mut j = i + 1;
                 while j < cs.len() && (cs[j].is_ascii_alphanumeric() || cs[j] == '_') {
                     j += 1;
                 }
                 let id: String = cs[i + 1..j].iter().collect();
-                match f(&id) {
+                match f(c, &id) {
                     Some(r) => {
-                        out.push('%');
+                        out.push(c);
                         out.push_str(&r);
                     }
                     None => out.extend(&cs[i..j]),
@@ -873,49 +875,76 @@ fn scan_line(line: &str, mut f: impl FnMut(&str) -> Option<String>) -> String {
     out
 }
 
-/// Tên biến `%tên` (bắt đầu bằng chữ hoặc `_`) -> số SSA, theo từng hàm. Là phép thay thế văn bản trước khi parse, nên dùng được ở
-/// mọi vị trí (đích, toán hạng, tham số hàm/block, @req/@ens/@inv, kiểu `ptr<L,%n>`, tham chiếu tới trước). Số cấp bắt đầu sau số
-/// `%<chữ số>` lớn nhất của hàm, nên tên và số không bao giờ đụng nhau. Trả (văn bản mới, bảng tên theo thứ tự hàm).
-fn rename_names(src: &str) -> (String, Vec<Vec<(Reg, String)>>) {
+/// `@b<chữ số>` là nhãn số; `@req/@ens/@inv` là chỉ thị; còn lại `@tên` là nhãn có tên
+fn is_named_label(id: &str) -> bool {
+    let numeric = id.strip_prefix('b').is_some_and(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()));
+    !id.is_empty() && !numeric && !matches!(id, "req" | "ens" | "inv") && !id.as_bytes()[0].is_ascii_digit()
+}
+
+type NameTables = (Vec<(Reg, String)>, Vec<(BlockId, String)>);
+
+/// Tên biến `%tên` và nhãn `@tên` (bắt đầu bằng chữ hoặc `_`) -> số SSA / số block `@b<N>`, theo từng hàm. Là phép thay thế văn bản
+/// trước khi parse, nên dùng được ở mọi vị trí (đích, toán hạng, tham số hàm/block, @req/@ens/@inv, kiểu `ptr<L,%n>`, tham chiếu
+/// tới trước, đích br/jmp). Số cấp bắt đầu sau số `%<chữ số>` / `@b<chữ số>` lớn nhất của hàm nên tên và số không đụng nhau.
+fn rename_names(src: &str) -> (String, Vec<NameTables>) {
     let lines: Vec<&str> = src.lines().collect();
     let starts: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].trim_start().starts_with("func ")).collect();
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     let mut tables = Vec::new();
     for (k, &st) in starts.iter().enumerate() {
         let end = starts.get(k + 1).copied().unwrap_or(lines.len());
-        let mut max: u64 = 0;
+        let (mut max_r, mut max_b) = (0u64, 0u64);
         let mut any = false;
         for l in &lines[st..end] {
-            scan_line(l, |id| {
-                if id.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
-                    max = max.max(id.parse::<u64>().unwrap_or(0));
-                } else if !id.is_empty() {
+            scan_line(l, |sg, id| {
+                let digits = |d: &str| d.bytes().next().is_some_and(|b| b.is_ascii_digit()).then(|| d.parse::<u64>().unwrap_or(0));
+                if sg == '%' {
+                    match digits(id) {
+                        Some(n) => max_r = max_r.max(n),
+                        None => any |= !id.is_empty(),
+                    }
+                } else if is_named_label(id) {
                     any = true;
+                } else if let Some(n) = id.strip_prefix('b').and_then(digits) {
+                    max_b = max_b.max(n);
                 }
                 None
             });
         }
         if !any {
-            tables.push(Vec::new());
+            tables.push((Vec::new(), Vec::new()));
             continue;
         }
-        let mut map: HashMap<String, Reg> = HashMap::new();
-        let mut next = (max + 1) as Reg;
+        let mut rmap: HashMap<String, Reg> = HashMap::new();
+        let mut bmap: HashMap<String, BlockId> = HashMap::new();
+        let (mut next_r, mut next_b) = ((max_r + 1) as Reg, (max_b + 1) as BlockId);
         for i in st..end {
-            out[i] = scan_line(&lines[i], |id| {
-                if id.is_empty() || id.as_bytes()[0].is_ascii_digit() {
-                    return None;
+            out[i] = scan_line(lines[i], |sg, id| {
+                if sg == '%' {
+                    if id.is_empty() || id.as_bytes()[0].is_ascii_digit() {
+                        return None;
+                    }
+                    let r = *rmap.entry(id.to_string()).or_insert_with(|| {
+                        next_r += 1;
+                        next_r - 1
+                    });
+                    Some(r.to_string())
+                } else if is_named_label(id) {
+                    let b = *bmap.entry(id.to_string()).or_insert_with(|| {
+                        next_b += 1;
+                        next_b - 1
+                    });
+                    Some(format!("b{}", b))
+                } else {
+                    None
                 }
-                let r = *map.entry(id.to_string()).or_insert_with(|| {
-                    next += 1;
-                    next - 1
-                });
-                Some(r.to_string())
             });
         }
-        let mut t: Vec<(Reg, String)> = map.into_iter().map(|(n, r)| (r, n)).collect();
+        let mut t: Vec<(Reg, String)> = rmap.into_iter().map(|(n, r)| (r, n)).collect();
         t.sort();
-        tables.push(t);
+        let mut bt: Vec<(BlockId, String)> = bmap.into_iter().map(|(n, b)| (b, n)).collect();
+        bt.sort();
+        tables.push((t, bt));
     }
     let mut joined = out.join("\n");
     if src.ends_with('\n') {

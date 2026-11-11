@@ -1,0 +1,25 @@
+# Nhãn block có tên (@tên): khai báo, br/jmp tới trước, lẫn với @b<số>; tên bắt đầu bằng "b" (@body) không bị nhầm với @b<số>
+func count_to bv64 %n:bv64 {
+    @req ule %n 1000
+    @ens ule %out %n
+    @entry
+        %zero = const 0 bv64
+        jmp @loop %zero
+
+    @loop %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+
+    @body
+        %one = const 1 bv64
+        %next = add %i %one
+        jmp @loop %next
+
+    @done
+        jmp @b9 %i
+
+    @b9 %out:bv64
+        @inv ule %out %n
+        ret %out
+}

@@ -261,6 +261,7 @@ pub struct Func {
     pub requires: Vec<Z3Expr>, // Hợp đồng đầu vào (@req)
     pub ensures: Vec<Z3Expr>,  // Hợp đồng đầu ra (@ens)
     pub blocks: Vec<Block>,
+    pub block_names: Vec<(BlockId, String)>, // nhãn có tên (@tên) -> số block; chỉ để báo lỗi
     pub names: Vec<(Reg, String)>, // tên biến người viết (%tên) -> số SSA; chỉ để báo lỗi, sắp theo số
     pub origin: String,        // "file:dòng" nơi khai báo hàm (chỉ để báo lỗi/ tài liệu, không tham gia kiểm chứng)
 }
