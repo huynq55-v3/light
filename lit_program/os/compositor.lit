@@ -1,0 +1,219 @@
+# File: lit_program/os/compositor.lit
+# COMPOSITOR (lát 2): mỗi slot App vẽ vào SURFACE RIÊNG, Kernel ghép vùng bẩn của App foreground vào Backbuffer.
+#
+#   Surface slot s: vật lý 0x12000000 + s*6MB (6MB >= 1920*720*4 = 5.53MB), cùng hình học với khung nhìn App cũ
+#   (ptr<VgaCell,1382400>, stride 1920) -> ABI App không đổi. 7 surface = 21 khung 2MB ĐẦU của bể VMM
+#   (288MB..330MB): comp_init đánh dấu đã cấp trong bitmap rồi ánh xạ đồng nhất vào PD_0[144..164] (0..1GB của
+#   PD_0 chưa có gì ở đó). Phải ở dưới 2GB vì App và thư viện gfx đòi `@req ult %fb 0x80000000`.
+#
+#   Bật/tắt: compositor BẬT khi và chỉ khi PD_0[144] = 0x12000083 (do comp_init ghi). Không có đủ 21 khung trống
+#   (máy < ~330MB RAM khả dụng) -> không ghi gì, App vẽ thẳng vào Backbuffer như trước.
+#
+#   Chỉ ghép trong VÙNG CỬA SỔ [180,1100) x [50,615) (tọa độ khung nhìn) — vùng WM vẫn xóa khi đổi/đóng App;
+#   Dock và nền Desktop ngoài vùng này không bao giờ bị surface đè.
+
+include ../lib/gfx.lit
+include ../lib/std_lib.lit
+
+def COMP_X1 180
+def COMP_Y1 50
+def COMP_X2 1100
+def COMP_Y2 615
+def COMP_BG 0x161b26
+
+layout CompSlot 6291456 {
+    0: bv32
+}
+
+# 1 nếu compositor đã được bật lúc boot
+func comp_enabled bv64 %io:io<0,0xffff> {
+    @ens ule %r 1
+    @b0
+        %pd = const 0x12000 ptr<DiskQword,512>
+        %e = call q512 %pd 144
+        %on = cmp eq %e 0x12000083
+        ret %on
+}
+
+# Surface của slot (0..6). Chỉ hợp lệ để chạm vào khi comp_enabled = 1.
+func comp_surface ptr<VgaCell,1382400> %io:io<0,0xffff> %slot:bv64 {
+    @req ult %slot 7
+    @ens uge %r 0x10000
+    @ens ult %r 0x80000000
+    @b0
+        %all = const 0x12000000 ptr<CompSlot,7>
+        %one = slice %all %slot ptr<CompSlot,1>
+        %px = view %one ptr<VgaCell,1382400>
+        ret %px
+}
+
+# Đích vẽ của App slot: surface riêng nếu compositor bật, ngược lại khung nhìn Backbuffer %fb
+func comp_target ptr<VgaCell,1382400> %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %slot:bv64 {
+    @req uge %fb 0x10000
+    @req ult %fb 0x80000000
+    @req ult %slot 7
+    @ens uge %r 0x10000
+    @ens ult %r 0x80000000
+    @b0
+        %on = call comp_enabled %io
+        %yes = cmp ne %on 0
+        br %yes @surf @direct
+    @surf
+        %s = call comp_surface %io %slot
+        ret %s
+    @direct
+        ret %fb
+}
+
+# Xóa vùng cửa sổ của surface slot về màu nền (lúc boot và khi đóng App: không rò điểm ảnh sang App kế tiếp)
+func comp_clear_slot void %io:io<0,0xffff> %slot:bv64 {
+    @req ult %slot 7
+    @b0
+        %on = call comp_enabled %io
+        %yes = cmp ne %on 0
+        br %yes @clr @done
+    @clr
+        %s = call comp_surface %io %slot
+        call gfx_fill_rect %s COMP_X1 COMP_Y1 COMP_X2 COMP_Y2 COMP_BG
+        ret
+    @done
+        ret
+}
+
+# Lúc boot (sau vmm_probe_ram): giữ 21 khung đầu của bể cho 7 surface và ánh xạ đồng nhất chúng.
+# Trả 1 nếu bật được compositor.
+func comp_init bv64 %io:io<0,0xffff> %vmm:ptr<DiskQword,512> {
+    @req uge %vmm 0x10000
+    @req ult %vmm 0x80000000
+    @ens ule %r 1
+    @b0
+        # 21 khung = bit 0..20 của Qword bitmap 128; phải TRỐNG cả (đã được vmm_probe_ram mở, chưa ai cấp)
+        %lim = call q512 %vmm 6
+        %enough = cmp uge %lim 21
+        br %enough @chk @no
+    @chk
+        %bm = call q512 %vmm 128
+        %used = and %bm 0x1fffff
+        %free = cmp eq %used 0
+        br %free @take @no
+    @take
+        %bm2 = or %bm 0x1fffff
+        call q512_set %vmm 128 %bm2
+        %nalloc = call q512 %vmm 2
+        %nalloc2 = add_sat %nalloc 21
+        call q512_set %vmm 2 %nalloc2
+        %nfree = call q512 %vmm 7
+        %nfree2 = sub_sat %nfree 21
+        call q512_set %vmm 7 %nfree2
+        %pd = const 0x12000 ptr<DiskQword,512>
+        jmp @map 0
+    @map %k:bv64
+        @inv ule %k 21
+        %more = cmp ult %k 21
+        br %more @ent @mapped
+    @ent
+        %idx = add %k 144
+        %off = shl %k 21
+        %phys = add %off 0x12000000
+        %e = or %phys 0x83
+        call q512_set %pd %idx %e
+        %k2 = add %k 1
+        jmp @map %k2
+    @mapped
+        call mmu_flush %io
+        jmp @clr 0
+    @clr %s:bv64
+        @inv ule %s 7
+        %smore = cmp ult %s 7
+        br %smore @clr1 @yes
+    @clr1
+        call comp_clear_slot %io %s
+        %s2 = add %s 1
+        jmp @clr %s2
+    @yes
+        ret 1
+    @no
+        ret 0
+}
+
+# Chép một hàng %n điểm
+func comp_copy_row void %n:bv64 %dst:ptr<VgaCell,%n> %src:ptr<VgaCell,%n> {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %s = slice %src %i ptr<VgaCell,1>
+        %d = slice %dst %i ptr<VgaCell,1>
+        %v = load %s 0 bv32
+        store %d 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+
+# Chép [x1,x2) x [y1,y2) (tọa độ khung nhìn) từ surface sang khung nhìn Backbuffer, cắt theo vùng cửa sổ
+func comp_blit void %src:ptr<VgaCell,1382400> %dst:ptr<VgaCell,1382400> %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
+    @b0
+        %xa = call std_max %x1 COMP_X1
+        %xb = call std_min %x2 COMP_X2
+        %ya = call std_max %y1 COMP_Y1
+        %yb = call std_min %y2 COMP_Y2
+        %okx = cmp ult %xa %xb
+        br %okx @chky @done
+    @chky
+        %oky = cmp ult %ya %yb
+        br %oky @start @done
+    @start
+        jmp @l %ya
+    @l %y:bv64
+        @inv ule %xb 1100
+        @inv ult %xa %xb
+        @inv ule %yb 615
+        @inv ule %y %yb
+        %more = cmp ult %y %yb
+        br %more @row @done
+    @row
+        %ry = mul %y 1920
+        %off = add %ry %xa
+        %span = sub %xb %xa
+        %s = slice %src %off ptr<VgaCell,%span>
+        %d = slice %dst %off ptr<VgaCell,%span>
+        call comp_copy_row %span %d %s
+        %y2n = add %y 1
+        jmp @l %y2n
+    @done
+        ret
+}
+
+# Sau khi App slot chạy: nếu App là foreground và có báo vùng bẩn, ghép vùng đó từ surface vào Backbuffer.
+# Gọi TRƯỚC app_sync_out (hàm đó xóa cờ bẩn của kênh App và gộp vùng sang kênh toàn cục để WM đẩy ra VRAM).
+func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
+    @req ult %slot 7
+    @b0
+        %on = call comp_enabled %io
+        %yes = cmp ne %on 0
+        br %yes @fg @done
+    @fg
+        %act = load %g IpcChannel.active_app
+        %me = add %slot 1
+        %isfg = cmp eq %act %me
+        br %isfg @dirty @done
+    @dirty
+        %d = load %c IpcChannel.dirty
+        %has = cmp ne %d 0
+        br %has @blit @done
+    @blit
+        %x1 = load %c IpcChannel.dirty_x1
+        %y1 = load %c IpcChannel.dirty_y1
+        %x2 = load %c IpcChannel.dirty_x2
+        %y2 = load %c IpcChannel.dirty_y2
+        %s = call comp_surface %io %slot
+        call comp_blit %s %fb %x1 %y1 %x2 %y2
+        ret
+    @done
+        ret
+}

@@ -172,6 +172,7 @@ func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:p
         call app_dispatch_zero_state %0 %4
         %chn = call app_chan %0 %4
         call ipc_channel_init %chn
+        call comp_clear_slot %0 %4               # surface sạch: App mở lại không thấy điểm ảnh cũ
 
         # 1b. Trả toàn bộ Chunk RAM động (1..16382) của App %4 về Bể Khung RAM của Kernel
         %60 = const 0xa00000 ptr<DiskQword,131072>

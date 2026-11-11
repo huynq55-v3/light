@@ -88,7 +88,7 @@ Mỗi biến được định danh bằng số thứ tự (`%0`, `%1`, `%2`...) 
 
 ```text
 lit_program/
-├── os/        kernel.lit (vòng lặp scheduler), init.lit, wm.lit (desktop, Dock, compositor), app_loader.lit (VMM, nạp App),
+├── os/        kernel.lit (vòng lặp scheduler), init.lit, wm.lit (desktop, Dock), compositor.lit (surface riêng mỗi App), app_loader.lit (VMM, nạp App),
 │              lightfs.lit (LightFS phía Kernel), hw.lit (framebuffer, PCI, MMIO), diag.lit (panic, selftest)
 ├── drivers/   blk, nvme, ata_disk, pci, usb_xhci, kbd_drv (PS/2 + chuột), vga_drv, serial
 ├── lib/       std_lib, os_layout (Layout dùng chung), gfx, font, ipc_bus, cap_mem, lightfs_api, ui_* (window, button,

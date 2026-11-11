@@ -75,8 +75,12 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
 
 ### GUI kiểu Wayland — các lát tiếp theo
 1. ~~Kênh riêng mỗi App~~ (xong).
-2. Surface ngoài màn hình: App vẽ vào bộ đệm riêng (cùng kiểu `ptr<VgaCell,1382400>` bước 1920 để không đổi ABI), compositor
-   blit theo z-order + vùng bẩn của từng kênh. Cần chỗ RAM vật lý cho 7 × 5,5MB (cấp từ bể khung, map vào cửa sổ của App).
+2. ~~Surface ngoài màn hình~~ (xong, `os/compositor.lit`): mỗi slot vẽ vào surface 6MB riêng tại `0x12000000 + slot*6MB`
+   (21 khung đầu của bể VMM, giữ lúc boot bởi `comp_init` và ánh xạ đồng nhất vào `PD_0[144..164]`; phải < 2GB vì App/gfx
+   đòi `@req ult %fb 0x80000000`). Cùng kiểu `ptr<VgaCell,1382400>` -> ABI không đổi. Sau mỗi lượt App foreground, vùng bẩn
+   của kênh App (cắt theo vùng cửa sổ `[180,1100) x [50,615)`) được chép từ surface vào Backbuffer. Không đủ khung -> tự
+   tắt, vẽ thẳng như cũ. Đã thử: legacy/usb/uefi, RAM 2G/4G/16G, đổi App, đóng/mở lại (surface được xóa khi đóng).
+   Chưa làm: giữ nội dung khi đổi App mà KHÔNG vẽ lại (WM vẫn xóa `win_drawn`); z-order nhiều cửa sổ cùng lúc (lát 3).
 3. Quản lý cửa sổ: focus, đưa lên trên, kéo; khung cửa sổ do compositor vẽ (App không vẽ ui_win_draw nữa).
 4. Surface động `(w, h, ptr)` + sự kiện `configure` khi đổi kích thước (đổi `check_app_abi` và test `app_abi_*`); toolkit trên `std/surface`.
 5. Tách quyền: compositor không giữ `io<0,0xffff>` (chỉ ptr màn hình + surface).
