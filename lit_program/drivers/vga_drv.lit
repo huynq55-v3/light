@@ -5,9 +5,7 @@
 #   ptr<VgaCell,1382400> = "khung nhìn" 1280x720 với bước dòng 1920 (= 720 dòng * 1920). Kernel cắt (slice) VRAM tại
 #                          một gốc (ox, oy) rồi đưa cho App/thư viện UI -> tọa độ cũ của App tự dời ra giữa màn hình.
 
-layout VgaCell 4 {
-    0: bv32                                 # Mã màu 32-bit TrueColor (0x00RRGGBB)
-}
+include ../lib/os_layout.lit               # layout VgaCell
 
 # 1. Bật chế độ đồ họa 1920x1080x32bpp qua cổng Bochs VBE (0x1ce, 0x1cf)
 func drv_vga_init void %0:io<0x1ce,0x1cf> {

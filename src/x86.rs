@@ -39,7 +39,11 @@ enum Rm {
     R(u8),
     M(u8, i32),
     X(u8, u8, u8, i32), // [base + idx << scale + disp]
+    Rip,                // [rip + disp32], disp32 = 0 (vá sau)
 }
+
+/// Cờ trong `call_patches`: vị trí rel32 trỏ tới dữ liệu tĩnh `module.datas[id]` thay vì hàm
+pub const DATA_PATCH: u32 = 0x8000_0000;
 
 fn rm_of(l: Loc) -> Rm {
     match l {
@@ -63,6 +67,7 @@ fn op_rm(c: &mut Vec<u8>, p66: bool, w: bool, force_rex: bool, op: &[u8], reg: u
         Rm::R(r) => (r, 0),
         Rm::M(b, _) => (b, 0),
         Rm::X(b, i, _, _) => (b, i),
+        Rm::Rip => (0, 0),
     };
     let rex = 0x40 | (w as u8) << 3 | ((reg >> 3) & 1) << 2 | ((idx >> 3) & 1) << 1 | ((base >> 3) & 1);
     if rex != 0x40 || force_rex {
@@ -71,6 +76,10 @@ fn op_rm(c: &mut Vec<u8>, p66: bool, w: bool, force_rex: bool, op: &[u8], reg: u
     c.extend_from_slice(op);
     match rm {
         Rm::R(r) => c.push(0xC0 | (reg & 7) << 3 | (r & 7)),
+        Rm::Rip => {
+            c.push((reg & 7) << 3 | 5);
+            c.extend_from_slice(&[0, 0, 0, 0]);
+        }
         Rm::M(b, d) => {
             let md = if d == 0 && b & 7 != 5 { 0x00 } else if fits8(d as i64) { 0x40 } else { 0x80 };
             c.push(md | (reg & 7) << 3 | (b & 7));
@@ -237,7 +246,7 @@ fn uses(i: &Inst) -> Vec<Reg> {
         Inst::Slice { base, idx, .. } => vec![*base, *idx],
         Inst::Load { base, .. } => vec![*base],
         Inst::Store { base, val, .. } => vec![*base, *val],
-        Inst::Narrow { src, .. } => vec![*src],
+        Inst::Narrow { src, .. } | Inst::View { src, .. } => vec![*src],
         Inst::Simd256 { op: SimdOp::Dot, lhs, rhs, .. } => vec![*lhs, *rhs],
         Inst::Simd256 { dst, lhs, rhs, .. } => vec![*lhs, *rhs, *dst],
         Inst::Parallel { smp, n, base, arg, .. } => vec![*smp, *n, *base, *arg],
@@ -258,6 +267,8 @@ fn def(i: &Inst) -> Option<Reg> {
         | Inst::Slice { dst, .. }
         | Inst::Load { dst, .. }
         | Inst::Narrow { dst, .. }
+        | Inst::View { dst, .. }
+        | Inst::Addr { dst, .. }
         | Inst::SmpWorkers { dst, .. }
         | Inst::Simd256 { op: SimdOp::Dot, dst, .. } => Some(*dst),
         Inst::HwIo { dst, is_write: false, .. } | Inst::Call { dst, .. } | Inst::CallPtr { dst, .. } => *dst,
@@ -302,7 +313,7 @@ pub fn reg_types(module: &Module, func: &Func) -> HashMap<Reg, Type> {
         t.extend(b.params.iter().cloned());
         for i in &b.insts {
             match i {
-                Inst::Const { dst, ty, .. } | Inst::Load { dst, ty, .. } | Inst::Narrow { dst, ty, .. } | Inst::Slice { dst, ty, .. } => {
+                Inst::Const { dst, ty, .. } | Inst::Load { dst, ty, .. } | Inst::Narrow { dst, ty, .. } | Inst::View { dst, ty, .. } | Inst::Addr { dst, ty, .. } | Inst::Slice { dst, ty, .. } => {
                     t.insert(*dst, *ty);
                 }
                 Inst::Cmp { dst, .. } => {
@@ -819,7 +830,21 @@ pub fn emit_func(
                         save(c, d, w);
                     }
                 }
-                Inst::Narrow { dst, src, .. } => {
+                Inst::Addr { dst, data_id, .. } => {
+                    if let Some(d) = dst_loc(dst) {
+                        let t = match d {
+                            Loc::R(x) => x,
+                            _ => RAX,
+                        };
+                        // lea t, [rip + data]; vị trí rel32 vá sau (DATA_PATCH | id)
+                        op_rm(c, false, true, false, &[0x8D], t, Rm::Rip);
+                        call_patches.push((c.len() - 4, DATA_PATCH | *data_id));
+                        if t == RAX {
+                            save(c, d, RAX);
+                        }
+                    }
+                }
+                Inst::Narrow { dst, src, .. } | Inst::View { dst, src, .. } => {
                     if let Some(d) = dst_loc(dst) {
                         par_move(c, vec![(d, opd(*src))]);
                     }

@@ -49,6 +49,31 @@ fn tokenize_line(raw_line: &str) -> Result<Vec<String>, String> {
     Ok(toks)
 }
 
+/// Giải mã chuỗi hằng `"..."` thành các byte (escape \n \r \t \0 \\ \" ; ký tự ngoài ASCII bị từ chối)
+fn p_str_bytes(s: &str) -> Result<Vec<u8>, String> {
+    let inner = &s[1..s.len() - 1];
+    let mut bytes = Vec::new();
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        let c = if c == '\\' {
+            match chars.next().ok_or_else(|| format!("Ký tự escape dở dang trong {}", s))? {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '0' => '\0',
+                other => other,
+            }
+        } else {
+            c
+        };
+        if !c.is_ascii() {
+            return Err(format!("Chuỗi {} có ký tự ngoài ASCII '{}'", s, c));
+        }
+        bytes.push(c as u8);
+    }
+    Ok(bytes)
+}
+
 /// Giải mã chuỗi hằng `"..."` (tối đa 8 byte ASCII) thành số u64 theo chuẩn Little-Endian
 fn p_str_qword(s: &str) -> Result<u64, String> {
     let inner = &s[1..s.len() - 1];
@@ -173,6 +198,16 @@ fn p_u64(s: &str, defs: &HashMap<String, u64>) -> Result<u64, String> {
     } else {
         s.parse()
             .map_err(|_| format!("Lỗi số nguyên hoặc hằng số chưa định nghĩa: {}", s))
+    }
+}
+
+fn int_bits(ty: Type) -> Option<u32> {
+    match ty {
+        Type::Bv8 => Some(8),
+        Type::Bv16 => Some(16),
+        Type::Bv32 => Some(32),
+        Type::Bv64 => Some(64),
+        _ => None,
     }
 }
 
@@ -357,13 +392,74 @@ fn inst_arity(toks: &[&str]) -> Option<(usize, usize)> {
         "assume" | "assert" => (2, ANY),
         d if d.starts_with('%') && toks.get(1) == Some(&"=") => match toks.get(2).copied()? {
             "const" | "hwio_r" | "vdot256" => (5, 5),
-            "smp_workers" => (4, 4),
-            "slice" | "load" | "cmp" => (6, 6),
+            "smp_workers" | "addr" => (4, 4),
+            "slice" | "cmp" => (6, 6),
+            "load" => (5, 6),
             "call" => (4, ANY),
             _ => (5, 5),
         },
         _ => return None,
     })
+}
+
+/// Hằng làm toán hạng trực tiếp: `add %x 6`, `call f %p 0x22d3ee`, `store %p IpcChannel.mouse_x 0`, `jmp @loop 0`.
+/// Mỗi hằng được hạ thành một lệnh `const` (thanh ghi mới, số tiếp sau thanh ghi lớn nhất của hàm) chèn ngay trước lệnh dùng nó,
+/// nên verifier và bộ sinh mã không đổi. Kiểu: hậu tố `5:bv8` nếu có; ngược lại theo ngữ cảnh (tham số hàm được gọi, kiểu trường
+/// có tên, tham số block đích của jmp, kiểu trả về của ret); còn lại bv64.
+#[derive(Default)]
+struct Lits {
+    next: Reg,
+    pending: Vec<Inst>,
+    /// (hàm, thanh ghi hằng, đích cần suy kiểu): jmp -> (block, vị trí tham số); ret -> None
+    fixes: Vec<(usize, Reg, Option<(BlockId, usize)>)>,
+}
+
+fn p_lit_ty(tok: &str, layouts: &[Layout], defs: &HashMap<String, u64>) -> Option<(u64, Option<Type>)> {
+    if let Ok(v) = p_u64(tok, defs) {
+        return Some((v, None));
+    }
+    let (v, t) = tok.rsplit_once(':')?;
+    let ty = p_type(t, layouts, defs).ok()?;
+    Some((p_u64(v, defs).ok()?, Some(ty)))
+}
+
+impl Lits {
+    /// Toán hạng: `%r` hoặc hằng. `hint` = kiểu suy từ ngữ cảnh khi hằng không có hậu tố.
+    fn opnd(&mut self, tok: &str, hint: Option<Type>, layouts: &[Layout], defs: &HashMap<String, u64>) -> Result<Reg, String> {
+        if tok.starts_with('%') {
+            return p_reg(tok);
+        }
+        let (val, ty) = p_lit_ty(tok, layouts, defs)
+            .ok_or_else(|| format!("Toán hạng '{}' không phải thanh ghi %r hay hằng số (dạng 5, 0x10, TÊN_DEF, \"ab\", 5:bv8)", tok))?;
+        let d = self.next;
+        self.next += 1;
+        self.pending.push(Inst::Const { dst: d, ty: ty.or(hint).unwrap_or(Type::Bv64), val });
+        Ok(d)
+    }
+    fn explicit(tok: &str, layouts: &[Layout], defs: &HashMap<String, u64>) -> bool {
+        !tok.starts_with('%') && p_lit_ty(tok, layouts, defs).is_some_and(|x| x.1.is_some())
+    }
+}
+
+/// Số thanh ghi `%<số>` lớn nhất trong từng hàm (theo thứ tự `func`), sau khi đã đổi tên -> nơi bắt đầu cấp thanh ghi cho hằng.
+fn func_max_regs(src: &str) -> Vec<Reg> {
+    let mut out: Vec<Reg> = Vec::new();
+    for l in src.lines() {
+        if l.trim_start().starts_with("func ") {
+            out.push(0);
+        }
+        if let Some(m) = out.last_mut() {
+            scan_line(l, |sg, id| {
+                if sg == '%' {
+                    if let Ok(n) = id.parse::<u64>() {
+                        *m = (*m).max(n.min(u32::MAX as u64 / 2) as Reg);
+                    }
+                }
+                None
+            });
+        }
+    }
+    out
 }
 
 fn p_params(
@@ -395,6 +491,12 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
     let mut m = Module::default();
     let mut defs: HashMap<String, u64> = HashMap::new();
     let mut in_layout = false;
+    let func_max = func_max_regs(src);
+    let mut lits = Lits::default();
+    // Trường có tên: `Layout.tên` -> kiểu (offset nằm trong `defs` nên dùng được ở mọi chỗ nhận số)
+    let mut field_ty: HashMap<String, Type> = HashMap::new();
+    // `data TÊN Layout [SỐ_PHẦN_TỬ] {`: (chỉ số data, số phần tử khai báo, các giá trị đã đọc)
+    let mut in_data: Option<(Option<u64>, Vec<u64>)> = None;
 
     for (line_no, raw_line) in src.lines().enumerate() {
         let loc = origins
@@ -409,7 +511,77 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
         }
         let toks: Vec<&str> = owned_toks.iter().map(|s| s.as_str()).collect();
 
+        if let Some((_, vals)) = in_data.as_mut() {
+            if toks[0] != "}" {
+                let d = m.datas.last().unwrap();
+                let lay = &m.layouts[d.layout_id as usize];
+                for t in &toks {
+                    let fty = lay.fields[vals.len() % lay.fields.len()].ty;
+                    if t.starts_with('"') && fty == Type::Bv8 {
+                        // Chuỗi trên trường bv8: mỗi byte một phần tử, độ dài tùy ý
+                        for ch in p_str_bytes(t).map_err(|e| err(&e))? {
+                            vals.push(ch as u64);
+                        }
+                        continue;
+                    }
+                    let v = p_u64(t, &defs).map_err(|e| err(&e))?;
+                    if int_bits(fty).is_some_and(|b| b < 64 && v >> b != 0) {
+                        return Err(err(&format!("Giá trị {:#x} không vừa trường {:?} của '{}'", v, fty, lay.name)));
+                    }
+                    vals.push(v);
+                }
+                return Ok(());
+            }
+        }
         match toks[0] {
+            "}" if in_data.is_some() => {
+                let (decl, vals) = in_data.take().unwrap();
+                let d = m.datas.last_mut().unwrap();
+                let lay = &m.layouts[d.layout_id as usize];
+                let nf = lay.fields.len();
+                if vals.len() % nf != 0 {
+                    return Err(err(&format!(
+                        "data '{}': {} giá trị không chia hết cho {} trường của Layout '{}'",
+                        d.name, vals.len(), nf, lay.name
+                    )));
+                }
+                let n = (vals.len() / nf) as u64;
+                let count = decl.unwrap_or(n);
+                if n > count || count == 0 {
+                    return Err(err(&format!("data '{}': {} phần tử, khai báo {}", d.name, n, count)));
+                }
+                let mut bytes = vec![0u8; (count * lay.size as u64) as usize];
+                for (k, v) in vals.iter().enumerate() {
+                    let f = &lay.fields[k % nf];
+                    let at = (k / nf) * lay.size as usize + f.offset as usize;
+                    let w = match f.ty { Type::Bv8 => 1, Type::Bv16 => 2, Type::Bv32 => 4, _ => 8 };
+                    bytes[at..at + w].copy_from_slice(&v.to_le_bytes()[..w]);
+                }
+                d.count = count;
+                d.bytes = bytes;
+                defs.insert(format!("{}.len", d.name), count);
+            }
+            "data" => {
+                // data FONT Byte [1520] {
+                if toks.len() < 4 || toks.len() > 5 || toks[toks.len() - 1] != "{" {
+                    return Err(err("Cú pháp: data <TÊN> <Layout> [số_phần_tử] {"));
+                }
+                if m.datas.iter().any(|d| d.name == toks[1]) {
+                    return Err(err(&format!("data '{}' bị khai báo hai lần", toks[1])));
+                }
+                let lid = m.layouts.iter().position(|l| l.name == toks[2])
+                    .ok_or_else(|| err(&format!("Không tìm thấy Layout '{}'", toks[2])))?;
+                let lay = &m.layouts[lid];
+                if lay.fields.is_empty() || lay.fields.iter().any(|f| f.inv.is_some() || int_bits(f.ty).is_none()) {
+                    return Err(err(&format!(
+                        "data: Layout '{}' phải có trường số nguyên và không có @inv (dữ liệu tĩnh ghi được, không kiểm bất biến)",
+                        lay.name
+                    )));
+                }
+                let decl = if toks.len() == 5 { Some(p_u64(toks[3], &defs).map_err(|e| err(&e))?) } else { None };
+                m.datas.push(Data { name: toks[1].into(), layout_id: lid as u16, count: 0, bytes: vec![] });
+                in_data = Some((decl, vec![]));
+            }
             "}" => in_layout = false,
             "def" => {
                 // def IPC_WIN_DRAWN 112 | def TITLE_TERM "TERMINAL"
@@ -442,6 +614,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                 if m.funcs.iter().any(|f| f.name == toks[1]) {
                     return Err(err(&format!("Hàm '{}' bị khai báo hai lần", toks[1])));
                 }
+                lits.next = func_max.get(m.funcs.len()).copied().unwrap_or(0) + 1;
                 let ret_ty = if toks[2] == "void" {
                     None
                 } else {
@@ -480,6 +653,17 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                 blk.invs
                     .push(p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?);
             }
+            "@dec" => {
+                let blk = m
+                    .funcs
+                    .last_mut()
+                    .and_then(|f| f.blocks.last_mut())
+                    .ok_or_else(|| err("@dec ngoài Block"))?;
+                if blk.dec.is_some() {
+                    return Err(err("Block chỉ có một @dec"));
+                }
+                blk.dec = Some(p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?);
+            }
             b if b.starts_with('@') => {
                 // @b1 %1:bv64
                 let f = m.funcs.last_mut().ok_or_else(|| err("Block ngoài Func"))?;
@@ -487,19 +671,35 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     id: p_blk(b)?,
                     params: p_params(&toks[1..], &m.layouts, &defs).map_err(|e| err(&e))?,
                     invs: Vec::new(),
+                    dec: None,
                     insts: Vec::new(),
                 });
             }
             _ if in_layout => {
-                // 0: bv64 @inv ugt val 0
-                if toks.len() < 2 || (toks.len() > 2 && toks[2] != "@inv") || toks.len() == 3 {
-                    return Err(err("Cú pháp trường: <offset>: <kiểu> [@inv <biểu_thức>]"));
+                // 0: bv64 [tên] [@inv ugt val 0]
+                let named = toks.len() > 2 && toks[2] != "@inv";
+                let rest = if named { 3 } else { 2 };
+                if toks.len() < 2 || (toks.len() > rest && toks[rest] != "@inv") || toks.len() == rest + 1 {
+                    return Err(err("Cú pháp trường: <offset>: <kiểu> [tên] [@inv <biểu_thức>]"));
                 }
                 let offset =
                     p_u64(toks[0].trim_end_matches(':'), &defs).map_err(|e| err(&e))? as u32;
                 let ty = p_type(toks[1], &m.layouts, &defs).map_err(|e| err(&e))?;
-                let inv = if toks.get(2) == Some(&"@inv") {
-                    Some(p_z3_all(&toks[3..], &defs).map_err(|e| err(&e))?)
+                if named {
+                    let n = toks[2];
+                    if !n.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                        || !n.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        return Err(err(&format!("Tên trường '{}' không hợp lệ (chữ, số, _)", n)));
+                    }
+                    let key = format!("{}.{}", m.layouts.last().unwrap().name, n);
+                    if field_ty.insert(key.clone(), ty).is_some() {
+                        return Err(err(&format!("Trường '{}' bị khai báo hai lần", key)));
+                    }
+                    defs.insert(key, offset as u64);
+                }
+                let inv = if toks.get(rest) == Some(&"@inv") {
+                    Some(p_z3_all(&toks[rest + 1..], &defs).map_err(|e| err(&e))?)
                 } else {
                     None
                 };
@@ -524,7 +724,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     "store" => Inst::Store {
                         base: p_reg(toks[1])?,
                         offset: p_u64(toks[2], &defs).map_err(|e| err(&e))? as u32,
-                        val: p_reg(toks[3])?,
+                        val: lits.opnd(toks[3], field_ty.get(toks[2]).copied(), &m.layouts, &defs)?,
                     },
                     "vadd256" | "vsub256" | "vmul256" | "vxor256" => Inst::Simd256 {
                         op: p_simdop(toks[0]).unwrap(),
@@ -534,26 +734,35 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     },
                     "parallel" => Inst::Parallel {
                         smp: p_reg(toks[1])?,
-                        n: p_reg(toks[2])?,
+                        n: lits.opnd(toks[2], None, &m.layouts, &defs)?,
                         func_id: p_func_id(toks[3], &m.funcs)?,
                         base: p_reg(toks[4])?,
-                        arg: p_reg(toks[5])?,
+                        arg: lits.opnd(toks[5], None, &m.layouts, &defs)?,
                     },
                     "br" => Inst::Br {
                         cond: p_reg(toks[1])?,
                         then_bb: p_blk(toks[2])?,
                         else_bb: p_blk(toks[3])?,
                     },
-                    "jmp" => Inst::Jmp {
-                        target_bb: p_blk(toks[1])?,
-                        args: toks[2..]
-                            .iter()
-                            .map(|r| p_reg(r))
-                            .collect::<Result<_, _>>()?,
-                    },
-                    "ret" => Inst::Ret {
-                        val: toks.get(1).map(|r| p_reg(r)).transpose()?,
-                    },
+                    "jmp" => {
+                        let target_bb = p_blk(toks[1])?;
+                        let fi = m.funcs.len().wrapping_sub(1);
+                        let mut args = Vec::new();
+                        for (k, t) in toks[2..].iter().enumerate() {
+                            let r = lits.opnd(t, None, &m.layouts, &defs)?;
+                            if !t.starts_with('%') && !Lits::explicit(t, &m.layouts, &defs) {
+                                lits.fixes.push((fi, r, Some((target_bb, k))));
+                            }
+                            args.push(r);
+                        }
+                        Inst::Jmp { target_bb, args }
+                    }
+                    "ret" => {
+                        let ret_hint = m.funcs.last().and_then(|f| f.ret_ty);
+                        Inst::Ret {
+                            val: toks.get(1).map(|r| lits.opnd(r, ret_hint, &m.layouts, &defs)).transpose()?,
+                        }
+                    }
                     "assume" => Inst::Assume(
                         p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?,
                     ),
@@ -572,14 +781,13 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                                     .collect::<Result<_, _>>()?,
                             }
                         } else {
-                            Inst::Call {
-                                dst: None,
-                                func_id: p_func_id(target_str, &m.funcs)?,
-                                args: toks[2..]
-                                    .iter()
-                                    .map(|r| p_reg(r))
-                                    .collect::<Result<_, _>>()?,
+                            let func_id = p_func_id(target_str, &m.funcs)?;
+                            let ps: Vec<Type> = m.funcs.get(func_id as usize).map(|f| f.params.iter().map(|p| p.1).collect()).unwrap_or_default();
+                            let mut args = Vec::new();
+                            for (k, t) in toks[2..].iter().enumerate() {
+                                args.push(lits.opnd(t, ps.get(k).copied(), &m.layouts, &defs)?);
                             }
+                            Inst::Call { dst: None, func_id, args }
                         }
                     }
                     // ata_read %cap %ptr %sec_idx %nsec: rep insd nsec sector từ cổng 0x1F0 vào [ptr + sec_idx*512]
@@ -593,7 +801,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                         dst: None,
                         cap: p_reg(toks[1])?,
                         port_or_reg: p_u64(toks[2], &defs).map_err(|e| err(&e))? as u16,
-                        val: Some(p_reg(toks[3])?),
+                        val: Some(lits.opnd(toks[3], None, &m.layouts, &defs)?),
                         is_write: true,
                     },
                     dst if dst.starts_with('%') && toks.get(1) == Some(&"=") => {
@@ -607,8 +815,23 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                             "slice" => Inst::Slice {
                                 dst: d,
                                 base: p_reg(toks[3])?,
-                                idx: p_reg(toks[4])?,
+                                idx: lits.opnd(toks[4], None, &m.layouts, &defs)?,
                                 ty: p_type(toks[5], &m.layouts, &defs).map_err(|e| err(&e))?,
+                            },
+                            "addr" => {
+                                let id = m.datas.iter().position(|x| x.name == toks[3])
+                                    .ok_or_else(|| format!("Không tìm thấy data '{}' (phải khai báo trước khi dùng)", toks[3]))?;
+                                let dd = &m.datas[id];
+                                Inst::Addr {
+                                    dst: d,
+                                    data_id: id as u32,
+                                    ty: Type::Ptr { layout_id: dd.layout_id, max_elems: dd.count },
+                                }
+                            }
+                            "view" => Inst::View {
+                                dst: d,
+                                src: p_reg(toks[3])?,
+                                ty: p_type(toks[4], &m.layouts, &defs).map_err(|e| err(&e))?,
                             },
                             "narrow" => Inst::Narrow {
                                 dst: d,
@@ -619,13 +842,18 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                                 dst: d,
                                 base: p_reg(toks[3])?,
                                 offset: p_u64(toks[4], &defs).map_err(|e| err(&e))? as u32,
-                                ty: p_type(toks[5], &m.layouts, &defs).map_err(|e| err(&e))?,
+                                ty: match toks.get(5) {
+                                    Some(t) => p_type(t, &m.layouts, &defs).map_err(|e| err(&e))?,
+                                    None => *field_ty.get(toks[4]).ok_or_else(|| {
+                                        err(&format!("load thiếu kiểu: '{}' không phải trường có tên (Layout.tên)", toks[4]))
+                                    })?,
+                                },
                             },
                             "cmp" => Inst::Cmp {
                                 dst: d,
                                 op: p_cmpop(toks[3]).ok_or("Lỗi CmpOp")?,
-                                lhs: p_reg(toks[4])?,
-                                rhs: p_reg(toks[5])?,
+                                lhs: lits.opnd(toks[4], None, &m.layouts, &defs)?,
+                                rhs: lits.opnd(toks[5], None, &m.layouts, &defs)?,
                             },
                             "call" => {
                                 let target_str = toks[3];
@@ -639,14 +867,13 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                                             .collect::<Result<_, _>>()?,
                                     }
                                 } else {
-                                    Inst::Call {
-                                        dst: Some(d),
-                                        func_id: p_func_id(target_str, &m.funcs)?,
-                                        args: toks[4..]
-                                            .iter()
-                                            .map(|r| p_reg(r))
-                                            .collect::<Result<_, _>>()?,
+                                    let func_id = p_func_id(target_str, &m.funcs)?;
+                                    let ps: Vec<Type> = m.funcs.get(func_id as usize).map(|f| f.params.iter().map(|p| p.1).collect()).unwrap_or_default();
+                                    let mut args = Vec::new();
+                                    for (k, t) in toks[4..].iter().enumerate() {
+                                        args.push(lits.opnd(t, ps.get(k).copied(), &m.layouts, &defs)?);
                                     }
+                                    Inst::Call { dst: Some(d), func_id, args }
                                 }
                             }
                             "hwio_r" => Inst::HwIo {
@@ -669,8 +896,8 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                             op_str => Inst::Bin {
                                 dst: d,
                                 op: p_binop(op_str).ok_or_else(|| err("Lệnh không rõ"))?,
-                                lhs: p_reg(toks[3])?,
-                                rhs: p_reg(toks[4])?,
+                                lhs: lits.opnd(toks[3], None, &m.layouts, &defs)?,
+                                rhs: lits.opnd(toks[4], None, &m.layouts, &defs)?,
                             },
                         }
                     }
@@ -681,6 +908,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     .last_mut()
                     .and_then(|f| f.blocks.last_mut())
                     .ok_or_else(|| err("Lệnh ngoài Block"))?;
+                blk.insts.extend(lits.pending.drain(..));
                 blk.insts.push(inst);
             }
         }
@@ -694,6 +922,24 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
     for (f, (t, bt)) in m.funcs.iter_mut().zip(name_tables) {
         f.names = t;
         f.block_names = bt;
+    }
+    // Hằng ở đối số jmp không có hậu tố: lấy kiểu tham số của block đích (block có thể đứng sau lệnh jmp)
+    for (fi, r, tgt) in std::mem::take(&mut lits.fixes) {
+        let Some(f) = m.funcs.get_mut(fi) else { continue };
+        let Some((bb, k)) = tgt else { continue };
+        let Some(ty) = f.blocks.iter().find(|b| b.id == bb).and_then(|b| b.params.get(k)).map(|p| p.1) else { continue };
+        for b in &mut f.blocks {
+            for i in &mut b.insts {
+                if let Inst::Const { dst, ty: t, .. } = i {
+                    if *dst == r {
+                        *t = ty;
+                    }
+                }
+            }
+        }
+    }
+    if in_data.is_some() {
+        return Err(format!("data '{}' chưa đóng bằng }}", m.datas.last().unwrap().name));
     }
     for f in &mut m.funcs {
         lower_func(f);
@@ -878,7 +1124,7 @@ fn scan_line(line: &str, mut f: impl FnMut(char, &str) -> Option<String>) -> Str
 /// `@b<chữ số>` là nhãn số; `@req/@ens/@inv` là chỉ thị; còn lại `@tên` là nhãn có tên
 fn is_named_label(id: &str) -> bool {
     let numeric = id.strip_prefix('b').is_some_and(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()));
-    !id.is_empty() && !numeric && !matches!(id, "req" | "ens" | "inv") && !id.as_bytes()[0].is_ascii_digit()
+    !id.is_empty() && !numeric && !matches!(id, "req" | "ens" | "inv" | "dec") && !id.as_bytes()[0].is_ascii_digit()
 }
 
 type NameTables = (Vec<(Reg, String)>, Vec<(BlockId, String)>);

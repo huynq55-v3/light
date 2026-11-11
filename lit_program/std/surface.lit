@@ -1,0 +1,194 @@
+# File: lit_program/std/surface.lit
+# LIGHT STD — vẽ 2D trên SURFACE kích thước động. Một surface là:
+#     %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64
+# điểm (x, y) nằm ở px[y*stride + x], hợp lệ khi x < w, y < h và chỉ số < n.
+# Khung nhìn App hiện tại là surface (1382400, fb, 1920, 1280, 720); bộ đệm riêng trong heap là surface
+# (w*h, slice của heap qua view, w, w, h).
+#
+# Vì sao không dùng y*stride trong chứng minh: phép nhân hai biến làm Z3 hết giờ. Thay vào đó offset được tính
+# bằng surf_offset (hàm mờ: người gọi chỉ thấy một số bất kỳ) rồi KIỂM BIÊN LÚC CHẠY trước khi slice; các hàng
+# kế tiếp đi bằng phép cộng (off += stride). Mọi điểm ngoài surface bị cắt bỏ, không bao giờ ghi ra ngoài.
+
+include mem.lit
+include ../lib/font.lit
+
+# y*stride + x (bão hòa ở 2^64-1). Không có @ens: chủ ý để người gọi không mang phép nhân vào Z3.
+func surf_offset bv64 %stride:bv64 %x:bv64 %y:bv64 {
+    @b0
+        %ry = mul_sat %y %stride
+        %o = add_sat %ry %x
+        ret %o
+}
+
+func surf_put void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x:bv64 %y:bv64 %c:bv32 {
+    @b0
+        %inx = cmp ult %x %w
+        br %inx @iny @out
+    @iny
+        %iny = cmp ult %y %h
+        br %iny @off @out
+    @off
+        %o = call surf_offset %stride %x %y
+        %in = cmp ult %o %n
+        br %in @put @out
+    @put
+        %cell = slice %px %o ptr<VgaCell,1>
+        store %cell 0 %c
+        ret
+    @out
+        ret
+}
+
+# Tô hình chữ nhật [x0,x1) x [y0,y1), tự cắt theo surface
+func surf_fill_rect void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x0:bv64 %y0:bv64 %x1:bv64 %y1:bv64 %c:bv32 {
+    @req ule %stride 0x10000
+    @req ule %w 0x10000
+    @b0
+        %xe = call math_min %x1 %w
+        %ye = call math_min %y1 %h
+        %okx = cmp ult %x0 %xe
+        br %okx @chky @done
+    @chky
+        %oky = cmp ult %y0 %ye
+        br %oky @start @done
+    @start
+        %span = sub %xe %x0
+        %rows = sub %ye %y0
+        %o0 = call surf_offset %stride %x0 %y0
+        %in0 = cmp ule %o0 %n
+        br %in0 @rowloop0 @done
+    @rowloop0
+        jmp @rowloop %o0 %rows
+    @rowloop %off:bv64 %k:bv64
+        @inv ule %off %n
+        %more = cmp ne %k 0
+        br %more @row @done
+    @row
+        %end = add %off %span
+        %fits = cmp ule %end %n
+        br %fits @draw @done
+    @draw
+        %r = slice %px %off ptr<VgaCell,%span>
+        call mem_fill_px %span %r %c
+        %k2 = sub %k 1
+        %next = add %off %stride
+        %inn = cmp ule %next %n
+        br %inn @step @done
+    @step
+        jmp @rowloop %next %k2
+    @done
+        ret
+}
+
+# Viền chữ nhật dày 1 điểm
+func surf_frame void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x0:bv64 %y0:bv64 %x1:bv64 %y1:bv64 %c:bv32 {
+    @req ule %stride 0x10000
+    @req ule %w 0x10000
+    @req ult %x0 %x1
+    @req ult %y0 %y1
+    @b0
+        %xa = add %x0 1
+        %ya = add %y0 1
+        %xb = sub %x1 1
+        %yb = sub %y1 1
+        call surf_fill_rect %n %px %stride %w %h %x0 %y0 %x1 %ya %c
+        call surf_fill_rect %n %px %stride %w %h %x0 %yb %x1 %y1 %c
+        call surf_fill_rect %n %px %stride %w %h %x0 %y0 %xa %y1 %c
+        call surf_fill_rect %n %px %stride %w %h %xb %y0 %x1 %y1 %c
+        ret
+}
+
+# Một hàng 8 điểm của glyph: bit k (từ bit thấp) = cột k
+func surf_glyph_row void %px:ptr<VgaCell,8> %bits:bv64 %fg:bv32 {
+    @b0
+        jmp @l 0
+    @l %k:bv64
+        @inv ule %k 8
+        %more = cmp ult %k 8
+        br %more @bit @done
+    @bit
+        %b = lshr %bits %k
+        %on = and %b 1
+        %set = cmp ne %on 0
+        br %set @put @next
+    @put
+        %cell = slice %px %k ptr<VgaCell,1>
+        store %cell 0 %fg
+        jmp @next
+    @next
+        %k2 = add %k 1
+        jmp @l %k2
+    @done
+        ret
+}
+
+# Ký tự ASCII 8x16 tại (x, y), chỉ vẽ điểm chữ (nền trong suốt). Ký tự không vừa trọn chiều ngang thì bỏ.
+func surf_char void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x:bv64 %y:bv64 %ch:bv64 %fg:bv32 {
+    @req ule %stride 0x10000
+    @b0
+        %top = call font_get_glyph_top %ch
+        %bot = call font_get_glyph_bot %ch
+        %xe = add_sat %x 8
+        %fitx = cmp ule %xe %w
+        br %fitx @start @done
+    @start
+        jmp @l 0
+    @l %r:bv64
+        @inv ule %r 16
+        %more = cmp ult %r 16
+        br %more @row @done
+    @row
+        %yr = add_sat %y %r
+        %iny = cmp ult %yr %h
+        br %iny @off @done
+    @off
+        %o = call surf_offset %stride %x %yr
+        %room = sub_sat %n %o
+        %fits = cmp uge %room 8
+        br %fits @draw @done
+    @draw
+        %cells = slice %px %o ptr<VgaCell,8>
+        %lo = cmp ult %r 8
+        br %lo @t @b
+    @t
+        %sh = shl %r 3
+        jmp @bits %sh %top
+    @b
+        %r8 = sub %r 8
+        %sh2 = shl %r8 3
+        jmp @bits %sh2 %bot
+    @bits %s:bv64 %g:bv64
+        @inv ult %s 64
+        %line = lshr %g %s
+        %byte = and %line 0xff
+        call surf_glyph_row %cells %byte %fg
+        %r2 = add %r 1
+        jmp @l %r2
+    @done
+        ret
+}
+
+# Chuỗi (len, s) tại (x, y), mỗi ký tự cách 9 điểm; dừng khi hết chỗ theo chiều ngang
+func surf_text void %n:bv64 %px:ptr<VgaCell,%n> %stride:bv64 %w:bv64 %h:bv64 %x:bv64 %y:bv64 %len:bv64 %s:ptr<Byte,%len> %fg:bv32 {
+    @req ule %stride 0x10000
+    @b0
+        jmp @l 0 %x
+    @l %i:bv64 %cx:bv64
+        @inv ule %i %len
+        %more = cmp ult %i %len
+        br %more @chk @done
+    @chk
+        %xe = add_sat %cx 8
+        %fit = cmp ule %xe %w
+        br %fit @draw @done
+    @draw
+        %p = slice %s %i ptr<Byte,1>
+        %c8 = load %p 0 bv8
+        %c = call byte_u64 %c8
+        call surf_char %n %px %stride %w %h %cx %y %c %fg
+        %i2 = add %i 1
+        %cx2 = add_sat %cx 9
+        jmp @l %i2 %cx2
+    @done
+        ret
+}

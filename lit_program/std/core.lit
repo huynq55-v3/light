@@ -1,0 +1,63 @@
+# File: lit_program/std/core.lit
+# LIGHT STD — lõi: layout dùng chung (DiskQword, VgaCell, Byte, IpcChannel) và toán học nhỏ có hợp đồng.
+#
+# Quy ước của std/ (dành cho người và AI viết code):
+#   - Vùng nhớ là cặp (độ dài, ptr<L,%độ_dài>): hàm nhận `%n:bv64 %p:ptr<L,%n>`, không đóng cứng kích thước.
+#   - Không dùng cặp @req miền địa chỉ (uge %p 0x10000 / ult %p ...): kiểu ptr đã bảo đảm con trỏ nằm trong RAM.
+#   - Mọi hàm trả về có @ens đủ để người gọi chứng minh tiếp (vd vị trí mới <= dung lượng).
+#   - Không vòng lặp vô hạn: mọi hàm ở đây được verifier chứng minh dừng.
+
+include ../lib/os_layout.lit
+
+func math_min bv64 %a:bv64 %b:bv64 {
+    @ens ule %r %a
+    @ens ule %r %b
+    @ens or eq %r %a eq %r %b
+    @b0
+        %lt = cmp ult %a %b
+        br %lt @x @y
+    @x
+        ret %a
+    @y
+        ret %b
+}
+
+func math_max bv64 %a:bv64 %b:bv64 {
+    @ens uge %r %a
+    @ens uge %r %b
+    @ens or eq %r %a eq %r %b
+    @b0
+        %gt = cmp ugt %a %b
+        br %gt @x @y
+    @x
+        ret %a
+    @y
+        ret %b
+}
+
+# Kẹp %v vào [lo, hi]
+func math_clamp bv64 %v:bv64 %lo:bv64 %hi:bv64 {
+    @req ule %lo %hi
+    @ens uge %r %lo
+    @ens ule %r %hi
+    @b0
+        %below = cmp ult %v %lo
+        br %below @lo_ @chk
+    @lo_
+        ret %lo
+    @chk
+        %above = cmp ugt %v %hi
+        br %above @hi_ @mid
+    @hi_
+        ret %hi
+    @mid
+        ret %v
+}
+
+# bv8 -> bv64 (giá trị giữ nguyên, < 256)
+func byte_u64 bv64 %b:bv8 {
+    @ens ult %r 256
+    @b0
+        %v = or %b 0
+        ret %v
+}

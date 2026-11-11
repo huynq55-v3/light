@@ -197,6 +197,19 @@ pub enum Inst {
         src: Reg,
         ty: Type,
     },
+    /// %dst = view %src ptr<L2,N|%n>: nhìn CÙNG vùng nhớ theo Layout khác (vd mảng byte trên bộ đệm qword).
+    /// Cả hai Layout phải không có @inv; Z3 chứng minh số byte đích <= số byte nguồn. Mã máy: một lệnh mov.
+    View {
+        dst: Reg,
+        src: Reg,
+        ty: Type,
+    },
+    /// %dst = addr TÊN: con trỏ ptr<L,count> tới dữ liệu tĩnh `data TÊN L` (địa chỉ tương đối RIP, ghi được).
+    Addr {
+        dst: Reg,
+        data_id: u32,
+        ty: Type,
+    },
 
     /// Lệnh đặc quyền cho OS Bare-metal (Đọc/ghi cổng I/O, thanh ghi CR3, MSR hoặc Syscall)
     HwIo {
@@ -250,6 +263,9 @@ pub struct Block {
     pub id: BlockId,
     pub params: Vec<(Reg, Type)>, // Tham số của Block (Thay thế cho lệnh Phi rườm rà trong SSA cổ điển)
     pub invs: Vec<Z3Expr>,
+    /// `@dec <biểu_thức>`: biến giảm (variant) của vòng lặp có đầu là block này — mỗi cạnh lùi phải làm nó giảm ngặt
+    /// (so sánh không dấu). Không ghi thì verifier tự thử `p`, `X - p`, `p - X` (p = tham số block, X = cận bất biến vòng).
+    pub dec: Option<Z3Expr>,
     pub insts: Vec<Inst>,
 }
 
@@ -270,6 +286,16 @@ pub struct Func {
 pub struct Module {
     pub layouts: Vec<Layout>, // Danh sách các cấu trúc dữ liệu phẳng
     pub funcs: Vec<Func>,     // Danh sách các hàm SSA
+    pub datas: Vec<Data>,     // Dữ liệu tĩnh (`data TÊN Layout { ... }`), đặt sau mã máy
+}
+
+/// Dữ liệu tĩnh khởi tạo sẵn: `count` phần tử Layout `layout_id` (Layout không có @inv), lấy bằng `%p = addr TÊN`.
+#[derive(Debug, Clone)]
+pub struct Data {
+    pub name: String,
+    pub layout_id: u16,
+    pub count: u64,
+    pub bytes: Vec<u8>,
 }
 
 impl Type {
@@ -292,6 +318,8 @@ impl Inst {
             | Inst::Slice { dst, .. }
             | Inst::Load { dst, .. }
             | Inst::Narrow { dst, .. }
+            | Inst::View { dst, .. }
+            | Inst::Addr { dst, .. }
             | Inst::SmpWorkers { dst, .. }
             | Inst::Simd256 { op: SimdOp::Dot, dst, .. } => Some(*dst),
             Inst::HwIo { dst, .. } | Inst::Call { dst, .. } | Inst::CallPtr { dst, .. } => *dst,

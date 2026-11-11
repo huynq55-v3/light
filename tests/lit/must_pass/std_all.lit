@@ -1,0 +1,20 @@
+# Toàn bộ lit_program/std phải qua kiểm chứng (kể cả chứng minh dừng) + một hàm dùng thử
+include ../../../lit_program/std/fmt.lit
+include ../../../lit_program/std/sys.lit
+include ../../../lit_program/std/surface.lit
+
+data HELLO Byte {
+    "mem="
+}
+
+# "mem=<số>" vào bộ đệm rồi vẽ lên surface
+func demo bv64 %n:bv64 %px:ptr<VgaCell,%n> %cap:bv64 %buf:ptr<Byte,%cap> %v:bv64 {
+    @b0
+        %h = addr HELLO
+        %p1 = call fmt_str %cap %buf 0 HELLO.len %h
+        %p2 = call fmt_u64 %cap %buf %p1 %v
+        %t = slice %buf 0 ptr<Byte,%p2>
+        call surf_fill_rect %n %px 1920 1280 720 10 10 300 40 0x0f172a
+        call surf_text %n %px 1920 1280 720 14 16 %p2 %t 0xffffff
+        ret %p2
+}

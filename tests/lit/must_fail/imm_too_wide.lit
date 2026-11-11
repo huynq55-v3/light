@@ -1,0 +1,11 @@
+# EXPECT: không vừa kiểu
+# Hằng truyền vào tham số bv8 lấy kiểu bv8 từ chữ ký hàm -> 300 bị từ chối
+func g void %b:bv8 {
+    @b0
+        ret
+}
+func f void {
+    @b0
+        call g 300
+        ret
+}

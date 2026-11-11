@@ -1,0 +1,15 @@
+# EXPECT: Tràn biên mảng khi slice
+# "a\n" là 2 byte (escape được giải mã giống chuỗi hằng), không phải 3
+layout Byte 1 {
+    0: bv8
+}
+data NL Byte {
+    "a\n"
+}
+func f bv8 {
+    @b0
+        %g = addr NL
+        %c = slice %g 2 ptr<Byte,1>
+        %v = load %c 0 bv8
+        ret %v
+}

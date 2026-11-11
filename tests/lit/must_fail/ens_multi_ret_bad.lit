@@ -1,0 +1,12 @@
+# EXPECT: Vi phạm điều kiện đầu ra (@ens #0)
+# một trong các ret (ret %a ở @x) vi phạm @ens
+func bad bv64 %a:bv64 %b:bv64 {
+    @ens ult %r %a
+    @b0
+        %lt = cmp ult %a %b
+        br %lt @x @y
+    @x
+        ret %a
+    @y
+        ret %b
+}

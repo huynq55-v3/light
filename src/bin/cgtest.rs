@@ -72,7 +72,7 @@ fn reg_types(m: &Module, f: &Func) -> HashMap<Reg, Type> {
         t.extend(b.params.iter().cloned());
         for i in &b.insts {
             match i {
-                Inst::Const { dst, ty, .. } | Inst::Load { dst, ty, .. } | Inst::Narrow { dst, ty, .. } | Inst::Slice { dst, ty, .. } => {
+                Inst::Const { dst, ty, .. } | Inst::Load { dst, ty, .. } | Inst::Narrow { dst, ty, .. } | Inst::View { dst, ty, .. } | Inst::Addr { dst, ty, .. } | Inst::Slice { dst, ty, .. } => {
                     t.insert(*dst, *ty);
                 }
                 Inst::Cmp { dst, .. } => {
@@ -100,7 +100,11 @@ fn interp(m: &Module, fid: usize, args: &[u64], bufs: &Bufs, fuel: &mut u64, dep
     }
     let get = |r: &HashMap<Reg, u64>, x: Reg| r.get(&x).copied().ok_or_else(|| Stop::Bad(format!("%{} chưa định nghĩa", x)));
     let chk = |a: u64, n: u64| -> Result<(), Stop> {
-        if bufs.iter().any(|&(s, e)| a >= s && a.checked_add(n).is_some_and(|x| x <= e)) {
+        let in_data = m.datas.iter().any(|d| {
+            let s = d.bytes.as_ptr() as u64;
+            a >= s && a.checked_add(n).is_some_and(|x| x <= s + d.bytes.len() as u64)
+        });
+        if in_data || bufs.iter().any(|&(s, e)| a >= s && a.checked_add(n).is_some_and(|x| x <= e)) {
             Ok(())
         } else {
             Err(Stop::Skip(format!("truy cập ngoài buffer 0x{:x}", a)))
@@ -167,7 +171,10 @@ fn interp(m: &Module, fid: usize, args: &[u64], bufs: &Bufs, fuel: &mut u64, dep
                     let v = get(&r, *base)?.wrapping_add(get(&r, *idx)?.wrapping_mul(sz));
                     r.insert(*dst, v);
                 }
-                Inst::Narrow { dst, src, .. } => {
+                Inst::Addr { dst, data_id, .. } => {
+                    r.insert(*dst, m.datas[*data_id as usize].bytes.as_ptr() as u64);
+                }
+                Inst::Narrow { dst, src, .. } | Inst::View { dst, src, .. } => {
                     r.insert(*dst, get(&r, *src)?);
                 }
                 Inst::Load { dst, ty, base, offset } => {
@@ -189,6 +196,12 @@ fn interp(m: &Module, fid: usize, args: &[u64], bufs: &Bufs, fuel: &mut u64, dep
                     let v = get(&r, *val)?;
                     let w = width(*tys.get(val).unwrap_or(&Type::Bv64));
                     chk(a, w as u64)?;
+                    if m.datas.iter().any(|d| {
+                        let s = d.bytes.as_ptr() as u64;
+                        a >= s && a < s + d.bytes.len() as u64
+                    }) {
+                        return Err(Stop::Skip("ghi vào data tĩnh (thông dịch chỉ đọc)".into()));
+                    }
                     unsafe {
                         match w {
                             1 => *(a as *mut u8) = v as u8,

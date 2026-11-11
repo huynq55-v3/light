@@ -1,0 +1,11 @@
+# EXPECT: Bảo mật
+# Hằng truyền vào tham số io: không rèn được thẻ phần cứng
+func g void %io:io<0x60,0x64> {
+    @b0
+        ret
+}
+func f void {
+    @b0
+        call g 0x60
+        ret
+}

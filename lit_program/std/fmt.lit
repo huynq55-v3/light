@@ -1,0 +1,115 @@
+# File: lit_program/std/fmt.lit
+# LIGHT STD — định dạng vào bộ đệm byte (dung lượng %cap). Mỗi hàm nhận vị trí ghi %pos và trả vị trí mới
+# (@ens <= %cap). Hết chỗ thì cắt bớt, không bao giờ ghi ra ngoài.
+#
+#   %pos1 = call fmt_str %cap %buf 0 MSG.len %msg
+#   %pos2 = call fmt_u64 %cap %buf %pos1 %value
+
+include str.lit
+
+func fmt_byte bv64 %cap:bv64 %buf:ptr<Byte,%cap> %pos:bv64 %b:bv8 {
+    @req ule %pos %cap
+    @ens ule %r %cap
+    @ens uge %r %pos
+    @b0
+        %room = cmp ult %pos %cap
+        br %room @put @full
+    @put
+        %p = slice %buf %pos ptr<Byte,1>
+        store %p 0 %b
+        %r1 = add %pos 1
+        ret %r1
+    @full
+        ret %pos
+}
+
+# Chép chuỗi (n, s) vào bộ đệm
+func fmt_str bv64 %cap:bv64 %buf:ptr<Byte,%cap> %pos:bv64 %n:bv64 %s:ptr<Byte,%n> {
+    @req ule %pos %cap
+    @ens ule %r %cap
+    @ens uge %r %pos
+    @b0
+        %room = sub %cap %pos
+        %k = call math_min %n %room
+        %dst = slice %buf %pos ptr<Byte,%room>
+        call mem_copy_b %room %dst %n %s %k
+        %r1 = add %pos %k
+        ret %r1
+}
+
+# Số thập phân không dấu, không có số 0 đứng đầu ("0" cho 0)
+func fmt_u64 bv64 %cap:bv64 %buf:ptr<Byte,%cap> %pos:bv64 %v:bv64 {
+    @req ule %pos %cap
+    @ens ule %r %cap
+    @ens uge %r %pos
+    @b0
+        %zero = cmp eq %v 0
+        br %zero @z @start
+    @z
+        %r0 = call fmt_byte %cap %buf %pos 48
+        ret %r0
+    @start
+        jmp @l %v 10000000000000000000 0 %pos
+    # rem: phần còn lại; d: lũy thừa 10 hiện tại; on: đã in chữ số khác 0; at: vị trí ghi
+    @l %rem:bv64 %d:bv64 %on:bv64 %at:bv64
+        @inv ule %on 1
+        @inv ule %pos %at
+        @inv ule %at %cap
+        %more = cmp ne %d 0
+        br %more @digit @done
+    @digit
+        %q = udiv %rem %d
+        %q9 = call math_min %q 9
+        %rem2 = urem %rem %d
+        %d2 = udiv %d 10
+        %nz = cmp ne %q9 0
+        %emit = or %nz %on
+        %e = cmp ne %emit 0
+        br %e @put @skip
+    @put
+        %ch = add %q9 48
+        %ch8 = narrow %ch bv8
+        %at2 = call fmt_byte %cap %buf %at %ch8
+        jmp @l %rem2 %d2 1 %at2
+    @skip
+        jmp @l %rem2 %d2 %on %at
+    @done
+        ret %at
+}
+
+# %digits chữ số hex thấp nhất của %v (1..16), chữ hoa, có số 0 đứng đầu
+func fmt_hex bv64 %cap:bv64 %buf:ptr<Byte,%cap> %pos:bv64 %v:bv64 %digits:bv64 {
+    @req ule %pos %cap
+    @req uge %digits 1
+    @req ule %digits 16
+    @ens ule %r %cap
+    @ens uge %r %pos
+    @b0
+        jmp @l %digits %pos
+    @l %k:bv64 %at:bv64
+        @inv ule %k 16
+        @inv ule %pos %at
+        @inv ule %at %cap
+        %more = cmp ne %k 0
+        br %more @digit @done
+    @digit
+        %k1 = sub %k 1
+        %sh = shl %k1 2
+        %x = lshr %v %sh
+        %nib = and %x 15
+        %alpha = cmp uge %nib 10
+        br %alpha @af @num
+    @af
+        %c1 = add %nib 55
+        jmp @emit %c1
+    @num
+        %c2 = add %nib 48
+        jmp @emit %c2
+    @emit %c:bv64
+        @inv ult %c 71
+        %c8 = narrow %c bv8
+        %at2 = call fmt_byte %cap %buf %at %c8
+        jmp @l %k1 %at2
+    @done
+        ret %at
+}

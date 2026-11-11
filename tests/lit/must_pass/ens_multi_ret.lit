@@ -1,0 +1,19 @@
+# @ens kiểm tại từng ret: nhiều ret trả thanh ghi khác nhau, không cần block gom + @inv
+func min2 bv64 %a:bv64 %b:bv64 {
+    @ens ule %r %a
+    @ens ule %r %b
+    @b0
+        %lt = cmp ult %a %b
+        br %lt @x @y
+    @x
+        ret %a
+    @y
+        ret %b
+}
+
+func use_min bv64 %a:bv64 %b:bv64 {
+    @ens ule %z %a
+    @b0
+        %m = call min2 %a %b
+        ret %m
+}

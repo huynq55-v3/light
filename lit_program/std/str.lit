@@ -1,0 +1,130 @@
+# File: lit_program/std/str.lit
+# LIGHT STD — chuỗi byte: một chuỗi là cặp (độ dài, ptr<Byte,%độ_dài>), KHÔNG kết thúc bằng 0.
+# Chuỗi hằng: `data TÊN Byte { "văn bản" }` rồi `%s = addr TÊN` (độ dài = TÊN.len).
+
+include mem.lit
+
+# 1 nếu hai chuỗi bằng nhau (cùng độ dài, cùng byte)
+func str_eq bv64 %n:bv64 %a:ptr<Byte,%n> %m:bv64 %b:ptr<Byte,%m> {
+    @ens ule %r 1
+    @b0
+        %same = cmp eq %n %m
+        br %same @cmp @no
+    @cmp
+        %e = call mem_eq_b %n %a %m %b %n
+        ret %e
+    @no
+        ret 0
+}
+
+# 1 nếu %s bắt đầu bằng %pre
+func str_starts_with bv64 %n:bv64 %s:ptr<Byte,%n> %m:bv64 %pre:ptr<Byte,%m> {
+    @ens ule %r 1
+    @b0
+        %fits = cmp ule %m %n
+        br %fits @cmp @no
+    @cmp
+        %e = call mem_eq_b %n %s %m %pre %m
+        ret %e
+    @no
+        ret 0
+}
+
+# Vị trí đầu tiên của byte %ch tính từ %from; trả %n nếu không có
+func str_find bv64 %n:bv64 %s:ptr<Byte,%n> %from:bv64 %ch:bv8 {
+    @ens ule %r %n
+    @b0
+        %start = call math_min %from %n
+        jmp @l %start
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @none
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %hit = cmp eq %v %ch
+        br %hit @found @next
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @found
+        ret %i
+    @none
+        ret %n
+}
+
+# Bỏ qua dấu cách từ %from; trả vị trí byte khác ' ' đầu tiên (hoặc %n)
+func str_skip_spaces bv64 %n:bv64 %s:ptr<Byte,%n> %from:bv64 {
+    @ens ule %r %n
+    @b0
+        %start = call math_min %from %n
+        jmp @l %start
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @end
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %sp = cmp eq %v 32
+        br %sp @next @end
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @end
+        ret %i
+}
+
+# 'A'..'Z' -> 'a'..'z', còn lại giữ nguyên
+func byte_lower bv8 %b:bv8 {
+    @b0
+        %ge = cmp uge %b 65
+        %le = cmp ule %b 90
+        %up = and %ge %le
+        %is = cmp ne %up 0
+        br %is @conv @keep
+    @conv
+        %l = add %b 32
+        %l8 = narrow %l bv8
+        ret %l8
+    @keep
+        ret %b
+}
+
+# 1 nếu %b là chữ số '0'..'9'
+func byte_is_digit bv64 %b:bv8 {
+    @ens ule %r 1
+    @b0
+        %ge = cmp uge %b 48
+        %le = cmp ule %b 57
+        %d = and %ge %le
+        ret %d
+}
+
+# Số thập phân không dấu ở đầu chuỗi (từ %from, dừng ở byte không phải chữ số). Quá 2^64-1 thì bão hòa.
+func str_parse_u64 bv64 %n:bv64 %s:ptr<Byte,%n> %from:bv64 {
+    @b0
+        %start = call math_min %from %n
+        jmp @l %start 0
+    @l %i:bv64 %acc:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @end
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %ge = cmp uge %v 48
+        br %ge @hi @end
+    @hi
+        %le = cmp ule %v 57
+        br %le @acc_ @end
+    @acc_
+        %d = sub %v 48
+        %t = mul_sat %acc 10
+        %acc2 = add_sat %t %d
+        %i2 = add %i 1
+        jmp @l %i2 %acc2
+    @end
+        ret %acc
+}

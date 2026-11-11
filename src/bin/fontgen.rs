@@ -379,45 +379,28 @@ fn get_crisp_glyph(ch: u8) -> [u8; 16] {
     }
 }
 
-fn emit_func(name: &str, glyphs: &[(u8, u64)]) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("func {} bv64 %0:bv64 {{\n\n", name));
-    s.push_str("    @b0\n");
-
-    let mut b_id = 1;
-    let mut reg_id = 1;
-
-    for &(ascii, bits) in glyphs {
-        let c_reg = reg_id;
-        let cmp_reg = reg_id + 1;
-        let ret_reg = reg_id + 2;
-        reg_id += 3;
-
-        let hit_blk = b_id;
-        let next_blk = b_id + 1;
-        b_id += 2;
-
-        s.push_str(&format!("        %{} = const {} bv64\n", c_reg, ascii));
-        s.push_str(&format!("        %{} = cmp eq %0 %{}\n", cmp_reg, c_reg));
-        s.push_str(&format!(
-            "        br %{} @b{} @b{}\n\n",
-            cmp_reg, hit_blk, next_blk
-        ));
-
-        s.push_str(&format!("    @b{}\n", hit_blk));
-        s.push_str(&format!(
-            "        %{} = const 0x{:016x} bv64\n",
-            ret_reg, bits
-        ));
-        s.push_str(&format!("        ret %{}\n\n", ret_reg));
-
-        s.push_str(&format!("    @b{}\n", next_blk));
+/// Bảng 128 qword (mã ASCII -> 8 dòng điểm ảnh, mỗi dòng 1 byte) dưới dạng dữ liệu tĩnh `data`
+fn emit_table(name: &str, glyphs: &[(u8, u64)]) -> String {
+    let mut t = [0u64; 128];
+    for &(a, bits) in glyphs {
+        t[a as usize] = bits;
     }
-
-    s.push_str(&format!("        %{} = const 0 bv64\n", reg_id));
-    s.push_str(&format!("        ret %{}\n", reg_id));
+    let mut s = format!("data {} FontGlyph 128 {{\n", name);
+    for row in t.chunks(4) {
+        let vals: Vec<String> = row.iter().map(|v| format!("0x{:016x}", v)).collect();
+        s.push_str(&format!("    {}\n", vals.join(" ")));
+    }
     s.push_str("}\n");
     s
+}
+
+/// Tra glyph: mã >= 128 -> 0 (không vẽ gì), còn lại đọc bảng
+fn emit_func(name: &str, table: &str) -> String {
+    format!(
+        "func {name} bv64 %c:bv64 {{\n    @b0\n        %ok = cmp ult %c 128\n        br %ok @hit @miss\n    @hit\n        \
+         %t = addr {table}\n        %p = slice %t %c ptr<FontGlyph,1>\n        %v = load %p 0 bv64\n        ret %v\n    \
+         @miss\n        ret 0\n}}\n"
+    )
 }
 
 fn main() {
@@ -438,9 +421,15 @@ fn main() {
     let mut lit_code = String::new();
     lit_code.push_str("# File: lit_program/lib/font.lit\n");
     lit_code.push_str("# Bộ Font 8x16 Crisp Pixel-Art (100% không mất nét M, W, a-z, A-Z)\n\n");
-    lit_code.push_str(&emit_func("font_get_glyph_top", &top_glyphs));
+    lit_code.push_str("# Sinh bởi `cargo run --bin fontgen` — không sửa tay.\n\n");
+    lit_code.push_str("layout FontGlyph 8 {\n    0: bv64\n}\n\n");
+    lit_code.push_str(&emit_table("FONT_TOP", &top_glyphs));
     lit_code.push('\n');
-    lit_code.push_str(&emit_func("font_get_glyph_bot", &bot_glyphs));
+    lit_code.push_str(&emit_table("FONT_BOT", &bot_glyphs));
+    lit_code.push('\n');
+    lit_code.push_str(&emit_func("font_get_glyph_top", "FONT_TOP"));
+    lit_code.push('\n');
+    lit_code.push_str(&emit_func("font_get_glyph_bot", "FONT_BOT"));
 
     fs::write("lit_program/lib/font.lit", lit_code).expect("Lỗi ghi font.lit");
     println!("✅ Đã sinh 'lit_program/lib/font.lit' chuẩn 8x16 Crisp!");

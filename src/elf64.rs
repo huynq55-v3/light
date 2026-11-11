@@ -434,7 +434,8 @@ fn check_app_abi(module: &Module, fname: &str, provided: &[Prov]) -> Result<(), 
 fn compile_raw(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, u64, u64, u64, Option<u64>), String> {
     let (code, offs) = compile_code(module, is_kernel)?;
     let off_of = |name: &str| module.funcs.iter().position(|f| f.name == name).map(|i| offs[i] as u64);
-    let entry_offset = offs.last().copied().unwrap_or(0) as u64;
+    // offs có thêm offset của data sau các hàm: entry = hàm CUỐI, không phải phần tử cuối
+    let entry_offset = module.funcs.len().checked_sub(1).map_or(0, |i| offs[i]) as u64;
     let icon_offset = off_of("app_draw_icon").unwrap_or(0);
     let worker_offset = off_of("app_smp_worker").unwrap_or(0);
     Ok((code, entry_offset, icon_offset, worker_offset, off_of("kernel_panic")))
@@ -481,13 +482,27 @@ pub fn compile_code(module: &Module, is_kernel: bool) -> Result<(Vec<u8>, Vec<us
             code[p..p + 4].copy_from_slice(&rel.to_le_bytes());
         }
     }
+    // Dữ liệu tĩnh: sau mã máy, mỗi khối căn 16 byte
+    let mut data_addrs = Vec::new();
+    for d in &module.datas {
+        while code.len() % 16 != 0 {
+            code.push(0);
+        }
+        data_addrs.push(code.len());
+        code.extend_from_slice(&d.bytes);
+    }
     for (patch_pos, f_id) in call_patches {
-        let target_addr = *func_addrs.get(&f_id).ok_or("Không tìm thấy func_id")?;
+        let target_addr = if f_id & crate::x86::DATA_PATCH != 0 {
+            *data_addrs.get((f_id & !crate::x86::DATA_PATCH) as usize).ok_or("Không tìm thấy data")?
+        } else {
+            *func_addrs.get(&f_id).ok_or("Không tìm thấy func_id")?
+        };
         let rel = (target_addr as i32) - ((patch_pos + 4) as i32);
         code[patch_pos..patch_pos + 4].copy_from_slice(&rel.to_le_bytes());
     }
 
-    let offs = (0..module.funcs.len()).map(|i| func_addrs[&(i as u32)]).collect();
+    // offs[i] = offset hàm i; tiếp theo là offset của từng data (theo thứ tự module.datas)
+    let offs = (0..module.funcs.len()).map(|i| func_addrs[&(i as u32)]).chain(data_addrs).collect();
     Ok((code, offs))
 }
 

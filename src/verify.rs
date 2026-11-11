@@ -133,6 +133,11 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
         },
         Inst::Load { base, .. } => vec![*base],
         Inst::Narrow { src, .. } => vec![*src],
+        Inst::Addr { .. } => vec![],
+        Inst::View { src, ty, .. } => match ty {
+            Type::DPtr { len, .. } => vec![*src, *len],
+            _ => vec![*src],
+        },
         Inst::Store { base, val, .. } => vec![*base, *val],
         Inst::Simd256 { op, dst, lhs, rhs } => {
             if *op == SimdOp::Dot {
@@ -324,20 +329,18 @@ fn check_ssa(func: &Func, cfg: &Cfg) -> Result<(), String> {
     Ok(())
 }
 
+/// Tên giá trị trả về trong @ens: thanh ghi duy nhất không phải tham số (None nếu @ens chỉ nhắc tham số).
+fn result_reg(func: &Func) -> Option<Reg> {
+    let params: HashSet<Reg> = func.params.iter().map(|p| p.0).collect();
+    let mut v = vec![];
+    for e in &func.ensures {
+        expr_regs(e, &mut v);
+    }
+    v.into_iter().find(|r| !params.contains(r))
+}
+
 fn check_contract(func: &Func) -> Result<(), String> {
     let params: HashSet<Reg> = func.params.iter().map(|p| p.0).collect();
-    let rets: HashSet<Reg> = func
-        .blocks
-        .iter()
-        .flat_map(|b| &b.insts)
-        .filter_map(|i| {
-            if let Inst::Ret { val: Some(r) } = i {
-                Some(*r)
-            } else {
-                None
-            }
-        })
-        .collect();
     for (i, req) in func.requires.iter().enumerate() {
         let mut v = vec![];
         expr_regs(req, &mut v);
@@ -348,21 +351,25 @@ fn check_contract(func: &Func) -> Result<(), String> {
             ));
         }
     }
-    if func.ret_ty.is_some() && !func.ensures.is_empty() && rets.len() > 1 {
-        return Err("hàm có @ens nhưng các lệnh ret trả về nhiều thanh ghi khác nhau".into());
-    }
+    // @ens chỉ được nhắc tới tham số và (nhiều nhất) MỘT tên cho giá trị trả về; tên đó được gán lại ở từng `ret`.
+    let mut res: Vec<Reg> = vec![];
     for (i, ens) in func.ensures.iter().enumerate() {
         let mut v = vec![];
         expr_regs(ens, &mut v);
-        if let Some(r) = v
-            .iter()
-            .find(|r| !params.contains(r) && !(func.ret_ty.is_some() && rets.contains(r)))
-        {
-            return Err(format!(
-                "@ens #{} dùng %{} không phải tham số hay thanh ghi trả về",
-                i, r
-            ));
+        for r in v.into_iter().filter(|r| !params.contains(r)) {
+            if func.ret_ty.is_none() {
+                return Err(format!("@ens #{} dùng %{} không phải tham số (hàm không trả giá trị)", i, r));
+            }
+            if !res.contains(&r) {
+                res.push(r);
+            }
         }
+    }
+    if res.len() > 1 {
+        return Err(format!(
+            "@ens dùng nhiều thanh ghi ngoài tham số ({}); chỉ được một tên cho giá trị trả về",
+            res.iter().map(|r| format!("%{}", r)).collect::<Vec<_>>().join(", ")
+        ));
     }
     Ok(())
 }
@@ -519,6 +526,105 @@ struct Verifier<'ctx> {
     conds: HashMap<usize, Option<Bool<'ctx>>>,
     pos: Vec<usize>,
     n_assume: usize,
+    /// Vòng lặp phải dừng (hàm không giữ thẻ io: không có lý do chờ phần cứng vô hạn)
+    need_term: bool,
+    /// Biến giảm còn hợp lệ của từng đầu vòng (block index) sau các cạnh lùi đã kiểm
+    term: HashMap<usize, Vec<Z3Expr>>,
+}
+
+/// Biểu thức chỉ gồm hằng và thanh ghi bất biến trong vòng lặp đầu `h` (tham số hàm hoặc định nghĩa ở block chi phối
+/// NGẶT `h`); thanh ghi `const` được thay bằng giá trị. None nếu không thỏa.
+/// Tham số của chính `h` cũng được nhận: biến giảm là hàm của trạng thái đầu vòng nên mọi biểu thức trên tham số `h` đều hợp lệ.
+fn loop_invariant(e: &Z3Expr, h: usize, hp: &[Reg], defs: &HashMap<Reg, usize>, consts: &HashMap<Reg, u64>, cfg: &Cfg) -> Option<Z3Expr> {
+    Some(match e {
+        Z3Expr::Reg(r) => {
+            if let Some(&v) = consts.get(r) {
+                Z3Expr::Const(v)
+            } else if hp.contains(r) {
+                Z3Expr::Reg(*r)
+            } else {
+                match defs.get(r) {
+                    None => Z3Expr::Reg(*r), // tham số hàm
+                    Some(&b) if b != h && cfg.dom[h][b] => Z3Expr::Reg(*r),
+                    _ => return None,
+                }
+            }
+        }
+        Z3Expr::Const(v) => Z3Expr::Const(*v),
+        Z3Expr::Bin(op, l, r) => Z3Expr::Bin(
+            *op,
+            Box::new(loop_invariant(l, h, hp, defs, consts, cfg)?),
+            Box::new(loop_invariant(r, h, hp, defs, consts, cfg)?),
+        ),
+        _ => return None,
+    })
+}
+
+/// Ứng viên biến giảm cho đầu vòng `h`: với mỗi tham số số nguyên p: p, X - p, p - X với X là cận bất biến vòng lấy từ
+/// @inv của `h` và mọi lệnh cmp trong hàm.
+fn dec_candidates(func: &Func, cfg: &Cfg, h: usize) -> Vec<Z3Expr> {
+    let mut defs: HashMap<Reg, usize> = HashMap::new();
+    let mut consts: HashMap<Reg, u64> = HashMap::new();
+    for (bi, b) in func.blocks.iter().enumerate() {
+        for &(r, _) in &b.params {
+            defs.insert(r, bi);
+        }
+        for i in &b.insts {
+            if let Some(d) = i.dst() {
+                defs.insert(d, bi);
+            }
+            if let Inst::Const { dst, val, ty } = i {
+                if int_bits(*ty).is_some() {
+                    consts.insert(*dst, *val);
+                }
+            }
+        }
+    }
+    let ps: Vec<Reg> = func.blocks[h].params.iter().filter(|(_, t)| int_bits(*t).is_some()).map(|p| p.0).collect();
+    let hp: Vec<Reg> = func.blocks[h].params.iter().map(|p| p.0).collect();
+    let mut bounds: Vec<Z3Expr> = Vec::new();
+    let mut add = |e: &Z3Expr| {
+        if let Some(x) = loop_invariant(e, h, &hp, &defs, &consts, cfg) {
+            let k = format!("{:?}", x);
+            if !bounds.iter().any(|b| format!("{:?}", b) == k) {
+                bounds.push(x);
+            }
+        }
+    };
+    fn walk(e: &Z3Expr, add: &mut dyn FnMut(&Z3Expr)) {
+        match e {
+            Z3Expr::Cmp(_, l, r) => {
+                add(l);
+                add(r);
+            }
+            Z3Expr::And(l, r) | Z3Expr::Or(l, r) => {
+                walk(l, add);
+                walk(r, add);
+            }
+            Z3Expr::Not(x) => walk(x, add),
+            _ => {}
+        }
+    }
+    for inv in &func.blocks[h].invs {
+        walk(inv, &mut add);
+    }
+    for b in &func.blocks {
+        for i in &b.insts {
+            if let Inst::Cmp { lhs, rhs, .. } = i {
+                add(&Z3Expr::Reg(*lhs));
+                add(&Z3Expr::Reg(*rhs));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for &p in &ps {
+        out.push(Z3Expr::Reg(p));
+        for x in bounds.iter().filter(|x| !matches!(x, Z3Expr::Reg(r) if *r == p)) {
+            out.push(Z3Expr::Bin(BinOp::Sub, Box::new(x.clone()), Box::new(Z3Expr::Reg(p))));
+            out.push(Z3Expr::Bin(BinOp::Sub, Box::new(Z3Expr::Reg(p)), Box::new(x.clone())));
+        }
+    }
+    out
 }
 
 fn fmt_inst(module: &Module, inst: &Inst) -> String {
@@ -533,6 +639,8 @@ fn fmt_inst(module: &Module, inst: &Inst) -> String {
         Inst::Slice { dst, base, idx, .. } => format!("%{} = slice %{} %{}", dst, base, idx),
         Inst::Load { dst, base, offset, .. } => format!("%{} = load %{} {}", dst, base, offset),
         Inst::Narrow { dst, src, ty } => format!("%{} = narrow %{} {:?}", dst, src, ty),
+        Inst::View { dst, src, .. } => format!("%{} = view %{}", dst, src),
+        Inst::Addr { dst, data_id, .. } => format!("%{} = addr #{}", dst, data_id),
         Inst::Store { base, offset, val } => format!("store %{} {} %{}", base, offset, val),
         Inst::Simd256 { op, dst, lhs, rhs } => {
             format!("{:?} %{} %{} %{}", op, dst, lhs, rhs)
@@ -1000,6 +1108,79 @@ impl<'ctx> Verifier<'ctx> {
         Ok(())
     }
 
+    /// Cạnh lùi bi -> ti (ti là đầu vòng): chứng minh biến giảm của ti giảm ngặt. `env_new` = giá trị tham số mới.
+    fn check_back_edge(
+        &mut self,
+        func: &Func,
+        cfg: &Cfg,
+        bi: usize,
+        ti: usize,
+        env_new: &Env<'ctx>,
+        extra: Option<&Bool<'ctx>>,
+    ) -> Result<(), String> {
+        if !self.need_term || cfg.pos[ti] > cfg.pos[bi] {
+            return Ok(());
+        }
+        let h = &func.blocks[ti];
+        // Bất biến của đích (đã được chứng minh ở cạnh này) làm giả thiết
+        let mut hyp = Vec::new();
+        for inv in &h.invs {
+            hyp.push(self.eval_bool(inv, env_new, None)?);
+        }
+        let hyp_refs: Vec<&Bool> = hyp.iter().collect();
+        let hyp_all = Bool::and(self.ctx, &hyp_refs);
+        let goal = |s: &Self, v: &Z3Expr| -> Result<Bool<'ctx>, String> {
+            let (old, new) = (s.eval_bv(v, &s.regs, None)?, s.eval_bv(v, env_new, None)?);
+            Ok(hyp_all.implies(&new.bvult(&old)))
+        };
+        if let Some(d) = &h.dec {
+            let mut used = vec![];
+            expr_regs(d, &mut used);
+            let defs: HashMap<Reg, usize> = func
+                .blocks
+                .iter()
+                .enumerate()
+                .flat_map(|(k, b)| b.insts.iter().filter_map(|i| i.dst()).chain(b.params.iter().map(|p| p.0)).map(move |r| (r, k)))
+                .collect();
+            for r in used {
+                let ok = h.params.iter().any(|p| p.0 == r)
+                    || defs.get(&r).is_none_or(|&b| b != ti && cfg.dom[ti][b]);
+                if !ok {
+                    return Err(format!(
+                        "@dec của @b{}: %{} không phải tham số của block hay biến định nghĩa trước vòng lặp",
+                        h.id, r
+                    ));
+                }
+            }
+            let g = goal(self, d)?;
+            return self.check_with(
+                extra,
+                &g,
+                &format!("Vòng lặp @b{} không chắc dừng: @dec không giảm ngặt (không dấu) trên cạnh này", h.id),
+            );
+        }
+        if !self.term.contains_key(&ti) {
+            self.term.insert(ti, dec_candidates(func, cfg, ti));
+        }
+        let cands = self.term[&ti].clone();
+        let mut keep = Vec::new();
+        for c in cands {
+            let g = goal(self, &c)?;
+            if self.check_with(extra, &g, "").is_ok() {
+                keep.push(c);
+            }
+        }
+        if keep.is_empty() {
+            return Err(format!(
+                "[Z3 FAIL] func {} @b{}: '{}' -> Không chứng minh được vòng lặp @b{} dừng: thêm `@dec <biểu_thức>` vào @b{} \
+                 (giá trị không dấu giảm ngặt ở mỗi vòng, vd `@dec sub %n %i`), hoặc giới hạn vòng bằng @inv/cmp với cận cố định",
+                self.func_name, self.cur_bb, self.cur_inst, h.id, h.id
+            ));
+        }
+        self.term.insert(ti, keep);
+        Ok(())
+    }
+
     fn step(
         &mut self,
         module: &Module,
@@ -1177,6 +1358,54 @@ impl<'ctx> Verifier<'ctx> {
                 if let Some(inv) = &field.inv {
                     self.assume(&self.eval_bool(inv, &HashMap::new(), Some(&d))?);
                 }
+            }
+            Inst::Addr { dst, data_id, ty } => {
+                let d = module.datas.get(*data_id as usize).ok_or("addr: data không tồn tại")?;
+                if *ty != (Type::Ptr { layout_id: d.layout_id, max_elems: d.count }) {
+                    return Err(format!("addr %{}: kiểu không khớp data '{}'", dst, d.name));
+                }
+                self.decl_reg(*dst, *ty)?;
+            }
+            Inst::View { dst, src, ty } => {
+                let Some((l1, m_old)) = self.ptr_len(self.reg_ty(*src)?, &self.regs)? else {
+                    return Err(format!("view: %{} không phải ptr", src));
+                };
+                if let Type::DPtr { len, .. } = *ty {
+                    if int_bits(self.reg_ty(len)?).is_none() {
+                        return Err(format!("độ dài %{} của ptr động phải là số nguyên", len));
+                    }
+                }
+                let Some((l2, m_new)) = self.ptr_len(*ty, &self.regs)? else {
+                    return Err(format!("view: kiểu đích của %{} phải là ptr", dst));
+                };
+                for l in [l1, l2] {
+                    let lay = &self.layouts[l as usize];
+                    if lay.fields.iter().any(|f| f.inv.is_some()) {
+                        return Err(format!(
+                            "Bảo mật: view không dùng được với Layout '{}' có @inv (ghi qua kiểu khác sẽ phá bất biến)",
+                            lay.name
+                        ));
+                    }
+                }
+                let (s1, s2) = (self.bv(self.elem_size(l1)?), self.bv(self.elem_size(l2)?));
+                self.check(
+                    &m_new.bvmul_no_overflow(&s2, false),
+                    &format!("view %{}: tràn số khi tính số byte đích", dst),
+                )?;
+                self.check(
+                    &m_old.bvmul_no_overflow(&s1, false),
+                    &format!("view %{}: tràn số khi tính số byte nguồn", dst),
+                )?;
+                self.check(
+                    &m_new.bvmul(&s2).bvule(&m_old.bvmul(&s1)),
+                    &format!("view %{}: vùng đích lớn hơn vùng nguồn", dst),
+                )?;
+                let s = self.get_reg(*src)?.clone();
+                let d = self.decl_raw(*dst, *ty)?;
+                self.solver.assert(&d._eq(&s));
+                let valid = self.any_ptr_valid(&d, *ty)?;
+                self.check(&valid, &format!("Con trỏ view tại %{} ra ngoài RAM", dst))?;
+                self.assume(&valid);
             }
             Inst::Narrow { dst, src, ty } => {
                 if int_bits(self.reg_ty(*src)?).is_none() {
@@ -1407,13 +1636,7 @@ impl<'ctx> Verifier<'ctx> {
                     }
                     let dbv = self.decl_reg(*d, rty)?;
                     if !callee.ensures.is_empty() {
-                        if let Some(r) = callee.blocks.iter().flat_map(|b| &b.insts).find_map(|i| {
-                            if let Inst::Ret { val: Some(r) } = i {
-                                Some(*r)
-                            } else {
-                                None
-                            }
-                        }) {
+                        if let Some(r) = result_reg(callee) {
                             env.insert(r, dbv);
                         }
                         for ens in &callee.ensures {
@@ -1454,6 +1677,8 @@ impl<'ctx> Verifier<'ctx> {
                         ));
                     }
                     self.check_target_invs(func, ti, &self.regs, Some(&extra))?;
+                    let env = self.regs.clone();
+                    self.check_back_edge(func, cfg, bi, ti, &env, Some(&extra))?;
                     let pc = self
                         .cur_cond
                         .as_ref()
@@ -1489,6 +1714,7 @@ impl<'ctx> Verifier<'ctx> {
                     )?;
                 }
                 self.check_target_invs(func, ti, &env, None)?;
+                self.check_back_edge(func, cfg, bi, ti, &env, None)?;
                 self.add_pred(bi, ti, self.cur_cond.clone());
             }
             Inst::Assume(e) => {
@@ -1515,9 +1741,14 @@ impl<'ctx> Verifier<'ctx> {
                         &format!("giá trị trả về %{}", r),
                     )?;
                 }
+                // @ens kiểm tại TỪNG ret: tên giá trị trả về trong @ens được gán bằng thanh ghi ret này
+                let mut env = self.regs.clone();
+                if let (Some(rr), Some(r)) = (result_reg(func), val) {
+                    env.insert(rr, self.get_reg(*r)?.clone());
+                }
                 for (i, ens) in func.ensures.iter().enumerate() {
                     self.check(
-                        &self.ev(ens)?,
+                        &self.eval_bool(ens, &env, None)?,
                         &format!(
                             "Vi phạm điều kiện đầu ra (@ens #{}) của hàm '{}'",
                             i, func.name
@@ -1567,6 +1798,8 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
         conds: HashMap::from([(0, None)]),
         pos: cfg.pos.clone(),
         n_assume: 0,
+        need_term: !func.params.iter().any(|&(_, t)| matches!(t, Type::Io { .. })),
+        term: HashMap::new(),
     };
 
     for &(r, ty) in &func.params {

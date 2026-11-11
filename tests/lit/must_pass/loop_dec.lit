@@ -1,0 +1,55 @@
+# Chứng minh dừng: tự suy (n - i) và @dec tường minh khi bước nhảy không đơn giản
+func sum_to bv64 %n:bv64 {
+    @req ult %n 1000
+    @b0
+        jmp @loop 0 0
+    @loop %i:bv64 %s:bv64
+        @inv ule %i %n
+        @inv ule %s mul %i 1000
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %s2 = add %s %i
+        %i2 = add %i 1
+        jmp @loop %i2 %s2
+    @done
+        ret %s
+}
+
+# Hai biến cùng đổi: a giảm hoặc b giảm -> @dec add %a %b
+func zigzag bv64 %a0:bv64 %b0:bv64 {
+    @req ult %a0 1000
+    @req ult %b0 1000
+    @b0
+        jmp @loop %a0 %b0
+    @loop %a:bv64 %b:bv64
+        @inv ult %a 1000
+        @inv ult %b 1000
+        @dec add %a %b
+        %az = cmp eq %a 0
+        br %az @tryb @deca
+    @deca
+        %a2 = sub %a 1
+        jmp @loop %a2 %b
+    @tryb
+        %bz = cmp eq %b 0
+        br %bz @done @decb
+    @decb
+        %b2 = sub %b 1
+        jmp @loop %a %b2
+    @done
+        ret %a
+}
+
+# Hàm giữ thẻ io được phép chờ phần cứng vô hạn
+func wait_hw void %io:io<0x60,0x64> {
+    @b0
+        jmp @poll
+    @poll
+        %st = hwio_r %io 0x64
+        %bit = and %st 1
+        %ready = cmp ne %bit 0
+        br %ready @done @poll
+    @done
+        ret
+}

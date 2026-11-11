@@ -1,0 +1,13 @@
+# EXPECT: view không dùng được với Layout
+# Ghi byte tùy ý qua view sẽ phá @inv của Layout nguồn
+layout Cell 8 {
+    0: bv64 @inv ult val 128
+}
+layout Byte 1 {
+    0: bv8
+}
+func f void %q:ptr<Cell,1> {
+    @b0
+        %b = view %q ptr<Byte,8>
+        ret
+}

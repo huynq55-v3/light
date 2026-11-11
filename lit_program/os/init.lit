@@ -46,6 +46,7 @@ func sys_init_desktop void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<VgaCel
 
     @b0
         call ipc_channel_init %3
+        call app_chan_init_all %0
 
         %7 = const 0 bv64
         %8 = const 1920 bv64

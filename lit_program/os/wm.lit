@@ -170,6 +170,8 @@ func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:p
     @b0
         # 1. Reset vùng nhớ Persistent State của App thứ %4 về 0!
         call app_dispatch_zero_state %0 %4
+        %chn = call app_chan %0 %4
+        call ipc_channel_init %chn
 
         # 1b. Trả toàn bộ Chunk RAM động (1..16382) của App %4 về Bể Khung RAM của Kernel
         %60 = const 0xa00000 ptr<DiskQword,131072>
@@ -439,6 +441,9 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         store %3 32 %13
         store %3 88 %13
         store %3 112 %13
+        # App vừa được đưa lên foreground phải vẽ lại khung cửa sổ: xóa cờ win_drawn trên kênh RIÊNG của nó
+        %chn = call app_chan %0 %261
+        store %chn IpcChannel.win_drawn 0
         jmp @b8
 
     @b20
