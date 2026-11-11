@@ -75,9 +75,20 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
 
 ### GUI kiểu Wayland — các lát tiếp theo
 1. ~~Kênh riêng mỗi App~~ (xong).
-2. Surface ngoài màn hình: App vẽ vào bộ đệm riêng (cùng kiểu `ptr<VgaCell,1382400>` bước 1920 để không đổi ABI), compositor
-   blit theo z-order + vùng bẩn của từng kênh. Cần chỗ RAM vật lý cho 7 × 5,5MB (cấp từ bể khung, map vào cửa sổ của App).
-3. Quản lý cửa sổ: focus, đưa lên trên, kéo; khung cửa sổ do compositor vẽ (App không vẽ ui_win_draw nữa).
+2. ~~Surface ngoài màn hình~~ (xong, `os/compositor.lit`): mỗi slot vẽ vào surface 6MB riêng tại `0x12000000 + slot*6MB`
+   (21 khung đầu của bể VMM, giữ lúc boot bởi `comp_init` và ánh xạ đồng nhất vào `PD_0[144..164]`; phải < 2GB vì App/gfx
+   đòi `@req ult %fb 0x80000000`). Cùng kiểu `ptr<VgaCell,1382400>` -> ABI không đổi. Không đủ khung -> tự tắt, vẽ thẳng.
+   **Đính chính:** commit đầu của lát này kiểm "đang bật" bằng `PD_0[144] == 0x12000083`, nhưng CPU bật bit A/D (0x60)
+   ngay lần chạm đầu -> compositor tự TẮT sau khi xóa surface lúc boot, mọi ảnh chụp khi đó là đường vẽ thẳng. Đã sửa
+   (bỏ bit A/D trước khi so) và kiểm lại bằng `qt.py mon:xp ...` đọc bảng cảnh + ảnh hai cửa sổ chồng nhau.
+3. ~~Quản lý cửa sổ: focus, đưa lên trên, kéo~~ (xong): bảng cảnh ở `0x79800` (thứ tự chồng + vị trí từng cửa sổ).
+   App vẫn vẽ cửa sổ tại (200,60) trong surface; compositor đặt nó ở (wx, wy) và quy đổi chuột ngược lại -> App không
+   biết bị dời. Nhấn cửa sổ dưới -> đưa lên trên (cú nhấn bị tiêu thụ); kéo thanh tiêu đề (trừ nút [X]) khi giữ nút trái;
+   cửa sổ mới xếp tầng (+40, +16); đóng cửa sổ trên cùng -> cửa sổ kế tiếp nhận focus. Chỉ vẽ trong 1280 x 624 của khung
+   nhìn (Dock không bị đè). Kiểm: 1 cửa sổ trùng từng điểm ảnh với bản trước; 2 cửa sổ: đưa lên, phím đúng cửa sổ, kéo,
+   [X] trên cửa sổ đã dời (usb), ESC rồi focus về cửa sổ dưới; legacy/usb/uefi.
+   Chưa làm: khung cửa sổ do compositor vẽ (App vẫn tự gọi ui_win_draw — phải đổi App); cửa sổ dưới không chạy nên nội
+   dung của nó đứng yên tới khi được đưa lên; vùng kéo chỉ trong khung nhìn 1280x720 (x 0..394, y 0..590).
 4. Surface động `(w, h, ptr)` + sự kiện `configure` khi đổi kích thước (đổi `check_app_abi` và test `app_abi_*`); toolkit trên `std/surface`.
 5. Tách quyền: compositor không giữ `io<0,0xffff>` (chỉ ptr màn hình + surface).
 

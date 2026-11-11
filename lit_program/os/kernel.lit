@@ -78,6 +78,7 @@ func kernel_boot_entry void %0:io<0,0xffff> {
         %20 = call sys_get_vmm_table %0
         call std_mem_zero %20
         call vmm_probe_ram %0 %20                # Đọc Memory Map: [3] = đỉnh RAM khả dụng, [4] = tổng RAM khả dụng (byte)
+        %21 = call comp_init %0 %20              # 21 khung đầu của bể -> 7 surface App (compositor); 0 = vẽ thẳng
 
         call sys_init_drivers %0 %4 %5 %6
         call sys_init_desktop %0 %9 %10 %3 %5

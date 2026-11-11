@@ -172,6 +172,7 @@ func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:p
         call app_dispatch_zero_state %0 %4
         %chn = call app_chan %0 %4
         call ipc_channel_init %chn
+        call comp_clear_slot %0 %4               # surface sạch: App mở lại không thấy điểm ảnh cũ
 
         # 1b. Trả toàn bộ Chunk RAM động (1..16382) của App %4 về Bể Khung RAM của Kernel
         %60 = const 0xa00000 ptr<DiskQword,131072>
@@ -197,14 +198,8 @@ func shell_close_and_reset_app void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:p
         store %2 104 %11
         store %2 112 %11
 
-        # 5. Xóa sạch vùng cửa sổ trên màn hình Desktop
-        %12 = const 180 bv64
-        %13 = const 50 bv64
-        %14 = const 1100 bv64
-        %15 = const 615 bv64
-        %16 = const 0x161b26 bv32
-        call gfx_fill_rect %1 %12 %13 %14 %15 %16
-        call ui_invalidate_rect %2 %12 %13 %14 %15
+        # 5. Gỡ cửa sổ khỏi cảnh compositor: cửa sổ kế tiếp lên foreground, vẽ lại khung nhìn
+        call comp_close %0 %1 %2 %4
         ret
 }
 
@@ -372,6 +367,8 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         # Khung nhìn của App: VRAM cắt tại gốc (320, 160) = 160 * 1920 + 320
         %910 = const 307520 bv64
         %911 = slice %2 %910 ptr<VgaCell,1382400>
+        # Đang kéo cửa sổ bằng thanh tiêu đề -> dời theo chuột
+        call comp_drag_tick %0 %911 %3
         %12 = load %3 32 bv64
         %13 = const 0 bv64
         %14 = const 1 bv64
@@ -389,6 +386,12 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         br %18 @b2 @b18
 
     @b18
+        # Compositor xử lý trước: đưa cửa sổ dưới lên trên / bắt đầu kéo (cú nhấn bị tiêu thụ)
+        %cc = call comp_click %0 %911 %3
+        %ccon = cmp ne %cc 0
+        br %ccon @b19 @b18a
+
+    @b18a
         %65 = load %3 56 bv64
         %66 = cmp ne %65 %13
         br %66 @b8 @b19
@@ -425,14 +428,8 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         br %101 @b41 @b42
 
     @b41
-        # Khi chuyển sang App khác: Xóa sạch vùng cửa sổ làm việc cũ trên Backbuffer (%2) và VRAM
-        %102 = const 180 bv64
-        %103 = const 50 bv64
-        %104 = const 1100 bv64
-        %105 = const 615 bv64
-        %106 = const 0x161b26 bv32
-        call gfx_fill_rect %911 %102 %103 %104 %105 %106
-        call ui_invalidate_rect %3 %102 %103 %104 %105
+        # Khi chuyển sang App khác: compositor đưa cửa sổ của nó lên trên (mở nếu chưa có) và vẽ lại cảnh
+        call comp_focus %0 %911 %3 %261
         jmp @b42
 
     @b42

@@ -1,6 +1,6 @@
 # tools/qt.py <tiền_tố_ra> <chế độ legacy|uefi|usb|usb2> <lệnh...>: chạy QEMU không màn hình, điều khiển qua QMP
-# Lệnh: wait:S  key:QCODE  type:TEXT (dùng $'..\n' để gõ Enter)  shot:TÊN  mouse:DX,DY  click  quit
-# Thư mục ra (serial, ảnh, ảnh đĩa tạm): $QT_OUT (mặc định /tmp/lightqt). Chuột PS/2/USB tương đối: 1 đơn vị = 2 pixel.
+# Lệnh: wait:S  key:QCODE  type:TEXT (dùng $'..\n' để gõ Enter)  shot:TÊN  mouse:DX,DY  click  down  up (giữ/nhả nút trái, để kéo)  mon:LỆNH_MONITOR (vd 'xp /4gx 0x79800')  quit
+# Thư mục ra (serial, ảnh, ảnh đĩa tạm): $QT_OUT (mặc định /tmp/lightqt). RAM: $QT_MEM (mặc định 4G). Chuột PS/2/USB tương đối: 1 đơn vị = 2 pixel.
 # usb = 1 xHCI (bàn phím + chuột); usb2 = 2 xHCI (chuột ở controller 1, bàn phím ở controller 2).
 import json, socket, subprocess, sys, time, os
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -8,7 +8,7 @@ S = os.environ.get('QT_OUT', '/tmp/lightqt'); os.makedirs(S, exist_ok=True)
 out, mode, cmds = sys.argv[1], sys.argv[2], sys.argv[3:]
 q = f'{S}/qmp.sock'
 if os.path.exists(q): os.remove(q)
-base = ['qemu-system-x86_64', '-enable-kvm', '-cpu', 'host', '-m', '4G', '-smp', '8', '-display', 'none', '-qmp', f'unix:{q},server,nowait', '-serial', f'file:{S}/{out}_serial.txt']
+base = ['qemu-system-x86_64', '-enable-kvm', '-cpu', 'host', '-m', os.environ.get('QT_MEM', '4G'), '-smp', '8', '-display', 'none', '-qmp', f'unix:{q},server,nowait', '-serial', f'file:{S}/{out}_serial.txt']
 if mode in ('legacy', 'usb', 'usb2'):
     subprocess.run(['cp', f'{R}/disk.img', f'{S}/disk64.img']); subprocess.run(['truncate', '-s', '64M', f'{S}/disk64.img'])
     base += ['-kernel', f'{R}/kernel.elf', '-drive', f'file={S}/disk64.img,format=raw,if=ide']
@@ -56,6 +56,10 @@ for c in cmds:
         dx, dy = map(int, arg.split(','))
         cmd('input-send-event', events=[{'type': 'rel', 'data': {'axis': 'x', 'value': dx}}, {'type': 'rel', 'data': {'axis': 'y', 'value': dy}}])
         time.sleep(0.1)
+    elif op == 'mon':
+        print(arg, '=>', cmd('human-monitor-command', **{'command-line': arg}).get('return', '').strip())
+    elif op in ('down', 'up'):
+        cmd('input-send-event', events=[{'type': 'btn', 'data': {'down': op == 'down', 'button': 'left'}}]); time.sleep(0.2)
     elif op == 'click':
         cmd('input-send-event', events=[{'type': 'btn', 'data': {'down': True, 'button': 'left'}}]); time.sleep(0.1)
         cmd('input-send-event', events=[{'type': 'btn', 'data': {'down': False, 'button': 'left'}}]); time.sleep(0.2)
