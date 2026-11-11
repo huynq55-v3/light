@@ -6,7 +6,7 @@
 #   (288MB..330MB): comp_init đánh dấu đã cấp trong bitmap rồi ánh xạ đồng nhất vào PD_0[144..164] (0..1GB của
 #   PD_0 chưa có gì ở đó). Phải ở dưới 2GB vì App và thư viện gfx đòi `@req ult %fb 0x80000000`.
 #
-#   Bật/tắt: compositor BẬT khi và chỉ khi PD_0[144] = 0x12000083 (do comp_init ghi; bỏ qua bit A/D do CPU bật). Không có đủ 21 khung trống
+#   Bật/tắt: CompCtl.enabled = 1 do comp_init ghi sau khi giữ khung + ánh xạ xong (trước đây đọc PD_0[144]). Không có đủ 21 khung trống
 #   (máy < ~330MB RAM khả dụng) -> không ghi gì, App vẽ thẳng vào Backbuffer như trước.
 #
 #   Chỉ ghép trong VÙNG CỬA SỔ [180,1100) x [50,615) (tọa độ khung nhìn) — vùng WM vẫn xóa khi đổi/đóng App;
@@ -14,6 +14,7 @@
 
 include ../lib/gfx.lit
 include ../lib/std_lib.lit
+include ../std/surface.lit
 
 def COMP_X1 180
 def COMP_Y1 50
@@ -25,89 +26,13 @@ layout CompSlot 6291456 {
     0: bv32
 }
 
-# 1 nếu compositor đã được bật lúc boot
-func comp_enabled bv64 %io:io<0,0xffff> {
-    @ens ule %r 1
-    @b0
-        %pd = const 0x12000 ptr<DiskQword,512>
-        %e = call q512 %pd 144
-        # CPU tự bật bit Accessed (0x20) / Dirty (0x40) khi chạm trang -> bỏ hai bit đó trước khi so
-        %e2 = and %e 0xffffffffffffff9f
-        %on = cmp eq %e2 0x12000083
-        ret %on
-}
-
-# Surface của slot (0..6). Chỉ hợp lệ để chạm vào khi comp_enabled = 1.
-func comp_surface ptr<VgaCell,1382400> %io:io<0,0xffff> %slot:bv64 {
-    @req ult %slot 7
-    @ens uge %r 0x10000
-    @ens ult %r 0x80000000
-    @b0
-        %all = const 0x12000000 ptr<CompSlot,7>
-        %one = slice %all %slot ptr<CompSlot,1>
-        %px = view %one ptr<VgaCell,1382400>
-        ret %px
-}
-
-# Đích vẽ của App slot: surface riêng nếu compositor bật, ngược lại khung nhìn Backbuffer %fb
-func comp_target ptr<VgaCell,1382400> %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %slot:bv64 {
-    @req uge %fb 0x10000
-    @req ult %fb 0x80000000
-    @req ult %slot 7
-    @ens uge %r 0x10000
-    @ens ult %r 0x80000000
-    @b0
-        %on = call comp_enabled %io
-        %yes = cmp ne %on 0
-        br %yes @surf @direct
-    @surf
-        %s = call comp_surface %io %slot
-        ret %s
-    @direct
-        ret %fb
-}
-
-# Xóa vùng cửa sổ của surface slot về màu nền (lúc boot và khi đóng App: không rò điểm ảnh sang App kế tiếp)
-func comp_clear_slot void %io:io<0,0xffff> %slot:bv64 {
-    @req ult %slot 7
-    @b0
-        %on = call comp_enabled %io
-        %yes = cmp ne %on 0
-        br %yes @clr @done
-    @clr
-        %s = call comp_surface %io %slot
-        call gfx_fill_rect %s COMP_X1 COMP_Y1 1280 720 COMP_BG
-        ret
-    @done
-        ret
-}
-
-# Chép một hàng %n điểm
-func comp_copy_row void %n:bv64 %dst:ptr<VgaCell,%n> %src:ptr<VgaCell,%n> {
-    @b0
-        jmp @l 0
-    @l %i:bv64
-        @inv ule %i %n
-        %more = cmp ult %i %n
-        br %more @body @done
-    @body
-        %s = slice %src %i ptr<VgaCell,1>
-        %d = slice %dst %i ptr<VgaCell,1>
-        %v = load %s 0 bv32
-        store %d 0 %v
-        %i2 = add %i 1
-        jmp @l %i2
-    @done
-        ret
-}
-
 # =============================================================================
 # CẢNH (lát 3): thứ tự chồng (z-order) + vị trí từng cửa sổ, nhấn để đưa lên trên, kéo bằng thanh tiêu đề.
 #   App vẫn vẽ cửa sổ ở vị trí CỐ ĐỊNH (200,60) cỡ 880x540 (+6 bóng đổ) trong surface của nó; compositor đặt cửa sổ
 #   ở (wx, wy) của khung nhìn: điểm (200+u, 60+v) của surface -> (wx+u, wy+v). Chuột gửi cho App được quy đổi ngược
 #   lại nên App không biết cửa sổ đã bị dời -> ABI không đổi.
 #   Trang IPC 0x79000: kênh toàn cục 0x79000 (320 byte), kênh riêng 7 slot 0x79200..0x79ac0, bảng cảnh 0x79c00 CompCtl,
-#   0x79c40 CompZ x7 (dưới -> trên), 0x79c80 CompWin x7.
+#   0x79c80 CompWin x7 (trường z của bản ghi i = phần tử i của thứ tự chồng, dưới -> trên).
 #   Bất biến: IpcChannel.active_app = cửa sổ trên cùng (0 nếu không còn cửa sổ nào).
 # =============================================================================
 
@@ -130,68 +55,131 @@ def VIEW_SX 320
 def VIEW_SY 160
 
 layout CompCtl 64 {
-    0: bv64 count @inv ule val 7            # số cửa sổ đang mở (độ dài CompZ)
+    0: bv64 count @inv ule val 7            # số cửa sổ đang mở (số phần tử z hợp lệ)
     8: bv64 drag @inv ult val 8             # slot+1 của cửa sổ đang kéo, 0 = không kéo
     16: bv64 gx @inv ule val 1074           # chỗ nắm trong cửa sổ lúc bắt đầu kéo
     24: bv64 gy @inv ule val 32
     32: bv64 mode @inv ule val 1            # 0 = dời cửa sổ, 1 = đổi kích thước (góc dưới-phải)
+    40: bv64 enabled @inv ule val 1         # 1 = compositor bật (comp_init giữ được 21 khung + ánh xạ xong)
 }
 
-layout CompZ 8 {
-    0: bv64 s @inv ult val 8                # slot+1
-}
-
-layout CompWin 40 {
+layout CompWin 48 {
     0: bv64 x @inv ule val 974              # góc trên-trái cửa sổ trong khung nhìn (x + w + 6 <= 1280 do comp giữ)
     8: bv64 y @inv ule val 590
     16: bv64 title                          # tên cửa sổ đã vẽ trên khung (so với IpcChannel.title để biết khi đổi)
     24: bv64 w @inv ule val 1074            # kích thước cửa sổ (không kể bóng đổ 6 điểm) mà App đã báo
     32: bv64 h @inv ule val 558
+    40: bv64 z @inv ult val 8               # phần tử thứ i của thứ tự chồng (dưới -> trên): slot+1
 }
 
-func comp_ctl ptr<CompCtl,1> %io:io<0,0xffff> {
+
+# 1 nếu compositor đã được bật lúc boot
+func cs_enabled bv64 %k:ptr<CompCtl,1> {
+    @ens ule %r 1
+    @b0
+        %e = load %k CompCtl.enabled
+        ret %e
+}
+
+# Surface của slot (0..6). Chỉ hợp lệ để chạm vào khi compositor bật.
+func cs_surface ptr<VgaCell,1382400> %sf:ptr<CompSlot,7> %slot:bv64 {
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
+    @req ult %slot 7
     @ens uge %r 0x10000
     @ens ult %r 0x80000000
     @b0
-        %c = const 0x79c00 ptr<CompCtl,1>
-        ret %c
+        %one = slice %sf %slot ptr<CompSlot,1>
+        %px = view %one ptr<VgaCell,1382400>
+        ret %px
 }
 
-func comp_z ptr<CompZ,1> %io:io<0,0xffff> %i:bv64 {
+# Đích vẽ của App slot: surface riêng nếu compositor bật, ngược lại khung nhìn Backbuffer %fb
+func cs_target ptr<VgaCell,1382400> %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %fb:ptr<VgaCell,1382400> %slot:bv64 {
+    @req uge %fb 0x10000
+    @req ult %fb 0x80000000
+    @req ult %slot 7
+    @ens uge %r 0x10000
+    @ens ult %r 0x80000000
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
+    @b0
+        %on = call cs_enabled %k
+        %yes = cmp ne %on 0
+        br %yes @surf @direct
+    @surf
+        %s = call cs_surface %sf %slot
+        ret %s
+    @direct
+        ret %fb
+}
+# Xóa vùng cửa sổ của surface slot về màu nền (lúc boot và khi đóng App: không rò điểm ảnh sang App kế tiếp)
+func cs_clear_slot void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %slot:bv64 {
+    @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
+    @b0
+        %on = call cs_enabled %k
+        %yes = cmp ne %on 0
+        br %yes @clr @done
+    @clr
+        %s = call cs_surface %sf %slot
+        call gfx_fill_rect %s COMP_X1 COMP_Y1 1280 720 COMP_BG
+        ret
+    @done
+        ret
+}
+# Chép một hàng %n điểm
+func comp_copy_row void %n:bv64 %dst:ptr<VgaCell,%n> %src:ptr<VgaCell,%n> {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %s = slice %src %i ptr<VgaCell,1>
+        %d = slice %dst %i ptr<VgaCell,1>
+        %v = load %s 0 bv32
+        store %d 0 %v
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
+func cs_ctl ptr<CompCtl,1> %k:ptr<CompCtl,1> {
+    @b0
+        ret %k
+}
+
+# Phần tử thứ i của thứ tự chồng (trường z của bản ghi thứ i)
+func cs_z ptr<CompWin,1> %ws:ptr<CompWin,7> %i:bv64 {
     @req ult %i 7
-    @ens uge %r 0x10000
-    @ens ult %r 0x80000000
     @b0
-        %all = const 0x79c40 ptr<CompZ,7>
-        %e = slice %all %i ptr<CompZ,1>
+        %e = slice %ws %i ptr<CompWin,1>
         ret %e
 }
 
-func comp_win ptr<CompWin,1> %io:io<0,0xffff> %slot:bv64 {
+func cs_win ptr<CompWin,1> %ws:ptr<CompWin,7> %slot:bv64 {
     @req ult %slot 7
-    @ens uge %r 0x10000
-    @ens ult %r 0x80000000
     @b0
-        %all = const 0x79c80 ptr<CompWin,7>
-        %e = slice %all %slot ptr<CompWin,1>
+        %e = slice %ws %slot ptr<CompWin,1>
         ret %e
 }
 
-# Kênh IPC riêng của slot (cùng địa chỉ với app_chan trong app_loader.lit, được định nghĩa sau file này)
-func comp_chan ptr<IpcChannel,1> %io:io<0,0xffff> %slot:bv64 {
+func cs_chan ptr<IpcChannel,1> %chs:ptr<IpcChannel,7> %slot:bv64 {
     @req ult %slot 7
-    @ens uge %r 0x79200
-    @ens ult %r 0x7a000
     @b0
-        %all = const 0x79200 ptr<IpcChannel,7>
-        %c = slice %all %slot ptr<IpcChannel,1>
+        %c = slice %chs %slot ptr<IpcChannel,1>
         ret %c
 }
 
 # Cảnh rỗng, mọi cửa sổ về vị trí mặc định
-func comp_scene_init void %io:io<0,0xffff> {
+func cs_scene_init void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> {
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         store %c CompCtl.count 0
         store %c CompCtl.drag 0
         store %c CompCtl.gx 0
@@ -203,9 +191,9 @@ func comp_scene_init void %io:io<0,0xffff> {
         %more = cmp ult %i 7
         br %more @body @done
     @body
-        %z = call comp_z %io %i
-        store %z CompZ.s 0
-        %w = call comp_win %io %i
+        %z = call cs_z %ws %i
+        store %z CompWin.z 0
+        %w = call cs_win %ws %i
         store %w CompWin.x WIN_X0
         store %w CompWin.y WIN_Y0
         store %w CompWin.title 0
@@ -216,31 +204,33 @@ func comp_scene_init void %io:io<0,0xffff> {
     @done
         ret
 }
-
 # slot+1 của cửa sổ trên cùng, 0 nếu cảnh rỗng
-func comp_top bv64 %io:io<0,0xffff> {
+func cs_top bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> {
     @ens ult %r 8
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         %n = load %c CompCtl.count
         %empty = cmp eq %n 0
         br %empty @none @get
     @get
         %i = sub %n 1
-        %z = call comp_z %io %i
-        %s = load %z CompZ.s
+        %z = call cs_z %ws %i
+        %s = load %z CompWin.z
         ret %s
     @none
         ret 0
 }
-
 # 1 nếu slot đang có cửa sổ trong cảnh
-func comp_has bv64 %io:io<0,0xffff> %slot:bv64 {
+func cs_has bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %slot:bv64 {
     @req ult %slot 7
     @ens ule %r 1
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
         %me = add %slot 1
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         %n = load %c CompCtl.count
         jmp @l 0
     @l %i:bv64
@@ -251,8 +241,8 @@ func comp_has bv64 %io:io<0,0xffff> %slot:bv64 {
         %live = cmp ult %i %n
         br %live @body @no
     @body
-        %z = call comp_z %io %i
-        %s = load %z CompZ.s
+        %z = call cs_z %ws %i
+        %s = load %z CompWin.z
         %hit = cmp eq %s %me
         br %hit @yes @next
     @next
@@ -263,21 +253,44 @@ func comp_has bv64 %io:io<0,0xffff> %slot:bv64 {
     @no
         ret 0
 }
+# Tên cửa sổ: 8 ký tự ASCII trong một qword (byte thấp = ký tự đầu), cách nhau 9 điểm, tại (214, 68) của surface.
+# Dùng bảng font `data` (std/surface) nên không cần con trỏ font của Kernel.
+func cs_title void %s:ptr<VgaCell,1382400> %title:bv64 %fg:bv32 {
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 8
+        %more = cmp ult %i 8
+        br %more @ch @done
+    @ch
+        %sh = shl %i 3
+        %b = lshr %title %sh
+        %c = and %b 0xff
+        %dx = mul %i 9
+        %x = add %dx 214
+        call surf_char 1382400 %s 1920 1280 720 %x 68 %c %fg
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret
+}
 
 # Khung cửa sổ do compositor vẽ (trang trí phía server) thẳng vào surface của slot, quanh cửa sổ (200,60) cỡ CompWin.w x h:
 # bóng đổ, viền, thanh tiêu đề + tên (IpcChannel.title), nút [X]. Cửa sổ đang focus và không focus khác màu.
 # Vẽ vào surface nên thứ tự chồng / cắt vùng do comp_draw_window lo như mọi điểm ảnh khác.
-func comp_frame void %io:io<0,0xffff> %slot:bv64 %active:bv64 {
+func cs_frame void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %slot:bv64 %active:bv64 {
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %on = call comp_enabled %io
+        %on = call cs_enabled %k
         %yes = cmp ne %on 0
         br %yes @go @done
     @go
-        %s = call comp_surface %io %slot
-        %ch = call comp_chan %io %slot
+        %s = call cs_surface %sf %slot
+        %ch = call cs_chan %chs %slot
         %title = load %ch IpcChannel.title
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         store %w CompWin.title %title
         %act = cmp ne %active 0
         br %act @hot @cold
@@ -307,8 +320,7 @@ func comp_frame void %io:io<0,0xffff> %slot:bv64 %active:bv64 {
         call gfx_fill_rect %s %r2 62 %r %bt2 %border
         # thanh tiêu đề + tên
         call gfx_fill_rect %s 202 62 %r2 92 %bar
-        %font = const 0x7c000 ptr<DiskQword,64>
-        call gfx_draw_str8 %s %font 214 68 %title %text
+        call cs_title %s %title %text
         # nút [X]
         %xb1 = sub %r 38
         %xb2 = sub %r 6
@@ -320,13 +332,14 @@ func comp_frame void %io:io<0,0xffff> %slot:bv64 %active:bv64 {
     @done
         ret
 }
-
 # Gỡ slot khỏi cảnh (dồn các phần tử còn lại xuống, giữ thứ tự)
-func comp_remove void %io:io<0,0xffff> %slot:bv64 {
+func cs_remove void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %slot:bv64 {
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
         %me = add %slot 1
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         %n = load %c CompCtl.count
         jmp @l 0 0
     @l %i:bv64 %j:bv64
@@ -338,29 +351,29 @@ func comp_remove void %io:io<0,0xffff> %slot:bv64 {
         %live = cmp ult %i %n
         br %live @body @fin
     @body
-        %zi = call comp_z %io %i
-        %s = load %zi CompZ.s
+        %zi = call cs_z %ws %i
+        %s = load %zi CompWin.z
         %i2 = add %i 1
         %drop = cmp eq %s %me
         br %drop @skip @keep
     @skip
         jmp @l %i2 %j
     @keep
-        %zj = call comp_z %io %j
-        store %zj CompZ.s %s
+        %zj = call cs_z %ws %j
+        store %zj CompWin.z %s
         %j2 = add %j 1
         jmp @l %i2 %j2
     @fin
         store %c CompCtl.count %j
         jmp @clr %j
-    @clr %k:bv64
-        @inv ule %k 7
-        %km = cmp ult %k 7
+    @clr %q:bv64
+        @inv ule %q 7
+        %km = cmp ult %q 7
         br %km @clr1 @done
     @clr1
-        %zk = call comp_z %io %k
-        store %zk CompZ.s 0
-        %k2 = add %k 1
+        %zk = call cs_z %ws %q
+        store %zk CompWin.z 0
+        %k2 = add %q 1
         jmp @clr %k2
     @done
         %d = load %c CompCtl.drag
@@ -372,22 +385,23 @@ func comp_remove void %io:io<0,0xffff> %slot:bv64 {
     @ret
         ret
 }
-
 # Đưa slot lên trên cùng. Cửa sổ MỚI mở được đặt lệch (+40, +16) so với cửa sổ đang trên cùng (xếp tầng).
-func comp_raise void %io:io<0,0xffff> %slot:bv64 {
+func cs_raise void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %slot:bv64 {
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %was = call comp_has %io %slot
-        %top = call comp_top %io
+        %was = call cs_has %k %ws %chs %sf %slot
+        %top = call cs_top %k %ws %chs %sf
         %fresh = cmp eq %was 0
         br %fresh @place @move
     @place
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         %hastop = cmp ne %top 0
         br %hastop @cascade @dflt
     @cascade
         %ts = sub %top 1
-        %tw = call comp_win %io %ts
+        %tw = call cs_win %ws %ts
         %tx = load %tw CompWin.x
         %ty = load %tw CompWin.y
         %nx = add %tx 40
@@ -408,22 +422,21 @@ func comp_raise void %io:io<0,0xffff> %slot:bv64 {
         store %w CompWin.y WIN_Y0
         jmp @move
     @move
-        call comp_remove %io %slot
-        %c = call comp_ctl %io
+        call cs_remove %k %ws %chs %sf %slot
+        %c = call cs_ctl %k
         %n = load %c CompCtl.count
         %room = cmp ult %n 7
         br %room @push @done
     @push
-        %z = call comp_z %io %n
+        %z = call cs_z %ws %n
         %me = add %slot 1
-        store %z CompZ.s %me
+        store %z CompWin.z %me
         %n2 = add %n 1
         store %c CompCtl.count %n2
         ret
     @done
         ret
 }
-
 # Chép %span điểm từ src[so..] sang dst[do..]; bỏ qua nếu ra ngoài (kiểm lúc chạy, không cần chứng minh hình học)
 func comp_row void %src:ptr<VgaCell,1382400> %dst:ptr<VgaCell,1382400> %so:bv64 %do:bv64 %span:bv64 {
     @b0
@@ -450,7 +463,6 @@ func comp_row void %src:ptr<VgaCell,1382400> %dst:ptr<VgaCell,1382400> %so:bv64 
     @done
         ret
 }
-
 # Vẽ cửa sổ của surface %surf đặt tại (wx, wy), phủ ew x eh (kể bóng đổ), vào khung nhìn %view, chỉ trong [x1,x2) x [y1,y2)
 # (cắt thêm theo khung nhìn 1280 x 624: không bao giờ đè Dock)
 func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400> %wx:bv64 %wy:bv64 %ew:bv64 %eh:bv64 %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
@@ -496,16 +508,17 @@ func comp_draw_window void %surf:ptr<VgaCell,1382400> %view:ptr<VgaCell,1382400>
     @done
         ret
 }
-
 # Vẽ lại cảnh trong [x1,x2) x [y1,y2) của khung nhìn: nền, rồi mọi cửa sổ từ dưới lên; báo vùng bẩn cho WM.
 # Compositor tắt: chỉ xóa vùng cửa sổ cố định như trước.
-func comp_repaint void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
+func cs_repaint void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %x1:bv64 %y1:bv64 %x2:bv64 %y2:bv64 {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %on = call comp_enabled %io
+        %on = call cs_enabled %k
         %yes = cmp ne %on 0
         br %yes @clip @legacy
     @legacy
@@ -524,7 +537,7 @@ func comp_repaint void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcCha
         br %oky @bg @done
     @bg
         call gfx_fill_rect %view %xa %ya %xb %yb COMP_BG
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         %n = load %c CompCtl.count
         jmp @l 0
     @l %i:bv64
@@ -535,21 +548,21 @@ func comp_repaint void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcCha
         %live = cmp ult %i %n
         br %live @body @inval
     @body
-        %z = call comp_z %io %i
-        %s = load %z CompZ.s
+        %z = call cs_z %ws %i
+        %s = load %z CompWin.z
         %i2 = add %i 1
         %valid = cmp ne %s 0
         br %valid @draw @skip
     @draw
         %slot = sub %s 1
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         %wx = load %w CompWin.x
         %wy = load %w CompWin.y
         %ww = load %w CompWin.w
         %wh = load %w CompWin.h
         %ew = add %ww 6
         %eh = add %wh 6
-        %surf = call comp_surface %io %slot
+        %surf = call cs_surface %sf %slot
         call comp_draw_window %surf %view %wx %wy %ew %eh %xa %ya %xb %yb
         jmp @l %i2
     @skip
@@ -560,22 +573,24 @@ func comp_repaint void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcCha
     @done
         ret
 }
-
 # Vẽ lại toàn bộ khung nhìn (trên Dock)
-func comp_repaint_all void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
+func cs_repaint_all void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        call comp_repaint %io %view %g 0 0 VIEW_W VIEW_H
+        call cs_repaint %k %ws %chs %sf %view %g 0 0 VIEW_W VIEW_H
         ret
 }
-
 # Focus đổi từ cửa sổ %old sang %new (slot+1, 0 = không có): vẽ lại khung của hai cửa sổ theo màu tương ứng
-func comp_refocus void %io:io<0,0xffff> %old:bv64 %new:bv64 {
+func cs_refocus void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %old:bv64 %new:bv64 {
     @req ult %old 8
     @req ult %new 8
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
         %hasold = cmp ne %old 0
         %diff = cmp ne %old %new
@@ -584,83 +599,86 @@ func comp_refocus void %io:io<0,0xffff> %old:bv64 %new:bv64 {
         br %dim @off @on0
     @off
         %os = sub %old 1
-        call comp_frame %io %os 0
+        call cs_frame %k %ws %chs %sf %os 0
         jmp @on0
     @on0
         %hasnew = cmp ne %new 0
         br %hasnew @on @done
     @on
         %ns = sub %new 1
-        call comp_frame %io %ns 1
+        call cs_frame %k %ws %chs %sf %ns 1
         ret
     @done
         ret
 }
-
 # Dock chọn App slot: đưa cửa sổ lên trên (mở nếu chưa có) và vẽ lại cảnh. Đã ở trên cùng -> không làm gì.
-func comp_focus void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
+func cs_focus void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %top = call comp_top %io
+        %top = call cs_top %k %ws %chs %sf
         %me = add %slot 1
         %same = cmp eq %top %me
         br %same @done @raise
     @raise
-        call comp_raise %io %slot
-        call comp_refocus %io %top %me
-        call comp_repaint_all %io %view %g
+        call cs_raise %k %ws %chs %sf %slot
+        call cs_refocus %k %ws %chs %sf %top %me
+        call cs_repaint_all %k %ws %chs %sf %view %g
         ret
     @done
         ret
 }
-
 # App slot vừa đóng: gỡ khỏi cảnh, cửa sổ kế tiếp lên foreground (phải vẽ lại khung: xóa win_drawn của nó).
 # Compositor tắt: cảnh chỉ có một cửa sổ hiện -> về desktop như trước.
-func comp_close void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
+func cs_close void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        call comp_remove %io %slot
+        call cs_remove %k %ws %chs %sf %slot
         # mở lại -> kích thước mặc định cho tới khi App báo kích thước
-        %cw = call comp_win %io %slot
+        %cw = call cs_win %ws %slot
         store %cw CompWin.w WIN_W
         store %cw CompWin.h WIN_H
-        %on = call comp_enabled %io
+        %on = call cs_enabled %k
         %yes = cmp ne %on 0
         br %yes @next @legacy
     @legacy
-        call comp_scene_init %io
+        call cs_scene_init %k %ws %chs %sf
         store %g IpcChannel.active_app 0
-        call comp_repaint_all %io %view %g
+        call cs_repaint_all %k %ws %chs %sf %view %g
         ret
     @next
-        %top = call comp_top %io
-        call comp_refocus %io 0 %top
+        %top = call cs_top %k %ws %chs %sf
+        call cs_refocus %k %ws %chs %sf 0 %top
         store %g IpcChannel.active_app %top
         %has = cmp ne %top 0
         br %has @redraw @paint
     @redraw
         %ts = sub %top 1
-        %ch = call comp_chan %io %ts
+        %ch = call cs_chan %chs %ts
         store %ch IpcChannel.win_drawn 0
         jmp @paint
     @paint
-        call comp_repaint_all %io %view %g
+        call cs_repaint_all %k %ws %chs %sf %view %g
         ret
 }
-
 # Chuột cho App slot: tọa độ màn hình -> tọa độ surface của App (cửa sổ App ở (200,60) trong surface)
-func comp_mouse_in void %io:io<0,0xffff> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
+func cs_mouse_in void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         %wx = load %w CompWin.x
         %wy = load %w CompWin.y
         %sx = load %g IpcChannel.scr_x
@@ -680,19 +698,20 @@ func comp_mouse_in void %io:io<0,0xffff> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,
         store %c IpcChannel.mouse_y %my
         ret
 }
-
 # Sau khi App foreground chạy: vùng bẩn của nó (tọa độ surface) -> vẽ cửa sổ tại (wx, wy) trong vùng tương ứng
 # của khung nhìn, báo vùng bẩn đã quy đổi cho WM, xóa cờ bẩn của kênh App (app_sync_out không gộp lần nữa).
-func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
+func cs_present void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
     @req uge %fb 0x10000
     @req ult %fb 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
     @req ult %slot 7
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
         # App vừa chạy -> đề nghị kích thước (nếu có) đã được giao
         store %c IpcChannel.configure 0
-        %on = call comp_enabled %io
+        %on = call cs_enabled %k
         %yes = cmp ne %on 0
         br %yes @fg @done
     @fg
@@ -702,7 +721,7 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         br %isfg @dirty @done
     @dirty
         # Kích thước App ĐÃ vẽ (do App quyết, kiểu Wayland): hợp lệ và khác -> nhận, vẽ khung mới, vẽ lại hợp hai vùng
-        %wt = call comp_win %io %slot
+        %wt = call cs_win %ws %slot
         %rw = load %c IpcChannel.win_w
         %rh = load %c IpcChannel.win_h
         %cw = load %wt CompWin.w
@@ -726,7 +745,7 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         store %wt CompWin.x %nx
         store %wt CompWin.w %rw
         store %wt CompWin.h %rh
-        call comp_frame %io %slot 1
+        call cs_frame %k %ws %chs %sf %slot 1
         store %c IpcChannel.dirty 0
         %oxe = add %ox %cw
         %nxe = add %nx %rw
@@ -735,7 +754,7 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         %mh = call std_max %chh %rh
         %uye0 = add %oy %mh
         %uye = add %uye0 6
-        call comp_repaint %io %fb %g %nx %oy %uxe %uye
+        call cs_repaint %k %ws %chs %sf %fb %g %nx %oy %uxe %uye
         ret
     @title
         # App vừa đặt/đổi tên cửa sổ -> vẽ lại khung (đang focus) và đưa cả cửa sổ ra màn hình
@@ -744,7 +763,7 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         %retitle = cmp ne %nt %ot
         br %retitle @reframe @chkd
     @reframe
-        call comp_frame %io %slot 1
+        call cs_frame %k %ws %chs %sf %slot 1
         store %c IpcChannel.dirty 0
         %fx = add %cw 206
         %fy = add %chh 66
@@ -765,7 +784,7 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         @inv ule %y1 720
         @inv ule %x2 1280
         @inv ule %y2 720
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         %wx = load %w CompWin.x
         %wy = load %w CompWin.y
         # surface -> khung nhìn: x' = max(x, 200) - 200 + wx (tương tự y)
@@ -785,7 +804,7 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
         %ph = load %w CompWin.h
         %pew = add %pw 6
         %peh = add %ph 6
-        %s = call comp_surface %io %slot
+        %s = call cs_surface %sf %slot
         call comp_draw_window %s %fb %wx %wy %pew %peh %dx1 %dy1 %dx2 %dy2
         %cx1 = call std_min %dx1 VIEW_W
         %cy1 = call std_min %dy1 VIEW_H
@@ -796,18 +815,19 @@ func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChann
     @done
         ret
 }
-
 # Nhấn chuột (không phải Dock): trúng cửa sổ dưới -> đưa lên trên; trúng thanh tiêu đề cửa sổ trên cùng (trừ nút
 # [X]) -> bắt đầu kéo; trúng nút [X] -> trả 2 (WM đóng App trên cùng). Trả 1 nếu compositor đã dùng cú nhấn (App
 # không nhận), 0 để chuyển cho App trên cùng.
-func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
+func cs_click bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
     @ens ule %r 2
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %on = call comp_enabled %io
+        %on = call cs_enabled %k
         %yes = cmp ne %on 0
         br %yes @pos @pass
     @pos
@@ -821,23 +841,23 @@ func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
     @scan0
         %vx = sub %sx VIEW_SX
         %vy = sub %sy VIEW_SY
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         %n = load %c CompCtl.count
         jmp @l %n
     # duyệt từ trên xuống: k = n .. 1, phần tử k-1
-    @l %k:bv64
-        @inv ule %k 7
-        %more = cmp ne %k 0
+    @l %q:bv64
+        @inv ule %q 7
+        %more = cmp ne %q 0
         br %more @body @pass
     @body
-        %i = sub %k 1
-        %z = call comp_z %io %i
-        %s = load %z CompZ.s
+        %i = sub %q 1
+        %z = call cs_z %ws %i
+        %s = load %z CompWin.z
         %valid = cmp ne %s 0
         br %valid @hit @next
     @hit
         %slot = sub %s 1
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         %wx = load %w CompWin.x
         %wy = load %w CompWin.y
         %hw = load %w CompWin.w
@@ -856,16 +876,16 @@ func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
     @next
         jmp @l %i
     @which
-        %istop = cmp eq %k %n
+        %istop = cmp eq %q %n
         br %istop @title @raise
     @raise
-        %oldtop = call comp_top %io
-        call comp_raise %io %slot
-        call comp_refocus %io %oldtop %s
+        %oldtop = call cs_top %k %ws %chs %sf
+        call cs_raise %k %ws %chs %sf %slot
+        call cs_refocus %k %ws %chs %sf %oldtop %s
         store %g IpcChannel.active_app %s
-        %ch = call comp_chan %io %slot
+        %ch = call cs_chan %chs %slot
         store %ch IpcChannel.win_drawn 0
-        call comp_repaint_all %io %view %g
+        call cs_repaint_all %k %ws %chs %sf %view %g
         store %g IpcChannel.click 0
         ret 1
     @title
@@ -908,15 +928,16 @@ func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChann
     @pass
         ret 0
 }
-
 # Mỗi nhịp WM: đang kéo và còn giữ nút trái -> dời cửa sổ theo chuột, vẽ lại vùng cũ và vùng mới
-func comp_drag_tick void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
+func cs_drag_tick void %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
     @req uge %view 0x10000
     @req ult %view 0x80000000
     @req uge %g 0x10000
     @req ult %g 0x80000000
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
-        %c = call comp_ctl %io
+        %c = call cs_ctl %k
         %d = load %c CompCtl.drag
         %dragging = cmp ne %d 0
         br %dragging @btn @done
@@ -930,7 +951,7 @@ func comp_drag_tick void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcC
         ret
     @move
         %slot = sub %d 1
-        %w = call comp_win %io %slot
+        %w = call cs_win %ws %slot
         %wx = load %w CompWin.x
         %wy = load %w CompWin.y
         %ww = load %w CompWin.w
@@ -954,7 +975,7 @@ func comp_drag_tick void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcC
         %ph0 = sub %rby %roy
         %ph1 = call std_min %ph0 WIN_MAX_H
         %ph = call std_max %ph1 WIN_MIN_H
-        %ch = call comp_chan %io %slot
+        %ch = call cs_chan %chs %slot
         %qw = load %ch IpcChannel.cfg_w
         %qh = load %ch IpcChannel.cfg_h
         %e1 = cmp eq %qw %pw
@@ -995,18 +1016,19 @@ func comp_drag_tick void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcC
         %eh = add %wh 6
         %oxe = add %wx %ew
         %oye = add %wy %eh
-        call comp_repaint %io %view %g %wx %wy %oxe %oye
+        call cs_repaint %k %ws %chs %sf %view %g %wx %wy %oxe %oye
         %nxe = add %nx %ew
         %nye = add %ny %eh
-        call comp_repaint %io %view %g %nx %ny %nxe %nye
+        call cs_repaint %k %ws %chs %sf %view %g %nx %ny %nxe %nye
         ret
     @done
         ret
 }
-
 # 1 nếu App trên cùng có đề nghị kích thước chưa nhận (WM phải gọi nó dù không có phím / chuột)
-func comp_wants_run bv64 %io:io<0,0xffff> %g:ptr<IpcChannel,1> {
+func cs_wants_run bv64 %k:ptr<CompCtl,1> %ws:ptr<CompWin,7> %chs:ptr<IpcChannel,7> %sf:ptr<CompSlot,7> %g:ptr<IpcChannel,1> {
     @ens ule %r 1
+    @req uge %sf 0x10000
+    @req ult %sf 0x40000000
     @b0
         %act = load %g IpcChannel.active_app
         %has = cmp ne %act 0
@@ -1016,11 +1038,184 @@ func comp_wants_run bv64 %io:io<0,0xffff> %g:ptr<IpcChannel,1> {
         %ok = cmp ult %slot 7
         br %ok @get @no
     @get
-        %ch = call comp_chan %io %slot
+        %ch = call cs_chan %chs %slot
         %cf = load %ch IpcChannel.configure
         ret %cf
     @no
         ret 0
+}
+
+# =============================================================================
+# CẦU NỐI KERNEL (lát 5 — tách quyền): CHỈ các hàm dưới đây giữ thẻ io<0,0xffff>. Chúng tạo con trỏ tới bảng cảnh,
+# kênh App và surface rồi gọi phần compositor thuần (cs_*), vốn KHÔNG giữ io: verifier cấm cs_* tạo con trỏ bằng const,
+# dùng hwio hay gọi hàm cần io -> compositor chỉ chạm được đúng bộ nhớ được trao (bảng cảnh, kênh, surface, Backbuffer,
+# kênh toàn cục), không chạm được phần cứng, bảng trang hay RAM của App.
+# =============================================================================
+
+func comp_ctl ptr<CompCtl,1> %io:io<0,0xffff> {
+    @b0
+        %c = const 0x79c00 ptr<CompCtl,1>
+        ret %c
+}
+
+func comp_ws ptr<CompWin,7> %io:io<0,0xffff> {
+    @b0
+        %w = const 0x79c80 ptr<CompWin,7>
+        ret %w
+}
+
+func comp_chs ptr<IpcChannel,7> %io:io<0,0xffff> {
+    @b0
+        %c = const 0x79200 ptr<IpcChannel,7>
+        ret %c
+}
+
+func comp_sf ptr<CompSlot,7> %io:io<0,0xffff> {
+    @ens uge %r 0x10000
+    @ens ult %r 0x40000000
+    @b0
+        %s = const 0x12000000 ptr<CompSlot,7>
+        ret %s
+}
+
+func comp_enabled bv64 %io:io<0,0xffff> {
+    @ens ule %r 1
+    @b0
+        %k = call comp_ctl %io
+        %e = call cs_enabled %k
+        ret %e
+}
+
+func comp_target ptr<VgaCell,1382400> %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %slot:bv64 {
+    @req uge %fb 0x10000
+    @req ult %fb 0x80000000
+    @req ult %slot 7
+    @ens uge %r 0x10000
+    @ens ult %r 0x80000000
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        %res = call cs_target %k %ws %chs %sf %fb %slot
+        ret %res
+}
+
+func comp_clear_slot void %io:io<0,0xffff> %slot:bv64 {
+    @req ult %slot 7
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_clear_slot %k %ws %chs %sf %slot
+        ret
+}
+
+func comp_scene_init void %io:io<0,0xffff> {
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_scene_init %k %ws %chs %sf
+        ret
+}
+
+func comp_focus void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
+    @req uge %view 0x10000
+    @req ult %view 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
+    @req ult %slot 7
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_focus %k %ws %chs %sf %view %g %slot
+        ret
+}
+
+func comp_close void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %slot:bv64 {
+    @req uge %view 0x10000
+    @req ult %view 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
+    @req ult %slot 7
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_close %k %ws %chs %sf %view %g %slot
+        ret
+}
+
+func comp_mouse_in void %io:io<0,0xffff> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
+    @req ult %slot 7
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_mouse_in %k %ws %chs %sf %g %c %slot
+        ret
+}
+
+func comp_present void %io:io<0,0xffff> %fb:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %c:ptr<IpcChannel,1> %slot:bv64 {
+    @req uge %fb 0x10000
+    @req ult %fb 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
+    @req ult %slot 7
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_present %k %ws %chs %sf %fb %g %c %slot
+        ret
+}
+
+func comp_click bv64 %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
+    @req uge %view 0x10000
+    @req ult %view 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
+    @ens ule %r 2
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        %res = call cs_click %k %ws %chs %sf %view %g
+        ret %res
+}
+
+func comp_drag_tick void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
+    @req uge %view 0x10000
+    @req ult %view 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        call cs_drag_tick %k %ws %chs %sf %view %g
+        ret
+}
+
+func comp_wants_run bv64 %io:io<0,0xffff> %g:ptr<IpcChannel,1> {
+    @ens ule %r 1
+    @b0
+        %k = call comp_ctl %io
+        %ws = call comp_ws %io
+        %chs = call comp_chs %io
+        %sf = call comp_sf %io
+        %res = call cs_wants_run %k %ws %chs %sf %g
+        ret %res
 }
 
 # Lúc boot (sau vmm_probe_ram): giữ 21 khung đầu của bể cho 7 surface và ánh xạ đồng nhất chúng.
@@ -1065,6 +1260,9 @@ func comp_init bv64 %io:io<0,0xffff> %vmm:ptr<DiskQword,512> {
         jmp @map %k2
     @mapped
         call mmu_flush %io
+        # bật compositor (trước khi xóa surface: comp_clear_slot chỉ chạy khi đã bật)
+        %kc = call comp_ctl %io
+        store %kc CompCtl.enabled 1
         jmp @clr 0
     @clr %s:bv64
         @inv ule %s 7
