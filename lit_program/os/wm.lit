@@ -9,6 +9,7 @@ include ../lib/ipc_bus.lit
 include ../lib/std_lib.lit
 include hw.lit
 include app_loader.lit
+include dock.lit
 
 func gfx_draw_cursor void %0:ptr<VgaCell,2073600> %1:bv64 %2:bv64 {
     @req uge %0 0x10000
@@ -255,82 +256,210 @@ func shell_bg_tick_apps void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:ptr<IpcC
 }
 
 # =============================================================================
-# THANH DOCK TỰ ĐỘNG QUÉT LIGHTFS VÀ CẤP PHÁT LÔ 64GB CHO TỐI ĐA 7 APPS
+# DOCK (lát 6): cầu nối kernel. Phần vẽ thuần ở os/dock.lit; ở đây chỉ những việc cần io: nạp App, đọc tên trong
+# LightFS, gọi mã App vẽ icon, đưa vùng Dock lên màn hình.
 # =============================================================================
-func dock_render_bar void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:ptr<IpcChannel,1> %3:ptr<DiskQword,64> {
-    @req uge %1 0x10000
-    @req ult %1 0x80000000
-    @req uge %2 0x10000
-    @req ult %2 0x80000000
-    @req uge %3 0x10000
-    @req ult %3 0x80000000
-
+func dock_ds ptr<DockState,1> %io:io<0,0xffff> {
     @b0
-        # Nền thanh Dock động căn giữa màn hình (rộng 510px, x: 385..895)
-        %6 = const 385 bv64
-        %7 = const 895 bv64
-        %8 = const 630 bv64
-        %9 = const 712 bv64
-        %10 = const 0x0b0e14 bv32
-        call gfx_fill_rect %1 %6 %8 %7 %9 %10
+        %d = const 0x79e00 ptr<DockState,1>
+        ret %d
+}
 
-        %11 = const 381 bv64
-        %12 = const 891 bv64
-        %13 = const 624 bv64
-        %14 = const 706 bv64
-        %15 = const 0x262f45 bv32
-        call gfx_fill_rect %1 %11 %13 %12 %14 %15
+# Lúc boot: cấp Lô 64GB + nạp mã cho mọi App trong apps/ (slot 0..6, gán bởi lfs_scan_apps), ghi tên + bố cục Dock
+func dock_load_apps void %io:io<0,0xffff> %g:ptr<IpcChannel,1> {
+    @b0
+        %ds = call dock_ds %io
+        jmp @l 0 0 0
+    @l %i:bv64 %n:bv64 %m:bv64
+        @inv ule %i 7
+        @inv ule %n %i
+        @inv ult %m 128
+        %more = cmp ult %i 7
+        br %more @slot @done
+    @slot
+        %has = call lfs_app_present %io %i
+        %hp = cmp ne %has 0
+        br %hp @load @next
+    @load
+        %pt = const 0x11000 ptr<DiskQword,512>
+        %ar = const 0xa00000 ptr<DiskQword,131072>
+        call vmm_alloc_app_arena %io %pt %ar %i
+        call app_dispatch_zero_state %io %i
+        %ok = call app_dispatch_load_app %io %i
+        %okp = cmp ne %ok 0
+        br %okp @name @next
+    @name
+        %si = add %i 24
+        %fid = call lfs_sget %io %si
+        %fz = cmp ne %fid 0
+        %fl = cmp ule %fid 256
+        %fok = and %fz %fl
+        br %fok @rd @noname
+    @noname
+        jmp @mark 0
+    @rd
+        %tab = call lfs_tab %io
+        %idx = sub %fid 1
+        %nm = call lfs_tget %tab %idx 8
+        jmp @mark %nm
+    @mark %v:bv64
+        call dk_set_name %ds %i %v
+        %bit = shl 1 %i
+        %m1 = or %m %bit
+        %n1 = add %i 1
+        %i1 = add %i 1
+        jmp @l %i1 %n1 %m1
+    @next
+        %i2 = add %i 1
+        jmp @l %i2 %n %m
+    @done
+        store %ds DockState.n %n
+        store %ds DockState.present %m
+        %x0 = call dk_layout_x0 %n
+        store %ds DockState.x0 %x0
+        store %ds DockState.drawn 0
+        store %ds DockState.hover 7
+        store %ds DockState.focus 7
+        store %ds DockState.run 0
+        %kx = add %x0 360                   # 320 + x0 + 14 + 26 = tâm icon ô 0 trên màn hình
+        store %g IpcChannel.dock_x0 %kx
+        ret
+}
 
-        %16 = const 626 bv64
-        %17 = const 0x566991 bv32
-        call gfx_fill_rect %1 %11 %13 %12 %16 %17
+# Vẽ lại toàn bộ Dock vào bộ đệm sau theo DockState
+func dock_redraw void %io:io<0,0xffff> %back:ptr<VgaCell,2073600> {
+    @req uge %back 0x10000
+    @req ult %back 0x40000000
+    @b0
+        %ds = call dock_ds %io
+        %v = slice %back 689600 ptr<VgaCell,1382400>
+        call dk_draw_base %v %ds
+        %n = load %ds DockState.n
+        %x0 = load %ds DockState.x0
+        %pm = load %ds DockState.present
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i 7
+        %more = cmp ult %i %n
+        br %more @slot @out
+    @slot
+        %bit = shl 1 %i
+        %p0 = and %pm %bit
+        %p = cmp ne %p0 0
+        br %p @icon @next
+    @icon
+        %ix = call dk_icon_x %x0 %i
+        %iy = call dk_icon_y %ds %i
+        call app_dispatch_draw_icon %io %v %ix %iy %i
+        %uc = call dk_icon_under %ds %i
+        call dk_round_icon %v %ix %iy %uc
+        jmp @next
+    @next
+        %i1 = add %i 1
+        jmp @l %i1
+    @out
+        ret
+}
 
-        # Vòng lặp duyệt tất cả các App slot 0..6 (gán lúc boot bởi lfs_scan_apps)
-        %18 = const 0 bv64
-        jmp @b1 %18
-
-    @b1 %19:bv64
-        @inv ule %19 7
-        %20 = const 7 bv64
-        %21 = cmp ult %19 %20
-        br %21 @b2 @b5
-
-    @b2
-        %22 = call lfs_app_present %0 %19
-        %23 = const 0 bv64
-        %24 = cmp ne %22 %23
-        br %24 @b3 @b4
-
-    @b3
-        # Tự động cấp phát Lô 64GB độc lập cho App thứ %19
-        %31 = const 0x11000 ptr<DiskQword,512>
-        %32 = const 0xa00000 ptr<DiskQword,131072>
-        call vmm_alloc_app_arena %0 %31 %32 %19
-        call app_dispatch_zero_state %0 %19
-
-        # Nạp mã App từ LightFS (apps/*.elf) vào Lô Code tương ứng; sai checksum -> bỏ qua slot
-        %33 = call app_dispatch_load_app %0 %19
-        %330 = cmp ne %33 %23
-        br %330 @b30 @b4
-
-    @b30
-
-        # Tự động tính tọa độ hiển thị icon của từng App trên Dock
-        %34 = const 70 bv64
-        %35 = mul %19 %34
-        %36 = const 395 bv64
-        %37 = add %36 %35
-        %38 = const 634 bv64
-        call app_dispatch_draw_icon %0 %1 %37 %38 %19
-        jmp @b4
-
-    @b4
-        %39 = const 1 bv64
-        %40 = add %19 %39
-        jmp @b1 %40
-
-    @b5
-        call ui_invalidate_rect %2 %11 %13 %7 %9
+# Mỗi nhịp WM: tính ô đang rê chuột, App đang mở / focus; đổi -> vẽ lại Dock, đưa lên màn hình, vẽ lại con trỏ
+func dock_tick void %io:io<0,0xffff> %front:ptr<VgaCell,2073600> %back:ptr<VgaCell,2073600> %g:ptr<IpcChannel,1> {
+    @req uge %front 0x10000
+    @req ult %front 0x40000000
+    @req uge %back 0x10000
+    @req ult %back 0x40000000
+    @b0
+        %ds = call dock_ds %io
+        %sx = load %g IpcChannel.scr_x
+        %sy = load %g IpcChannel.scr_y
+        # Phím F vừa đặt chuột lên ô Dock: ghi nhớ chỗ đó, không hover cho tới khi chuột thật di chuyển
+        %kp = load %g IpcChannel.kbd_pick
+        %kpn = cmp ne %kp 0
+        br %kpn @kset @kchk
+    @kset
+        store %g IpcChannel.kbd_pick 0
+        store %ds DockState.kbd 1
+        store %ds DockState.kx %sx
+        store %ds DockState.ky %sy
+        jmp @hov
+    @kchk
+        %kb = load %ds DockState.kbd
+        %kbn = cmp ne %kb 0
+        br %kbn @kcmp @hov
+    @kcmp
+        %kx = load %ds DockState.kx
+        %ky = load %ds DockState.ky
+        %mx = cmp ne %kx %sx
+        %my = cmp ne %ky %sy
+        %mv = or %mx %my
+        br %mv @kclr @hov
+    @kclr
+        store %ds DockState.kbd 0
+        jmp @hov
+    @hov
+        %h1 = call dk_hit %ds %sx %sy
+        %kb2 = load %ds DockState.kbd
+        %kon = cmp ne %kb2 0
+        br %kon @hk @hn
+    @hk
+        jmp @hsel 7
+    @hn
+        jmp @hsel %h1
+    @hsel %h0:bv64
+        @inv ule %h0 7
+        %pm = load %ds DockState.present
+        %hb = shl 1 %h0
+        %hp0 = and %pm %hb
+        %hp = cmp ne %hp0 0
+        br %hp @hv @nohv
+    @nohv
+        jmp @hv2 7
+    @hv
+        jmp @hv2 %h0
+    @hv2 %hov:bv64
+        @inv ule %hov 7
+        %act = load %g IpcChannel.active_app
+        %fg = cmp ne %act 0
+        br %fg @fa @fn
+    @fa
+        %f = sub %act 1
+        %fb = shl 1 %f
+        jmp @st %f %fb
+    @fn
+        jmp @st 7 0
+    @st %foc:bv64 %fbit:bv64
+        @inv ule %foc 7
+        @inv ult %fbit 128
+        %cm = call comp_run_mask %io
+        %run = or %cm %fbit
+        %od = load %ds DockState.drawn
+        %oh = load %ds DockState.hover
+        %or = load %ds DockState.run
+        %of = load %ds DockState.focus
+        %c0 = cmp eq %od 0
+        %c1 = cmp ne %oh %hov
+        %c2 = cmp ne %or %run
+        %c3 = cmp ne %of %foc
+        %c01 = or %c0 %c1
+        %c23 = or %c2 %c3
+        %ch = or %c01 %c23
+        br %ch @draw @same
+    @draw
+        store %ds DockState.hover %hov
+        store %ds DockState.run %run
+        store %ds DockState.focus %foc
+        store %ds DockState.drawn 1
+        call dock_redraw %io %back
+        # vùng Dock trên màn hình: x [320, 1600), y [359 + 580, 1079)
+        call gfx_blit_rect %front %back 320 939 1600 1079
+        call fb_present_rect %io %front 320 939 1600 1079
+        %cx = load %g IpcChannel.cursor_x
+        %cy = load %g IpcChannel.cursor_y
+        call gfx_draw_cursor %front %cx %cy
+        %cx2 = add %cx 12
+        %cy2 = add %cy 18
+        call fb_present_rect %io %front %cx %cy %cx2 %cy2
+        ret
+    @same
         ret
 }
 
@@ -416,19 +545,13 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         jmp @b6
 
     @b2
-        # Vùng click Dock (tọa độ màn hình): x trong [710..1200)
-        %19 = const 710 bv64
-        %20 = const 1200 bv64
-        %21 = cmp uge %10 %19
-        %22 = cmp ult %10 %20
-        %23 = and %21 %22
+        # Ô Dock được click (bố cục do dock.lit tính); 7 = trượt
+        %dsk = call dock_ds %0
+        %26 = call dk_hit %dsk %10 %11
+        %23 = cmp ult %26 7
         br %23 @b3 @b19
 
     @b3
-        # Tự động tính slot được click: clicked_slot = (mouse_x - 710) / 70
-        %24 = sub %10 %19
-        %25 = const 70 bv64
-        %26 = udiv %24 %25
         %260 = const 6 bv64
         %261 = call std_min %26 %260
         %27 = call lfs_app_present %0 %261
@@ -567,5 +690,7 @@ func app_desktop_ipc_task void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:ptr<Vg
         jmp @b12
 
     @b12
+        # Dock: chỉ báo App đang mở / focus, hiệu ứng rê chuột
+        call dock_tick %0 %1 %2 %3
         ret
 }

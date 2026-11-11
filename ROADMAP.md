@@ -122,12 +122,24 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    gõ `sys` (usb) trùng từng điểm ảnh với `main`, bảng cảnh: Terminal ở (360,140) và trên cùng; `cargo test`;
    stack-report 577 hàm.
    Giới hạn còn lại: cầu nối vẫn chạy trong kernel (chưa phải tiến trình riêng); cs_* tin con trỏ cầu nối đưa vào.
-6. Làm lại Dock + giao diện desktop (người dùng yêu cầu 2026-11-11: Dock hiện "xấu"): Dock hiện vẽ một lần lúc boot
-   bằng hình chữ nhật phẳng trong `dock_render_bar` (wm.lit), icon 52x52 do App tự vẽ, không có chỉ báo App đang chạy,
-   không có hiệu ứng hover, nền desktop một màu, dòng chẩn đoán BLK/PART/USB in ở góc trên-trái.
-   Hướng làm: tách Dock thành phần vẽ thuần (kiểu `cs_*`, không io) + cầu nối; nền bo góc / đổ bóng, icon có khoảng
-   đệm đều, chấm chỉ báo App đang chạy + App đang focus, làm sáng icon khi rê chuột, nhãn tên khi hover; nền desktop
-   gradient; ẩn dòng chẩn đoán (chỉ hiện khi bật chế độ debug); kiểm lại trên legacy/usb/uefi và RAM 320M.
+6. ~~Làm lại Dock~~ (xong; người dùng yêu cầu 2026-11-11 vì Dock cũ "xấu"): `os/dock.lit` = phần vẽ THUẦN (`dk_*`, không
+   io) + cầu nối trong `wm.lit` (`dock_load_apps` lúc boot: nạp App + đọc tên file trong LightFS; `dock_redraw`: gọi mã App
+   vẽ icon; `dock_tick` mỗi nhịp WM). Trạng thái `DockState` tại 0x79e00 (ô rê chuột, App đang mở, App focus, số ô, tên).
+   Giao diện: bảng bo góc căn giữa theo số App (rộng n*68+12) + bóng đổ + viền + vệt sáng trên; icon 52x52 cắt góc tròn;
+   rê chuột -> ô nền sáng, icon nâng 4 điểm, nhãn tên App ("Editor", "Terminal", "Widgets" — từ tên file); dưới icon:
+   chấm xám = App đang mở (theo cảnh compositor, `comp_run_mask`), vạch xanh = App focus. Chỉ vẽ lại khi trạng thái đổi,
+   rồi đưa vùng Dock lên màn hình + vẽ lại con trỏ. Hàm vẽ bo góc `dk_rrect` / `dk_inset` (góc tròn tính bằng số nguyên).
+   Click Dock và phím F1..F7 dùng chung bố cục: `dk_hit`; kernel ghi tâm ô 0 vào `IpcChannel.dock_x0` (kênh chung, byte
+   296) cho driver bàn phím (F-phím giờ trỏ vào x = dock_x0 + 68*ô, y 1025). Phím F đặt chuột lên icon nhưng ghi
+   `IpcChannel.kbd_pick` -> Dock không bật hover cho tới khi chuột thật di chuyển (máy chỉ có bàn phím không bị kẹt nhãn).
+   Kiểm: rê chuột/nhãn/chỉ báo khi mở 2-3 App, ESC đóng App -> chỉ báo đổi; click chuột PS/2 thật (legacy); RAM 320M
+   (compositor tắt -> chỉ báo theo App foreground); uefi; phím F sau khi đóng App (dock_x0 vẫn 0x37c), không hover sau
+   phím F, có hover sau khi rê thật; kịch bản đưa lên + kéo của lát 5 (bù vị trí phím F) trùng từng điểm ảnh sau khi che
+   vùng Dock, ô con trỏ và dòng "mouse x,y" của Terminal (lệch 1 điểm do chuột); `cargo test`; stack-report.
+   Giới hạn: `dock_redraw` gọi mã icon của App lúc chạy (trước đây chỉ lúc boot) với con trỏ phủ hàng 359..1079 của bộ
+   đệm sau (gồm cả phần dưới khung nhìn cửa sổ) -> nên đệm sẵn icon lúc boot; nhãn tên chỉ lấy 8 byte đầu tên file.
+   Đề xuất tiếp (chưa làm, cần người dùng chọn): nền desktop gradient/hình nền; ẩn dòng chẩn đoán BLK/PART/USB ở góc
+   trên-trái (chỉ hiện ở chế độ debug); thanh trên cùng (đồng hồ / tên App focus); khung cửa sổ bo góc + bóng mềm.
 
 ## 📋 Tiếp theo
 

@@ -448,15 +448,16 @@ func kbd_handle_scancode void %0:io<0x60,0x64> %1:ptr<KeyMap,8> %2:ptr<IpcChanne
 
     @b55
         %325 = sub %12 %320
-        %326 = const 70 bv64
+        %326 = const 68 bv64
         %327 = mul %325 %326
-        %328 = const 745 bv64
-        %329 = add %327 %328                # x màn hình = 710 + 70 * ô + 35 (Dock căn giữa đáy màn 1920x1080)
-        %330 = const 1019 bv64
+        %328 = load %2 IpcChannel.dock_x0
+        %329 = add %327 %328                # x màn hình = tâm ô 0 (Kernel ghi theo bố cục Dock) + 68 * ô
+        %330 = const 1025 bv64              # tâm hàng icon Dock (359 + 640 + 26)
         %331 = const 1 bv64
         store %2 184 %329
         store %2 192 %330
         store %2 32 %331
+        store %2 IpcChannel.kbd_pick 1
         ret
 
     @b56
