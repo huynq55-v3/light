@@ -146,7 +146,7 @@ fn run() -> Result<(), String> {
                 }
             } else {
                 for e in &bad {
-                    eprintln!("{}\n", e);
+                    eprintln!("{}\n", tooling::pretty_err(e));
                 }
             }
             return Err(format!("{} hàm không qua kiểm chứng", n));
@@ -220,7 +220,7 @@ fn main() {
             if tooling::json_mode() {
                 println!("{}", tooling::error_json(&err));
             } else {
-                eprintln!("\n❌ LỖI BIÊN DỊCH:\n{}", err);
+                eprintln!("\n❌ LỖI BIÊN DỊCH:\n{}", tooling::pretty_err(&err));
             }
             process::exit(1);
         }

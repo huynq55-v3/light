@@ -108,22 +108,7 @@ fn is_term(i: &Inst) -> bool {
 }
 
 fn dst_of(i: &Inst) -> Option<Reg> {
-    match i {
-        Inst::Const { dst, .. }
-        | Inst::Bin { dst, .. }
-        | Inst::Cmp { dst, .. }
-        | Inst::Slice { dst, .. }
-        | Inst::Load { dst, .. }
-        | Inst::Narrow { dst, .. }
-        | Inst::SmpWorkers { dst, .. }
-        | Inst::Simd256 {
-            op: SimdOp::Dot,
-            dst,
-            ..
-        } => Some(*dst),
-        Inst::HwIo { dst, .. } | Inst::Call { dst, .. } | Inst::CallPtr { dst, .. } => *dst,
-        _ => None,
-    }
+    i.dst()
 }
 
 fn expr_regs(e: &Z3Expr, out: &mut Vec<Reg>) {

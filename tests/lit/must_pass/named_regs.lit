@@ -1,0 +1,52 @@
+# Tên biến %tên: ở mọi vị trí (tham số, @req/@ens, kiểu ptr<L,%n>, tham số block), lẫn với số, tham chiếu tới trước
+layout DiskQword 8 {
+    0: bv64
+}
+func min2 bv64 %a:bv64 %b:bv64 {
+    @ens ule %r %a
+    @ens ule %r %b
+    @b0
+        %lt = cmp ult %a %b
+        br %lt @b1 @b2
+
+    @b1
+        jmp @b3 %a
+
+    @b2
+        jmp @b3 %b
+
+    @b3 %r:bv64
+        @inv ule %r %a
+        @inv ule %r %b
+        ret %r
+}
+
+func sum_prefix bv64 %n:bv64 %buf:ptr<DiskQword,%n> %limit:bv64 {
+    @req ult %limit %n
+    @ens ule %total 0xffffffffffff
+    @b0
+        %zero = const 0 bv64
+        jmp @b1 %zero %zero
+
+    @b1 %i:bv64 %acc:bv64
+        @inv ule %i %limit
+        @inv ule %acc 0xffffffff
+        %more = cmp ult %i %limit
+        br %more @b2 @b3
+
+    @b2
+        %cell = slice %buf %i ptr<DiskQword,1>
+        %v = load %cell 0 bv64
+        %small = const 0xffff bv64
+        %vs = call min2 %v %small
+        %acc2 = add_sat %acc %vs
+        %cap = const 0xffffffff bv64
+        %acc3 = call min2 %acc2 %cap
+        %one = const 1 bv64
+        %i2 = add %i %one
+        jmp @b1 %i2 %acc3
+
+    @b3
+        %total = add %acc %zero
+        ret %total
+}

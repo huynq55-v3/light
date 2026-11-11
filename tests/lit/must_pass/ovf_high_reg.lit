@@ -1,0 +1,12 @@
+# lower_func phải tính số SSA lớn nhất từ MỌI loại đích (ở đây là call), nếu không thanh ghi tạm của add_sat trùng %9
+func g bv64 %0:bv64 {
+    @b0
+        ret %0
+}
+
+func ovf_high_reg bv64 %0:bv64 %1:bv64 {
+    @b0
+        %2 = add_sat %0 %1
+        %9 = call g %2
+        ret %9
+}

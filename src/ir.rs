@@ -261,6 +261,7 @@ pub struct Func {
     pub requires: Vec<Z3Expr>, // Hợp đồng đầu vào (@req)
     pub ensures: Vec<Z3Expr>,  // Hợp đồng đầu ra (@ens)
     pub blocks: Vec<Block>,
+    pub names: Vec<(Reg, String)>, // tên biến người viết (%tên) -> số SSA; chỉ để báo lỗi, sắp theo số
     pub origin: String,        // "file:dòng" nơi khai báo hàm (chỉ để báo lỗi/ tài liệu, không tham gia kiểm chứng)
 }
 
@@ -275,6 +276,24 @@ impl Type {
     pub fn ptr_layout(&self) -> Option<u16> {
         match *self {
             Type::Ptr { layout_id, .. } | Type::DPtr { layout_id, .. } => Some(layout_id),
+            _ => None,
+        }
+    }
+}
+
+impl Inst {
+    /// Thanh ghi đích của lệnh (nếu có) — danh sách đầy đủ duy nhất, dùng chung cho verifier, hạ lệnh và cấp số
+    pub fn dst(&self) -> Option<Reg> {
+        match self {
+            Inst::Const { dst, .. }
+            | Inst::Bin { dst, .. }
+            | Inst::Cmp { dst, .. }
+            | Inst::Slice { dst, .. }
+            | Inst::Load { dst, .. }
+            | Inst::Narrow { dst, .. }
+            | Inst::SmpWorkers { dst, .. }
+            | Inst::Simd256 { op: SimdOp::Dot, dst, .. } => Some(*dst),
+            Inst::HwIo { dst, .. } | Inst::Call { dst, .. } | Inst::CallPtr { dst, .. } => *dst,
             _ => None,
         }
     }

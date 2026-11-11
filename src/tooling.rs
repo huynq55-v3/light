@@ -12,6 +12,7 @@ use std::sync::{Mutex, OnceLock};
 static JSON: OnceLock<bool> = OnceLock::new();
 static NO_CACHE: OnceLock<bool> = OnceLock::new();
 static ORIGINS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static NAMES: Mutex<Option<HashMap<String, Vec<(u32, String)>>>> = Mutex::new(None);
 static STATS: Mutex<(u32, u32)> = Mutex::new((0, 0)); // (trúng cache, kiểm chứng mới)
 static CACHE: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
 static ERRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -43,6 +44,53 @@ pub fn register_module(m: &Module) {
     let map = g.get_or_insert_with(HashMap::new);
     for f in &m.funcs {
         map.insert(f.name.clone(), f.origin.clone());
+    }
+    let mut g2 = NAMES.lock().unwrap();
+    let nm = g2.get_or_insert_with(HashMap::new);
+    for f in &m.funcs {
+        if !f.names.is_empty() {
+            nm.insert(f.name.clone(), f.names.clone());
+        }
+    }
+}
+
+/// Thay `%<số>` bằng `%tên` theo bảng tên của hàm (nếu hàm dùng tên biến)
+fn with_names(s: &str, func: &str) -> String {
+    let g = NAMES.lock().unwrap();
+    let Some(t) = g.as_ref().and_then(|m| m.get(func)) else { return s.to_string() };
+    let cs: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] == '%' && i + 1 < cs.len() && cs[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < cs.len() && cs[j].is_ascii_digit() {
+                j += 1;
+            }
+            let num: String = cs[i + 1..j].iter().collect();
+            match num.parse::<u32>().ok().and_then(|n| t.binary_search_by_key(&n, |e| e.0).ok()) {
+                Some(k) => {
+                    out.push('%');
+                    out.push_str(&t[k].1);
+                }
+                None => out.extend(&cs[i..j]),
+            }
+            i = j;
+        } else {
+            out.push(cs[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Chuỗi lỗi với số SSA đổi lại thành tên biến (cho người đọc)
+pub fn pretty_err(e: &str) -> String {
+    let d = parse_err(e);
+    if d.func.is_empty() {
+        e.to_string()
+    } else {
+        with_names(e, &d.func)
     }
 }
 fn origin_of(name: &str) -> Option<String> {
@@ -176,6 +224,14 @@ pub fn parse_err(s: &str) -> Diag {
         d.message = s.trim().into();
     }
     d.hint = hint_for(&d.message, &d.kind).into();
+    if !d.func.is_empty() {
+        d.message = with_names(&d.message, &d.func);
+        d.inst = with_names(&d.inst, &d.func);
+        let f = d.func.clone();
+        for c in &mut d.counterexample {
+            c.0 = with_names(&c.0, &f);
+        }
+    }
     d
 }
 
@@ -233,6 +289,7 @@ fn func_key(module: &Module, func: &Func) -> u64 {
     // Chuẩn hóa: id hàm -> băm tên, bỏ origin (dòng đổi không làm mất cache)
     let mut f = func.clone();
     f.origin.clear();
+    f.names.clear(); // tên chỉ để báo lỗi: không làm mất cache khi đổi tên biến
     let mut callees: Vec<u32> = Vec::new();
     for b in &mut f.blocks {
         for i in &mut b.insts {

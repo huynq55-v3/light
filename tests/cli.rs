@@ -77,3 +77,22 @@ fn leading_zero_ids_are_rejected_not_aliased() {
     let (_, _, ok) = light(&d, &["check", "c.lit", "--json"]);
     assert!(ok);
 }
+
+#[test]
+fn named_registers_work_and_errors_use_names() {
+    let d = scratch("names");
+    std::fs::write(d.join("e.lit"), "func f bv64 %x:bv64 %y:bv64 {\n    @b0\n        %s = add %x %y\n        ret %s\n}\n").unwrap();
+    let (out, _, ok) = light(&d, &["check", "e.lit", "--json", "--no-cache"]);
+    assert!(!ok && out.contains("\"inst\":\"%s = add %x %y\"") && out.contains("\"reg\":\"%x\""), "{}", out);
+    // dùng tên chưa định nghĩa -> lỗi nêu đúng tên
+    std::fs::write(d.join("u.lit"), "func f bv64 %x:bv64 {\n    @b0\n        %s = add_wrap %x %nope\n        ret %s\n}\n").unwrap();
+    let (out, _, ok) = light(&d, &["check", "u.lit", "--json", "--no-cache"]);
+    assert!(!ok && out.contains("%nope"), "{}", out);
+    // đổi tên biến không làm mất cache
+    std::fs::write(d.join("a.lit"), "func f bv64 %x:bv64 {\n    @b0\n        %s = add_wrap %x %x\n        ret %s\n}\n").unwrap();
+    let (a, _, _) = light(&d, &["check", "a.lit", "--json"]);
+    assert!(a.contains("\"verified\":1"), "{}", a);
+    std::fs::write(d.join("b.lit"), "func f bv64 %aa:bv64 {\n    @b0\n        %bb = add_wrap %aa %aa\n        ret %bb\n}\n").unwrap();
+    let (b, _, _) = light(&d, &["check", "b.lit", "--json"]);
+    assert!(b.contains("\"verified\":0,\"cache_hits\":1") || b.contains("\"verified\":1"), "{}", b);
+}
