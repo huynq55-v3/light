@@ -192,6 +192,12 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    ở `VIEW_H` = 624 (đỉnh Dock CŨ nằm trong khung nhìn). Dock nay là bảng nổi ngoài khung nhìn -> `VIEW_H` = 720; kéo /
    phóng to bị kẹp để y + h + 6 <= 720 (cửa sổ dừng ở mép, không bị cắt). USB: khôi phục EP0 + thử lại đọc descriptor
    cấu hình (nhánh usb-ep0-retry), dòng chẩn đoán USBC; bàn phím USB ngoài đã chạy trên máy thật.
+12. Độ sáng màn hình (2026-11-11, chưa thử máy thật): `drivers/backlight.lit` — GPU Intel 00:02.0 (máy thật: TigerLake-LP
+   GT2 8086:9a49, Ubuntu `intel_backlight` max 96000), BAR0 ánh xạ PD_MMIO[6]; chọn bộ điều khiển PWM firmware đã bật
+   (CTL 0xC8250 / 0xC8350 bit 31, FREQ != 0, theo đường cnp của i915), chỉ ghi DUTY, kẹp [FREQ/16, FREQ], 16 bậc.
+   F8 / F9 qua `IpcChannel.hotkey` (đổi tên từ diag_toggle: 1 F10, 2 F8, 3 F9), Kernel gọi `bl_tick` mỗi nhịp.
+   Dòng chẩn đoán BL. QEMU (không có GPU Intel): BL = E0, phím không ảnh hưởng gì khác.
+   Còn lại: phím Fn sáng/tối của HP (qua EC / ACPI), nhớ độ sáng qua lần khởi động, hiện mức % trên màn hình.
 
 ## 📋 Tiếp theo
 

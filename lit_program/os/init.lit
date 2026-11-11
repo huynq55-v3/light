@@ -2,6 +2,7 @@
 include wm.lit
 include ../drivers/serial.lit
 include ../drivers/usb_xhci.lit
+include ../drivers/backlight.lit
 
 func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64> %3:ptr<DiskQword,64> {
     @req uge %1 0x10000
@@ -16,6 +17,7 @@ func sys_init_drivers void %0:io<0,0xffff> %1:ptr<KeyMap,8> %2:ptr<DiskQword,64>
         %kd = call drv_kbd_init %0 %1
         call hw_set %0 300 %kd                # HW[300] = chẩn đoán i8042 (dòng KBD)
         call usb_init %0
+        call bl_init %0                       # đèn nền GPU Intel (F8 / F9), dòng chẩn đoán BL
 
         # Gắn LightFS (mã gắn -> HW[33] để chẩn đoán) và gán các App trong apps/ vào slot Dock
         %6 = call lfs_mount %0
