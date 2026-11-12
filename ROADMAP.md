@@ -247,6 +247,21 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    (an toàn nhờ thứ tự: kiểm tra + ghi trước, đóng / nạp sau).
    Còn mở: chỉ thay App đã có slot; `rm` chỉ nhận một PATH (đối số thừa bị bỏ qua, không báo lỗi).
 
+15. Light-Stitch giai đoạn 0 + 1 (2026-11-12, nhánh stitch; ý tưởng từ "vocabulary gap" — Cao & Yang 2026):
+   `tools/stitch/litparse.py` (phân tích .lit chỉ đọc, MDL = số token), `tools/stitch/mine.py` (dò mẫu lặp theo luồng
+   dữ liệu: đoạn thẳng trong khối, vùng nhiều khối một lối vào / một lối ra, hàm gần-trùng; gộp mọi `const`, đổi tên cả
+   tên nằm trong kiểu `ptr<Byte,%n>`, hằng ở vị trí giá trị và cỡ con trỏ thành lỗ; con trỏ khác cỡ cần thêm tham số
+   độ dài; chọn thư viện tham lam như Stitch; báo ứng viên cùng dạng với hàm có sẵn), `tools/stitch/gate.py` (cổng an
+   toàn: build + kiểm chứng kernel / App, cargo test, stack-report, 6 bộ golden kênh Agent trên QEMU so với
+   `tools/stitch/golden/*.expected.jsonl`; đã thử cổng bắt được kết quả sai).
+   Kết quả lần đầu (`target/stitch/report.md`, CẬN TRÊN, chưa viết lại / kiểm chứng): MDL 78214 token; 40 primitive
+   ~2230 token (2,8%) = nhiều hàm ~1490 + cùng dạng hàm có sẵn ~390 + trong 1 hàm ~350 (nên là vòng lặp); hàm
+   gần-trùng ~510 (lớn nhất: 4 hàm `sys_get_app_*_ptr`). Lặp chủ yếu là thành ngữ nhỏ: đọc byte / qword theo chỉ số
+   (đã có 4 hàm cùng dạng `qbuf cap_state_get q512 mem_mmap_q`), kiểm tra khoảng, kiểm tra bit, tách trường bit; vùng
+   nhiều khối bên trong hàm hiếm khi lặp nguyên dạng.
+   Luật kiểu đã thử bằng `light check`: bool truyền / trả qua hàm được, `br` nhận bv64.
+   Chưa làm: giai đoạn 2 (tạo primitive + hợp đồng + viết lại, qua cổng), chi phí lời gọi trên đường nóng.
+
 ## 📋 Tiếp theo
 
 ### Bước 3b — Giải phóng riêng lẻ (`free`)
