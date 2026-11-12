@@ -234,6 +234,18 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    Còn mở: một dòng lệnh Agent chạy hết trong MỘT nhịp Kernel (đọc file 1MB ~1,2s -> desktop đứng trong lúc đó; lõi đã
    chạy từng bước nên thêm hạn mức thao tác / nhịp là dễ); Terminal in stderr sau toàn bộ stdout của dòng; lệnh riêng
    của Terminal (sys, mem...) chỉ nhận khi là cả dòng, không đi qua ống được.
+14. Cài App nóng (2026-11-12, nhánh hot-install): `light build-app`, lệnh riêng kênh Agent `appinstall SRC APP`
+   (`ag_install`: kiểm tra trước, ghi đè cùng mục bằng `lfs_write_mode` cho phép file App, `shell_close_and_reset_app`,
+   `app_dispatch_load_app`, mở cửa sổ + bit chạy ngầm một lần để App tự vẽ), MCP `install_app` (+ `write_bytes`),
+   `ag_tick` nhận Backbuffer + kênh chung.
+   Đã thử (QEMU legacy): từ chối SRC thiếu / thư mục / rác (sai lệnh nhảy) / 8 byte / APP không phải App / thừa đối số,
+   `appinstall` trống in cách dùng; cài Terminal sửa banner -> cửa sổ tự vẽ banner mới không cần phím, gõ lệnh được; cài 2
+   lần liên tiếp, cài lại bản cũ, cài khi Terminal đang chạy dở `grep` x5 trên file 1MB (ảnh chụp xác nhận chưa xong),
+   cài Editor / Widgets lúc đóng (mở lên đúng); MCP qua JSON-RPC (`tools/list`, `install_app`, tên sai) và `--install`;
+   khởi động lại cùng đĩa -> App mới được nạp (checksum đúng, cùng slot); `light sync` ra file trùng từng byte với `.elf` trên
+   host; `light fsck` 0 lỗi; stack-report OK. Chưa thử: UEFI / NVMe, máy thật, `claude -p` thật, ghi lỗi khi đĩa đầy
+   (an toàn nhờ thứ tự: kiểm tra + ghi trước, đóng / nạp sau).
+   Còn mở: chỉ thay App đã có slot; `rm` chỉ nhận một PATH (đối số thừa bị bỏ qua, không báo lỗi).
 
 ## 📋 Tiếp theo
 

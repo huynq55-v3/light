@@ -186,6 +186,14 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if args.len() > 3 && args[1] == "build-app" {
+        // Biên dịch + kiểm chứng MỘT App ra file .elf (cho cài App nóng qua kênh Agent); không đụng storage/ hay disk.img
+        let bin = compile_and_verify_app(&args[2])?;
+        fs::write(&args[3], &bin).map_err(|e| format!("Không thể ghi '{}': {}", args[3], e))?;
+        say!("OK: {} byte -> {}", bin.len(), args[3]);
+        return Ok(());
+    }
+
     if args.len() > 1 && args[1] == "pack" {
         say!("📦 Đang đóng gói 'storage/' vào 'disk.img'...");
         return build_disk_img(size_arg(&args)?);

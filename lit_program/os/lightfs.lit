@@ -671,9 +671,9 @@ func lfs_zero_tail void %0:bv64 %1:ptr<DiskQword,%0> %2:bv64 {
         ret
 }
 
-# WRITE từ bộ đệm %buf (%n qword): thay toàn bộ nội dung file %id bằng %len byte đầu (copy-on-write).
-# Trả %len, hoặc lỗi (2 id sai, 3 không phải file / là App, 4 không vừa bộ đệm, 5 hết chỗ). Phần đệm của sector cuối bị xóa 0.
-func lfs_write_buf bv64 %0:io<0,0xffff> %n:bv64 %buf:ptr<DiskQword,%n> %id:bv64 %len:bv64 {
+# Như lfs_write_buf; %allow_app = 1 cho ghi cả file App (chỉ kênh Agent dùng để cài App nóng: giữ nguyên id mục,
+# nên slot và thứ tự nạp lúc boot không đổi). Cờ App của mục được giữ.
+func lfs_write_mode bv64 %0:io<0,0xffff> %n:bv64 %buf:ptr<DiskQword,%n> %id:bv64 %len:bv64 %allow_app:bv64 {
     @req uge %buf 0x10000
     @req ult %buf 0x10000000000
     @b0
@@ -683,10 +683,12 @@ func lfs_write_buf bv64 %0:io<0,0xffff> %n:bv64 %buf:ptr<DiskQword,%n> %id:bv64 
     @isfile
         %f = call lfs_is_file %tab %id
         %fl = call lfs_tget %tab %id 0
-        %app = and %fl 4                    # file App: không cho ghi đè mã App
+        %app = and %fl 4                    # file App: không cho ghi đè mã App (trừ khi %allow_app)
         %isf = cmp ne %f 0
         %notapp = cmp eq %app 0
-        %w = and %isf %notapp
+        %allow = cmp ne %allow_app 0
+        %okapp = or %notapp %allow
+        %w = and %isf %okapp
         br %w @len @badtype
     @len
         %small = cmp ult %len 0x2000000
@@ -736,6 +738,16 @@ func lfs_write_buf bv64 %0:io<0,0xffff> %n:bv64 %buf:ptr<DiskQword,%n> %id:bv64 
     @nospace
         %e5 = call lfs_err 5
         ret %e5
+}
+
+# WRITE từ bộ đệm %buf (%n qword): thay toàn bộ nội dung file %id bằng %len byte đầu (copy-on-write).
+# Trả %len, hoặc lỗi (2 id sai, 3 không phải file / là App, 4 không vừa bộ đệm, 5 hết chỗ). Phần đệm của sector cuối bị xóa 0.
+func lfs_write_buf bv64 %0:io<0,0xffff> %n:bv64 %buf:ptr<DiskQword,%n> %id:bv64 %len:bv64 {
+    @req uge %buf 0x10000
+    @req ult %buf 0x10000000000
+    @b0
+        %r = call lfs_write_mode %0 %n %buf %id %len 0
+        ret %r
 }
 
 # WRITE cho App: %4 byte trong State của App từ sector %3 -> file %2

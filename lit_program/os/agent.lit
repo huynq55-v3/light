@@ -89,6 +89,42 @@ data AG_M_STEPS Byte {
 data AG_HEX Byte {
     "0123456789abcdef"
 }
+data AG_C_INST Byte {
+    "appinstall"
+}
+data AG_M_IUSE Byte {
+    "appinstall: usage: appinstall SRC APP  (SRC = new .elf, APP = installed app file under /apps)\n"
+}
+data AG_M_ISRC Byte {
+    "appinstall: SRC must be an existing regular file\n"
+}
+data AG_M_IDST Byte {
+    "appinstall: APP must be an app file loaded in a Dock slot (new apps need a reboot)\n"
+}
+data AG_M_ISIZE Byte {
+    "appinstall: SRC size must be 24 B .. 1 MiB\n"
+}
+data AG_M_IREAD Byte {
+    "appinstall: cannot read SRC\n"
+}
+data AG_M_IHDR Byte {
+    "appinstall: SRC is not a Light app binary (bad entry stubs)\n"
+}
+data AG_M_IWRITE Byte {
+    "appinstall: write failed (disk full?); old app kept\n"
+}
+data AG_M_ILOAD Byte {
+    "appinstall: load failed; app removed from its slot\n"
+}
+data AG_M_IOK1 Byte {
+    "installed into slot "
+}
+data AG_M_IOK2 Byte {
+    ", "
+}
+data AG_M_IOK3 Byte {
+    " bytes; app restarted\n"
+}
 
 # Gửi (n, s) nguyên văn (byte >= 128 -> '?')
 func ag_raw void %io:io<0x3f8,0x3ff> %n:bv64 %s:ptr<Byte,%n> {
@@ -285,8 +321,228 @@ func ag_op bv64 %io:io<0,0xffff> {
         ret %ex
 }
 
+# Lỗi của appinstall: thông báo (n, s) vào stderr, mã thoát %rc
+func ag_ifail void %n:bv64 %s:ptr<Byte,%n> %rc:bv64 {
+    @b0
+        %st = addr AG_ST
+        %err = addr AG_ERR
+        call sh_err %st AG_ERR.len %err %n %s
+        store %st ShState.exit %rc
+        ret
+}
+
+# 1 nếu byte %at của %b bằng %v
+func ag_byte_is bv64 %n:bv64 %b:ptr<Byte,%n> %at:bv64 %v:bv8 {
+    @ens ule %r 1
+    @b0
+        %in = cmp ult %at %n
+        br %in @get @no
+    @get
+        %p = slice %b %at ptr<Byte,1>
+        %x = load %p 0 bv8
+        %eq = cmp eq %x %v
+        br %eq @yes @no
+    @yes
+        ret 1
+    @no
+        ret 0
+}
+
+# Slot (0..6) đang nạp App từ mục %id, hoặc 7 nếu không có
+func ag_slot_of bv64 %io:io<0,0xffff> %id:bv64 {
+    @ens ule %r 7
+    @b0
+        %want = add_sat %id 1
+        jmp @l 0
+    @l %s:bv64
+        @inv ule %s 7
+        %more = cmp ult %s 7
+        br %more @body @none
+    @body
+        %si = add %s 24
+        %v = call lfs_sget %io %si
+        %hit = cmp eq %v %want
+        br %hit @yes @next
+    @next
+        %s2 = add %s 1
+        jmp @l %s2
+    @yes
+        ret %s
+    @none
+        ret 7
+}
+
+# CÀI APP NÓNG (chỉ kênh Agent):  appinstall SRC APP
+#   SRC: file thường chứa mã App mới (host biên dịch + kiểm chứng: `light build-app`), APP: file App đang nạp ở một slot.
+#   Kiểm tra hết TRƯỚC khi ghi (ghi là bước không quay lại): SRC là file thường 24 B .. 1 MiB, đọc được, đúng 3 lệnh nhảy
+#   đầu (E9 .. 90 90 90 ở 0 / 8 / 16); APP có cờ App và đang ở slot s. Rồi: ghi SRC vào CÙNG mục APP (giữ id -> slot và
+#   thứ tự nạp lúc boot không đổi), đóng + reset App như nút [X], nạp lại mã, mở lại cửa sổ ở foreground.
+#   Mã App chạy trực tiếp bởi Kernel: lệnh này cho host quyền chạy mã tùy ý, như quyền ghi disk.img.
+func ag_install void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> %n:bv64 %cmd:ptr<Byte,%n> {
+    @req uge %view 0x10000
+    @req ult %view 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
+    @b0
+        %st = addr AG_ST
+        store %st ShState.exit 0
+        %a = call str_skip_spaces %n %cmd AG_C_INST.len
+        %e1 = call str_find %n %cmd %a 32
+        %k1 = sub_sat %e1 %a
+        %b = call str_skip_spaces %n %cmd %e1
+        %e2 = call str_find %n %cmd %b 32
+        %k2 = sub_sat %e2 %b
+        %z = call str_skip_spaces %n %cmd %e2
+        %ne1 = cmp ne %k1 0
+        %ne2 = cmp ne %k2 0
+        %end = cmp eq %z %n
+        %ok0 = and %ne1 %ne2
+        %ok = and %ok0 %end
+        %a1 = call math_min %a %n
+        %b1 = call math_min %b %n
+        br %ok @args @usage
+    @usage
+        %mu = addr AG_M_IUSE
+        call ag_ifail AG_M_IUSE.len %mu 2
+        ret
+    @args
+        %m = call lfs_sget %io 0
+        %mounted = cmp ne %m 0
+        br %mounted @resolve @nosrc
+    @resolve
+        %tab = call lfs_tab %io
+        %cw0 = load %st ShState.cwd
+        %cw = call math_min %cw0 255
+        %r1 = sub %n %a1
+        %l1 = call math_min %k1 %r1
+        %p1 = slice %cmd %a1 ptr<Byte,%l1>
+        %src = call sh_resolve %tab %cw %l1 %p1
+        %r2 = sub %n %b1
+        %l2 = call math_min %k2 %r2
+        %p2 = slice %cmd %b1 ptr<Byte,%l2>
+        %dst = call sh_resolve %tab %cw %l2 %p2
+        %sok = cmp ult %src 256
+        br %sok @srcf @nosrc
+    @srcf
+        %sf = call lfs_tget %tab %src 0
+        %s7 = and %sf 7
+        %plain = cmp eq %s7 1               # đang dùng, không thư mục, không App
+        br %plain @dstok @nosrc
+    @dstok
+        %dok = cmp ult %dst 256
+        br %dok @dstf @nodst
+    @dstf
+        %df = call lfs_tget %tab %dst 0
+        %d7 = and %df 7
+        %isapp = cmp eq %d7 5
+        br %isapp @slot @nodst
+    @slot
+        %s = call ag_slot_of %io %dst
+        %loaded = cmp ult %s 7
+        br %loaded @size @nodst
+    @size
+        %sz = call lfs_tget %tab %src 2
+        %big = cmp uge %sz 24
+        %fit = cmp ule %sz AG_FILE_B
+        %szok = and %big %fit
+        br %szok @read @badsize
+    @read
+        %fb = call ag_fbuf %io
+        %rr = call lfs_read_buf %io AG_FILE_Q %fb %src
+        %rerr = lshr %rr 63
+        %rok = cmp eq %rerr 0
+        br %rok @hdr @noread
+    @hdr
+        %bb = view %fb ptr<Byte,1048576>
+        %h0 = call ag_byte_is AG_FILE_B %bb 0 0xe9
+        %h1 = call ag_byte_is AG_FILE_B %bb 8 0xe9
+        %h2 = call ag_byte_is AG_FILE_B %bb 16 0xe9
+        %h3 = call ag_byte_is AG_FILE_B %bb 7 0x90
+        %h4 = call ag_byte_is AG_FILE_B %bb 15 0x90
+        %h5 = call ag_byte_is AG_FILE_B %bb 23 0x90
+        %ha = and %h0 %h1
+        %hb = and %h2 %h3
+        %hc = and %h4 %h5
+        %hab = and %ha %hb
+        %hh = and %hab %hc
+        %hok = cmp ne %hh 0
+        br %hok @write @badhdr
+    @write
+        %wr = call lfs_write_mode %io AG_FILE_Q %fb %dst %rr 1
+        %werr = lshr %wr 63
+        %wok = cmp eq %werr 0
+        br %wok @reload @nowrite
+    @reload
+        # Như nút [X]: reset State + kênh + surface, trả chunk RAM, gỡ cửa sổ; rồi nạp mã mới vào bộ đệm mã của slot
+        %smp = const 0x7e000 smp
+        call shell_close_and_reset_app %io %view %g %smp %s
+        %ld = call app_dispatch_load_app %io %s
+        %ds = call dock_ds %io
+        store %ds DockState.drawn 0         # Dock vẽ lại icon bằng mã mới
+        %ldok = cmp ne %ld 0
+        br %ldok @open @noload
+    @open
+        # Như bấm icon trên Dock: cửa sổ lên foreground; bit chạy ngầm = gọi App một lần ở nhịp tới để nó tự vẽ
+        call comp_focus %io %view %g %s
+        %s1 = add %s 1
+        store %g IpcChannel.key_ready 0
+        store %g IpcChannel.active_app %s1
+        store %g IpcChannel.click 0
+        store %g IpcChannel.win_cmd 0
+        store %g IpcChannel.win_drawn 0
+        %chn = call app_chan %io %s
+        store %chn IpcChannel.win_drawn 0
+        %bm = load %g IpcChannel.bg_mask
+        %bit = shl 1 %s
+        %bm1 = or %bm %bit
+        store %g IpcChannel.bg_mask %bm1
+        %out = call ag_out %io
+        %q1 = addr AG_M_IOK1
+        %o1 = call fmt_str AG_OUT_CAP %out 0 AG_M_IOK1.len %q1
+        %o2 = call fmt_u64 AG_OUT_CAP %out %o1 %s
+        %q2 = addr AG_M_IOK2
+        %o3 = call fmt_str AG_OUT_CAP %out %o2 AG_M_IOK2.len %q2
+        %o4 = call fmt_u64 AG_OUT_CAP %out %o3 %rr
+        %q3 = addr AG_M_IOK3
+        %o5 = call fmt_str AG_OUT_CAP %out %o4 AG_M_IOK3.len %q3
+        store %st ShState.so_len %o5
+        ret
+    @nosrc
+        %ms = addr AG_M_ISRC
+        call ag_ifail AG_M_ISRC.len %ms 1
+        ret
+    @nodst
+        %md = addr AG_M_IDST
+        call ag_ifail AG_M_IDST.len %md 1
+        ret
+    @badsize
+        %mz = addr AG_M_ISIZE
+        call ag_ifail AG_M_ISIZE.len %mz 1
+        ret
+    @noread
+        %mr = addr AG_M_IREAD
+        call ag_ifail AG_M_IREAD.len %mr 1
+        ret
+    @badhdr
+        %mh = addr AG_M_IHDR
+        call ag_ifail AG_M_IHDR.len %mh 1
+        ret
+    @nowrite
+        %mw = addr AG_M_IWRITE
+        call ag_ifail AG_M_IWRITE.len %mw 1
+        ret
+    @noload
+        %ml = addr AG_M_ILOAD
+        call ag_ifail AG_M_ILOAD.len %ml 1
+        ret
+}
+
 # Một dòng yêu cầu đã nhận đủ trong ag_rx: tách id, chạy lệnh đến hết, trả lời
-func ag_line void %io:io<0,0xffff> {
+func ag_line void %io:io<0,0xffff> %view:ptr<VgaCell,1382400> %g:ptr<IpcChannel,1> {
+    @req uge %view 0x10000
+    @req ult %view 0x80000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
     @b0
         %rs = addr AG_RS
         %len0 = load %rs AgState.rx_len
@@ -311,6 +567,20 @@ func ag_line void %io:io<0,0xffff> {
         %long = cmp ne %over 0
         br %long @toolong @run
     @run
+        %ip = addr AG_C_INST
+        %isi = call str_starts_with %cn %cmd AG_C_INST.len %ip
+        %isp = call ag_byte_is %cn %cmd AG_C_INST.len 32
+        %iex = cmp eq %cn AG_C_INST.len
+        %ispb = cmp ne %isp 0
+        %iend = or %ispb %iex
+        %isib = cmp ne %isi 0
+        %inst = and %isib %iend
+        br %inst @install @shell
+    @install
+        call ag_install %io %view %g %cn %cmd
+        call ag_reply %io %id
+        ret
+    @shell
         %tab = call lfs_tab %io
         %ws = call ag_ws %io
         %fbq = call ag_fbuf %io
@@ -385,7 +655,11 @@ func ag_init void %io:io<0,0xffff> {
 }
 
 # Mỗi nhịp lịch: nhận tối đa AG_RX_TICK byte; gặp '\n' thì chạy lệnh (tối đa 1 lệnh / nhịp)
-func ag_tick void %io:io<0,0xffff> {
+func ag_tick void %io:io<0,0xffff> %back:ptr<VgaCell,2073600> %g:ptr<IpcChannel,1> {
+    @req uge %back 0x10000
+    @req ult %back 0x40000000
+    @req uge %g 0x10000
+    @req ult %g 0x80000000
     @b0
         %rs = addr AG_RS
         %pr = load %rs AgState.present
@@ -405,7 +679,9 @@ func ag_tick void %io:io<0,0xffff> {
         %nl = cmp eq %v 10
         br %nl @line @t_cr
     @line
-        call ag_line %io
+        # khung nhìn App trên Backbuffer: gốc (320, 160), như app_desktop_ipc_task
+        %view = slice %back 307520 ptr<VgaCell,1382400>
+        call ag_line %io %view %g
         ret
     @t_cr
         %cr = cmp eq %v 13
