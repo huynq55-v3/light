@@ -59,8 +59,8 @@ fn doc_lists_contracts_and_supports_json() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let (t, _, ok) = light(&root, &["doc", "mem_get_q"]);
     assert!(ok && t.contains("func mem_get_q(") && t.contains("@req ult %i %n"), "{}", t);
-    let (j, _, _) = light(&root, &["doc", "lfs_find_child", "--json"]);
-    assert!(j.starts_with("[{\"kind\":\"func\",\"name\":\"lfs_find_child\"") && j.contains("\"ensures\":[\"ult %20 256\"]"), "{}", j);
+    let (j, _, _) = light(&root, &["doc", "math_min", "--json"]);
+    assert!(j.starts_with("[{\"kind\":\"func\",\"name\":\"math_min\"") && j.contains("\"ensures\":[\"ule %r %a\""), "{}", j);
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn named_labels_work_and_errors_use_them() {
 
 #[test]
 fn real_stack_frames_never_exceed_verifier_bound() {
-    // kernel + mọi App: khung thật do bộ sinh mã báo <= cận của verifier cho từng hàm
+    // mọi file std: khung thật do bộ sinh mã báo <= cận của verifier cho từng hàm
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let (out, err, ok) = light(&root, &["stack-report"]);
     assert!(ok && out.contains("OK:"), "{}\n{}", out, err);

@@ -1,3 +1,6 @@
+> **2026-11-12, nhánh `lang-refactor`:** Light OS đã bị xoá khỏi nhánh này (lịch sử dưới đây giữ để tra cứu; code còn trên `main`).
+> Hướng mới: Light = ngôn ngữ viết app Linux userspace, thân thiện AI, kiểm chứng đúng chức năng.
+
 # 🗺️ Lộ trình Light & Light OS
 
 Cập nhật: 2026-11-11 · nhánh `cleanup-verifier-step1`

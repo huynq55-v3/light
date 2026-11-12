@@ -1,33 +1,22 @@
-# ⚡ Light & Light OS
-**Ngôn ngữ Trung gian Kiểm chứng Hình thức dành cho AI (Verification-Native AI-IR) & Hệ điều hành Exokernel Không gian Địa chỉ Đơn (Single-Address-Space Capability OS)**
+# ⚡ Light
+**Ngôn ngữ cấp thấp có kiểm chứng Z3, thiết kế để AI viết được code ĐÚNG — hướng tới app Linux userspace (gọi syscall trực tiếp).**
+
+> Nhánh `lang-refactor` (2026-11-12): Light OS (kernel, driver, App, LightFS, công cụ QEMU) đã được xoá; lịch sử còn trên `main`.
+> Hướng mới: viết app Linux bằng std Light, kiểm chứng ĐÚNG CHỨC NĂNG (không chỉ an toàn bộ nhớ). Lộ trình: `ROADMAP.md`.
 
 ---
 
-## 1. Tầm nhìn & Triết lý Thiết kế (Design Philosophy)
+## 1. Tầm nhìn & Triết lý Thiết kế
 
-Các ngôn ngữ lập trình truyền thống (C, C++, Python, hay thậm chí là Rust) và các hệ điều hành truyền thống (Linux, Windows) đều được thiết kế xoay quanh **giới hạn sinh học của con người**:
-- Ngôn ngữ cần cú pháp văn bản lồng nhau phức tạp, ẩn giấu trạng thái, nhưng lại thiếu khả năng chứng minh toán học tự động, dẫn đến hiện tượng **ảo giác (hallucination)** và lỗi tràn bộ nhớ khi AI sinh mã.
-- Hệ điều hành phải dùng cơ chế phần cứng đắt đỏ (**Ring 0 / Ring 3, MMU Context Switch, TLB Flush**) để cách ly các chương trình không đáng tin cậy, làm lãng phí hàng nghìn chu kỳ CPU cho mỗi lời gọi hệ thống (`syscall`) hay giao tiếp liên tiến trình (`IPC`).
-
-**Light (`.lit`)** và **Light OS** ra đời để định nghĩa lại từ gốc cả hai tầng này khi **AI là chủ thể viết và thực thi mã nguồn**:
-
-### 4 Trụ cột Kiến trúc Cốt lõi:
-1. **Verification-as-Isolation (Cách ly bằng Toán học thay vì Phần cứng):**
-   - Trình biên dịch `light` tích hợp trực tiếp bộ giải **Z3 SMT Solver** (trên miền `BitVector 64-bit`) làm "Thần giữ cửa" bắt buộc.
-   - Mọi đoạn mã (dù là Kernel, Driver hay Ứng dụng AI) đều phải được Z3 chứng minh là **UNSAT** (tuyệt đối không tràn số, không chia cho 0, không dịch bit lố, không truy cập ngoài biên bộ nhớ, không vi phạm hợp đồng hàm) trước khi được phép sinh ra mã máy `x86_64`.
-2. **Single Address Space OS — SASOS (Không chia Userspace / Kernelspace):**
-   - Nhờ mã máy đầu ra đã được chứng minh an toàn 100% lúc biên dịch, toàn bộ Kernel, Driver và Ứng dụng chạy chung trong **một không gian địa chỉ 64-bit phẳng duy nhất ở Ring 0**.
-   - Giao tiếp giữa Ứng dụng, Driver và Kernel chỉ là lệnh `call` hàm trực tiếp ở tốc độ **nano-giây (Zero Context-Switch, Zero-Copy IPC)**.
-3. **Unforgeable Capability-Based Security (Bảo mật theo Thẻ Quyền Năng Không thể Giả mạo):**
-   - Trong toàn bộ trình biên dịch `light` **không tồn tại khái niệm hay từ khóa đặc quyền riêng cho Kernel**.
-   - Quyền truy cập RAM và Phần cứng được quyết định hoàn toàn bởi 2 kiểu dữ liệu Thẻ quyền năng trên chữ ký hàm: **`ptr<Layout, MaxElems>`** (Thẻ Bộ nhớ) và **`io<MinPort, MaxPort>`** (Thẻ Phần cứng).
-   - Không một hàm nào có thể tự chế tạo thẻ `io` hay ép kiểu từ số nguyên `bv64` sang con trỏ `ptr`. Quyền năng chỉ có thể được **thu hẹp (Capability Attenuation / Subtyping)** khi ủy quyền từ hàm cha xuống hàm con.
-4. **Flat SSA (Cú pháp Phẳng cho LLM):**
-   - Một dòng một lệnh, không biểu thức lồng, không AST đa tầng. Trình biên dịch Rust (`src/`: parser, verifier Z3, sinh mã x86-64, ELF64, LightFS, công cụ) ~6.000 dòng, xuất thẳng ELF64 bare-metal không cần `ld`.
+- **Kiểm chứng là cổng bắt buộc:** trình biên dịch `light` gọi **Z3** (BitVector 64-bit). Mọi hàm phải được chứng minh: không tràn số
+  ngoài ý muốn, không chia cho 0, không dịch bit lố, không truy cập ngoài biên, vòng lặp dừng, đúng hợp đồng `@req/@ens` — trước khi sinh mã x86-64.
+- **Cú pháp phẳng cho LLM:** một dòng một lệnh SSA, mỗi việc một cách viết; lỗi kiểm chứng kèm **phản ví dụ cụ thể** để AI tự sửa.
+- **Thẻ quyền năng:** `ptr<Layout, N>` không thể giả mạo từ số nguyên; chỉ thu hẹp được khi truyền xuống hàm con.
+- Trình biên dịch Rust (`src/`: parser, verifier Z3, sinh mã x86-64, công cụ) ~5.000 dòng.
 
 ### Vùng tin cậy (những gì KHÔNG được Z3 chứng minh)
 - Bộ sinh mã `src/x86.rs` và `src/elf64.rs` (được kiểm vi sai bằng `cgtest`, không chứng minh).
-- Mã assembly runtime `src/rt/*.s` (`parallel`, exception).
+- Mã assembly runtime `src/rt/rt_parallel.s` (`parallel`).
 - Mọi `assume` trong hàm giữ `io<0,0xffff>`; `CallPtr` (chỉ hàm gốc).
 - Z3 hết thời gian (10 giây/điều kiện) được coi là LỖI, không phải "qua".
 - Vòng lặp trong hàm giữ thẻ `io<..>` (driver chờ phần cứng, scheduler) không bị buộc phải dừng; mọi hàm khác — kể cả toàn bộ App — phải chứng minh dừng (xem "Vòng lặp phải dừng").
@@ -82,126 +71,25 @@ Mỗi biến được định danh bằng số thứ tự (`%0`, `%1`, `%2`...) 
 
 ---
 
-## 3. Kiến trúc Hệ điều hành `Light OS`
+## 3. Biên dịch & thử
 
-`Light OS` được tổ chức theo kiến trúc **Capability Exokernel + Init Startup**, phân tách hoàn toàn cơ chế lõi khỏi các chương trình ngoại vi:
-
-```text
-lit_program/
-├── os/        kernel.lit (vòng lặp scheduler), init.lit, wm.lit (desktop, cầu nối Dock), dock.lit (vẽ Dock thuần: bảng bo góc, hover, chỉ báo App), topbar.lit (thanh trên cùng: tên App, ngày giờ RTC), compositor.lit (surface riêng mỗi App, xếp chồng/kéo cửa sổ, vẽ khung), app_loader.lit (VMM, nạp App),
-│              lightfs.lit (LightFS phía Kernel), hw.lit (framebuffer, PCI, MMIO), diag.lit (panic, selftest)
-├── drivers/   blk, nvme, ata_disk, pci, usb_xhci, kbd_drv (PS/2 + chuột), vga_drv, serial
-├── lib/       std_lib, os_layout (Layout dùng chung), gfx, font, ipc_bus, cap_mem, lightfs_api, ui_* (window, button,
-│              canvas, text_view, file_browser)
-└── apps/      terminal.lit, editor.lit, widgets.lit, mandel.lit (biên dịch riêng thành storage/apps/*.elf)
-```
-
-### 3.1. Bộ nhớ của App: cấp phát & thu hồi tường minh
-
-- **Bể khung RAM vật lý** (khung 2MB từ 288MB, tối đa 24576 khung = 48GB): lúc boot `vmm_probe_ram` khóa toàn bộ bitmap rồi chỉ mở những khung nằm **trọn** trong vùng RAM type 1 của memory map (không bao giờ cấp lỗ PCI / ACPI / reserved).
-- **Mỗi App** có cửa sổ ảo 64GB riêng; chunk c (2MB) = trang c+1. Chunk 0..14 (30MB) luôn được map; chunk 15.. lấy từ bể.
-- **ABI hàm main của App**: `(VgaCell*, Ipc*, State ptr<DiskQword,≤3932160>, Q64, Q64, smp, %n:bv64, heap:ptr<DiskQword,%n>)`. `heap` phủ **đúng** các chunk đã map (`n = số_chunk × 262144`), nên Z3 chứng minh App không bao giờ chạm vùng chưa có RAM thật. App có thể khai báo ít tham số hơn (tiền tố).
-- **Cấp / thu hồi**: App ghi số chunk mong muốn vào IPC offset 168 (`mem_req`, 15..16383). Ngay sau tick đó, Kernel cấp thêm (mỗi chunk được **xóa trắng** trước khi giao, chống rò dữ liệu giữa App) hoặc gỡ ánh xạ + trả khung về bể. Lần gọi tiếp theo App nhận heap với độ dài mới. Offset 176 (`mem_free`) = số khung còn trống.
-- **Vì sao thu hồi an toàn**: App không thể giữ con trỏ qua tick (Layout cấm trường ptr; heap được truyền lại mỗi lần gọi). TLB: nhân BSP nạp lại CR3 sau khi gỡ; mỗi nhân AP nạp lại CR3 trước mỗi job `parallel`.
-- Terminal có lệnh `mem`, `memup` (+1GB), `memdown` (trả hết), `memtest` (ghi/đọc lại mỗi trang 4KB của heap).
-
-### 3.2. Boot trên máy thật, màn hình, đĩa NVMe
-
-- **Boot**: GRUB EFI nạp `kernel.elf` bằng multiboot1. Header xin framebuffer 1920×1080×32; GRUB trả framebuffer GOP thật (kích thước bất kỳ). `qemu -kernel` vẫn chạy (không có framebuffer trong Multiboot Info → dùng Bochs VGA, PCI 1234:1111). ELF có bảng section header tối thiểu (GRUB 2.14 bắt buộc). Boot stub chuyển x2APIC → xAPIC nếu firmware để x2APIC, đặt PAT (PA1 = Write-Combining), gửi INIT + 2 SIPI.
-- **Màn hình**: màn hình logic 1920×1080. VRAM logic `0x200000` và Backbuffer `0xC00000` (8MB mỗi bộ) nằm trong RAM; `fb_present_rect` (os/hw.lit) chép vùng thay đổi ra framebuffer thật (pitch bất kỳ, căn giữa nếu màn hình lớn hơn, cắt nếu nhỏ hơn). Hai kiểu con trỏ VRAM: `ptr<VgaCell,2073600>` = cả màn hình (kernel: nền, con trỏ, blit, present, các hàm `*_scr`); `ptr<VgaCell,1382400>` = khung nhìn 1280×720 bước dòng 1920 — kernel `slice` VRAM tại gốc (320,160) đưa cho App, tại (320,359) cho Dock, nên App giữ nguyên tọa độ cũ mà vẫn nằm giữa màn hình. Chuột: tọa độ màn hình ở IPC 184/192; mỗi nhịp kernel quy đổi sang tọa độ khung nhìn App (IPC 16/24, kẹp trong 1260×700).
-- **USB** (`drivers/usb_xhci.lit`): driver xHCI viết bằng Light, thăm dò, không ngắt. Quét PCI bus 0 tìm controller 0C:03:30, thử lần lượt (laptop Intel có controller Thunderbolt đứng trước controller PCH). Giành quyền từ BIOS (USB Legacy Support), reset, dựng ring lệnh/sự kiện, reset cổng USB2, Address Device, đọc descriptor, chọn interface HID boot (bàn phím/chuột), Configure Endpoint, SET_PROTOCOL(boot). Chỉ thiết bị cắm thẳng vào cổng gốc (chưa hỗ trợ hub), tối đa 8 slot. Báo cáo chuột được đổi thành gói PS/2, mã phím HID đổi thành scancode set 1, rồi đi qua đúng code xử lý của driver PS/2 (`kbd_handle_scancode`). Vùng DMA 2MB cố định tại `0x1400000` (PD_0[10]); BAR0 ánh xạ ở PD_MMIO[2..3]. Dòng chẩn đoán `USB` trên màn hình: giai đoạn (0 = OK, 8 = không có thiết bị HID), dev PCI, số cổng, số slot, mã hoàn thành, số bàn phím/chuột, bước dò cuối.
-- **MMIO**: Light không cho đổi số nguyên thành `ptr`, nên địa chỉ chỉ biết lúc chạy (framebuffer, BAR) được ánh xạ vào địa chỉ ảo cố định qua PML4[1]: `0x80_0000_0000` framebuffer (WC), `0x80_4000_0000` BAR NVMe (UC), `0x80_4200_0000` CFGBAR của Intel VMD (UC). Bảng HW ở `0x96000`.
-- **Đĩa** (`drivers/blk.lit`): NVMe nếu có, ngược lại ATA PIO. Driver NVMe (`drivers/nvme.lit`, viết bằng Light): tìm NVMe trên PCI hoặc phía sau **Intel VMD** (laptop Intel đời 11+), 1 cặp hàng đợi Admin + 1 cặp I/O, thăm dò completion, DMA qua bộ đệm bounce 64KB ở `0x80000`. Chỉ dùng phân vùng GPT tên **`lightos`** có header **LightFS** (`LIGHTFS1`; copy-on-write + checksum, xem ROADMAP bước 6; host: `light sync/fsck/pack`); mọi LBA được kiểm tra `< kích thước phân vùng` ngay trong driver. Đĩa không có GPT (ảnh thô trên QEMU) → cả namespace.
-- **Dòng trạng thái** góc trên trái (và serial): `BLK = backend<<48 | gpt<<40 | mã_lỗi_nvme<<32 | rộng<<16 | cao`, `PART` = LBA đầu phân vùng, `PLEN` = số sector. Backend 2 = NVMe, 1 = ATA, 0 = không có; gpt 1 = thấy `lightos`; mã lỗi NVMe xem đầu hàm `nvme_init_ctrl`.
-- **Phím**: F1..F7 mở App ở ô Dock tương ứng (touchpad I2C của laptop chưa có driver), F8 / F9 giảm / tăng độ sáng màn hình (GPU Intel, `drivers/backlight.lit`), F10 hiện/ẩn dòng chẩn đoán phần cứng, F12 khởi động lại.
-
----
-
-## 4. Hướng dẫn Cài đặt & Chạy thử nghiệm
-
-### Yêu cầu hệ thống (Ubuntu / Debian):
 ```bash
-sudo apt update && sudo apt install -y libz3-dev clang libclang-dev qemu-system-x86
+sudo apt install -y libz3-dev clang libclang-dev   # Ubuntu / Debian
+cargo build --release
+./target/release/light check lit_program/std/fmt.lit       # kiểm chứng một file
+python3 tools/stitch/gate.py                                # cổng an toàn đầy đủ
 ```
-
-### Biên dịch và Khởi chạy `Light OS` trên QEMU:
-```bash
-# 1. Phân tích cú pháp, kiểm chứng hình thức Z3 và xuất tệp thực thi ELF64 bare-metal
-cargo run --release   # kernel.elf (lit_program/os/kernel.lit) + storage/apps/*.bin + disk.img
-
-# 2. Khởi động trên QEMU có cửa sổ (gắn đĩa LightFS chứa App, 4G RAM, KVM; serial in ra terminal)
-bash tools/qemu_run.sh            # --fresh: chép lại đĩa sạch, --usb: bàn phím/chuột USB
-                                  # --agent: COM1 thành socket cho Claude (xem "Kênh Agent"), --headless: không cửa sổ
-
-# 3. Giống hệt máy thật: OVMF (UEFI) -> GRUB lightos.efi -> multiboot, đĩa NVMe có GPT (ESP / lightos / ubuntu)
-bash tools/qemu_uefi_nvme.sh
-```
-
-### Cài lên máy thật (UEFI, đĩa NVMe)
-1. **Tắt Secure Boot** trong BIOS (HP: F10). GRUB khóa lệnh `multiboot` khi Secure Boot bật. Ubuntu vẫn khởi động bình thường khi tắt.
-2. `cargo run --release` (tạo `kernel.elf` + `disk.img`), rồi chạy thử `sudo bash tools/install_lightos.sh` để xem kế hoạch, sau đó `sudo bash tools/install_lightos.sh --yes`. Script dùng lại phân vùng `rustos` (nvme0n1p2): sao lưu nội dung vào `~/lightos_backup_<ngày>/`, ghi `disk.img`, đổi tên GPT thành `lightos`, cài `EFI/lightos/{kernel.elf,lightos.efi}`, thêm mục UEFI "Light OS" ở **cuối** BootOrder (Ubuntu vẫn là mặc định).
-3. Khởi động vào Light OS một lần: `sudo efibootmgr -n <số mục Light OS>` rồi reboot (hoặc F9 lúc bật máy). F12 trong Light OS để quay lại.
-4. Cập nhật sau này: `--kernel-only --yes` (giữ dữ liệu trên phân vùng) hoặc `--disk-only --yes` (ghi lại `disk.img`).
 
 ## Công cụ cho người và AI
 
 - `light check <file.lit> [--json]` — kiểm chứng MỌI hàm trong file (không dừng ở hàm lỗi đầu tiên). Với `--json`, stdout chỉ có một đối tượng
   `{"ok":false,"errors":[{"kind","func","block","inst","message","counterexample":[{"reg","value"}],"origin":"file:dòng","source","hint"}]}`
   hoặc `{"ok":true,"verified":N,"cache_hits":M}`; tiến trình nằm ở stderr/bị tắt.
-- `light build-app APP.lit OUT.elf` — kiểm chứng + biên dịch MỘT App ra file (dùng cho cài App nóng qua kênh Agent).
+- `light stack-report [FILE.lit...]` — đối chiếu khung stack thật với cận của verifier (mặc định: mọi file std).
 - `light doc [TRUY_VẤN] [--brief] [--defs] [--file F]... [--json]` — chữ ký, `@req/@ens` và chú thích của hàm (và `def` với `--defs`) trong
   `lit_program/`; tra theo tên, chú thích hoặc đường dẫn. Dùng thay cho việc đọc cả file thư viện.
 - Cache Z3: kết quả chứng minh lưu ở `.light-cache/z3.keys` (khóa = băm mã verifier + layouts + hàm + hợp đồng của hàm được gọi).
   Build lại không đổi gì mất ~0,06s thay vì ~7s. `--no-cache` hoặc `LIGHT_NO_CACHE=1` để tắt; xóa thư mục để làm mới.
-
-## Kênh Agent: Claude chạy lệnh trong Light OS (QEMU)
-
-Lõi shell `std/shell.lit` (thuần, không io) là bộ thông dịch CHẠY TỪNG BƯỚC: `sh_begin` rồi gọi `sh_step` tới khi xong;
-mỗi khi cần đĩa, lõi dừng lại xin mặt tiền một thao tác LightFS mức thấp (READ / WRITE / CREATE / DELETE), mặt tiền làm
-rồi trả kết quả bằng `sh_op_done`. Kết quả: stdout, stderr, mã thoát (0 / 1 lỗi / 2 cú pháp / 127 không có lệnh), cờ cắt.
-
-- Lệnh: `help echo pwd cd ls stat cat write append mkdir touch rm grep wc head tail sort uniq find env unset true false`.
-- Cú pháp: nháy `'...'` (nguyên văn) và `"..."` (thay `$VAR`), `$VAR ${VAR} $?`, `TÊN=giá_trị`, ống `a | b`,
-  chuyển hướng `> >> <`, chuỗi lệnh `a ; b`, `a && b`, `a || b`. `\` chỉ thoát ký tự đặc biệt của shell; chuỗi `\n`... khác
-  đi nguyên tới lệnh (`write`, `append`, `echo -e` hiểu `\n \t \\ \xHH`). Lỗi cú pháp được báo trước khi lệnh nào chạy.
-  Chưa có: glob, `$(...)`, `2>`, chạy nền.
-- Ống chạy tuần tự qua hai bộ đệm 128KB (A / B đổi vai); đầu ra của mỗi lệnh vào một bộ đệm rồi mới chuyển tiếp: lệnh
-  sau, file (`>`, `>>`, `write`, `append` đều đi qua cùng một đường) hoặc stdout. Đầu ra bị cắt (tràn 128KB ở bất kỳ
-  lệnh nào trong ống) KHÔNG BAO GIỜ được ghi vào file: lệnh báo "file too large" và trả 1.
-- `grep` tìm chuỗi cố định (`^` / `$` neo đầu / cuối dòng, `-v -i -n -c`), `sort` tối đa 6144 dòng (`-r -n -u`, heapsort),
-  `find` duyệt bảng LightFS (`-name` với `* ?`, `-type f|d`). Biến: 4KB, giữ qua các lệnh của phiên.
-
-Kernel (`os/agent.lit`) đọc lệnh từ COM1 mỗi nhịp, chạy lõi tới hết (thao tác đĩa làm đồng bộ, `ag_op`, có chặn khi
-chưa gắn hệ tệp) và trả một dòng `@@LR|id|exit|trunc|stdout|stderr` (thoát ký tự `\\ \n \t \xHH`); khởi động xong in
-`@@LREADY`. Giới hạn: dòng lệnh 128KB, stdout 64KB, stderr 1KB, file 1MB. Bộ nhớ: vùng Kernel PD_0[11]
-(stdout 0x1660000, dòng lệnh 0x1670000, vùng làm việc của lõi 448KB ở 0x1690000, nội dung file 0x1700000).
-App Terminal (`apps/terminal.lit`) là mặt tiền thứ hai của CÙNG lõi: mỗi thao tác đĩa là một yêu cầu IPC; khi đang chạy
-lệnh, App đặt `IpcChannel.run_req` để Kernel gọi lại mỗi nhịp (không cần phím), chỉ vẽ lại khi xong lệnh. Bộ đệm cuộn
-32KB tự xuống dòng, cửa sổ đổi kích thước được, nút cuộn ^ / v; thêm lệnh riêng `clear sys mem memup memdown memtest`
-(chỉ khi là cả dòng). Người và Claude gõ cùng một bộ lệnh.
-MCP server có 4 công cụ: `run` (một dòng lệnh), `read_file`, `write_file` (gửi `write 'PATH' '<nội dung đã thoát>'`,
-`'` thành `\x27`, chia thành `write` + `append` theo khối 120000 ký tự) và `install_app` (cài App nóng, dưới đây).
-
-**Cài App nóng** (sửa App, thấy kết quả sau vài giây, không khởi động lại): `install_app {"name": "terminal"}` chạy trên host
-`light build-app lit_program/apps/terminal.lit target/hot/terminal.elf` (kiểm chứng Z3 + kiểm ABI như lúc pack, không đụng
-`storage/` hay `disk.img`), gửi `.elf` vào file tạm `/install.tmp`, rồi lệnh riêng của kênh Agent
-`appinstall /install.tmp /apps/terminal.elf`: Kernel kiểm tra hết TRƯỚC khi ghi (SRC là file thường 24 B .. 1 MiB, đọc được,
-đúng 3 lệnh nhảy đầu của tệp App; APP có cờ App và đang ở một slot), ghi đè CÙNG mục (giữ id -> slot / thứ tự nạp không đổi),
-đóng + reset App như nút [X], nạp lại mã rồi mở cửa sổ ở foreground. Ghi lỗi (hết chỗ...) -> App cũ vẫn chạy. Chỉ thay được
-App đã nạp lúc boot (App mới cần khởi động lại). Thay đổi nằm trên đĩa làm việc của QEMU (`target/qemu_disk.img`);
-`qemu_run.sh` chép đè đĩa này khi `disk.img` mới hơn. Mã App chạy trực tiếp trong Kernel: kênh Agent nay có quyền như việc
-ghi `disk.img` — chỉ nối socket cho tiến trình tin cậy. Một lần cài (build có cache + gửi + nạp) ~2-4s.
-Chỉ dùng cho thay đổi NẰM TRONG App: sửa Kernel hay phần dùng chung (`lib/os_layout.lit`, IPC, API LightFS) cần build đủ
-và khởi động lại; sửa `std/shell.lit` chỉ cập nhật bản shell trong Terminal, shell của kênh Agent (trong Kernel) vẫn cũ.
-
-```bash
-bash tools/qemu_run.sh --agent             # cửa sổ QEMU + socket target/light_serial.sock
-python3 tools/light_mcp.py --run "ls /apps"  # thử tay: in stdout/stderr, mã thoát = mã của lệnh
-python3 tools/light_mcp.py --install terminal  # build + cài nóng một App
-# Claude Code dùng MCP server (stdio, không cần cài gì thêm) qua tools/light_mcp.json -> công cụ mcp__vm__run:
-claude -p "liệt kê các App trong Light OS" --strict-mcp-config --mcp-config tools/light_mcp.json \
-       --allowedTools "mcp__vm__run,mcp__vm__install_app" --disallowedTools "Bash,Edit,Write,WebFetch,WebSearch"
-```
 
 ## Số học tường minh khi tràn 64-bit
 
@@ -261,39 +149,12 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `mem` | `mem_fill_{q,b,px}`, `mem_copy_{q,b}`, `mem_eq_b` |
 | `str` | chuỗi = (độ dài, `ptr<Byte,%n>`): `str_eq`, `str_starts_with`, `str_find`, `str_skip_spaces`, `str_parse_u64`, `byte_lower` |
 | `fmt` | ghi vào bộ đệm, trả vị trí mới `<= cap`: `fmt_byte`, `fmt_str`, `fmt_u64`, `fmt_hex` |
-| `sys` | IPC theo tên trường: `sys_key_pop`, `sys_mouse_x/y`, `sys_click_take`, `sys_mem_request`, `sys_close`, `sys_damage` |
-| `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text`, `surf_round_inset`, `surf_round_rect` (hình bo góc dùng chung cho Dock / compositor / widget) |
-| `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
-| `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
 | `fixq` | số điểm cố định Q4.60 có dấu (`fq_mul` ghép 4 tích 32x32, sai số <= 3 ulp; `fq_abs`, `fq_clamp2`) + lõi Mandelbrot `mb_iter` (liền mạch, dò chu kỳ Brent) / `mb_color`. Phép `_wrap` nên đúng đắn số học do `tools/mandel_model.py test` đối chiếu từng bit với mã máy (`cgtest --call`) |
 | `bignum` | số điểm cố định n limb (1..16, dấu-độ lớn, limb cao = Q4.60, F = 60 + 64(n-1) bit lẻ): `bn_addsub`, `bn_mul` (tích đủ 2n limb bằng `mulhi`, rồi cắt), `bn_from_q`, `bn_to_q`, `bn_cmp_mag`; đối chiếu từng bit bằng `tools/mandel_model.py test` |
 | `mbref` | quỹ đạo tham chiếu Mandelbrot bằng `bignum`: `mb_ref_run` chạy tiếp từng lô, ghi Z_k dạng Q4.60 (cho phóng sâu kiểu nhiễu loạn) |
-| `shell` | lõi shell dùng chung: `sh_begin` / `sh_step` / `sh_op_done` / `sh_op_name` (bộ thông dịch chạy từng bước, `ShState` giữ cwd, `$?` và thao tác đĩa đang chờ; vùng làm việc `SH_WS` = 448KB), `sh_unescape`, `sh_resolve` (đường dẫn `/a/../b`) |
 
-`surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
-lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Lõi shell in số bằng `fmt_u64` (`sh_out_dec`).
-
-## App Mandelbrot (`apps/mandel.lit`)
-
-Vẽ tập Mandelbrot bằng Q4.60 (`std/fixq.lit`), mỗi nhịp vẽ một lô hàng (`run_req`) chia cho mọi nhân bằng `parallel`
-(số phần = số nhân, mỗi phần <= 16 hàng, ngân sách ~3 triệu vòng lặp mỗi nhân mỗi nhịp) nên hệ thống vẫn phản hồi khi đang tính.
-Nhấn chuột = lấy làm tâm + phóng x2, `+`/`-` phóng, `WASD` di chuyển, `Z` tự phóng vào tâm, `T` chuyến tham quan tự phóng
-vào vùng cá ngựa, `R` về đầu, ESC đóng. Thanh dưới: độ phóng, số vòng tối đa (96 + 48·log2(độ phóng), <= 2000), số khung.
-
-**Không phóng vô hạn được.** Q4.60 có 60 bit lẻ; đáy phóng là bước 2^-46 mỗi điểm ảnh (~3·10^11 lần khung đầu, chữ LIMIT):
-so với tham chiếu 256 bit, ở 2^-46 ~20% điểm ảnh lệch số vòng (đa số ±vài vòng), sâu hơn thì vỡ thành nhiễu. Các clip
-"phóng vô hạn" (10^100 lần trở lên) dùng số nhiều chữ số + kỹ thuật nhiễu loạn (perturbation: một quỹ đạo tham chiếu chính
-xác cao, các điểm ảnh tính độ lệch bằng số nhỏ) và được kết xuất trước. Điểm đích tự phóng do `tools/mandel_model.py target`
-dò (bám biên bằng số 256 bit) để mọi độ sâu tới đáy đều còn biên; `depth` đo độ lệch theo độ sâu.
-
-Đã thử (QEMU, 4 nhân): ảnh chụp màn hình khớp TỪNG điểm ảnh với mô hình Python ở x1, x3016, x6,9·10^8 và đáy; kênh Agent
-vẫn trả lời khi đang tự phóng; cài nóng giữa lúc tự phóng; 1 nhân (không có AP). Tự phóng ~4 khung/giây trên QEMU 4 nhân.
-
-## Kênh IPC riêng cho từng App
-
-Kênh `0x79000` là của driver/WM. Mỗi slot App có `IpcChannel` riêng ở `0x79100 + slot*240` (`app_chan`). Trước mỗi lần gọi App,
-`app_sync_in` chép chuột/Shift và **chỉ App foreground** nhận phím/click; sau đó `app_sync_out` trả phím/click chưa dùng, lệnh đóng
-cửa sổ và vùng bẩn về kênh chung. Yêu cầu RAM (`mem_req`) và LightFS được phục vụ trên đúng kênh của App đã gửi.
+Mẹo khi Z3 hết giờ vì nhân hai biến (vd `y*stride`): tính offset bằng một hàm mờ (không `@ens`), kiểm biên lúc chạy
+trước khi `slice`, các hàng sau đi bằng phép cộng.
 
 ## Vòng lặp phải dừng (`@dec`)
 
@@ -328,5 +189,5 @@ có thể dùng lẫn. Thông báo lỗi và `--json` in lại bằng tên. Tên
 
 Cận stack của verifier (`verify::local_stack_bound`) là một lập luận; `light stack-report` kiểm nó bằng đo đạc: bộ sinh mã báo khung THẬT của từng hàm
 (địa chỉ trả về + rbp + thanh ghi push + vùng spill + đối số đẩy lên stack + `push rdi` của ata_read + khung `lt_parallel`) và lệnh fail nếu có hàm
-vượt cận. Chạy trên kernel và mọi App; `cgtest` kiểm thêm trên mọi chương trình trong `tests/lit/codegen` và các chương trình fuzz (hàm có tới 8
+vượt cận. Chạy trên mọi file std; `cgtest` kiểm thêm trên mọi chương trình trong `tests/lit/codegen` và các chương trình fuzz (hàm có tới 8
 tham số, nhiều lời gọi).

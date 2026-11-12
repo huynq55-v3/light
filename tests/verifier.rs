@@ -5,8 +5,7 @@
 //! - `tests/lit/must_pass/*.lit`: PHẢI qua kiểm chứng (chống verifier quá khắt khe sau khi sửa).
 //! - `tests/lit/known_holes/*.lit`: lỗ hổng ĐÃ BIẾT nhưng CHƯA vá — hiện vẫn qua kiểm chứng. Khi vá xong, test này sẽ
 //!   báo đỏ: thêm `# EXPECT:` rồi chuyển file sang `must_fail/`.
-//! - `# MODE: app` = chạy `light check-app` (kiểm tra thêm ABI App), mặc định `light check`.
-//! - Cuối cùng: toàn bộ chương trình thật (kernel + apps) phải qua kiểm chứng.
+//! - Cuối cùng: toàn bộ lit_program/std phải qua kiểm chứng.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,13 +46,7 @@ fn header(src: &str, key: &str) -> Option<String> {
 }
 
 fn run_file(p: &Path) -> (bool, String) {
-    let src = std::fs::read_to_string(p).unwrap();
-    let cmd = if header(&src, "MODE:").as_deref() == Some("app") {
-        "check-app"
-    } else {
-        "check"
-    };
-    light(&[cmd, p.to_str().unwrap()])
+    light(&["check", p.to_str().unwrap()])
 }
 
 fn report(fails: Vec<String>) {
@@ -114,17 +107,14 @@ fn known_holes_are_still_open() {
 }
 
 #[test]
-fn real_kernel_and_apps_verify() {
+fn real_std_verifies() {
+    // Toàn bộ lit_program/std phải qua kiểm chứng (kể cả chứng minh dừng)
     let mut fails = vec![];
-    let (ok, out) = light(&["check", "lit_program/os/kernel.lit"]);
-    if !ok {
-        fails.push(format!("kernel: {}", out.trim()));
-    }
-    let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("lit_program/apps");
-    for e in std::fs::read_dir(apps).unwrap() {
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("lit_program/std");
+    for e in std::fs::read_dir(std_dir).unwrap() {
         let p = e.unwrap().path();
         if p.extension().is_some_and(|x| x == "lit") {
-            let (ok, out) = light(&["check-app", p.to_str().unwrap()]);
+            let (ok, out) = light(&["check", p.to_str().unwrap()]);
             if !ok {
                 fails.push(format!("{}: {}", p.display(), out.trim()));
             }

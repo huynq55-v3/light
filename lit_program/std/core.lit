@@ -1,5 +1,5 @@
 # File: lit_program/std/core.lit
-# LIGHT STD — lõi: layout dùng chung (DiskQword, VgaCell, Byte, IpcChannel) và toán học nhỏ có hợp đồng.
+# LIGHT STD — lõi: layout dùng chung (DiskQword, VgaCell, Byte) và toán học nhỏ có hợp đồng.
 #
 # Quy ước của std/ (dành cho người và AI viết code):
 #   - Vùng nhớ là cặp (độ dài, ptr<L,%độ_dài>): hàm nhận `%n:bv64 %p:ptr<L,%n>`, không đóng cứng kích thước.
@@ -7,7 +7,17 @@
 #   - Mọi hàm trả về có @ens đủ để người gọi chứng minh tiếp (vd vị trí mới <= dung lượng).
 #   - Không vòng lặp vô hạn: mọi hàm ở đây được verifier chứng minh dừng.
 
-include ../lib/os_layout.lit
+layout DiskQword 8 {
+    0: bv64
+}
+
+layout VgaCell 4 {
+    0: bv32                                 # màu 32-bit 0x00RRGGBB
+}
+
+layout Byte 1 {
+    0: bv8
+}
 
 func math_min bv64 %a:bv64 %b:bv64 {
     @ens ule %r %a
