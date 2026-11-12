@@ -72,7 +72,6 @@ layout CompWin 48 {
     40: bv64 z @inv ult val 8               # phần tử thứ i của thứ tự chồng (dưới -> trên): slot+1
 }
 
-
 # 1 nếu compositor đã được bật lúc boot
 func cs_enabled bv64 %k:ptr<CompCtl,1> {
     @ens ule %r 1
@@ -1488,23 +1487,23 @@ func comp_init bv64 %io:io<0,0xffff> %vmm:ptr<DiskQword,512> {
     @b0
         call comp_scene_init %io
         # 21 khung = bit 0..20 của Qword bitmap 128; phải TRỐNG cả (đã được vmm_probe_ram mở, chưa ai cấp)
-        %lim = call q512 %vmm 6
+        %lim = call mem_get_q 512 %vmm 6
         %enough = cmp uge %lim 21
         br %enough @chk @no
     @chk
-        %bm = call q512 %vmm 128
+        %bm = call mem_get_q 512 %vmm 128
         %used = and %bm 0x1fffff
         %free = cmp eq %used 0
         br %free @take @no
     @take
         %bm2 = or %bm 0x1fffff
-        call q512_set %vmm 128 %bm2
-        %nalloc = call q512 %vmm 2
+        call mem_set_q 512 %vmm 128 %bm2
+        %nalloc = call mem_get_q 512 %vmm 2
         %nalloc2 = add_sat %nalloc 21
-        call q512_set %vmm 2 %nalloc2
-        %nfree = call q512 %vmm 7
+        call mem_set_q 512 %vmm 2 %nalloc2
+        %nfree = call mem_get_q 512 %vmm 7
         %nfree2 = sub_sat %nfree 21
-        call q512_set %vmm 7 %nfree2
+        call mem_set_q 512 %vmm 7 %nfree2
         %pd = const 0x12000 ptr<DiskQword,512>
         jmp @map 0
     @map %k:bv64
@@ -1516,7 +1515,7 @@ func comp_init bv64 %io:io<0,0xffff> %vmm:ptr<DiskQword,512> {
         %off = shl %k 21
         %phys = add %off 0x12000000
         %e = or %phys 0x83
-        call q512_set %pd %idx %e
+        call mem_set_q 512 %pd %idx %e
         %k2 = add %k 1
         jmp @map %k2
     @mapped

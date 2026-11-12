@@ -4,6 +4,24 @@
 
 include core.lit
 
+# p[i] — đọc / ghi một qword theo chỉ số (thay cho q512 / cap_state_get / qbuf / mem_mmap_q trước đây: cùng một việc
+# trên bảng cỡ cố định; nơi gọi truyền cỡ bảng làm %n)
+func mem_get_q bv64 %n:bv64 %p:ptr<DiskQword,%n> %i:bv64 {
+    @req ult %i %n
+    @b0
+        %c = slice %p %i ptr<DiskQword,1>
+        %v = load %c 0 bv64
+        ret %v
+}
+
+func mem_set_q void %n:bv64 %p:ptr<DiskQword,%n> %i:bv64 %v:bv64 {
+    @req ult %i %n
+    @b0
+        %c = slice %p %i ptr<DiskQword,1>
+        store %c 0 %v
+        ret
+}
+
 # p[0..n) = v
 func mem_fill_q void %n:bv64 %p:ptr<DiskQword,%n> %v:bv64 {
     @b0

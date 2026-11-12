@@ -1,0 +1,11 @@
+help
+ls
+pwd
+cat /x
+write /x a
+mkdir /d
+touch /t
+rm /x
+cd /apps
+stat /
+echo ok

@@ -1,0 +1,50 @@
+{"cmd": "help", "exit": 0, "stdout": "commands:\n  help                      this list\n  echo [-n] [-e] ARG...     print arguments (-n: no newline, -e: TEXT escapes)\n  pwd | cd [PATH] | ls [PATH] | stat PATH\n  cat [FILE...]             print files (no FILE or -: stdin)\n  write PATH TEXT...        replace file content with TEXT (creates the file)\n  append PATH TEXT...       add TEXT at the end of a file (creates the file)\n  mkdir PATH | touch PATH | rm PATH (file or empty directory)\n  grep [-v] [-i] [-n] [-c] PATTERN [FILE...]   lines containing PATTERN\n                            (fixed string; ^ at start / $ at end anchor it)\n  wc [-l] [-w] [-c] [FILE...]   lines, words, bytes\n  head [-n N] [FILE...] | tail [-n N] [FILE...]   first / last N lines (10)\n  sort [-r] [-n] [-u] [FILE] | uniq [-c] [FILE]\n  find [PATH] [-name GLOB] [-type f|d]   paths below PATH (GLOB: * ?)\n  env | unset NAME... | NAME=VALUE | true | false\nsyntax: a | b   a > FILE   a >> FILE   a < FILE   a ; b   a && b   a || b\n  'literal'  \"with $VAR\"  \\ before a special character  $VAR ${VAR} $? (exit code)\nTEXT escapes: \\n newline, \\t tab, \\\\ backslash, \\xHH any byte\nlimits: 128 KiB output per command (pipes, > >>), files up to 1 MiB\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "write /f.txt 'banana\\napple\\ncherry\\napple\\nBanana split\\n10 ten\\n9 nine\\n100 hundred\\n'", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /f.txt", "exit": 0, "stdout": "banana\napple\ncherry\napple\nBanana split\n10 ten\n9 nine\n100 hundred\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat < /f.txt", "exit": 0, "stdout": "banana\napple\ncherry\napple\nBanana split\n10 ten\n9 nine\n100 hundred\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /f.txt | grep an", "exit": 0, "stdout": "banana\nBanana split\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep an /f.txt", "exit": 0, "stdout": "banana\nBanana split\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep -i banana /f.txt", "exit": 0, "stdout": "banana\nBanana split\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep -v a /f.txt", "exit": 0, "stdout": "cherry\n10 ten\n9 nine\n100 hundred\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep -n apple /f.txt", "exit": 0, "stdout": "2:apple\n4:apple\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep -c apple /f.txt", "exit": 0, "stdout": "2\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep ^b /f.txt", "exit": 0, "stdout": "banana\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep 'e$' /f.txt", "exit": 0, "stdout": "apple\napple\n9 nine\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep '^apple$' /f.txt", "exit": 0, "stdout": "apple\napple\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep zzz /f.txt; echo rc=$?", "exit": 0, "stdout": "rc=1\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep apple /f.txt /nope; echo rc=$?", "exit": 0, "stdout": "/f.txt:apple\n/f.txt:apple\nrc=2\n", "stderr": "grep: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep", "exit": 2, "stdout": "", "stderr": "grep: missing operand\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep -x a /f.txt", "exit": 2, "stdout": "", "stderr": "grep: unknown option: -x\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "wc /f.txt", "exit": 0, "stdout": "8 12 65 /f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "wc -l /f.txt", "exit": 0, "stdout": "8 /f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /f.txt | wc", "exit": 0, "stdout": "8 12 65\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "wc -w /f.txt /f.txt", "exit": 0, "stdout": "12 /f.txt\n12 /f.txt\n24 total\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "head -n 3 /f.txt", "exit": 0, "stdout": "banana\napple\ncherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "head -2 /f.txt", "exit": 0, "stdout": "banana\napple\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "tail -n 2 /f.txt", "exit": 0, "stdout": "9 nine\n100 hundred\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "tail -3 < /f.txt", "exit": 0, "stdout": "10 ten\n9 nine\n100 hundred\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "head -n 0 /f.txt", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "head -n x /f.txt", "exit": 2, "stdout": "", "stderr": "head: invalid number: x\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "sort /f.txt", "exit": 0, "stdout": "10 ten\n100 hundred\n9 nine\nBanana split\napple\napple\nbanana\ncherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "sort -r /f.txt", "exit": 0, "stdout": "cherry\nbanana\napple\napple\nBanana split\n9 nine\n100 hundred\n10 ten\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "sort -n /f.txt", "exit": 0, "stdout": "Banana split\napple\napple\nbanana\ncherry\n9 nine\n10 ten\n100 hundred\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "sort -u /f.txt", "exit": 0, "stdout": "10 ten\n100 hundred\n9 nine\nBanana split\napple\nbanana\ncherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /f.txt | sort | uniq", "exit": 0, "stdout": "10 ten\n100 hundred\n9 nine\nBanana split\napple\nbanana\ncherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /f.txt | sort | uniq -c", "exit": 0, "stdout": "      1 10 ten\n      1 100 hundred\n      1 9 nine\n      1 Banana split\n      2 apple\n      1 banana\n      1 cherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "sort /f.txt | uniq -c | sort -rn | head -n 2", "exit": 0, "stdout": "      2 apple\n      1 cherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "sort /f.txt /f.txt", "exit": 2, "stdout": "", "stderr": "sort: at most one file\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find /", "exit": 0, "stdout": "/\n/apps\n/apps/editor.elf\n/apps/terminal.elf\n/apps/widgets.elf\n/data\n/data/note.txt\n/f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find / -type d", "exit": 0, "stdout": "/\n/apps\n/data\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find /apps -name '*.elf'", "exit": 0, "stdout": "/apps/editor.elf\n/apps/terminal.elf\n/apps/widgets.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find -name 'e*'", "exit": 0, "stdout": "/apps/editor.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find / -type f -name '?.txt'", "exit": 0, "stdout": "/f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find /nope", "exit": 1, "stdout": "", "stderr": "find: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cd /apps; find; cd /", "exit": 0, "stdout": "/apps\n/apps/editor.elf\n/apps/terminal.elf\n/apps/widgets.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "grep -c an /f.txt > /c.txt; cat /c.txt", "exit": 0, "stdout": "2\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo one > /g.txt; echo two >> /g.txt; cat /f.txt /g.txt | tail -n 3", "exit": 0, "stdout": "100 hundred\none\ntwo\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /nope | wc -l", "exit": 0, "stdout": "0\n", "stderr": "cat: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat < /nope", "exit": 1, "stdout": "", "stderr": "cat: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo x | cat - ", "exit": 0, "stdout": "x\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "printf", "exit": 127, "stdout": "", "stderr": "printf: command not found\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo $((1+2))", "exit": 0, "stdout": "$((1+2))\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "rm /f.txt; rm /g.txt; rm /c.txt; ls /", "exit": 0, "stdout": "apps/\ndata/\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}

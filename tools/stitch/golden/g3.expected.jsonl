@@ -1,0 +1,54 @@
+{"cmd": "echo hello   world  x", "exit": 0, "stdout": "hello world x\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo 'a  b'   \"c  d\"", "exit": 0, "stdout": "a  b c  d\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a;echo b", "exit": 0, "stdout": "a\nb\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a ; echo b ; echo c", "exit": 0, "stdout": "a\nb\nc\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "false && echo no", "exit": 1, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "false || echo yes", "exit": 0, "stdout": "yes\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "true && echo yes2", "exit": 0, "stdout": "yes2\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "true || echo no2", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "false && echo no; echo after", "exit": 0, "stdout": "after\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "false; echo $?", "exit": 0, "stdout": "1\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "true; echo $?", "exit": 0, "stdout": "0\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "foo; echo $?", "exit": 0, "stdout": "127\n", "stderr": "foo: command not found\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo $?", "exit": 0, "stdout": "0\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "A=hello", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo $A ${A}x \"$A\" '$A'", "exit": 0, "stdout": "hello hellox hello $A\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "B=1 C=2", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo $B$C", "exit": 0, "stdout": "12\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "env", "exit": 0, "stdout": "A=hello\nB=1\nC=2\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "unset B", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "env", "exit": 0, "stdout": "A=hello\nC=2\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo x$NOPE.y", "exit": 0, "stdout": "x.y\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo $NOPE", "exit": 0, "stdout": "\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo \"$NOPE\"", "exit": 0, "stdout": "\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a\\ b a\\;b a\\\\nb 'it''s' \"say \\\"hi\\\"\"", "exit": 0, "stdout": "a b a;b a\\\\nb its say \"hi\"\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo -n abc", "exit": 0, "stdout": "abc", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo -e 'a\\tb\\nc'", "exit": 0, "stdout": "a\tb\nc\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo -ne 'x\\n'", "exit": 0, "stdout": "x\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "write /w.txt 'line one\\nline two\\n'", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /w.txt", "exit": 0, "stdout": "line one\nline two\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "append /w.txt more words here", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /w.txt", "exit": 0, "stdout": "line one\nline two\nmore words here", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo redirected > /r.txt", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /r.txt", "exit": 0, "stdout": "redirected\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo again >> /r.txt", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /r.txt", "exit": 0, "stdout": "redirected\nagain\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo over > /r.txt; cat /r.txt", "exit": 0, "stdout": "over\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo x>/r2.txt;cat /r2.txt", "exit": 0, "stdout": "x\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cat /r.txt /r2.txt /nope /w.txt", "exit": 1, "stdout": "over\nx\nline one\nline two\nmore words here", "stderr": "cat: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo x > /apps", "exit": 1, "stdout": "", "stderr": "echo: is a directory: /apps\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo x > /nope/f", "exit": 1, "stdout": "", "stderr": "echo: no such file or directory: /nope/f\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo x >", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a |", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "| echo a", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a && && echo b", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a &", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo 'unterminated", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo \"unterm", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo ${A", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "write /x.txt hi > /y.txt", "exit": 2, "stdout": "", "stderr": "write: cannot be combined with > or >>\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": ";", "exit": 2, "stdout": "", "stderr": "sh: syntax error\n", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "echo a;", "exit": 0, "stdout": "a\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cd /apps && pwd && cd / ; pwd", "exit": 0, "stdout": "/apps\n/\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "ls /apps | echo piped", "exit": 0, "stdout": "piped\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "rm /w.txt && rm /r.txt && rm /r2.txt && ls /", "exit": 0, "stdout": "apps/\ndata/\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}

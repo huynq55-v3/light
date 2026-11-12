@@ -1,0 +1,50 @@
+help
+write /f.txt 'banana\napple\ncherry\napple\nBanana split\n10 ten\n9 nine\n100 hundred\n'
+cat /f.txt
+cat < /f.txt
+cat /f.txt | grep an
+grep an /f.txt
+grep -i banana /f.txt
+grep -v a /f.txt
+grep -n apple /f.txt
+grep -c apple /f.txt
+grep ^b /f.txt
+grep 'e$' /f.txt
+grep '^apple$' /f.txt
+grep zzz /f.txt; echo rc=$?
+grep apple /f.txt /nope; echo rc=$?
+grep
+grep -x a /f.txt
+wc /f.txt
+wc -l /f.txt
+cat /f.txt | wc
+wc -w /f.txt /f.txt
+head -n 3 /f.txt
+head -2 /f.txt
+tail -n 2 /f.txt
+tail -3 < /f.txt
+head -n 0 /f.txt
+head -n x /f.txt
+sort /f.txt
+sort -r /f.txt
+sort -n /f.txt
+sort -u /f.txt
+cat /f.txt | sort | uniq
+cat /f.txt | sort | uniq -c
+sort /f.txt | uniq -c | sort -rn | head -n 2
+sort /f.txt /f.txt
+find /
+find / -type d
+find /apps -name '*.elf'
+find -name 'e*'
+find / -type f -name '?.txt'
+find /nope
+cd /apps; find; cd /
+grep -c an /f.txt > /c.txt; cat /c.txt
+echo one > /g.txt; echo two >> /g.txt; cat /f.txt /g.txt | tail -n 3
+cat /nope | wc -l
+cat < /nope
+echo x | cat - 
+printf
+echo $((1+2))
+rm /f.txt; rm /g.txt; rm /c.txt; ls /
