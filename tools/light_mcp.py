@@ -13,12 +13,14 @@ Everything else on the serial line (boot / diag output) is ignored.
 Usage:
     python3 tools/light_mcp.py                 # MCP server on stdin/stdout (for Claude Code)
     python3 tools/light_mcp.py --run "ls /"    # one command, print the result (manual test)
+    python3 tools/light_mcp.py --install terminal   # build + hot-install one app (see install_app)
 No third-party dependencies. Only JSON-RPC goes to stdout in server mode; logs go to stderr.
 """
 import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -140,8 +142,12 @@ def check_path(path):
 
 
 def write_file(ch, path, content, timeout):
+    return write_bytes(ch, path, content.encode("utf-8"), timeout)
+
+
+def write_bytes(ch, path, data, timeout):
     check_path(path)
-    tokens = escape_bytes(content.encode("utf-8"))
+    tokens = escape_bytes(data)
     room = WRITE_CHUNK
     chunks, cur, size = [], [], 0
     for t in tokens:
@@ -154,8 +160,42 @@ def write_file(ch, path, content, timeout):
         if r["exit"] != 0:
             r["stderr"] += f"(failed at chunk {i + 1}/{len(chunks)})\n"
             return r
-    return {"exit": 0, "stdout": f"wrote {len(content.encode('utf-8'))} bytes to {path} in {len(chunks)} command(s)\n",
+    return {"exit": 0, "stdout": f"wrote {len(data)} bytes to {path} in {len(chunks)} command(s)\n",
             "stderr": "", "truncated": {"stdout": False, "stderr": False}}
+
+
+STAGE = "/install.tmp"  # file tạm trên đĩa Light OS cho install_app (xóa sau khi cài)
+
+
+def install_app(ch, name, timeout):
+    """Biên dịch + kiểm chứng lit_program/apps/NAME.lit trên host, gửi .elf qua kênh, cài nóng vào slot của App."""
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", name):
+        raise ValueError("'name' must be an app name like 'terminal' (lit_program/apps/<name>.lit)")
+    src = os.path.join(REPO, "lit_program", "apps", name + ".lit")
+    if not os.path.isfile(src):
+        raise ValueError(f"no such app source: lit_program/apps/{name}.lit")
+    out_dir = os.path.join(REPO, "target", "hot")
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, name + ".elf")
+    try:
+        b = subprocess.run(["cargo", "run", "--quiet", "--release", "--bin", "light", "--", "build-app", src, out],
+                           cwd=REPO, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("build timed out (900 s)")
+    if b.returncode != 0:
+        log_txt = (b.stdout + b.stderr)[-4000:]
+        return {"exit": 1, "stdout": "", "stderr": f"build/verify failed:\n{log_txt}",
+                "truncated": {"stdout": False, "stderr": False}}
+    with open(out, "rb") as f:
+        data = f.read()
+    w = write_bytes(ch, STAGE, data, timeout)
+    if w["exit"] != 0:
+        ch.run(f"rm '{STAGE}'", timeout)
+        return w
+    r = ch.run(f"appinstall {STAGE} /apps/{name}.elf", max(timeout, 30))
+    ch.run(f"rm '{STAGE}'", timeout)
+    r["stdout"] = f"built {name}.elf ({len(data)} bytes, verified)\n" + r["stdout"]
+    return r
 
 
 WRITE_CHUNK = 120000  # escaped bytes per write/append command (<= MAX_LINE; each append re-reads and rewrites the file)
@@ -166,7 +206,8 @@ TOOLS = [{
         "Run one shell command inside Light OS (running in QEMU) and return its exit code, stdout and stderr. "
         "The shell session (current directory) persists between calls. Commands are ASCII, one line. "
         "Same shell as the Light OS Terminal app (run `help` for usage). Commands: help echo pwd cd ls stat cat write "
-        "append mkdir touch rm grep wc head tail sort uniq find env unset true false. "
+        "append mkdir touch rm grep wc head tail sort uniq find env unset true false; agent-only: appinstall SRC APP "
+        "(prefer the install_app tool). "
         "Syntax: 'single' and \"double\" quotes, $VAR ${VAR} $? (exit code), NAME=value, pipes a | b, "
         "redirection > >> <, sequences a ; b, a && b, a || b. No globbing (find -name takes * ?), no subshells, "
         "no $(...), no 2>. A backslash only escapes shell special characters; other backslash sequences reach the "
@@ -193,6 +234,20 @@ TOOLS = [{
                    "must exist; app files under /apps are read-only. Maximum file size 1 MiB.",
     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                     "required": ["path", "content"]},
+}, {
+    "name": "install_app",
+    "description": "Hot-install an app: compile + Z3-verify lit_program/apps/<name>.lit on the host (`light build-app`), "
+                   "send the binary to Light OS and replace /apps/<name>.elf in place (same Dock slot), then restart the "
+                   "app (its window state is reset, like closing it with [X]) and bring its window to the foreground. "
+                   "Only apps already loaded at boot can be replaced; new apps need a reboot. The change persists on the "
+                   "QEMU working disk. Only for changes inside the app: edits to kernel code or shared ABI (lib/os_layout.lit, "
+                   "IPC, LightFS API) need a full build + reboot, and std/shell.lit edits reach the Terminal but not the "
+                   "kernel's agent shell. Note: app code runs directly in the kernel, so this tool gives the host the same "
+                   "power as rebuilding disk.img.",
+    "inputSchema": {"type": "object", "properties": {
+        "name": {"type": "string", "description": "app name, e.g. \"terminal\""},
+        "timeout_s": {"type": "number", "description": "seconds per Light OS command (default 10)"}},
+        "required": ["name"]},
 }]
 
 
@@ -206,6 +261,8 @@ def call_tool(ch, name, args):
         if not isinstance(content, str):
             raise ValueError("'content' must be a string")
         return write_file(ch, args.get("path"), content, timeout)
+    if name == "install_app":
+        return install_app(ch, args.get("name"), timeout)
     if name != "run":
         raise ValueError(f"unknown tool: {name}")
     cmd = args.get("command")
@@ -256,6 +313,11 @@ def serve():
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--install":
+        r = install_app(Channel(SOCK), sys.argv[2], 10)
+        sys.stdout.write(r["stdout"])
+        sys.stderr.write(r["stderr"])
+        sys.exit(r["exit"])
     if len(sys.argv) >= 3 and sys.argv[1] == "--run":
         r = Channel(SOCK).run(" ".join(sys.argv[2:]), 10)
         sys.stdout.write(r["stdout"])

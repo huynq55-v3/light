@@ -148,6 +148,7 @@ bash tools/qemu_uefi_nvme.sh
 - `light check <file.lit> [--json]` — kiểm chứng MỌI hàm trong file (không dừng ở hàm lỗi đầu tiên). Với `--json`, stdout chỉ có một đối tượng
   `{"ok":false,"errors":[{"kind","func","block","inst","message","counterexample":[{"reg","value"}],"origin":"file:dòng","source","hint"}]}`
   hoặc `{"ok":true,"verified":N,"cache_hits":M}`; tiến trình nằm ở stderr/bị tắt.
+- `light build-app APP.lit OUT.elf` — kiểm chứng + biên dịch MỘT App ra file (dùng cho cài App nóng qua kênh Agent).
 - `light doc [TRUY_VẤN] [--brief] [--defs] [--file F]... [--json]` — chữ ký, `@req/@ens` và chú thích của hàm (và `def` với `--defs`) trong
   `lit_program/`; tra theo tên, chú thích hoặc đường dẫn. Dùng thay cho việc đọc cả file thư viện.
 - Cache Z3: kết quả chứng minh lưu ở `.light-cache/z3.keys` (khóa = băm mã verifier + layouts + hàm + hợp đồng của hàm được gọi).
@@ -178,15 +179,28 @@ App Terminal (`apps/terminal.lit`) là mặt tiền thứ hai của CÙNG lõi: 
 lệnh, App đặt `IpcChannel.run_req` để Kernel gọi lại mỗi nhịp (không cần phím), chỉ vẽ lại khi xong lệnh. Bộ đệm cuộn
 32KB tự xuống dòng, cửa sổ đổi kích thước được, nút cuộn ^ / v; thêm lệnh riêng `clear sys mem memup memdown memtest`
 (chỉ khi là cả dòng). Người và Claude gõ cùng một bộ lệnh.
-MCP server có 3 công cụ: `run` (một dòng lệnh), `read_file`, `write_file` (gửi `write 'PATH' '<nội dung đã thoát>'`,
-`'` thành `\x27`, chia thành `write` + `append` theo khối 120000 ký tự).
+MCP server có 4 công cụ: `run` (một dòng lệnh), `read_file`, `write_file` (gửi `write 'PATH' '<nội dung đã thoát>'`,
+`'` thành `\x27`, chia thành `write` + `append` theo khối 120000 ký tự) và `install_app` (cài App nóng, dưới đây).
+
+**Cài App nóng** (sửa App, thấy kết quả sau vài giây, không khởi động lại): `install_app {"name": "terminal"}` chạy trên host
+`light build-app lit_program/apps/terminal.lit target/hot/terminal.elf` (kiểm chứng Z3 + kiểm ABI như lúc pack, không đụng
+`storage/` hay `disk.img`), gửi `.elf` vào file tạm `/install.tmp`, rồi lệnh riêng của kênh Agent
+`appinstall /install.tmp /apps/terminal.elf`: Kernel kiểm tra hết TRƯỚC khi ghi (SRC là file thường 24 B .. 1 MiB, đọc được,
+đúng 3 lệnh nhảy đầu của tệp App; APP có cờ App và đang ở một slot), ghi đè CÙNG mục (giữ id -> slot / thứ tự nạp không đổi),
+đóng + reset App như nút [X], nạp lại mã rồi mở cửa sổ ở foreground. Ghi lỗi (hết chỗ...) -> App cũ vẫn chạy. Chỉ thay được
+App đã nạp lúc boot (App mới cần khởi động lại). Thay đổi nằm trên đĩa làm việc của QEMU (`target/qemu_disk.img`);
+`qemu_run.sh` chép đè đĩa này khi `disk.img` mới hơn. Mã App chạy trực tiếp trong Kernel: kênh Agent nay có quyền như việc
+ghi `disk.img` — chỉ nối socket cho tiến trình tin cậy. Một lần cài (build có cache + gửi + nạp) ~2-4s.
+Chỉ dùng cho thay đổi NẰM TRONG App: sửa Kernel hay phần dùng chung (`lib/os_layout.lit`, IPC, API LightFS) cần build đủ
+và khởi động lại; sửa `std/shell.lit` chỉ cập nhật bản shell trong Terminal, shell của kênh Agent (trong Kernel) vẫn cũ.
 
 ```bash
 bash tools/qemu_run.sh --agent             # cửa sổ QEMU + socket target/light_serial.sock
 python3 tools/light_mcp.py --run "ls /apps"  # thử tay: in stdout/stderr, mã thoát = mã của lệnh
+python3 tools/light_mcp.py --install terminal  # build + cài nóng một App
 # Claude Code dùng MCP server (stdio, không cần cài gì thêm) qua tools/light_mcp.json -> công cụ mcp__vm__run:
 claude -p "liệt kê các App trong Light OS" --strict-mcp-config --mcp-config tools/light_mcp.json \
-       --allowedTools "mcp__vm__run" --disallowedTools "Bash,Edit,Write,WebFetch,WebSearch"
+       --allowedTools "mcp__vm__run,mcp__vm__install_app" --disallowedTools "Bash,Edit,Write,WebFetch,WebSearch"
 ```
 
 ## Số học tường minh khi tràn 64-bit
