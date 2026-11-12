@@ -71,6 +71,9 @@ pub enum BinOp {
     // Số thực Điểm cố định Q16.16 (Fixed-Point Arithmetic: fxmul = (a*b)>>16, fxdiv = (a<<16)/b)
     FxMul,
     FxDiv,
+    // Nửa cao 64 bit của tích KHÔNG DẤU 64x64 = 128 bit (x86 `mul`). Verifier coi kết quả lệnh là giá trị mờ (không đưa
+    // phép nhân 128 bit vào Z3); trong biểu thức @req/@ens thì có ngữ nghĩa đúng.
+    MulHi,
     // Phép số học tường minh khi tràn 64-bit. *Wrap: quay vòng, không đòi chứng minh. *Sat / *Ovf: bị parser HẠ thành các lệnh
     // gốc (xem parser::lower) nên verify/x86 không bao giờ thấy chúng.
     AddWrap,

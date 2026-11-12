@@ -283,6 +283,7 @@ fn p_binop(s: &str) -> Option<BinOp> {
         "ashr" => Some(BinOp::AShr),
         "fxmul" => Some(BinOp::FxMul),
         "fxdiv" => Some(BinOp::FxDiv),
+        "mulhi" => Some(BinOp::MulHi),
         "add_wrap" => Some(BinOp::AddWrap),
         "sub_wrap" => Some(BinOp::SubWrap),
         "mul_wrap" => Some(BinOp::MulWrap),

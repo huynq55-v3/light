@@ -1,0 +1,70 @@
+# File: lit_program/std/mbref.lit
+# LIGHT STD — quỹ đạo tham chiếu Mandelbrot độ chính xác cao (std/bignum.lit) cho phóng sâu kiểu nhiễu loạn.
+#
+# Trạng thái s = 7 số x 17 Qword: [0] CR, [1] CI (điểm tham chiếu), [2] ZR, [3] ZI (Z_k hiện tại), [4..6] tạm.
+# mb_ref_run chạy tiếp tối đa `count` vòng từ Z hiện tại, ghi Z_k (limb cao nhất kèm dấu = Q4.60) vào out[2k], out[2k+1]
+# TRƯỚC khi bước, dừng khi |ZR| > 2 hoặc |ZI| > 2 (như mb_iter). Trả số Z đã ghi. Gọi nhiều lần (mỗi nhịp một lô) được:
+# trạng thái nằm hết trong s.
+
+include bignum.lit
+
+def MBR_N 119                               # 7 x 17
+
+func mbr_num ptr<DiskQword,17> %s:ptr<DiskQword,119> %k:bv64 {
+    @req ult %k 7
+    @b0
+        %o = mul %k 17
+        %p = slice %s %o ptr<DiskQword,17>
+        ret %p
+}
+
+func mb_ref_run bv64 %s:ptr<DiskQword,119> %t:ptr<DiskQword,32> %n:bv64 %out:ptr<DiskQword,4096> %count:bv64 {
+    @req uge %n 1
+    @req ule %n 16
+    @req ule %count 2048
+    @ens ule %r %count
+    @b0
+        %cr = call mbr_num %s 0
+        %ci = call mbr_num %s 1
+        %zr = call mbr_num %s 2
+        %zi = call mbr_num %s 3
+        %x2 = call mbr_num %s 4
+        %y2 = call mbr_num %s 5
+        %xy = call mbr_num %s 6
+        jmp @l 0
+    @l %k:bv64
+        @inv ule %k %count
+        @dec sub %count %k
+        %more = cmp ult %k %count
+        br %more @emit @done
+    @emit
+        %qr = call bn_to_q %zr %n
+        %qi = call bn_to_q %zi %n
+        %o = shl %k 1
+        %o1 = add %o 1
+        call mem_set_q 4096 %out %o %qr
+        call mem_set_q 4096 %out %o1 %qi
+        # thoát: limb cao nhất (độ lớn) > 2.0 ở phần thực hoặc ảo
+        %tn = sub %n 1
+        %mr = call bn_limb %zr %tn
+        %mi = call bn_limb %zi %tn
+        %br = cmp ugt %mr 0x2000000000000000
+        %bi = cmp ugt %mi 0x2000000000000000
+        %big = or %br %bi
+        br %big @esc @step
+    @step
+        call bn_mul %x2 %zr %zr %n %t
+        call bn_mul %y2 %zi %zi %n %t
+        call bn_mul %xy %zr %zi %n %t
+        call bn_addsub %zr %x2 %y2 %n 1
+        call bn_addsub %zr %zr %cr %n 0
+        call bn_addsub %zi %xy %xy %n 0
+        call bn_addsub %zi %zi %ci %n 0
+        %k1 = add %k 1
+        jmp @l %k1
+    @esc
+        %k2 = add %k 1
+        ret %k2
+    @done
+        ret %count
+}

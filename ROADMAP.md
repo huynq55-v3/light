@@ -278,6 +278,18 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    Chưa làm: phóng sâu hơn cần số nhiều chữ số + perturbation; đo thời gian thật (App chưa có đồng hồ); SIMD (AVX2) cho
    lõi lặp.
 
+18. Phóng sâu bước 1 (2026-11-12, nhánh deepzoom): lệnh `mulhi` (nửa cao tích 64x64; verifier: kết quả mờ + cận
+   `<= a, <= b`; codegen `mul rcx`, fuzz cgtest có `mulhi`), `std/bignum.lit` (n limb dấu-độ lớn), `std/mbref.lit`
+   (quỹ đạo tham chiếu theo lô), `cgtest --call` nhận bộ đệm `[a,b,..]` / `[*N]` và in lại sau lời gọi,
+   `tools/mandel_model.py`: mô hình số lớn + `nucleus()` (chu kỳ quả cầu + Newton mpmath: tâm Mandelbrot con chu kỳ 1530,
+   cỡ ~1e-26, gần điểm đích cũ). Đã thử: 8000 ca số lớn n = 1..16 và quỹ đạo 3067 vòng tại tâm (2 lô) khớp từng bit; quỹ
+   đạo tuần hoàn (|Z_1530| < 2^-60), lệch mpmath <= 1.1e-16; ~1,1 µs/vòng ở 4 limb, ~5,6 µs ở 16 limb.
+   Tìm tâm lồng nhau sâu hơn (c_p + S·c0) chưa ổn định (ánh xạ co bị méo xa tâm) — để sau.
+   Đã hỏi advisor về `f64`: không làm mất khả năng kiểm chứng nếu giá trị f64 là mờ với Z3 (không mô hình IEEE), cấm f64
+   trong hợp đồng / chỉ số / `parallel`, `fcmp` trả bool mờ (NaN), f64 -> số nguyên trả giá trị mờ + kẹp lúc chạy, ghi bộ
+   nhớ qua đổi bit tường minh; rủi ro thật: AP phải bật SSE (CR4.OSFXSR, MXCSR), không sinh FMA để còn đối chiếu từng bit.
+   Tiếp: bước 2 = kiểu `f64`; bước 3 = nhiễu loạn trong App.
+
 ## 📋 Tiếp theo
 
 ### Bước 3b — Giải phóng riêng lẻ (`free`)

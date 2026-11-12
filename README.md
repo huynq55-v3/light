@@ -211,6 +211,7 @@ claude -p "liệt kê các App trong Light OS" --strict-mcp-config --mcp-config 
 |---|---|
 | `%d = add_sat %a %b` (`sub_sat`, `mul_sat`) | kẹp ở biên (0 hoặc 2^64-1), luôn qua verifier |
 | `%d = add_wrap %a %b` (`sub_wrap`, `mul_wrap`) | quay vòng modulo 2^64 (hash, checksum), không đòi chứng minh |
+| `%d = mulhi %a %b` | nửa cao 64 bit của tích KHÔNG DẤU 128 bit (x86 `mul`). Verifier coi kết quả là giá trị mờ, chỉ biết `%d <= %a` và `%d <= %b` (không đưa phép nhân 128 bit vào Z3); trong `@req/@ens` có ngữ nghĩa đúng nhưng vì thế không chứng minh được `@ens` về giá trị chính xác |
 | `%f = add_ovf %a %b` (`sub_ovf`, `mul_ovf`) | `%f` = 1 nếu phép tương ứng sẽ tràn, ngược lại 0 (bv64); dùng với `br`/`add_wrap` |
 
 `*_sat` và `*_ovf` được parser hạ thành các lệnh bv64 thuần (không rẽ nhánh), nên verifier và bộ sinh mã không đổi; ngữ nghĩa được kiểm trên
@@ -265,6 +266,8 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
 | `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
 | `fixq` | số điểm cố định Q4.60 có dấu (`fq_mul` ghép 4 tích 32x32, sai số <= 3 ulp; `fq_abs`, `fq_clamp2`) + lõi Mandelbrot `mb_iter` (liền mạch, dò chu kỳ Brent) / `mb_color`. Phép `_wrap` nên đúng đắn số học do `tools/mandel_model.py test` đối chiếu từng bit với mã máy (`cgtest --call`) |
+| `bignum` | số điểm cố định n limb (1..16, dấu-độ lớn, limb cao = Q4.60, F = 60 + 64(n-1) bit lẻ): `bn_addsub`, `bn_mul` (tích đủ 2n limb bằng `mulhi`, rồi cắt), `bn_from_q`, `bn_to_q`, `bn_cmp_mag`; đối chiếu từng bit bằng `tools/mandel_model.py test` |
+| `mbref` | quỹ đạo tham chiếu Mandelbrot bằng `bignum`: `mb_ref_run` chạy tiếp từng lô, ghi Z_k dạng Q4.60 (cho phóng sâu kiểu nhiễu loạn) |
 | `shell` | lõi shell dùng chung: `sh_begin` / `sh_step` / `sh_op_done` / `sh_op_name` (bộ thông dịch chạy từng bước, `ShState` giữ cwd, `$?` và thao tác đĩa đang chờ; vùng làm việc `SH_WS` = 448KB), `sh_unescape`, `sh_resolve` (đường dẫn `/a/../b`) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên

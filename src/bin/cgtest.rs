@@ -140,6 +140,7 @@ fn interp(m: &Module, fid: usize, args: &[u64], bufs: &Bufs, fuel: &mut u64, dep
                         BinOp::SDiv => ((a as i64) / (c as i64)) as u64,
                         BinOp::SRem => ((a as i64) % (c as i64)) as u64,
                         BinOp::FxMul => a.wrapping_mul(c) >> 16,
+                        BinOp::MulHi => ((a as u128 * c as u128) >> 64) as u64,
                         BinOp::FxDiv => {
                             if (a << 16) >> 16 != a {
                                 return Err(Stop::Skip("fxdiv tràn".into()));
@@ -272,7 +273,7 @@ fn load_code(code: &[u8]) -> *mut u8 {
 /// hoán vị ở hai cạnh lùi, phép tính/so sánh/load/store/gọi hàm ngẫu nhiên -> thử cấp phát thanh ghi, tràn stack,
 /// chép song song và giữ giá trị qua lời gọi.
 fn gen_prog(r: &mut Rng) -> String {
-    const OPS: [&str; 11] = ["add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "udiv", "urem"];
+    const OPS: [&str; 12] = ["add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "udiv", "urem", "mulhi"];
     const CMPS: [&str; 10] = ["eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge"];
     let mut s = String::from("layout Q 8 {\n    0: bv64\n}\n");
     let mut v: u64;
@@ -290,7 +291,7 @@ fn gen_prog(r: &mut Rng) -> String {
         };
         match k {
             0..=4 => {
-                let op = OPS[(r.next() % 11) as usize];
+                let op = OPS[(r.next() % 12) as usize];
                 let y = match op {
                     "shl" | "lshr" | "ashr" => {
                         let c = new(s, v, "const 63 bv64".into());
@@ -451,9 +452,37 @@ fn main() {
         let (code, offs) = elf64::compile_code(&m, false).unwrap_or_else(|e| panic!("{}", e));
         let exe = load_code(&code);
         let parse = |t: &str| t.strip_prefix("0x").map_or_else(|| t.parse::<u64>().unwrap(), |h| u64::from_str_radix(h, 16).unwrap());
+        // Đối số dạng `[v1,v2,...]` = bộ đệm Qword (truyền con trỏ), `[*N]` = N Qword 0; sau lời gọi in nội dung
+        // từng bộ đệm: `0xKQ [0x..,0x..] ...`
         for line in std::io::stdin().lock().lines() {
-            let a: Vec<u64> = line.unwrap().split_whitespace().map(parse).collect();
-            println!("0x{:x}", native(exe, offs[fi], &a));
+            let line = line.unwrap();
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            let mut bufs: Vec<Vec<u64>> = toks
+                .iter()
+                .filter_map(|t| t.strip_prefix('[').and_then(|t| t.strip_suffix(']')))
+                .map(|b| match b.strip_prefix('*') {
+                    Some(n) => vec![0u64; n.parse().unwrap()],
+                    None => b.split(',').filter(|x| !x.is_empty()).map(parse).collect(),
+                })
+                .collect();
+            let mut k = 0;
+            let a: Vec<u64> = toks
+                .iter()
+                .map(|t| {
+                    if t.starts_with('[') {
+                        k += 1;
+                        bufs[k - 1].as_mut_ptr() as u64
+                    } else {
+                        parse(t)
+                    }
+                })
+                .collect();
+            let r = native(exe, offs[fi], &a);
+            let dump: Vec<String> = bufs
+                .iter()
+                .map(|b| format!("[{}]", b.iter().map(|v| format!("0x{:x}", v)).collect::<Vec<_>>().join(",")))
+                .collect();
+            println!("0x{:x}{}{}", r, if dump.is_empty() { "" } else { " " }, dump.join(" "));
         }
         return;
     }

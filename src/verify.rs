@@ -965,6 +965,7 @@ impl<'ctx> Verifier<'ctx> {
             BinOp::AShr => l.bvashr(r),
             BinOp::FxMul => l.bvmul(r).bvlshr(&self.bv(16)),
             BinOp::FxDiv => l.bvshl(&self.bv(16)).bvudiv(r),
+            BinOp::MulHi => l.zero_ext(64).bvmul(&r.zero_ext(64)).extract(127, 64),
         }
     }
 
@@ -1298,7 +1299,13 @@ impl<'ctx> Verifier<'ctx> {
                 }
                 let res = self.eval_binop(*op, &l, &r);
                 let d = self.decl_reg(*dst, Type::Bv64)?;
-                self.solver.assert(&d._eq(&res));
+                if *op != BinOp::MulHi {
+                    self.solver.assert(&d._eq(&res));
+                } else {
+                    // mờ, chỉ giữ cận rẻ và đúng: (a*b) >> 64 <= min(a, b) vì cả hai < 2^64
+                    self.solver.assert(&d.bvule(&l));
+                    self.solver.assert(&d.bvule(&r));
+                }
             }
             Inst::Cmp { dst, op, lhs, rhs } => {
                 let cond = self.eval_cmpop(*op, self.get_reg(*lhs)?, self.get_reg(*rhs)?);

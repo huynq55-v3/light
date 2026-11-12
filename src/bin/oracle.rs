@@ -189,6 +189,7 @@ fn bv_total(op: BinOp, l: u64, r: u64) -> u64 {
             }
         }
         BinOp::FxMul => l.wrapping_mul(r) >> 16,
+        BinOp::MulHi => ((l as u128 * r as u128) >> 64) as u64,
         BinOp::FxDiv => {
             if r == 0 {
                 u64::MAX

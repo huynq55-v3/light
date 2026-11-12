@@ -1,0 +1,294 @@
+# File: lit_program/std/bignum.lit
+# LIGHT STD — số điểm cố định NHIỀU LIMB (dấu-độ lớn) cho quỹ đạo tham chiếu của phóng sâu Mandelbrot.
+#
+# Một số = BN_SLOT (17) Qword: [0] = dấu (0 dương, 1 âm; số 0 luôn có dấu 0), [1 + i] = limb i (64 bit, i = 0 thấp nhất),
+# chỉ dùng n limb (1 <= n <= 16). Độ lớn A = sum limb_i * 2^(64 i); giá trị = (-1)^dấu * A / 2^F với F = 60 + 64 (n - 1):
+# limb cao nhất là phần Q4.60 (giống std/fixq.lit), các limb sau thêm 64 bit lẻ mỗi limb (n = 4: 252 bit lẻ ~ 10^-75).
+#
+# Mọi phép cắt (không làm tròn) độ lớn; tràn quá limb cao nhất bị bỏ (người dùng giữ |giá trị| < 16). Đúng đắn số học do
+# tools/mandel_model.py (lớp BN) đối chiếu TỪNG BIT qua `cgtest --call`; verifier bảo đảm truy cập bộ nhớ và dừng.
+# Đích được trùng với nguồn (d = a, d = b): mỗi phép đọc hết nguồn của một limb trước khi ghi limb đó / ghi qua bộ đệm.
+
+include mem.lit
+
+def BN_SLOT 17
+def BN_TMP 32
+
+# a[i] (limb i)
+func bn_limb bv64 %a:ptr<DiskQword,17> %i:bv64 {
+    @req ult %i 16
+    @b0
+        %k = add %i 1
+        %v = call mem_get_q BN_SLOT %a %k
+        ret %v
+}
+
+func bn_set_limb void %a:ptr<DiskQword,17> %i:bv64 %v:bv64 {
+    @req ult %i 16
+    @b0
+        %k = add %i 1
+        call mem_set_q BN_SLOT %a %k %v
+        ret
+}
+
+# Dấu về 0 nếu độ lớn bằng 0
+func bn_norm void %a:ptr<DiskQword,17> %n:bv64 {
+    @req ule %n 16
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %acc:bv64
+        @inv ule %i %n
+        @dec sub %n %i
+        %more = cmp ult %i %n
+        br %more @or @end
+    @or
+        %v = call bn_limb %a %i
+        %acc1 = or %acc %v
+        %i1 = add %i 1
+        jmp @l %i1 %acc1
+    @end
+        %z = cmp eq %acc 0
+        br %z @zero @done
+    @zero
+        call mem_set_q BN_SLOT %a 0 0
+        ret
+    @done
+        ret
+}
+
+# So độ lớn: 0 nếu |a| < |b|, 1 nếu bằng, 2 nếu |a| > |b|
+func bn_cmp_mag bv64 %a:ptr<DiskQword,17> %b:ptr<DiskQword,17> %n:bv64 {
+    @req ule %n 16
+    @ens ule %r 2
+    @b0
+        jmp @l %n
+    @l %i:bv64
+        @inv ule %i %n
+        @dec %i
+        %more = cmp ne %i 0
+        br %more @cmp @eq
+    @cmp
+        %k = sub %i 1
+        %x = call bn_limb %a %k
+        %y = call bn_limb %b %k
+        %lt = cmp ult %x %y
+        br %lt @less @ge
+    @ge
+        %gt = cmp ugt %x %y
+        br %gt @greater @next
+    @next
+        jmp @l %k
+    @less
+        ret 0
+    @greater
+        ret 2
+    @eq
+        ret 1
+}
+
+# |d| = |a| + |b| (bỏ phần nhớ ra khỏi limb cao nhất); không đụng dấu
+func bn_add_mag void %d:ptr<DiskQword,17> %a:ptr<DiskQword,17> %b:ptr<DiskQword,17> %n:bv64 {
+    @req ule %n 16
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %c:bv64
+        @inv ule %i %n
+        @dec sub %n %i
+        %more = cmp ult %i %n
+        br %more @add @done
+    @add
+        %x = call bn_limb %a %i
+        %y = call bn_limb %b %i
+        %s = add_wrap %x %y
+        %c1 = cmp ult %s %x
+        %s2 = add_wrap %s %c
+        %c2 = cmp ult %s2 %s
+        call bn_set_limb %d %i %s2
+        %cc = or %c1 %c2
+        %cn = add_wrap %cc 0
+        %i1 = add %i 1
+        jmp @l %i1 %cn
+    @done
+        ret
+}
+
+# |d| = |a| - |b| (người gọi bảo đảm |a| >= |b|); không đụng dấu
+func bn_sub_mag void %d:ptr<DiskQword,17> %a:ptr<DiskQword,17> %b:ptr<DiskQword,17> %n:bv64 {
+    @req ule %n 16
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %c:bv64
+        @inv ule %i %n
+        @dec sub %n %i
+        %more = cmp ult %i %n
+        br %more @sub @done
+    @sub
+        %x = call bn_limb %a %i
+        %y = call bn_limb %b %i
+        %s = sub_wrap %x %y
+        %c1 = cmp ult %x %y
+        %s2 = sub_wrap %s %c
+        %c2 = cmp ult %s %c
+        call bn_set_limb %d %i %s2
+        %cc = or %c1 %c2
+        %cn = add_wrap %cc 0
+        %i1 = add %i 1
+        jmp @l %i1 %cn
+    @done
+        ret
+}
+
+# d = a + (-1)^neg_b * b (neg_b = 0: cộng, 1: trừ)
+func bn_addsub void %d:ptr<DiskQword,17> %a:ptr<DiskQword,17> %b:ptr<DiskQword,17> %n:bv64 %neg_b:bv64 {
+    @req ule %n 16
+    @b0
+        %sa0 = call mem_get_q BN_SLOT %a 0
+        %sb0 = call mem_get_q BN_SLOT %b 0
+        %sa = and %sa0 1
+        %sbx = xor %sb0 %neg_b
+        %sb = and %sbx 1
+        %same = cmp eq %sa %sb
+        br %same @add @diff
+    @add
+        call bn_add_mag %d %a %b %n
+        call mem_set_q BN_SLOT %d 0 %sa
+        call bn_norm %d %n
+        ret
+    @diff
+        %c = call bn_cmp_mag %a %b %n
+        %ageb = cmp ne %c 0
+        br %ageb @amb @bma
+    @amb
+        call bn_sub_mag %d %a %b %n
+        call mem_set_q BN_SLOT %d 0 %sa
+        call bn_norm %d %n
+        ret
+    @bma
+        call bn_sub_mag %d %b %a %n
+        call mem_set_q BN_SLOT %d 0 %sb
+        call bn_norm %d %n
+        ret
+}
+
+# d = a * b, cắt về F bit lẻ. t: bộ đệm 32 Qword cho tích đủ 2n limb.
+func bn_mul void %d:ptr<DiskQword,17> %a:ptr<DiskQword,17> %b:ptr<DiskQword,17> %n:bv64 %t:ptr<DiskQword,32> {
+    @req uge %n 1
+    @req ule %n 16
+    @b0
+        %sa = call mem_get_q BN_SLOT %a 0
+        %sb = call mem_get_q BN_SLOT %b 0
+        %sx = xor %sa %sb
+        %sgn = and %sx 1
+        %n2 = shl %n 1
+        jmp @z 0
+    @z %k:bv64
+        @inv ule %k %n2
+        @dec sub %n2 %k
+        %zm = cmp ult %k %n2
+        br %zm @zero @outer0
+    @zero
+        call mem_set_q BN_TMP %t %k 0
+        %k1 = add %k 1
+        jmp @z %k1
+    @outer0
+        jmp @o 0
+    @o %i:bv64
+        @inv ule %i %n
+        @dec sub %n %i
+        %om = cmp ult %i %n
+        br %om @row @shift0
+    @row
+        %ai = call bn_limb %a %i
+        jmp @in 0 0
+    @in %j:bv64 %c:bv64
+        @inv ule %j %n
+        @dec sub %n %j
+        %im = cmp ult %j %n
+        br %im @mac @rowend
+    @mac
+        %bj = call bn_limb %b %j
+        %lo = mul_wrap %ai %bj
+        %hi = mulhi %ai %bj
+        %p = add %i %j
+        %tv = call mem_get_q BN_TMP %t %p
+        %s = add_wrap %tv %lo
+        %c1 = cmp ult %s %lo
+        %s2 = add_wrap %s %c
+        %c2 = cmp ult %s2 %c
+        call mem_set_q BN_TMP %t %p %s2
+        %h1 = add_wrap %hi %c1
+        %h2 = add_wrap %h1 %c2
+        %j1 = add %j 1
+        jmp @in %j1 %h2
+    @rowend
+        %pn = add %i %n
+        call mem_set_q BN_TMP %t %pn %c
+        %i1 = add %i 1
+        jmp @o %i1
+    @shift0
+        # d_k = (t[k + n - 1] >> 60) | (t[k + n] << 4)
+        %nm1 = sub %n 1
+        jmp @sh 0
+    @sh %k2:bv64
+        @inv ule %k2 %n
+        @dec sub %n %k2
+        %sm = cmp ult %k2 %n
+        br %sm @limb @fin
+    @limb
+        %lo_i = add %k2 %nm1
+        %hi_i = add %k2 %n
+        %tl = call mem_get_q BN_TMP %t %lo_i
+        %th = call mem_get_q BN_TMP %t %hi_i
+        %a1 = lshr %tl 60
+        %a2 = shl %th 4
+        %v = or %a1 %a2
+        call bn_set_limb %d %k2 %v
+        %k3 = add %k2 1
+        jmp @sh %k3
+    @fin
+        call mem_set_q BN_SLOT %d 0 %sgn
+        call bn_norm %d %n
+        ret
+}
+
+# d = v (Q4.60 có dấu, bù hai) mở rộng ra n limb
+func bn_from_q void %d:ptr<DiskQword,17> %v:bv64 %n:bv64 {
+    @req uge %n 1
+    @req ule %n 16
+    @b0
+        %s = lshr %v 63
+        %m = sub_wrap 0 %s
+        %x = xor %v %m
+        %mag = sub_wrap %x %m
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        @dec sub %n %i
+        %more = cmp ult %i %n
+        br %more @z @top
+    @z
+        call bn_set_limb %d %i 0
+        %i1 = add %i 1
+        jmp @l %i1
+    @top
+        %t = sub %n 1
+        call bn_set_limb %d %t %mag
+        call mem_set_q BN_SLOT %d 0 %s
+        call bn_norm %d %n
+        ret
+}
+
+# Limb cao nhất kèm dấu -> Q4.60 bù hai (cắt về 0 trên độ lớn)
+func bn_to_q bv64 %a:ptr<DiskQword,17> %n:bv64 {
+    @req uge %n 1
+    @req ule %n 16
+    @b0
+        %t = sub %n 1
+        %mag = call bn_limb %a %t
+        %s0 = call mem_get_q BN_SLOT %a 0
+        %s = and %s0 1
+        %m = sub_wrap 0 %s
+        %x = xor %mag %m
+        %r = sub_wrap %x %m
+        ret %r
+}

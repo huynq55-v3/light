@@ -83,6 +83,196 @@ def cg_call(func, rows):
     return [int(x, 16) for x in out.split()]
 
 
+# ---- std/bignum.lit: số dấu-độ lớn n limb, F = 60 + 64 (n - 1) bit lẻ ----
+BN_LIB = os.path.join(REPO, "lit_program", "std", "bignum.lit")
+
+
+def bn_pack(sign, mag, n):
+    """-> 17 Qword như trong bộ nhớ (dấu, limb thấp trước)"""
+    return [sign] + [(mag >> (64 * i)) & M64 for i in range(n)] + [0] * (16 - n)
+
+
+def bn_unpack(q, n):
+    return q[0], sum(q[1 + i] << (64 * i) for i in range(n))
+
+
+def bn_norm(s, a):
+    return (0 if a == 0 else s), a
+
+
+def bn_addsub(a, b, n, neg_b):
+    (sa, ma), (sb, mb) = a, b
+    sb = (sb ^ neg_b) & 1
+    mod = 1 << (64 * n)
+    if sa == sb:
+        return bn_norm(sa, (ma + mb) % mod)
+    if ma >= mb:
+        return bn_norm(sa, ma - mb)
+    return bn_norm(sb, mb - ma)
+
+
+def bn_mul(a, b, n):
+    (sa, ma), (sb, mb) = a, b
+    return bn_norm((sa ^ sb) & 1, ((ma * mb) >> (60 + 64 * (n - 1))) % (1 << (64 * n)))
+
+
+def bn_from_q(v, n):
+    m = mask(v)
+    return bn_norm(v >> 63, ((v ^ m) - m) & M64) if False else bn_norm(v >> 63, (((v ^ m) - m) & M64) << (64 * (n - 1)))
+
+
+def bn_to_q(a, n):
+    s, mag = a
+    top = (mag >> (64 * (n - 1))) & M64
+    m = (0 - (s & 1)) & M64
+    return ((top ^ m) - m) & M64
+
+
+def bn_call(func, rows, lib=BN_LIB):
+    """rows: list các list token (int hoặc list Qword = bộ đệm); trả (kết quả, [bộ đệm sau lời gọi])"""
+    exe = os.path.join(REPO, "target", "release", "cgtest")
+    fmt = lambda t: "[" + ",".join(hex(v) for v in t) + "]" if isinstance(t, list) else hex(t)
+    inp = "\n".join(" ".join(fmt(t) for t in r) for r in rows) + "\n"
+    out = subprocess.run([exe, "--call", lib, func], input=inp, capture_output=True, text=True, check=True).stdout
+    res = []
+    for line in out.splitlines():
+        parts = line.split(" ")
+        res.append((int(parts[0], 16), [[int(x, 16) for x in b[1:-1].split(",")] for b in parts[1:]]))
+    return res
+
+
+def bn_from_mp(x, n):
+    """số mpmath -> (dấu, độ lớn) cắt về F bit lẻ"""
+    from mpmath import mpf, floor
+    F = 60 + 64 * (n - 1)
+    return bn_norm(1 if x < 0 else 0, int(floor(abs(x) * mpf(2) ** F)))
+
+
+def mb_ref_run(cr, ci, zr, zi, n, count):
+    """Như mb_ref_run trong std/mbref.lit: trả (danh sách (qr, qi) đã ghi, zr, zi)"""
+    out = []
+    lim = 1 << 61
+    for k in range(count):
+        out.append((bn_to_q(zr, n), bn_to_q(zi, n)))
+        top = lambda a: (a[1] >> (64 * (n - 1))) & M64
+        if top(zr) > lim or top(zi) > lim:
+            return out, zr, zi
+        x2, y2, xy = bn_mul(zr, zr, n), bn_mul(zi, zi, n), bn_mul(zr, zi, n)
+        zr = bn_addsub(bn_addsub(x2, y2, n, 1), cr, n, 0)
+        zi = bn_addsub(bn_addsub(xy, xy, n, 0), ci, n, 0)
+    return out, zr, zi
+
+
+# Điểm đích phóng sâu: tâm Mandelbrot con chu kỳ 1530 (cỡ ~1e-26) gần điểm bám biên cũ, tìm bằng chu kỳ quả cầu + Newton
+NUC_PERIOD = 1530
+
+
+def nucleus(prec=800):
+    from mpmath import mp, mpf, mpc
+    mp.prec = prec
+    c0 = mpc(mpf(-0.7383804474313052), mpf(0.14518910758297718))
+    z = dz = mpc(0)
+    p = None
+    for k in range(1, 100000):
+        dz = 2 * z * dz + 1
+        z = z * z + c0
+        if abs(z) < mpf(10) ** -14 * abs(dz):
+            p = k
+            break
+    c = c0
+    for _ in range(200):
+        z = dz = mpc(0)
+        for _ in range(p):
+            dz = 2 * z * dz + 1
+            z = z * z + c
+        d = z / dz
+        c -= d
+        if abs(d) < mpf(2) ** (-prec + 16):
+            break
+    return c, p
+
+
+def test_ref(n=4, count=2 * NUC_PERIOD + 7):
+    """Quỹ đạo tham chiếu tại tâm chu kỳ 1530: mã máy == mô hình (từng bit, 2 lô liên tiếp), tuần hoàn, không thoát,
+    và gần quỹ đạo mpmath"""
+    from mpmath import mpc
+    c, p = nucleus()
+    cr, ci = bn_from_mp(c.real, n), bn_from_mp(c.imag, n)
+    z0 = (0, 0)
+    lib = os.path.join(REPO, "lit_program", "std", "mbref.lit")
+    s = bn_pack(*cr, n) + bn_pack(*ci, n) + bn_pack(*z0, n) + bn_pack(*z0, n) + [0] * 51
+    half = count // 2
+    (r1, b1), = bn_call("mb_ref_run", [[s, [0] * 32, n, [0] * 4096, half]], lib)
+    (r2, b2), = bn_call("mb_ref_run", [[b1[0], [0] * 32, n, [0] * 4096, count - half]], lib)
+    got = [(b1[2][2 * k], b1[2][2 * k + 1]) for k in range(r1)] + [(b2[2][2 * k], b2[2][2 * k + 1]) for k in range(r2)]
+    want, _, _ = mb_ref_run(cr, ci, z0, z0, n, count)
+    ok = got == want and len(got) == count
+    zp = max(abs(signed(want[p][0])), abs(signed(want[p][1]))) / ONE
+    z = mpc(0); err = 0.0
+    for k in range(count):
+        e = max(abs(float(z.real) - signed(want[k][0]) / ONE), abs(float(z.imag) - signed(want[k][1]) / ONE))
+        err = max(err, e)
+        z = z * z + c
+    print(f"mb_ref_run: chu kỳ {p}, n = {n} limb, {count} vòng (2 lô): {'khớp' if got == want else 'LỆCH'} mô hình, "
+          f"{len(got)} Z đã ghi, |Z_p| = {zp:.1e}, lệch mpmath tối đa {err:.1e}")
+    return ok and p == NUC_PERIOD
+
+
+def test_bn(rnd):
+    def rbn(n):
+        r = rnd.random()
+        bits = 64 * n
+        if r < 0.1:
+            mag = 0
+        elif r < 0.2:
+            mag = (1 << bits) - 1 >> rnd.choice([0, 4, 60])
+        elif r < 0.3:
+            mag = rnd.getrandbits(rnd.randrange(1, min(70, bits + 1)))
+        else:
+            mag = rnd.getrandbits(bits - rnd.choice([0, 1, 3, 4, 8]))
+        return bn_norm(rnd.randrange(2), mag)
+    bad = tot = 0
+    # cộng / trừ, có đích trùng nguồn (gọi với cùng bộ đệm không được qua cgtest: thử riêng bằng hàm Light bọc ở dưới)
+    rows, want = [], []
+    for _ in range(3000):
+        n = rnd.choice([1, 2, 3, 4, 5, 8, 16])
+        a, b, neg = rbn(n), rbn(n), rnd.randrange(2)
+        rows.append([[0] * 17, bn_pack(*a, n), bn_pack(*b, n), n, neg])
+        want.append(bn_pack(*bn_addsub(a, b, n, neg), n))
+    for (r, bufs), w in zip(bn_call("bn_addsub", rows), want):
+        tot += 1; bad += bufs[0] != w
+    print(f"bn_addsub: {tot} ca, lệch {bad}")
+    b1 = bad
+    rows, want = [], []
+    for _ in range(3000):
+        n = rnd.choice([1, 2, 3, 4, 5, 8, 16])
+        a, b = rbn(n), rbn(n)
+        rows.append([[0] * 17, bn_pack(*a, n), bn_pack(*b, n), n, [0] * 32])
+        want.append(bn_pack(*bn_mul(a, b, n), n))
+    bad = 0
+    for row, (r, bufs), w in zip(rows, bn_call("bn_mul", rows), want):
+        if bufs[0] != w and bad < 2:
+            n = row[3]
+            print("  lệch n", n, "a", row[1][:n + 1], "b", row[2][:n + 1], "\n   được", bufs[0][:n + 1], "\n   muốn", w[:n + 1])
+        bad += bufs[0] != w
+    print(f"bn_mul: {len(rows)} ca, lệch {bad}")
+    b2 = bad
+    rows, want = [], []
+    for _ in range(1000):
+        n = rnd.choice([1, 2, 4, 16])
+        v = rnd.getrandbits(64)
+        rows.append([[0] * 17, v, n])
+        want.append(bn_pack(*bn_from_q(v, n), n))
+    bad = sum(bufs[0] != w for (r, bufs), w in zip(bn_call("bn_from_q", rows), want))
+    rows2 = []
+    for _ in range(1000):
+        n = rnd.choice([1, 2, 4, 16]); a = rbn(n)
+        rows2.append(([bn_pack(*a, n), n], bn_to_q(a, n)))
+    bad += sum(r != w for (r, _), (_, w) in zip(bn_call("bn_to_q", [x for x, _ in rows2]), rows2))
+    print(f"bn_from_q / bn_to_q: 2000 ca, lệch {bad}")
+    return b1 == 0 and b2 == 0 and bad == 0
+
+
 def test():
     rnd = random.Random(1)
 
@@ -119,7 +309,8 @@ def test():
     got = cg_call("mb_color", rows)
     bad3 = [r for r, g in zip(rows, got) if (g & 0xffffffff) != mb_color(*r)]
     print(f"mb_color: {len(rows)} ca, lệch {len(bad3)}")
-    ok = not bad and not bad2 and not bad3 and err <= 3
+    okb = test_bn(rnd) and test_ref()
+    ok = not bad and not bad2 and not bad3 and err <= 3 and okb
     print("OK" if ok else "SAI")
     return ok
 
