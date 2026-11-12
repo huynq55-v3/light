@@ -83,6 +83,19 @@ def run_golden(cmdfile, disk, sock):
     return res
 
 
+def app_sizes_norm(r):
+    """Cỡ file App đổi mỗi khi mã App / thư viện đổi: `size: N` của lệnh nhắc /apps/X.elf phải bằng cỡ file
+    storage/apps/X.elf vừa build, rồi được thay bằng `size: <app>` trước khi so."""
+    import re
+    cmd = r.get("cmd", "")
+    m = re.search(r"/apps/([A-Za-z0-9_]+\.elf)", cmd)
+    if not m or "size: " not in r.get("stdout", ""):
+        return r
+    want = os.path.getsize(os.path.join(REPO, "storage", "apps", m.group(1)))
+    out = re.sub(r"size: (\d+)", lambda x: "size: <app>" if int(x.group(1)) == want else x.group(0), r["stdout"])
+    return {**r, "stdout": out}
+
+
 def golden():
     os.makedirs(WORK, exist_ok=True)
     ok = True
@@ -95,6 +108,7 @@ def golden():
         t = time.monotonic()
         got = run_golden(os.path.join(GOLD, name), disk, os.path.join(WORK, "a.sock"))
         want = [json.loads(l) for l in open(os.path.join(GOLD, base + ".expected.jsonl"))]
+        got = [app_sizes_norm(r) for r in got]
         bad = [k for k, (g, w) in enumerate(zip(got, want)) if g != w]
         same = len(got) == len(want) and not bad
         print(f"[{'OK' if same else 'FAIL'}] golden {base} ({len(got)} lệnh, {time.monotonic() - t:.1f}s)")

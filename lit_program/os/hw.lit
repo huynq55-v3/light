@@ -53,7 +53,7 @@ func hw_get bv64 %0:io<0,0xffff> %1:bv64 {
 
     @b0
         %2 = const 0x96000 ptr<DiskQword,512>
-        %3 = call q512 %2 %1
+        %3 = call mem_get_q 512 %2 %1
         ret %3
 }
 
@@ -62,7 +62,7 @@ func hw_set void %0:io<0,0xffff> %1:bv64 %2:bv64 {
 
     @b0
         %3 = const 0x96000 ptr<DiskQword,512>
-        call q512_set %3 %1 %2
+        call mem_set_q 512 %3 %1 %2
         ret
 }
 
@@ -89,11 +89,11 @@ func mmio_map_init void %0:io<0,0xffff> {
         %6 = const 1 bv64
         %7 = const 0x97003 bv64
         %8 = const 0x99003 bv64
-        call q512_set %3 %5 %7
-        call q512_set %3 %6 %8
+        call mem_set_q 512 %3 %5 %7
+        call mem_set_q 512 %3 %6 %8
         %9 = const 0x10000 ptr<DiskQword,512>
         %10 = const 0x98003 bv64
-        call q512_set %9 %6 %10
+        call mem_set_q 512 %9 %6 %10
         call mmu_flush %0
         ret
 }
@@ -108,7 +108,7 @@ func mmio_map_2m void %0:io<0,0xffff> %1:bv64 %2:bv64 {
         %5 = const 0x9b bv64
         %6 = or %4 %5
         %7 = const 0x99000 ptr<DiskQword,512>
-        call q512_set %7 %1 %6
+        call mem_set_q 512 %7 %1 %6
         ret
 }
 
@@ -118,7 +118,7 @@ func fb_init void %0:io<0,0xffff> {
     @b0
         %1 = const 0x7d000 ptr<DiskQword,512>
         %2 = const 0 bv64
-        %3 = call q512 %1 %2
+        %3 = call mem_get_q 512 %1 %2
         %4 = const 0x1000 bv64
         %5 = and %3 %4
         %6 = cmp ne %5 %2
@@ -126,11 +126,11 @@ func fb_init void %0:io<0,0xffff> {
 
     @b1
         %7 = const 11 bv64
-        %8 = call q512 %1 %7                # framebuffer_addr (offset 88)
+        %8 = call mem_get_q 512 %1 %7                # framebuffer_addr (offset 88)
         %9 = const 12 bv64
-        %10 = call q512 %1 %9               # pitch | width << 32
+        %10 = call mem_get_q 512 %1 %9               # pitch | width << 32
         %11 = const 13 bv64
-        %12 = call q512 %1 %11              # height | bpp << 32 | type << 40
+        %12 = call mem_get_q 512 %1 %11              # height | bpp << 32 | type << 40
         %13 = const 0xffffffff bv64
         %14 = and %10 %13
         %15 = const 32 bv64
@@ -233,7 +233,7 @@ func fb_init void %0:io<0,0xffff> {
         %90 = add %64 %89
         %91 = const 0x8b bv64               # P|RW|PWT|PS -> PAT1 = WC
         %92 = or %90 %91
-        call q512_set %85 %87 %92
+        call mem_set_q 512 %85 %87 %92
         %93 = add %87 %78
         jmp @b6 %93
 
@@ -276,7 +276,7 @@ func fb_present_rect void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:bv64 %3:bv6
     @b0
         %6 = const 0x96000 ptr<DiskQword,512>
         %7 = const 0 bv64
-        %8 = call q512 %6 %7
+        %8 = call mem_get_q 512 %6 %7
         %9 = cmp ne %8 %7
         br %9 @b1 @b9
 
@@ -286,11 +286,11 @@ func fb_present_rect void %0:io<0,0xffff> %1:ptr<VgaCell,2073600> %2:bv64 %3:bv6
         %12 = const 5 bv64
         %13 = const 6 bv64
         %14 = const 7 bv64
-        %15 = call q512 %6 %10
-        %16 = call q512 %6 %11
-        %17 = call q512 %6 %12
-        %18 = call q512 %6 %13
-        %19 = call q512 %6 %14
+        %15 = call mem_get_q 512 %6 %10
+        %16 = call mem_get_q 512 %6 %11
+        %17 = call mem_get_q 512 %6 %12
+        %18 = call mem_get_q 512 %6 %13
+        %19 = call mem_get_q 512 %6 %14
         %20 = const 16384 bv64
         %21 = const 0x1000000 bv64
         %22 = const 25165824 bv64

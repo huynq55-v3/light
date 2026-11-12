@@ -105,13 +105,13 @@ func lfs_read_commit void %0:io<0,0xffff> %1:bv64 {
         %6 = const 7 bv64
         %7 = const LFS_FNV bv64
         %8 = call lfs_cks %6 %5 %7
-        %9 = call cap_state_get %5 %4
-        %10 = call cap_state_get %5 %2
+        %9 = call mem_get_q 64 %5 %4
+        %10 = call mem_get_q 64 %5 %2
         %11 = const 2 bv64
-        %12 = call cap_state_get %5 %11
+        %12 = call mem_get_q 64 %5 %11
         %13 = const 3 bv64
-        %14 = call cap_state_get %5 %13
-        %15 = call cap_state_get %5 %6
+        %14 = call mem_get_q 64 %5 %13
+        %15 = call mem_get_q 64 %5 %6
         %16 = const 0x54494d4f4353464c bv64 # "LFSCOMIT"
         %17 = cmp eq %9 %16
         %18 = cmp eq %15 %8
@@ -213,7 +213,7 @@ func lfs_mount bv64 %0:io<0,0xffff> {
     @b1
         call lfs_sec_rw %0 %1 %1
         %6 = call lfs_sec %0
-        %7 = call cap_state_get %6 %1
+        %7 = call mem_get_q 64 %6 %1
         %8 = const 0x315346544847494c bv64 # "LIGHTFS1"
         %9 = cmp eq %7 %8
         br %9 @b2 @b90
@@ -222,17 +222,17 @@ func lfs_mount bv64 %0:io<0,0xffff> {
         %10 = const 7 bv64
         %11 = const LFS_FNV bv64
         %12 = call lfs_cks %10 %6 %11
-        %13 = call cap_state_get %6 %10
-        %14 = call cap_state_get %6 %2            # phiên bản
+        %13 = call mem_get_q 64 %6 %10
+        %14 = call mem_get_q 64 %6 %2            # phiên bản
         %15 = const 2 bv64
-        %16 = call cap_state_get %6 %15           # tổng sector
+        %16 = call mem_get_q 64 %6 %15           # tổng sector
         %17 = const 3 bv64
-        %18 = call cap_state_get %6 %17
+        %18 = call mem_get_q 64 %6 %17
         %19 = const 4 bv64
-        %20 = call cap_state_get %6 %19
-        %21 = call cap_state_get %6 %3
+        %20 = call mem_get_q 64 %6 %19
+        %21 = call mem_get_q 64 %6 %3
         %22 = const 6 bv64
-        %23 = call cap_state_get %6 %22
+        %23 = call mem_get_q 64 %6 %22
         %24 = cmp eq %12 %13
         %25 = cmp eq %14 %2
         %26 = const 64 bv64
@@ -363,14 +363,14 @@ func lfs_commit void %0:io<0,0xffff> {
         %19 = call lfs_sec %0
         call std_mem_zero %19
         %20 = const 0x54494d4f4353464c bv64
-        call cap_state_set %19 %1 %20
-        call cap_state_set %19 %2 %18
-        call cap_state_set %19 %3 %6
+        call mem_set_q 64 %19 %1 %20
+        call mem_set_q 64 %19 %2 %18
+        call mem_set_q 64 %19 %3 %6
         %21 = const 3 bv64
-        call cap_state_set %19 %21 %14
+        call mem_set_q 64 %19 %21 %14
         %22 = const 7 bv64
         %23 = call lfs_cks %22 %19 %13
-        call cap_state_set %19 %22 %23
+        call mem_set_q 64 %19 %22 %23
         %24 = and %18 %2
         %25 = add %24 %2                    # slot = 1 + thế hệ % 2
         call lfs_sec_rw %0 %25 %2

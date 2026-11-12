@@ -2,6 +2,7 @@
 # LIGHT STANDARD LIBRARY: Toán học (Math), Bộ nhớ Byte (Memory), và Chuỗi (String/Format)
 
 include os_layout.lit
+include ../std/mem.lit
 
 # =============================================================================
 # PHẦN 1: TOÁN HỌC AN TOÀN VỚI HỢP ĐỒNG HẬU ĐIỀU KIỆN (@ens) CHO Z3
@@ -55,24 +56,7 @@ func std_max bv64 %0:bv64 %1:bv64 {
 # PHẦN 2: TRUY CẬP MẢNG BYTE TRÊN BỘ ĐỆM 64-BIT (BYTE-ADDRESSABLE MEMORY API)
 # =============================================================================
 
-# Đọc/ghi qword %1 của bảng 512 qword (dùng chung cho bảng HW, bảng VMM, thông tin bộ nhớ)
-func q512 bv64 %0:ptr<DiskQword,512> %1:bv64 {
-    @req ult %1 512
-
-    @b0
-        %2 = slice %0 %1 ptr<DiskQword,1>
-        %3 = load %2 0 bv64
-        ret %3
-}
-
-func q512_set void %0:ptr<DiskQword,512> %1:bv64 %2:bv64 {
-    @req ult %1 512
-
-    @b0
-        %3 = slice %0 %1 ptr<DiskQword,1>
-        store %3 0 %2
-        ret
-}
+# (đọc / ghi qword theo chỉ số: mem_get_q / mem_set_q trong std/mem.lit)
 
 # 1. Đọc 1 byte (0..255) tại vị trí byte_idx (%1 = 0..511) từ bộ đệm 512-byte (%0)
 func std_mem_get_byte bv64 %0:ptr<DiskQword,64> %1:bv64 {

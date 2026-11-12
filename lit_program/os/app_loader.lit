@@ -89,10 +89,10 @@ func vmm_alloc_app_arena void %0:io<0,0xffff> %1:ptr<DiskQword,512> %2:ptr<DiskQ
         %27 = const 0x7f000 ptr<DiskQword,512>
         %28 = const 8 bv64
         %29 = add %28 %3
-        %30 = call q512 %27 %29
+        %30 = call mem_get_q 512 %27 %29
         %31 = const 15 bv64
         %32 = call std_max %30 %31
-        call q512_set %27 %29 %32
+        call mem_set_q 512 %27 %29 %32
 
         %26 = const 0x10000 bv64
         hwio_w %0 3 %26
@@ -103,280 +103,101 @@ func vmm_alloc_app_arena void %0:io<0,0xffff> %1:ptr<DiskQword,512> %2:ptr<DiskQ
 # 3. CÁC HÀM HELPER LẤY CON TRỎ TỚI LÔ 64GB CỦA APP (CỬA SỔ ARENA 16GB)
 # =============================================================================
 
+# Gốc Lô ảo của slot %slot: 0x1000000000 * (slot + 1). Mã App ở +0 (bộ đệm 1MB), icon ở +8 byte, State ở +2MB.
+# Light không đổi số thành con trỏ được nên vẫn là chuỗi so sánh, nhưng chỉ MỘT chuỗi; 4 hàm dưới cắt từ gốc này.
+func sys_app_vbase ptr<DiskQword,4294967296> %io:io<0,0xffff> %slot:bv64 {
+    @req ult %slot 7
+    @ens uge %r 0x1000000000
+    @ens ule %r 0x7000000000
+    @b0
+        jmp @t0
+    @t0
+        %e0 = cmp eq %slot 0
+        br %e0 @s0 @t1
+    @s0
+        %p0 = const 0x1000000000 ptr<DiskQword,4294967296>
+        jmp @done %p0
+    @t1
+        %e1 = cmp eq %slot 1
+        br %e1 @s1 @t2
+    @s1
+        %p1 = const 0x2000000000 ptr<DiskQword,4294967296>
+        jmp @done %p1
+    @t2
+        %e2 = cmp eq %slot 2
+        br %e2 @s2 @t3
+    @s2
+        %p2 = const 0x3000000000 ptr<DiskQword,4294967296>
+        jmp @done %p2
+    @t3
+        %e3 = cmp eq %slot 3
+        br %e3 @s3 @t4
+    @s3
+        %p3 = const 0x4000000000 ptr<DiskQword,4294967296>
+        jmp @done %p3
+    @t4
+        %e4 = cmp eq %slot 4
+        br %e4 @s4 @t5
+    @s4
+        %p4 = const 0x5000000000 ptr<DiskQword,4294967296>
+        jmp @done %p4
+    @t5
+        %e5 = cmp eq %slot 5
+        br %e5 @s5 @t6
+    @s5
+        %p5 = const 0x6000000000 ptr<DiskQword,4294967296>
+        jmp @done %p5
+    @t6
+        %p6 = const 0x7000000000 ptr<DiskQword,4294967296>
+        jmp @done %p6
+    @done %p:ptr<DiskQword,4294967296>
+        @inv uge %p 0x1000000000
+        @inv ule %p 0x7000000000
+        ret %p
+}
+
+# State của App: gốc + 2MB (0x40000 qword)
 func sys_get_app_state_ptr ptr<DiskQword,4294705152> %0:io<0,0xffff> %1:bv64 {
     @req ult %1 7
-    @ens uge %30 0x10000
-    @ens ult %30 0x10000000000
-
+    @ens uge %r 0x10000
+    @ens ult %r 0x10000000000
     @b0
-        %2 = const 0 bv64
-        %3 = cmp eq %1 %2
-        br %3 @b1 @b2
-
-    @b1
-        %20 = const 0x1000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %20
-
-    @b2
-        %4 = const 1 bv64
-        %5 = cmp eq %1 %4
-        br %5 @b3 @b4
-
-    @b3
-        %21 = const 0x2000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %21
-
-    @b4
-        %6 = const 2 bv64
-        %7 = cmp eq %1 %6
-        br %7 @b5 @b6
-
-    @b5
-        %22 = const 0x3000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %22
-
-    @b6
-        %8 = const 3 bv64
-        %9 = cmp eq %1 %8
-        br %9 @b7 @b8
-
-    @b7
-        %23 = const 0x4000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %23
-
-    @b8
-        %10 = const 4 bv64
-        %11 = cmp eq %1 %10
-        br %11 @b9 @b10
-
-    @b9
-        %24 = const 0x5000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %24
-
-    @b10
-        %12 = const 5 bv64
-        %13 = cmp eq %1 %12
-        br %13 @b11 @b12
-
-    @b11
-        %25 = const 0x6000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %25
-
-    @b12
-        %26 = const 0x7000200000 ptr<DiskQword,4294705152>
-        jmp @b99 %26
-
-    @b99 %30:ptr<DiskQword,4294705152>
-        @inv uge %30 0x10000
-        @inv ult %30 0x10000000000
-        ret %30
+        %b = call sys_app_vbase %0 %1
+        %p = slice %b 0x40000 ptr<DiskQword,4294705152>
+        ret %p
 }
 
+# điểm vào App (lệnh nhảy đầu tiên của tệp App)
 func sys_get_app_code_ptr ptr<DiskQword,1> %0:io<0,0xffff> %1:bv64 {
     @req ult %1 7
-    @ens uge %30 0x10000
-    @ens ult %30 0x10000000000
-
+    @ens uge %r 0x10000
+    @ens ult %r 0x10000000000
     @b0
-        %2 = const 0 bv64
-        %3 = cmp eq %1 %2
-        br %3 @b1 @b2
-
-    @b1
-        %20 = const 0x1000000000 ptr<DiskQword,1>
-        jmp @b99 %20
-
-    @b2
-        %4 = const 1 bv64
-        %5 = cmp eq %1 %4
-        br %5 @b3 @b4
-
-    @b3
-        %21 = const 0x2000000000 ptr<DiskQword,1>
-        jmp @b99 %21
-
-    @b4
-        %6 = const 2 bv64
-        %7 = cmp eq %1 %6
-        br %7 @b5 @b6
-
-    @b5
-        %22 = const 0x3000000000 ptr<DiskQword,1>
-        jmp @b99 %22
-
-    @b6
-        %8 = const 3 bv64
-        %9 = cmp eq %1 %8
-        br %9 @b7 @b8
-
-    @b7
-        %23 = const 0x4000000000 ptr<DiskQword,1>
-        jmp @b99 %23
-
-    @b8
-        %10 = const 4 bv64
-        %11 = cmp eq %1 %10
-        br %11 @b9 @b10
-
-    @b9
-        %24 = const 0x5000000000 ptr<DiskQword,1>
-        jmp @b99 %24
-
-    @b10
-        %12 = const 5 bv64
-        %13 = cmp eq %1 %12
-        br %13 @b11 @b12
-
-    @b11
-        %25 = const 0x6000000000 ptr<DiskQword,1>
-        jmp @b99 %25
-
-    @b12
-        %26 = const 0x7000000000 ptr<DiskQword,1>
-        jmp @b99 %26
-
-    @b99 %30:ptr<DiskQword,1>
-        @inv uge %30 0x10000
-        @inv ult %30 0x10000000000
-        ret %30
+        %b = call sys_app_vbase %0 %1
+        %p = slice %b 0 ptr<DiskQword,1>
+        ret %p
 }
 
+# điểm vẽ icon (lệnh nhảy thứ hai, +8 byte)
 func sys_get_app_icon_ptr ptr<DiskQword,1> %0:io<0,0xffff> %1:bv64 {
     @req ult %1 7
-    @ens uge %30 0x10000
-    @ens ult %30 0x10000000000
-
+    @ens uge %r 0x10000
+    @ens ult %r 0x10000000000
     @b0
-        %2 = const 0 bv64
-        %3 = cmp eq %1 %2
-        br %3 @b1 @b2
-
-    @b1
-        %20 = const 0x1000000008 ptr<DiskQword,1>
-        jmp @b99 %20
-
-    @b2
-        %4 = const 1 bv64
-        %5 = cmp eq %1 %4
-        br %5 @b3 @b4
-
-    @b3
-        %21 = const 0x2000000008 ptr<DiskQword,1>
-        jmp @b99 %21
-
-    @b4
-        %6 = const 2 bv64
-        %7 = cmp eq %1 %6
-        br %7 @b5 @b6
-
-    @b5
-        %22 = const 0x3000000008 ptr<DiskQword,1>
-        jmp @b99 %22
-
-    @b6
-        %8 = const 3 bv64
-        %9 = cmp eq %1 %8
-        br %9 @b7 @b8
-
-    @b7
-        %23 = const 0x4000000008 ptr<DiskQword,1>
-        jmp @b99 %23
-
-    @b8
-        %10 = const 4 bv64
-        %11 = cmp eq %1 %10
-        br %11 @b9 @b10
-
-    @b9
-        %24 = const 0x5000000008 ptr<DiskQword,1>
-        jmp @b99 %24
-
-    @b10
-        %12 = const 5 bv64
-        %13 = cmp eq %1 %12
-        br %13 @b11 @b12
-
-    @b11
-        %25 = const 0x6000000008 ptr<DiskQword,1>
-        jmp @b99 %25
-
-    @b12
-        %26 = const 0x7000000008 ptr<DiskQword,1>
-        jmp @b99 %26
-
-    @b99 %30:ptr<DiskQword,1>
-        @inv uge %30 0x10000
-        @inv ult %30 0x10000000000
-        ret %30
+        %b = call sys_app_vbase %0 %1
+        %p = slice %b 1 ptr<DiskQword,1>
+        ret %p
 }
 
+# bộ đệm mã 1MB (lfs_load_app nạp vào đây)
 func sys_get_app_code_buf_ptr ptr<DiskQword,131072> %0:io<0,0xffff> %1:bv64 {
     @req ult %1 7
-    @ens uge %30 0x10000
-    @ens ult %30 0x10000000000
-
+    @ens uge %r 0x10000
+    @ens ult %r 0x10000000000
     @b0
-        %2 = const 0 bv64
-        %3 = cmp eq %1 %2
-        br %3 @b1 @b2
-
-    @b1
-        %20 = const 0x1000000000 ptr<DiskQword,131072>
-        jmp @b99 %20
-
-    @b2
-        %4 = const 1 bv64
-        %5 = cmp eq %1 %4
-        br %5 @b3 @b4
-
-    @b3
-        %21 = const 0x2000000000 ptr<DiskQword,131072>
-        jmp @b99 %21
-
-    @b4
-        %6 = const 2 bv64
-        %7 = cmp eq %1 %6
-        br %7 @b5 @b6
-
-    @b5
-        %22 = const 0x3000000000 ptr<DiskQword,131072>
-        jmp @b99 %22
-
-    @b6
-        %8 = const 3 bv64
-        %9 = cmp eq %1 %8
-        br %9 @b7 @b8
-
-    @b7
-        %23 = const 0x4000000000 ptr<DiskQword,131072>
-        jmp @b99 %23
-
-    @b8
-        %10 = const 4 bv64
-        %11 = cmp eq %1 %10
-        br %11 @b9 @b10
-
-    @b9
-        %24 = const 0x5000000000 ptr<DiskQword,131072>
-        jmp @b99 %24
-
-    @b10
-        %12 = const 5 bv64
-        %13 = cmp eq %1 %12
-        br %13 @b11 @b12
-
-    @b11
-        %25 = const 0x6000000000 ptr<DiskQword,131072>
-        jmp @b99 %25
-
-    @b12
-        %26 = const 0x7000000000 ptr<DiskQword,131072>
-        jmp @b99 %26
-
-    @b99 %30:ptr<DiskQword,131072>
-        @inv uge %30 0x10000
-        @inv ult %30 0x10000000000
-        ret %30
+        %b = call sys_app_vbase %0 %1
+        %p = slice %b 0 ptr<DiskQword,131072>
+        ret %p
 }
 
 # =============================================================================
@@ -406,12 +227,12 @@ func vmm_tbl_inc void %0:ptr<DiskQword,512> %1:bv64 {
     @req ult %1 512
 
     @b0
-        %2 = call q512 %0 %1
+        %2 = call mem_get_q 512 %0 %1
         %3 = const 0xffffffff bv64
         %4 = call std_min %2 %3
         %5 = const 1 bv64
         %6 = add %4 %5
-        call q512_set %0 %1 %6
+        call mem_set_q 512 %0 %1 %6
         ret
 }
 
@@ -421,10 +242,10 @@ func vmm_tbl_dec void %0:ptr<DiskQword,512> %1:bv64 {
     @req ult %1 512
 
     @b0
-        %2 = call q512 %0 %1
+        %2 = call mem_get_q 512 %0 %1
         %3 = const 1 bv64
         %4 = call std_sat_sub %2 %3
-        call q512_set %0 %1 %4
+        call mem_set_q 512 %0 %1 %4
         ret
 }
 
@@ -439,7 +260,7 @@ func vmm_granted bv64 %0:ptr<DiskQword,512> %1:bv64 {
     @b0
         %2 = const 8 bv64
         %3 = add %2 %1
-        %4 = call q512 %0 %3
+        %4 = call mem_get_q 512 %0 %3
         %6 = const 15 bv64
         %7 = const 16383 bv64
         %5 = call std_clamp %4 %6 %7
@@ -455,7 +276,7 @@ func vmm_frame_alloc bv64 %0:ptr<DiskQword,512> {
     @b0
         %1 = const 0 bv64
         %2 = const 6 bv64
-        %3 = call q512 %0 %2
+        %3 = call mem_get_q 512 %0 %2
         %4 = const 24576 bv64
         %5 = call std_min %3 %4             # lim = số chỉ số khung của bể
         jmp @b1 %1
@@ -470,7 +291,7 @@ func vmm_frame_alloc bv64 %0:ptr<DiskQword,512> {
     @b2
         %10 = const 128 bv64
         %11 = add %6 %10
-        %12 = call q512 %0 %11
+        %12 = call mem_get_q 512 %0 %11
         %13 = const 0xffffffffffffffff bv64
         %14 = cmp ne %12 %13
         br %14 @b3 @b8
@@ -499,7 +320,7 @@ func vmm_frame_alloc bv64 %0:ptr<DiskQword,512> {
     @b61
         %24 = shl %19 %15
         %25 = or %12 %24
-        call q512_set %0 %11 %25
+        call mem_set_q 512 %0 %11 %25
         %26 = const 2 bv64
         call vmm_tbl_inc %0 %26
         %27 = const 7 bv64
@@ -531,7 +352,7 @@ func vmm_frame_free void %0:ptr<DiskQword,512> %1:bv64 {
 
     @b0
         %2 = const 6 bv64
-        %3 = call q512 %0 %2
+        %3 = call mem_get_q 512 %0 %2
         %4 = cmp ult %1 %3
         br %4 @b1 @b9
 
@@ -542,7 +363,7 @@ func vmm_frame_free void %0:ptr<DiskQword,512> %1:bv64 {
         %8 = add %6 %7                      # 128..511
         %9 = const 63 bv64
         %10 = and %1 %9
-        %11 = call q512 %0 %8
+        %11 = call mem_get_q 512 %0 %8
         %12 = lshr %11 %10
         %13 = const 1 bv64
         %14 = and %12 %13
@@ -555,7 +376,7 @@ func vmm_frame_free void %0:ptr<DiskQword,512> %1:bv64 {
         %18 = const 0xffffffffffffffff bv64
         %19 = xor %17 %18
         %20 = and %11 %19
-        call q512_set %0 %8 %20
+        call mem_set_q 512 %0 %8 %20
         %21 = const 2 bv64
         call vmm_tbl_dec %0 %21
         %22 = const 7 bv64
@@ -680,7 +501,7 @@ func vmm_commit_chunks bv64 %0:io<0,0xffff> %1:ptr<DiskQword,131072> %2:ptr<Disk
         jmp @b1 %17
 
     @b4
-        call q512_set %2 %11 %12
+        call mem_set_q 512 %2 %11 %12
         %18 = const 0x10000 bv64
         hwio_w %0 3 %18                     # nạp lại CR3 trước khi chạm vào chunk mới
         jmp @b5 %9
@@ -759,7 +580,7 @@ func vmm_release_chunks void %0:io<0,0xffff> %1:ptr<DiskQword,131072> %2:ptr<Dis
 
     @b4
         %33 = call std_min %8 %9
-        call q512_set %2 %41 %33
+        call mem_set_q 512 %2 %41 %33
         %34 = const 0x10000 bv64
         hwio_w %0 3 %34
         ret
@@ -814,7 +635,7 @@ func app_service_mem_req void %0:io<0,0xffff> %1:ptr<IpcChannel,1> %2:bv64 {
 
     @b9
         %12 = const 7 bv64
-        %13 = call q512 %4 %12
+        %13 = call mem_get_q 512 %4 %12
         %14 = const 0xffffffff bv64
         %15 = call std_min %13 %14
         store %1 176 %15
@@ -975,7 +796,7 @@ func app_dispatch_entry void %0:io<0,0xffff> %1:ptr<VgaCell,1382400> %2:ptr<IpcC
         %11 = const 18 bv64
         %12 = shl %10 %11
         %13 = const 7 bv64
-        %14 = call q512 %9 %13
+        %14 = call mem_get_q 512 %9 %13
         %15 = const 0xffffffff bv64
         %16 = call std_min %14 %15
         store %ch IpcChannel.mem_free %16
@@ -1057,17 +878,6 @@ func app_dispatch_zero_state void %0:io<0,0xffff> %1:bv64 {
 #      q[3k+0] = size | base_lo << 32      q[3k+1] = base_hi | len_lo << 32      q[3k+2] = len_hi | type << 32
 # =============================================================================
 
-func mem_mmap_q bv64 %0:ptr<DiskQword,480> %1:bv64 {
-    @req uge %0 0x10000
-    @req ult %0 0x80000000
-    @req ult %1 480
-
-    @b0
-        %2 = slice %0 %1 ptr<DiskQword,1>
-        %3 = load %2 0 bv64
-        ret %3
-}
-
 # Mở các khung của bể nằm TRỌN trong [%1, %2) (một vùng RAM type 1): khung f khi 288MB + f*2MB >= %1 và
 # 288MB + (f+1)*2MB <= %2. Khung đã mở (vùng mmap chồng nhau) không bị đếm lại.
 func vmm_pool_unlock_range void %0:ptr<DiskQword,512> %1:bv64 %2:bv64 {
@@ -1103,7 +913,7 @@ func vmm_pool_unlock_range void %0:ptr<DiskQword,512> %1:bv64 %2:bv64 {
         %20 = add %18 %19                   # 128..511
         %21 = const 63 bv64
         %22 = and %15 %21
-        %23 = call q512 %0 %20
+        %23 = call mem_get_q 512 %0 %20
         %24 = lshr %23 %22
         %25 = const 1 bv64
         %26 = and %24 %25
@@ -1116,7 +926,7 @@ func vmm_pool_unlock_range void %0:ptr<DiskQword,512> %1:bv64 %2:bv64 {
         %30 = const 0xffffffffffffffff bv64
         %31 = xor %29 %30
         %32 = and %23 %31
-        call q512_set %0 %20 %32
+        call mem_set_q 512 %0 %20 %32
         %33 = const 7 bv64
         call vmm_tbl_inc %0 %33
         jmp @b4
@@ -1152,14 +962,14 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %114 = cmp uge %110 %113
         %115 = const 0xffffffffffffffff bv64
         %116 = mul %114 %115                # 128.. -> khóa hết; 0..127 -> 0
-        call q512_set %0 %110 %116
+        call mem_set_q 512 %0 %110 %116
         %117 = const 1 bv64
         %118 = add %110 %117
         jmp @b90 %118
 
     @b92
         %1 = const 0x7d000 ptr<DiskQword,512>
-        %3 = call q512 %1 %2
+        %3 = call mem_get_q 512 %1 %2
         %4 = const 0x40 bv64
         %5 = and %3 %4
         %6 = cmp ne %5 %2
@@ -1174,12 +984,12 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
 
     @b1
         %10 = const 5 bv64
-        %11 = call q512 %1 %10
+        %11 = call mem_get_q 512 %1 %10
         %12 = const 32 bv64
         %13 = lshr %11 %12
         %14 = const 0xf00 bv64
         %15 = call std_min %13 %14
-        call q512_set %0 %10 %15
+        call mem_set_q 512 %0 %10 %15
         jmp @b2 %2
 
     @b2 %20:bv64
@@ -1193,7 +1003,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %24 = mul %20 %23
         %25 = add %24 %23
         %26 = const 5 bv64
-        %27 = call q512 %0 %26
+        %27 = call mem_get_q 512 %0 %26
         %28 = cmp ule %25 %27
         br %28 @b4 @b9
 
@@ -1201,7 +1011,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %30 = const 0x7d100 ptr<DiskQword,480>
         %31 = const 3 bv64
         %32 = mul %20 %31
-        %33 = call mem_mmap_q %30 %32
+        %33 = call mem_get_q 480 %30 %32
         %34 = const 0xffffffff bv64
         %35 = and %33 %34
         %36 = const 20 bv64
@@ -1213,7 +1023,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %41 = lshr %33 %40                  # base_lo
         %42 = const 1 bv64
         %43 = add %32 %42
-        %44 = call mem_mmap_q %30 %43       # base_hi | len_lo << 32
+        %44 = call mem_get_q 480 %30 %43       # base_hi | len_lo << 32
         %45 = const 0xffffffff bv64
         %46 = and %44 %45                   # base_hi
         %47 = shl %46 %40
@@ -1221,7 +1031,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %49 = lshr %44 %40                  # len_lo
         %50 = const 2 bv64
         %51 = add %32 %50
-        %52 = call mem_mmap_q %30 %51       # len_hi | type << 32
+        %52 = call mem_get_q 480 %30 %51       # len_hi | type << 32
         %53 = and %52 %45                   # len_hi
         %54 = shl %53 %40
         %55 = or %49 %54                    # len
@@ -1235,14 +1045,14 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %550 = call std_min %55 %59
         %60 = add %480 %550                 # end = base + len (không tràn bv64)
         %61 = const 3 bv64
-        %62 = call q512 %0 %61
+        %62 = call mem_get_q 512 %0 %61
         %63 = call std_max %62 %60
-        call q512_set %0 %61 %63
+        call mem_set_q 512 %0 %61 %63
         %64 = const 4 bv64
-        %65 = call q512 %0 %64
+        %65 = call mem_get_q 512 %0 %64
         %650 = call std_min %65 %59
         %66 = add %650 %550
-        call q512_set %0 %64 %66
+        call mem_set_q 512 %0 %64 %66
         call vmm_pool_unlock_range %0 %480 %60
         jmp @b8
 
@@ -1254,7 +1064,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
     @b9
         # Số chỉ số khung của bể = ceil((đỉnh RAM - 288MB) / 2MB), kẹp <= 24576 (khung ngoài bitmap không bao giờ cấp)
         %80 = const 3 bv64
-        %83 = call q512 %0 %80
+        %83 = call mem_get_q 512 %0 %80
         %84 = const 0x12000000 bv64
         %85 = call std_sat_sub %83 %84
         %86 = const 0xffffffffffff bv64
@@ -1266,7 +1076,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
         %92 = const 24576 bv64
         %93 = call std_min %91 %92
         %94 = const 6 bv64
-        call q512_set %0 %94 %93
+        call mem_set_q 512 %0 %94 %93
         %95 = const 0x22000000 bv64
         %96 = cmp ugt %83 %95
         br %96 @b12 @b11
@@ -1274,7 +1084,7 @@ func vmm_probe_ram void %100:io<0,0xffff> %0:ptr<DiskQword,512> {
     @b11
         # Không có mmap (đỉnh RAM chưa biết): bể 128 khung đã mở ở @b80
         %97 = const 128 bv64
-        call q512_set %0 %94 %97
+        call mem_set_q 512 %0 %94 %97
         jmp @b12
 
     @b12

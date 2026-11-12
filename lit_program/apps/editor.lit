@@ -297,12 +297,12 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
 
     @b100
         # Kernel vừa phục vụ yêu cầu: xử lý kết quả, KHÔNG xử lý lại phím/chuột của lượt này
-        %230 = call cap_state_get %211 %202
+        %230 = call mem_get_q 64 %211 %202
         %231 = cmp eq %230 %12
         br %231 @b1 @b101
 
     @b101
-        call cap_state_set %211 %202 %12
+        call mem_set_q 64 %211 %202 %12
         %232 = call lfs_result %1
         %233 = call lfs_is_err %232
         %234 = cmp ne %233 %12
@@ -327,7 +327,7 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
     @b1041
         %241 = const 57 bv64
         %242 = cmp ult %238 %241
-        %243 = call cap_state_get %237 %238
+        %243 = call mem_get_q 64 %237 %238
         %244 = slice %212 %238 ptr<DiskQword,1>
         br %242 @b1042 @b1043
 
@@ -349,7 +349,7 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
 
     @b106
         # CREATE xong: ghi văn bản vào file mới
-        call cap_state_set %211 %201 %232
+        call mem_set_q 64 %211 %201 %232
         jmp @b84
 
     @b1
@@ -385,8 +385,8 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
 
     @b6
         # Nút [BROWSE]: duyệt từ thư mục gốc, xin bảng file mới nhất
-        call cap_state_set %211 %200 %13
-        call cap_state_set %211 %202 %13
+        call mem_set_q 64 %211 %200 %13
+        call mem_set_q 64 %211 %202 %13
         call lfs_request %1 %13 %12 %12 %12
         ret
 
@@ -396,36 +396,36 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         br %34 @b8 @b10
 
     @b8
-        %35 = call cap_state_get %211 %201
+        %35 = call mem_get_q 64 %211 %201
         %38 = cmp ne %35 %12
         br %38 @b84 @b85
 
     @b84
         # [SAVE] file đang mở: WRITE toàn bộ văn bản (sector 0)
-        %39 = call cap_state_get %211 %201
+        %39 = call mem_get_q 64 %211 %201
         %40 = call std_str_len %212
-        call cap_state_set %211 %202 %218
+        call mem_set_q 64 %211 %202 %218
         call lfs_request %1 %218 %39 %12 %40
         ret
 
     @b85
         # [SAVE] chưa có file: tạo data/noteN.txt (hoặc ở gốc nếu không có data/)
         %250 = const 0x61746164 bv64        # "data"
-        call cap_state_set %211 %220 %250
+        call mem_set_q 64 %211 %220 %250
         %251 = const 17 bv64
-        call cap_state_set %211 %251 %12
+        call mem_set_q 64 %211 %251 %12
         %252 = const 18 bv64
-        call cap_state_set %211 %252 %12
+        call mem_set_q 64 %211 %252 %12
         %253 = const 19 bv64
-        call cap_state_set %211 %253 %12
+        call mem_set_q 64 %211 %253 %12
         %254 = const 20 bv64
-        call cap_state_set %211 %254 %12
+        call mem_set_q 64 %211 %254 %12
         %255 = const 21 bv64
-        call cap_state_set %211 %255 %12
+        call mem_set_q 64 %211 %255 %12
         %256 = const 22 bv64
-        call cap_state_set %211 %256 %12
+        call mem_set_q 64 %211 %256 %12
         %257 = const 23 bv64
-        call cap_state_set %211 %257 %12
+        call mem_set_q 64 %211 %257 %12
         %258 = slice %211 %220 ptr<DiskQword,8>
         %259 = call lfs_find_child %214 %12 %258
         %260 = call lfs_is_dir %214 %259
@@ -445,12 +445,12 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         br %264 @b89 @b99
 
     @b89
-        call cap_state_set %211 %202 %219
+        call mem_set_q 64 %211 %202 %219
         call lfs_request %1 %219 %262 %217 %12
         ret
 
     @b10
-        %41 = call cap_state_get %211 %200
+        %41 = call mem_get_q 64 %211 %200
         %42 = cmp ugt %41 %12
         br %42 @b11 @b99
 
@@ -473,7 +473,7 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
     @b121
         # BACK hoặc thư mục: đổi thư mục đang duyệt
         %109 = add %105 %13
-        call cap_state_set %211 %200 %109
+        call mem_set_q 64 %211 %200 %109
         jmp @b36
 
     @b12
@@ -482,14 +482,14 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
 
     @b122
         # Click file: mở bằng READ vào sector 16
-        call cap_state_set %211 %200 %12
-        call cap_state_set %211 %201 %105
-        call cap_state_set %211 %202 %217
+        call mem_set_q 64 %211 %200 %12
+        call mem_set_q 64 %211 %201 %105
+        call mem_set_q 64 %211 %202 %217
         call lfs_request %1 %217 %105 %220 %12
         ret
 
     @b30
-        %56 = call cap_state_get %211 %200
+        %56 = call mem_get_q 64 %211 %200
         %58 = cmp ugt %56 %12
         br %58 @b99 @b31
 
@@ -531,13 +531,13 @@ func app_editor_main void %0:ptr<VgaCell,1382400> %1:ptr<IpcChannel,1> %2:ptr<Di
         %76 = const 606 bv64
         call ui_invalidate_rect %1 %8 %9 %75 %76
         # Xin bảng file ngay khi mở cửa sổ (cần cho SAVE / BROWSE)
-        call cap_state_set %211 %202 %13
+        call mem_set_q 64 %211 %202 %13
         call lfs_request %1 %13 %12 %12 %12
         jmp @b36
 
     @b36
-        %77 = call cap_state_get %211 %200
-        %275 = call cap_state_get %211 %201
+        %77 = call mem_get_q 64 %211 %200
+        %275 = call mem_get_q 64 %211 %201
         call editor_draw %0 %212 %214 %77 %275
         call wg_damage %1 0 0 ED_CW ED_CH
         ret

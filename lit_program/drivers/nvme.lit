@@ -15,15 +15,6 @@ include ../os/hw.lit
 # Thanh ghi NVMe (BAR0 ánh xạ UC tại ảo 0x80_4000_0000 + offset, xem nvme_find)
 # ---------------------------------------------------------------------------------------------------------------
 
-func qbuf bv64 %0:ptr<DiskQword,8192> %1:bv64 {
-    @req ult %1 8192
-
-    @b0
-        %2 = slice %0 %1 ptr<DiskQword,1>
-        %3 = load %2 0 bv64
-        ret %3
-}
-
 func nvme_reg_ptr ptr<Mmio32,1> %0:io<0,0xffff> %1:bv64 {
     @req ult %1 0x2000
 
@@ -895,16 +886,16 @@ func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
         br %9 @b80 @b1
 
     @b1
-        %10 = call qbuf %7 %2
+        %10 = call mem_get_q 8192 %7 %2
         %11 = const 0x5452415020494645 bv64 # "EFI PART"
         %12 = cmp eq %10 %11
         br %12 @b2 @b60
 
     @b2
         %13 = const 9 bv64
-        %14 = call qbuf %7 %13            # LBA mảng entry
+        %14 = call mem_get_q 8192 %7 %13            # LBA mảng entry
         %15 = const 10 bv64
-        %16 = call qbuf %7 %15
+        %16 = call mem_get_q 8192 %7 %15
         %17 = const 0xffffffff bv64
         %18 = and %16 %17                   # số entry
         %19 = lshr %16 %6                   # kích thước entry
@@ -947,10 +938,10 @@ func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
         %38 = mul %34 %37
         %39 = const 7 bv64
         %40 = add %38 %39
-        %41 = call qbuf %7 %40
+        %41 = call mem_get_q 8192 %7 %40
         %42 = const 8 bv64
         %43 = add %38 %42
-        %44 = call qbuf %7 %43
+        %44 = call mem_get_q 8192 %7 %43
         %45 = const 0x006800670069006c bv64 # UTF-16LE "ligh"
         %46 = const 0x00000073006f0074 bv64 # UTF-16LE "tos\0"
         %47 = cmp eq %41 %45
@@ -961,10 +952,10 @@ func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
     @b9
         %50 = const 4 bv64
         %51 = add %38 %50
-        %52 = call qbuf %7 %51            # LBA đầu
+        %52 = call mem_get_q 8192 %7 %51            # LBA đầu
         %53 = const 5 bv64
         %54 = add %38 %53
-        %55 = call qbuf %7 %54            # LBA cuối (bao gồm)
+        %55 = call mem_get_q 8192 %7 %54            # LBA cuối (bao gồm)
         %56 = cmp uge %52 %3
         %57 = cmp uge %55 %52
         %58 = cmp ult %55 %1
@@ -999,7 +990,7 @@ func nvme_find_partition bv64 %0:io<0,0xffff> %1:bv64 {
         br %66 @b80 @b71
 
     @b71
-        %67 = call qbuf %7 %2
+        %67 = call mem_get_q 8192 %7 %2
         %68 = const 0x315346544847494c bv64 # "LIGHTFS1"
         %69 = cmp eq %67 %68
         br %69 @b72 @b82
@@ -1098,7 +1089,7 @@ func nvme_init_ctrl bv64 %0:io<0,0xffff> {
         %38 = shl %34 %37
         %39 = const 0x81000 bv64
         %40 = add %39 %38
-        call q512_set %33 %34 %40
+        call mem_set_q 512 %33 %34 %40
         %41 = add %34 %2
         jmp @b5 %41
 
@@ -1154,16 +1145,16 @@ func nvme_init_ctrl bv64 %0:io<0,0xffff> {
 
     @b10
         %69 = const 0x94000 ptr<DiskQword,512>
-        %70 = call q512 %69 %1              # NSZE
+        %70 = call mem_get_q 512 %69 %1              # NSZE
         %71 = const 3 bv64
-        %72 = call q512 %69 %71
+        %72 = call mem_get_q 512 %69 %71
         %73 = lshr %72 %14
         %74 = and %73 %12                   # FLBAS & 0xf
         %75 = const 1 bv64
         %76 = lshr %74 %75
         %77 = const 16 bv64
         %78 = add %77 %76
-        %79 = call q512 %69 %78
+        %79 = call mem_get_q 512 %69 %78
         %80 = and %74 %75
         %81 = const 5 bv64
         %82 = shl %80 %81                   # 0 hoặc 32

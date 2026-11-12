@@ -67,7 +67,7 @@
 {"cmd": "rm /m", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "rm /big", "exit": 0, "stdout": "", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "ls /", "exit": 0, "stdout": "apps/\ndata/\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
-{"cmd": "stat /apps/terminal.elf", "exit": 0, "stdout": "type: app\nsize: 62745\nid: 3\nname: /apps/terminal.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "stat /apps/terminal.elf", "exit": 0, "stdout": "type: app\nsize: <app>\nid: 3\nname: /apps/terminal.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "cd /apps/terminal.elf", "exit": 1, "stdout": "", "stderr": "cd: not a directory: /apps/terminal.elf\n", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "write /apps/terminal.elf x", "exit": 1, "stdout": "", "stderr": "write: wrong type (apps are read-only): /apps/terminal.elf\n", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "append /apps/editor.elf x", "exit": 1, "stdout": "", "stderr": "append: wrong type (apps are read-only): /apps/editor.elf\n", "truncated": {"stdout": false, "stderr": false}}

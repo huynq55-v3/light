@@ -57,8 +57,8 @@ fn cache_hits_on_second_run_and_invalidates_on_change() {
 #[test]
 fn doc_lists_contracts_and_supports_json() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let (t, _, ok) = light(&root, &["doc", "q512"]);
-    assert!(ok && t.contains("func q512(") && t.contains("@req ult %1 512"), "{}", t);
+    let (t, _, ok) = light(&root, &["doc", "mem_get_q"]);
+    assert!(ok && t.contains("func mem_get_q(") && t.contains("@req ult %i %n"), "{}", t);
     let (j, _, _) = light(&root, &["doc", "lfs_find_child", "--json"]);
     assert!(j.starts_with("[{\"kind\":\"func\",\"name\":\"lfs_find_child\"") && j.contains("\"ensures\":[\"ult %20 256\"]"), "{}", j);
 }

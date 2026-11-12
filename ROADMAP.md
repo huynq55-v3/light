@@ -261,6 +261,12 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    nhiều khối bên trong hàm hiếm khi lặp nguyên dạng.
    Luật kiểu đã thử bằng `light check`: bool truyền / trả qua hàm được, `br` nhận bv64.
    Chưa làm: giai đoạn 2 (tạo primitive + hợp đồng + viết lại, qua cổng), chi phí lời gọi trên đường nóng.
+16. Gộp hàm trùng theo báo cáo Stitch (2026-11-12, nhánh stitch, làm tay, qua `tools/stitch/gate.py`): 6 hàm đọc /
+   ghi qword cỡ cố định (`q512 q512_set cap_state_get cap_state_set qbuf mem_mmap_q`) -> `mem_get_q / mem_set_q %n %p %i`
+   trong `std/mem.lit` (116 chỗ gọi truyền cỡ bảng); 4 chuỗi if 7 nhánh `sys_get_app_*_ptr` -> một `sys_app_vbase` + 4 hàm
+   `slice` (State +2MB, icon +8B). MDL 78214 -> 77751 (-463; phần qword gần hòa vì mỗi chỗ gọi thêm một đối số — lợi
+   chính là bớt 5 tên cho cùng một việc). Kernel 121488 -> 121504 byte. Cổng: golden so cỡ `/apps/*.elf` với file vừa
+   build thay vì số cứng. Đã thử thêm: desktop + icon Dock, mở cả 3 App, gõ Terminal / Editor (QEMU).
 
 ## 📋 Tiếp theo
 
