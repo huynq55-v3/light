@@ -73,7 +73,7 @@ Mỗi biến được định danh bằng số thứ tự (`%0`, `%1`, `%2`...) 
 9. **`jmp @target_bb [%arg0 %arg1 ...]`**: Nhảy vô điều kiện kèm truyền **Tham số Khối (`Block Params`)** thay cho hàm $\phi$ (Phi-node) cổ điển, đồng thời kích hoạt kiểm chứng quy nạp toán học trên `@inv` của khối đích.
 10. **`[%d =] call <func_name> [%arg0 ...]`**: Gọi hàm trực tiếp. Tự động kiểm tra phép thu hẹp thẻ quyền năng (`can_delegate`), chứng minh tiền điều kiện `@req` và kế thừa hậu điều kiện `@ens`.
 11. **`ret [%val]`**: Thoát hàm và chứng minh mọi hậu điều kiện `@ens` **tại từng `ret`**. Trong `@ens`, ngoài tham số được phép dùng đúng MỘT tên (thanh ghi không phải tham số, vd `%r`) chỉ giá trị trả về; mỗi `ret` gán tên đó bằng giá trị nó trả. Hàm nhiều đường thoát không cần block gom + `@inv` chép lại hậu điều kiện (xem `tests/lit/must_pass/ens_multi_ret.lit`).
-12. **`parallel %smp %n <hàm> %base %arg`** & **`%d = smp_workers %smp`**: Fork-join đa nhân **chặn**. Chia `%base` (`ptr<L,M>`) thành `%n` (1..16) phần `ptr<L,K>` (K = kiểu tham số đầu của hàm), chạy `hàm(phần_i, %arg, i)` trên các nhân AP online (phần còn lại chạy trên nhân gọi) và chỉ trả về khi mọi phần xong. Z3 chứng minh `n*K <= M` và `@req` của worker đúng với mọi `i < n`; worker có chữ ký cố định `(ptr<L,K>, bv64, bv64)`, phải vừa stack AP 32KB và không lồng `parallel`. `smp_workers` trả số AP đang online (0..15).
+12. **`parallel %smp %n <hàm> %base %arg`** & **`%d = smp_workers %smp`**: Fork-join đa nhân **chặn**. Chia `%base` (`ptr<L,M>`) thành `%n` (1..16) phần `ptr<L,K>` (K = kiểu tham số đầu của hàm), chạy `hàm(phần_i, %arg, i)` trên các nhân AP online (phần còn lại chạy trên nhân gọi) và chỉ trả về khi mọi phần xong. Z3 chứng minh `n*K <= M` và `@req` của worker đúng với mọi `i < n`; worker có chữ ký cố định `(ptr<L,K>, bv64, bv64)`, phải vừa stack AP 32KB và không lồng `parallel`. `smp_workers` trả số AP đang online (0..15). Phần `i` chạy trên AP có APIC ID `i` (nếu online), phần 0 và mọi phần `i >= số nhân` chạy trên nhân gọi — muốn song song thật thì chọn `%n = smp_workers + 1` và cho mỗi phần nhiều việc hơn.
 13. **`assume <z3_prefix_expr>`** & **`assert <z3_prefix_expr>`**: Các chỉ thị Ghost phục vụ suy luận toán học, bị xóa bỏ 100% khi sinh mã máy `x86_64`. `assume` chỉ được dùng trong hàm giữ `io<0,0xffff>`.
 14. **`vadd256|vsub256|vmul256|vxor256 %dst %a %b`** & **`%d = vdot256 %a %b`**: AVX2 trên 32 byte; Z3 chứng minh cả ba vùng đủ 32 byte, cấm ghi lên Layout có `@inv`.
 15. **`fxmul`, `fxdiv`**: số điểm cố định Q16.16 (chống tràn như `mul`).
@@ -93,7 +93,7 @@ lit_program/
 ├── drivers/   blk, nvme, ata_disk, pci, usb_xhci, kbd_drv (PS/2 + chuột), vga_drv, serial
 ├── lib/       std_lib, os_layout (Layout dùng chung), gfx, font, ipc_bus, cap_mem, lightfs_api, ui_* (window, button,
 │              canvas, text_view, file_browser)
-└── apps/      terminal.lit, editor.lit (biên dịch riêng thành storage/apps/*.bin)
+└── apps/      terminal.lit, editor.lit, widgets.lit, mandel.lit (biên dịch riêng thành storage/apps/*.elf)
 ```
 
 ### 3.1. Bộ nhớ của App: cấp phát & thu hồi tường minh
@@ -264,10 +264,27 @@ Viết quanh vùng nhớ độ dài động `(%n, ptr<L,%n>)`, mọi hàm có `@
 | `surface` | vẽ trên surface `(n, px, stride, w, h)`: `surf_put`, `surf_fill_rect`, `surf_frame`, `surf_char`, `surf_text`, `surf_round_inset`, `surf_round_rect` (hình bo góc dùng chung cho Dock / compositor / widget) |
 | `widget` | cửa sổ đổi kích thước được: `wg_pick_w/h` (nhận đề nghị configure, kẹp theo min/max của App), `wg_window_open` (báo kích thước đã vẽ), `wg_client` (surface của vùng nội dung, tự cắt), `wg_label`, `wg_box`, `wg_button`, `wg_hit`, `wg_mouse_x/y`, `wg_damage`; component kiểu macOS: `wg_rbox`, `wg_rframe`, `wg_pbutton`, `wg_field`, `wg_toolbar`, `wg_statusbar`, `wg_textarea`, `wg_number`, `wg_qtext`, `wg_list_row`, `wg_icon_doc/folder` |
 | `widget_fs` | duyệt LightFS kiểu Finder: `wg_fs_name`, `wg_fs_list`, `wg_fs_hit` (Editor dùng) |
+| `fixq` | số điểm cố định Q4.60 có dấu (`fq_mul` ghép 4 tích 32x32, sai số <= 3 ulp; `fq_abs`, `fq_clamp2`) + lõi Mandelbrot `mb_iter` (liền mạch, dò chu kỳ Brent) / `mb_color`. Phép `_wrap` nên đúng đắn số học do `tools/mandel_model.py test` đối chiếu từng bit với mã máy (`cgtest --call`) |
 | `shell` | lõi shell dùng chung: `sh_begin` / `sh_step` / `sh_op_done` / `sh_op_name` (bộ thông dịch chạy từng bước, `ShState` giữ cwd, `$?` và thao tác đĩa đang chờ; vùng làm việc `SH_WS` = 448KB), `sh_unescape`, `sh_resolve` (đường dẫn `/a/../b`) |
 
 `surface` không đưa `y*stride` vào chứng minh (nhân hai biến làm Z3 hết giờ): offset tính bằng hàm mờ `surf_offset`, kiểm biên
 lúc chạy trước khi `slice`, các hàng sau đi bằng phép cộng. Lõi shell in số bằng `fmt_u64` (`sh_out_dec`).
+
+## App Mandelbrot (`apps/mandel.lit`)
+
+Vẽ tập Mandelbrot bằng Q4.60 (`std/fixq.lit`), mỗi nhịp vẽ một lô hàng (`run_req`) chia cho mọi nhân bằng `parallel`
+(số phần = số nhân, mỗi phần <= 16 hàng, ngân sách ~3 triệu vòng lặp mỗi nhân mỗi nhịp) nên hệ thống vẫn phản hồi khi đang tính.
+Nhấn chuột = lấy làm tâm + phóng x2, `+`/`-` phóng, `WASD` di chuyển, `Z` tự phóng vào tâm, `T` chuyến tham quan tự phóng
+vào vùng cá ngựa, `R` về đầu, ESC đóng. Thanh dưới: độ phóng, số vòng tối đa (96 + 48·log2(độ phóng), <= 2000), số khung.
+
+**Không phóng vô hạn được.** Q4.60 có 60 bit lẻ; đáy phóng là bước 2^-46 mỗi điểm ảnh (~3·10^11 lần khung đầu, chữ LIMIT):
+so với tham chiếu 256 bit, ở 2^-46 ~20% điểm ảnh lệch số vòng (đa số ±vài vòng), sâu hơn thì vỡ thành nhiễu. Các clip
+"phóng vô hạn" (10^100 lần trở lên) dùng số nhiều chữ số + kỹ thuật nhiễu loạn (perturbation: một quỹ đạo tham chiếu chính
+xác cao, các điểm ảnh tính độ lệch bằng số nhỏ) và được kết xuất trước. Điểm đích tự phóng do `tools/mandel_model.py target`
+dò (bám biên bằng số 256 bit) để mọi độ sâu tới đáy đều còn biên; `depth` đo độ lệch theo độ sâu.
+
+Đã thử (QEMU, 4 nhân): ảnh chụp màn hình khớp TỪNG điểm ảnh với mô hình Python ở x1, x3016, x6,9·10^8 và đáy; kênh Agent
+vẫn trả lời khi đang tự phóng; cài nóng giữa lúc tự phóng; 1 nhân (không có AP). Tự phóng ~4 khung/giây trên QEMU 4 nhân.
 
 ## Kênh IPC riêng cho từng App
 

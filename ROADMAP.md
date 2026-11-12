@@ -268,6 +268,16 @@ Bộ sinh mã mới `src/x86.rs` thay cho kiểu "mọi biến SSA nằm trên s
    chính là bớt 5 tên cho cùng một việc). Kernel 121488 -> 121504 byte. Cổng: golden so cỡ `/apps/*.elf` với file vừa
    build thay vì số cứng. Đã thử thêm: desktop + icon Dock, mở cả 3 App, gõ Terminal / Editor (QEMU).
 
+17. App Mandelbrot (2026-11-12, nhánh mandelbrot): `std/fixq.lit` (Q4.60: `fq_mul` từ 4 tích 32x32, `mb_iter` liền mạch +
+   dò chu kỳ Brent — điểm trong tập trả ngay, ~8,5 ns/vòng trên host so với ~27 ns khi gọi `fq_mul`), `apps/mandel.lit`
+   (App đầu tiên dùng `parallel`: vẽ dần theo lô hàng qua `run_req`, số phần = số nhân), `tools/mandel_model.py` (mô
+   hình từng bit + `test` đối chiếu `cgtest --call` + `target` dò điểm đích bám biên 256 bit + `depth` đo đáy phóng),
+   `cgtest --call FILE FUNC` (gọi một hàm Light bằng mã máy thật với đối số từ stdin). Đáy phóng 2^-46/điểm ảnh
+   (~3·10^11 lần). Phát hiện: `parallel` với n > số nhân dồn phần thừa lên nhân gọi (16 phần trên 4 nhân ≈ chạy tuần tự);
+   sửa bên App, ghi vào README. Golden g1/g4/g6 tạo lại: mọi chỗ lệch đã kiểm là thêm `mandel.elf` hoặc id LightFS +1.
+   Chưa làm: phóng sâu hơn cần số nhiều chữ số + perturbation; đo thời gian thật (App chưa có đồng hồ); SIMD (AVX2) cho
+   lõi lặp.
+
 ## 📋 Tiếp theo
 
 ### Bước 3b — Giải phóng riêng lẻ (`free`)

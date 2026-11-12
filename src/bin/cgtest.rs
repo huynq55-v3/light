@@ -441,6 +441,22 @@ fn main() {
     let runs: usize = args.iter().position(|a| a == "--runs").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(2000);
     let bench = args.iter().any(|a| a == "--bench");
     let fuzz: u64 = args.iter().position(|a| a == "--fuzz").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(300);
+    // cgtest --call FILE FUNC: mỗi dòng stdin = các đối số số nguyên (thập phân / 0x hex) của FUNC (chỉ tham số số),
+    // in kết quả chạy THẬT (mã máy) mỗi dòng ra stdout dạng 0x...; dùng để đối chiếu với mô hình ngoài (Python).
+    if let Some(i) = args.iter().position(|a| a == "--call") {
+        use std::io::BufRead;
+        let (file, func) = (&args[i + 1], &args[i + 2]);
+        let m = parser::parse_file(file).unwrap_or_else(|e| panic!("{}: {}", file, e));
+        let fi = m.funcs.iter().position(|f| &f.name == func).unwrap_or_else(|| panic!("không có hàm {}", func));
+        let (code, offs) = elf64::compile_code(&m, false).unwrap_or_else(|e| panic!("{}", e));
+        let exe = load_code(&code);
+        let parse = |t: &str| t.strip_prefix("0x").map_or_else(|| t.parse::<u64>().unwrap(), |h| u64::from_str_radix(h, 16).unwrap());
+        for line in std::io::stdin().lock().lines() {
+            let a: Vec<u64> = line.unwrap().split_whitespace().map(parse).collect();
+            println!("0x{:x}", native(exe, offs[fi], &a));
+        }
+        return;
+    }
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lit/codegen");
     let mut files: Vec<_> = std::fs::read_dir(dir).expect("thiếu tests/lit/codegen").map(|e| e.unwrap().path()).collect();
     files.sort();
