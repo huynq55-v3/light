@@ -27,7 +27,24 @@ fn json_reports_every_bad_function_with_counterexample_and_hint() {
     assert!(!out.contains("\"func\":\"good\""), "{}", out);
     assert!(out.contains("\"counterexample\":[{\"reg\""), "{}", out);
     assert!(out.contains("\"hint\":\"Phép toán"), "{}", out);
-    assert!(out.contains("bad.lit:1"), "origin phải trỏ tới dòng khai báo hàm: {}", out);
+    assert!(out.contains("\"origin\":\"bad.lit:1\""), "origin phải trỏ tới dòng khai báo hàm: {}", out);
+    // `at` trỏ đúng dòng lệnh gây lỗi, `source` là dòng gốc (tên chưa bị đổi sang số)
+    assert!(out.contains("\"at\":\"bad.lit:3\"") && out.contains("\"at\":\"bad.lit:9\""), "{}", out);
+    assert!(out.contains("\"source\":\"%2 = add %0 %1\""), "{}", out);
+}
+
+#[test]
+fn error_location_survives_lowering_and_names() {
+    let d = scratch("at");
+    // add_sat bị hạ thành nhiều lệnh: lỗi ở lệnh sau nó vẫn phải trỏ đúng dòng 4
+    std::fs::write(d.join("s.lit"), "func g bv64 %n:bv64 {\n    @b0\n        %a = add_sat %n 3\n        %b = add %a 1\n        ret %b\n}\n").unwrap();
+    let (out, _, ok) = light(&d, &["check", "s.lit", "--json", "--no-cache"]);
+    assert!(!ok && out.contains("\"at\":\"s.lit:4\"") && out.contains("\"source\":\"%b = add %a 1\""), "{}", out);
+    // vi phạm @inv báo ở dòng jmp
+    let l = "func f bv64 %n:bv64 {\n    @b0\n        jmp @l 0\n    @l %i:bv64\n        @inv ult %i 5\n        %c = cmp ult %i %n\n        br %c @s @d\n    @s\n        %j = add_wrap %i 1\n        jmp @l %j\n    @d\n        ret %i\n}\n";
+    std::fs::write(d.join("l.lit"), l).unwrap();
+    let (out, _, ok) = light(&d, &["check", "l.lit", "--json", "--no-cache"]);
+    assert!(!ok && out.contains("\"at\":\"l.lit:10\""), "{}", out);
 }
 
 #[test]

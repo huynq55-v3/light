@@ -519,6 +519,7 @@ struct Verifier<'ctx> {
     func_name: &'ctx str,
     cur_bb: BlockId,
     cur_inst: String,
+    cur_at: String, // "file:dòng" của lệnh đang kiểm
     cur_regs: Vec<Reg>,
     regs: Env<'ctx>,
     reg_tys: HashMap<Reg, Type>,
@@ -749,17 +750,22 @@ impl<'ctx> Verifier<'ctx> {
                     })
                     .unwrap_or_default();
                 Err(format!(
-                    "[Z3 FAIL] func {} @b{}: '{}' -> {} when {}",
-                    self.func_name, self.cur_bb, self.cur_inst, msg, ce
+                    "[Z3 FAIL] func {} @b{}: '{}' -> {} when {}{}",
+                    self.func_name, self.cur_bb, self.cur_inst, msg, ce, self.at_line()
                 ))
             }
             SatResult::Unknown => Err(format!(
-                "[Z3 TIMEOUT] func {} @b{}: '{}' -> Không thể chứng minh: {}",
-                self.func_name, self.cur_bb, self.cur_inst, msg
+                "[Z3 TIMEOUT] func {} @b{}: '{}' -> Không thể chứng minh: {}{}",
+                self.func_name, self.cur_bb, self.cur_inst, msg, self.at_line()
             )),
         };
         self.solver.pop(1);
         out
+    }
+
+    /// Dòng phụ "\n    tại file:dòng" (parse_err đọc lại; dòng đầu giữ nguyên định dạng cũ)
+    fn at_line(&self) -> String {
+        if self.cur_at.is_empty() { String::new() } else { format!("\n    tại {}", self.cur_at) }
     }
 
     fn check(&self, cond: &Bool<'ctx>, msg: &str) -> Result<(), String> {
@@ -1174,8 +1180,8 @@ impl<'ctx> Verifier<'ctx> {
         if keep.is_empty() {
             return Err(format!(
                 "[Z3 FAIL] func {} @b{}: '{}' -> Không chứng minh được vòng lặp @b{} dừng: thêm `@dec <biểu_thức>` vào @b{} \
-                 (giá trị không dấu giảm ngặt ở mỗi vòng, vd `@dec sub %n %i`), hoặc giới hạn vòng bằng @inv/cmp với cận cố định",
-                self.func_name, self.cur_bb, self.cur_inst, h.id, h.id
+                 (giá trị không dấu giảm ngặt ở mỗi vòng, vd `@dec sub %n %i`), hoặc giới hạn vòng bằng @inv/cmp với cận cố định{}",
+                self.func_name, self.cur_bb, self.cur_inst, h.id, h.id, self.at_line()
             ));
         }
         self.term.insert(ti, keep);
@@ -1301,6 +1307,19 @@ impl<'ctx> Verifier<'ctx> {
                 let d = self.decl_reg(*dst, Type::Bv64)?;
                 if *op != BinOp::MulHi {
                     self.solver.assert(&d._eq(&res));
+                    // Bổ đề thừa nhưng đúng (suy ra được từ d == res): Z3 bit-blast phép chia 64-bit rất chậm nên
+                    // không tự tìm ra, vd không chứng minh nổi `x urem y < y` để vòng Euclid dừng (Light-Bench 14).
+                    // Có điều kiện r != 0: assert là toàn cục (không kèm điều kiện đường đi), nên bổ đề phải đúng cả khi
+                    // lệnh không chạy tới — với r = 0 thì bvudiv = 0xff..ff, `d <= l` sẽ ép sai giá trị l.
+                    let nz = r._eq(&zero).not();
+                    match op {
+                        BinOp::URem => {
+                            self.solver.assert(&nz.implies(&d.bvule(&l)));
+                            self.solver.assert(&nz.implies(&d.bvult(&r)));
+                        }
+                        BinOp::UDiv => self.solver.assert(&nz.implies(&d.bvule(&l))),
+                        _ => {}
+                    }
                 } else {
                     // mờ, chỉ giữ cận rẻ và đúng: (a*b) >> 64 <= min(a, b) vì cả hai < 2^64
                     self.solver.assert(&d.bvule(&l));
@@ -1798,6 +1817,7 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
         func_name: &func.name,
         cur_bb: 0,
         cur_inst: String::new(),
+        cur_at: String::new(),
         cur_regs: Vec::new(),
         regs: HashMap::new(),
         reg_tys: HashMap::new(),
@@ -1831,6 +1851,7 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
         let block = &func.blocks[bi];
         v.cur_bb = block.id;
         v.cur_inst = format!("@b{} entry", block.id);
+        v.cur_at = block.label_at.clone();
         v.cur_regs = block.params.iter().map(|&(r, _)| r).collect();
         for &(r, ty) in &block.params {
             v.decl_reg(r, ty)?;
@@ -1844,8 +1865,9 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
                 block.id
             ));
         }
-        for inst in &block.insts {
+        for (k, inst) in block.insts.iter().enumerate() {
             v.cur_inst = fmt_inst(module, inst);
+            v.cur_at = block.at.get(k).cloned().unwrap_or_default();
             v.cur_regs = uses_of(inst);
             if let Some(d) = dst_of(inst) {
                 v.cur_regs.push(d);

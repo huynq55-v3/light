@@ -589,6 +589,9 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                 if toks.len() < 3 {
                     return Err(err("Cú pháp: def <TÊN_HẰNG> <GIÁ_TRỊ>"));
                 }
+                if defs.contains_key(toks[1]) {
+                    return Err(err(&format!("Hằng '{}' bị định nghĩa hai lần (def trùng tên, hoặc trùng tên trường Layout/độ dài data)", toks[1])));
+                }
                 let val = p_u64(toks[2], &defs).map_err(|e| err(&e))?;
                 defs.insert(toks[1].to_string(), val);
             }
@@ -674,6 +677,8 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     invs: Vec::new(),
                     dec: None,
                     insts: Vec::new(),
+                    at: Vec::new(),
+                    label_at: loc.clone(),
                 });
             }
             _ if in_layout => {
@@ -909,8 +914,10 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     .last_mut()
                     .and_then(|f| f.blocks.last_mut())
                     .ok_or_else(|| err("Lệnh ngoài Block"))?;
-                blk.insts.extend(lits.pending.drain(..));
-                blk.insts.push(inst);
+                for i in lits.pending.drain(..).chain(std::iter::once(inst)) {
+                    blk.insts.push(i);
+                    blk.at.push(loc.clone());
+                }
             }
         }
         Ok(())
@@ -1032,42 +1039,52 @@ fn lower_func(f: &mut Func) {
     let mut next = max + 1;
     for b in &mut f.blocks {
         let old = std::mem::take(&mut b.insts);
-        for inst in old {
-            let Inst::Bin { dst, op, lhs: l, rhs: r } = inst else {
-                b.insts.push(inst);
-                continue;
-            };
-            let mut lw = Low { out: &mut b.insts, next: &mut next };
-            match op {
-                BinOp::AddOvf => {
-                    lw.add_ovf(l, r, Some(dst));
-                }
-                BinOp::SubOvf => {
-                    lw.sub_ovf(l, r, Some(dst));
-                }
-                BinOp::MulOvf => {
-                    lw.mul_ovf(l, r, Some(dst));
-                }
-                BinOp::AddSat => {
-                    let (s, c) = lw.add_ovf(l, r, None);
-                    let m = lw.mask(c);
-                    lw.op(BinOp::Or, s, m, Some(dst));
-                }
-                BinOp::SubSat => {
-                    let (d, c) = lw.sub_ovf(l, r, None);
-                    let one = lw.k(1);
-                    let keep = lw.op(BinOp::Xor, c, one, None);
-                    let m = lw.mask(keep);
-                    lw.op(BinOp::And, d, m, Some(dst));
-                }
-                BinOp::MulSat => {
-                    let (p, c) = lw.mul_ovf(l, r, None);
-                    let m = lw.mask(c);
-                    lw.op(BinOp::Or, p, m, Some(dst));
-                }
-                _ => b.insts.push(inst),
+        let old_at = std::mem::take(&mut b.at);
+        assert_eq!(old.len(), old_at.len(), "lệnh và vị trí nguồn lệch nhau");
+        for (inst, at) in old.into_iter().zip(old_at) {
+            let before = b.insts.len();
+            lower_one(b, inst, &mut next);
+            for _ in before..b.insts.len() {
+                b.at.push(at.clone());
             }
         }
+    }
+}
+
+fn lower_one(b: &mut Block, inst: Inst, next: &mut u32) {
+    let Inst::Bin { dst, op, lhs: l, rhs: r } = inst else {
+        b.insts.push(inst);
+        return;
+    };
+    let mut lw = Low { out: &mut b.insts, next };
+    match op {
+        BinOp::AddOvf => {
+            lw.add_ovf(l, r, Some(dst));
+        }
+        BinOp::SubOvf => {
+            lw.sub_ovf(l, r, Some(dst));
+        }
+        BinOp::MulOvf => {
+            lw.mul_ovf(l, r, Some(dst));
+        }
+        BinOp::AddSat => {
+            let (s, c) = lw.add_ovf(l, r, None);
+            let m = lw.mask(c);
+            lw.op(BinOp::Or, s, m, Some(dst));
+        }
+        BinOp::SubSat => {
+            let (d, c) = lw.sub_ovf(l, r, None);
+            let one = lw.k(1);
+            let keep = lw.op(BinOp::Xor, c, one, None);
+            let m = lw.mask(keep);
+            lw.op(BinOp::And, d, m, Some(dst));
+        }
+        BinOp::MulSat => {
+            let (p, c) = lw.mul_ovf(l, r, None);
+            let m = lw.mask(c);
+            lw.op(BinOp::Or, p, m, Some(dst));
+        }
+        _ => b.insts.push(inst),
     }
 }
 

@@ -1,0 +1,14 @@
+# EXPECT: Vi phạm điều kiện đầu ra
+# Bổ đề của urem được assert toàn cục; nếu không kèm điều kiện y != 0 thì với y = 0 (nhánh không chia)
+# bổ đề `x urem y < y` làm y = 0 thành vô nghiệm và "chứng minh" sai @ens dưới đây. Phản ví dụ đúng: x = 7, y = 0.
+func f bv64 %x:bv64 %y:bv64 {
+    @ens ne %r 7
+    @b0
+        %z = cmp eq %y 0
+        br %z @a @b
+    @a
+        ret %x
+    @b
+        %q = urem %x %y
+        ret 0
+}

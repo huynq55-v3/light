@@ -1,0 +1,22 @@
+# Light-Bench 05 — vị trí byte 0 đầu tiên trong s[0..n), hoặc n
+include ../../lit_program/std/core.lit
+
+func strnlen_b bv64 %n:bv64 %s:ptr<Byte,%n> {
+    @ens ule %r %n
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %z = cmp eq %v 0
+        br %z @done @next
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @done
+        ret %i
+}

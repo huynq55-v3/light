@@ -1,0 +1,22 @@
+# Light-Bench 10 — out[k] = (a[0] + ... + a[k]) mod 2^64 với mọi k < n
+include ../../lit_program/std/core.lit
+
+func prefix_sum_q void %n:bv64 %a:ptr<DiskQword,%n> %m:bv64 %out:ptr<DiskQword,%m> {
+    @req ule %n %m
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %s:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %p = slice %a %i ptr<DiskQword,1>
+        %v = load %p 0 bv64
+        %s2 = add_wrap %s %v
+        %o = slice %out %i ptr<DiskQword,1>
+        store %o 0 %s2
+        %i2 = add %i 1
+        jmp @l %i2 %s2
+    @done
+        ret
+}

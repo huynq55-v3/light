@@ -270,6 +270,9 @@ pub struct Block {
     /// (so sánh không dấu). Không ghi thì verifier tự thử `p`, `X - p`, `p - X` (p = tham số block, X = cận bất biến vòng).
     pub dec: Option<Z3Expr>,
     pub insts: Vec<Inst>,
+    /// "file:dòng" nguồn của từng lệnh trong `insts` (song song, cùng độ dài) và của dòng nhãn — chỉ để báo lỗi
+    pub at: Vec<String>,
+    pub label_at: String,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,29 @@
+# Light-Bench 12 — a[0..n) đã sắp tăng dần: chỉ số nhỏ nhất j có a[j] >= x, hoặc n
+include ../../lit_program/std/core.lit
+
+func lower_bound_q bv64 %n:bv64 %a:ptr<DiskQword,%n> %x:bv64 {
+    @ens ule %r %n
+    @b0
+        jmp @l 0 %n
+    @l %lo:bv64 %hi:bv64
+        @inv ule %lo %hi
+        @inv ule %hi %n
+        @dec sub %hi %lo
+        %more = cmp ult %lo %hi
+        br %more @body @done
+    @body
+        %w = sub %hi %lo
+        %h = lshr %w 1
+        %mid = add %lo %h
+        %p = slice %a %mid ptr<DiskQword,1>
+        %v = load %p 0 bv64
+        %lt = cmp ult %v %x
+        br %lt @right @left
+    @right
+        %m1 = add %mid 1
+        jmp @l %m1 %hi
+    @left
+        jmp @l %lo %mid
+    @done
+        ret %lo
+}

@@ -1,0 +1,16 @@
+# Light-Bench 14 — ước chung lớn nhất (Euclid); gcd(0, 0) = 0
+func gcd bv64 %a:bv64 %b:bv64 {
+    @ens or ne %r 0 and eq %a 0 eq %b 0
+    @b0
+        jmp @l %a %b
+    @l %x:bv64 %y:bv64
+        @inv or or ne %x 0 ne %y 0 and eq %a 0 eq %b 0
+        @dec %y
+        %z = cmp eq %y 0
+        br %z @done @step
+    @step
+        %m = urem %x %y
+        jmp @l %y %m
+    @done
+        ret %x
+}

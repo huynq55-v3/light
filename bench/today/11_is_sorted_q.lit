@@ -1,0 +1,27 @@
+# Light-Bench 11 — 1 nếu a[0..n) không giảm (a[j] <= a[j+1]), ngược lại 0
+include ../../lit_program/std/core.lit
+
+func is_sorted_q bv64 %n:bv64 %a:ptr<DiskQword,%n> {
+    @ens ule %r 1
+    @b0
+        jmp @l 1
+    @l %i:bv64
+        @inv uge %i 1
+        %more = cmp ult %i %n
+        br %more @body @yes
+    @body
+        %i0 = sub %i 1
+        %p0 = slice %a %i0 ptr<DiskQword,1>
+        %x = load %p0 0 bv64
+        %p1 = slice %a %i ptr<DiskQword,1>
+        %y = load %p1 0 bv64
+        %ok = cmp ule %x %y
+        br %ok @next @no
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @yes
+        ret 1
+    @no
+        ret 0
+}

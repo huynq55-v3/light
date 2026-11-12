@@ -1,6 +1,32 @@
 > **2026-11-12, nhánh `lang-refactor`:** Light OS đã bị xoá khỏi nhánh này (lịch sử dưới đây giữ để tra cứu; code còn trên `main`).
 > Hướng mới: Light = ngôn ngữ viết app Linux userspace, thân thiện AI, kiểm chứng đúng chức năng.
 
+# Kế hoạch: Light thân thiện với AI (nhánh lang-refactor)
+
+Nguyên tắc giữ nguyên: **SSA hiện tại là IR mà Z3 kiểm chứng**; cú pháp mới chỉ là mặt tiền HẠ xuống IR đó (công thức gửi Z3
+không đổi). Không chuyển kiểu ngầm. Số đo trên std lúc bắt đầu: 43 hàm, 1051 dòng, 539 lệnh; 210/253 phép tính thuần chỉ dùng
+một lần (gộp được vào biểu thức); 11 vòng lặp; 36 lần truy cập phần tử qua `mem_get_q` / `slice`+`load`.
+
+**Quyết định cần chốt:** cú pháp (A) lồng tiền tố trong SSA hiện tại hay (B) cú pháp trung tố kiểu Rust hạ xuống SSA.
+Đề xuất (B). Phép toán: `+` có kiểm tràn (sinh điều kiện chứng minh), `+%` quay vòng, `+|` bão hòa.
+
+| Pha | Nội dung | Xong khi |
+|---|---|---|
+| P0 Mốc so sánh ✅ | XONG 2026-11-12: `bench/` (15 bài, `bench/tasks.md` đề + đặc tả mong muốn, `bench/today/` lời giải, `tools/bench.py` metrics/test, trong cổng). Mốc: 447 dòng, 1710 token, 10 lần trượt (7 là hết giờ), **0/15 đạt đặc tả mong muốn** — xem `bench/baseline.md`. Kèm: lỗi Z3 có `tại file:dòng` (JSON `at`/`source`), `def` trùng là lỗi, bổ đề urem/udiv | Có bảng số liệu gốc |
+| P1 Biểu thức | Tokenizer + parser biểu thức (Pratt), span nguồn cho MỌI phép con (lỗi tràn chỉ đúng cột), `let`, `p[i]`, `p.trường`, suy kiểu hằng từ đích (P0: `store %p 0 61` bị từ chối với trường bv8), chỉ phép THUẦN được lồng (call / load có thứ tự rõ ràng sau); bỏ khỏi mặt tiền các tính năng OS (io, hwio, ata_read, smp, assume, fx*, vector) | std viết lại phần không vòng lặp; so với P0 |
+| P2 Điều khiển + biến thay đổi được | `var`, gán, `if/else`, `while` (+ `invariant`/`decreases`), `for i in a..b` tự sinh `@inv`/`@dec`, `return`/`break` sớm -> dựng SSA ở front-end (thuật toán Braun et al.) | Toàn bộ std + Light-Bench viết lại; đo lại |
+| P3 Ngôn ngữ đặc tả (kiểm chứng đúng chức năng) | **số nguyên toán học `int` trong đặc tả** (P0: bit-vector 64-bit hết giờ với `(n+2)/3 == n/3+1` mất 14–27 s, số nguyên 0,03 s — mã vẫn bv64 có kiểm tràn), `forall/exists` có chặn trên khoảng, `old(...)`, `modifies`, hàm `spec` thuần, gợi ý bổ đề; trigger cho lượng từ; ví dụ: `mem_eq_b` có `ensures r == 1 <==> forall j in 0..k: a[j] == b[j]` | Light-Bench có đặc tả ĐẦY ĐỦ qua kiểm chứng |
+| P4 Target Linux | ELF tĩnh, `_start`, lệnh `syscall` chỉ trong std, `std/linux` (read/write/openat/close/exit/mmap) có đặc tả gồm cả đọc/ghi thiếu, lỗi | `cat`, `wc` chạy, so đầu ra với coreutils |
+| P5 Module | `import` / `pub` / không gian tên thay `include` văn bản; `def` trùng là lỗi | std tách module; tiền đề cho trình quản lý gói |
+| P6 Generic | Sinh bản riêng theo kiểu phần tử / layout TRƯỚC khi kiểm chứng (không đưa `chỉ_số * cỡ` ký hiệu vào Z3) | Gộp `mem_fill_{q,b,px}`, `mem_copy_{q,b}` |
+| P7 Gói | Gói = module có hợp đồng đã kiểm chứng, khóa theo băm; dùng chung cache Z3 | Cài một gói từ thư mục / git |
+
+Mỗi pha qua `tools/stitch/gate.py`; cú pháp SSA cũ vẫn được chấp nhận (làm IR, xem kết quả hạ, gỡ lỗi).
+
+---
+
+# Lịch sử (Light OS)
+
 # 🗺️ Lộ trình Light & Light OS
 
 Cập nhật: 2026-11-11 · nhánh `cleanup-verifier-step1`

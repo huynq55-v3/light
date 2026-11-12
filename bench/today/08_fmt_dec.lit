@@ -1,0 +1,53 @@
+# Light-Bench 08 — ghi số thập phân của v (không số 0 đứng đầu, "0" cho 0) vào buf[0..), trả số chữ số
+include ../../lit_program/std/core.lit
+
+func fmt_dec bv64 %cap:bv64 %buf:ptr<Byte,%cap> %v:bv64 {
+    @req uge %cap 20
+    @ens uge %r 1
+    @ens ule %r 20
+    @b0
+        jmp @dig %v 0
+    # ghi chữ số theo thứ tự ngược (hàng đơn vị trước)
+    @dig %t:bv64 %len:bv64
+        @inv ule %len 20
+        %room = cmp ult %len 20
+        br %room @put @full
+    @put
+        %q = udiv %t 10
+        %d = urem %t 10
+        %ch = add %d 48
+        %c8 = narrow %ch bv8
+        %p = slice %buf %len ptr<Byte,1>
+        store %p 0 %c8
+        %l2 = add %len 1
+        %more = cmp ne %q 0
+        br %more @again @last
+    @again
+        jmp @dig %q %l2
+    @last
+        jmp @rev 0 %l2 %l2
+    @full
+        jmp @rev 0 %len %len
+    # đảo buf[i..j)
+    @rev %i:bv64 %j:bv64 %k:bv64
+        @inv uge %k 1
+        @inv ule %k 20
+        @inv ule %i %j
+        @inv ule %j %k
+        @dec sub %j %i
+        %w = sub %j %i
+        %two = cmp ugt %w 1
+        br %two @swap @done
+    @swap
+        %j1 = sub %j 1
+        %pi = slice %buf %i ptr<Byte,1>
+        %pj = slice %buf %j1 ptr<Byte,1>
+        %x = load %pi 0 bv8
+        %y = load %pj 0 bv8
+        store %pi 0 %y
+        store %pj 0 %x
+        %i2 = add %i 1
+        jmp @rev %i2 %j1 %k
+    @done
+        ret %k
+}

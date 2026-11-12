@@ -1,0 +1,14 @@
+# Vòng Euclid dừng vì x urem y < y — verifier cần bổ đề urem (Z3 không tự bit-blast ra trong thời hạn)
+func gcd bv64 %a:bv64 %b:bv64 {
+    @b0
+        jmp @l %a %b
+    @l %x:bv64 %y:bv64
+        @dec %y
+        %z = cmp eq %y 0
+        br %z @done @step
+    @step
+        %m = urem %x %y
+        jmp @l %y %m
+    @done
+        ret %x
+}

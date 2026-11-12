@@ -1,0 +1,27 @@
+# Light-Bench 15 — căn bậc hai nguyên: r lớn nhất có r*r <= x
+func isqrt bv64 %x:bv64 {
+    # Đặc tả mong muốn: r*r <= x < (r+1)*(r+1). Hai @ens/@inv phi tuyến đó làm Z3 hết giờ (xem bench/tasks.md, bài 15),
+    # nên hôm nay chỉ còn cận r < 2^32.
+    @ens ule %r 0xffffffff
+    @b0
+        jmp @l 0 0x100000000
+    @l %lo:bv64 %hi:bv64
+        @inv ult %lo %hi
+        @inv ule %hi 0x100000000
+        @dec sub %hi %lo
+        %w = sub %hi %lo
+        %wide = cmp ugt %w 1
+        br %wide @body @done
+    @body
+        %h = lshr %w 1
+        %mid = add %lo %h
+        %sq = mul %mid %mid
+        %le = cmp ule %sq %x
+        br %le @up @down
+    @up
+        jmp @l %mid %hi
+    @down
+        jmp @l %lo %mid
+    @done
+        ret %lo
+}

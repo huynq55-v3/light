@@ -131,7 +131,8 @@ pub struct Diag {
     pub inst: String,
     pub message: String,
     pub counterexample: Vec<(String, String)>,
-    pub origin: String,
+    pub origin: String, // dòng khai báo hàm
+    pub at: String,     // "file:dòng" của chính lệnh/nhãn gây lỗi (nếu biết)
     pub source: String,
     pub hint: String,
 }
@@ -232,6 +233,12 @@ pub fn parse_err(s: &str) -> Diag {
         d.kind = "other".into();
         d.message = s.trim().into();
     }
+    if let Some(at) = s.lines().find_map(|l| l.strip_prefix("    tại ")) {
+        d.at = at.trim().into();
+        if d.source.is_empty() {
+            d.source = source_line(&d.at).unwrap_or_default();
+        }
+    }
     d.hint = hint_for(&d.message, &d.kind).into();
     if !d.func.is_empty() {
         d.message = with_names(&d.message, &d.func);
@@ -247,6 +254,13 @@ pub fn parse_err(s: &str) -> Diag {
     d
 }
 
+/// Nội dung gốc (trước khi đổi tên %x -> %số) của "file:dòng"
+fn source_line(at: &str) -> Option<String> {
+    let (file, line) = at.rsplit_once(':')?;
+    let n: usize = line.parse().ok()?;
+    Some(fs::read_to_string(file).ok()?.lines().nth(n.checked_sub(1)?)?.trim().to_string())
+}
+
 pub fn diag_json(d: &Diag) -> String {
     let ce: Vec<String> = d
         .counterexample
@@ -254,8 +268,8 @@ pub fn diag_json(d: &Diag) -> String {
         .map(|(k, v)| format!("{{\"reg\":{},\"value\":{}}}", esc(k), esc(v)))
         .collect();
     format!(
-        "{{\"kind\":{},\"func\":{},\"block\":{},\"inst\":{},\"message\":{},\"counterexample\":[{}],\"origin\":{},\"source\":{},\"hint\":{}}}",
-        esc(&d.kind), esc(&d.func), esc(&d.block), esc(&d.inst), esc(&d.message), ce.join(","), esc(&d.origin), esc(&d.source), esc(&d.hint)
+        "{{\"kind\":{},\"func\":{},\"block\":{},\"inst\":{},\"message\":{},\"counterexample\":[{}],\"origin\":{},\"at\":{},\"source\":{},\"hint\":{}}}",
+        esc(&d.kind), esc(&d.func), esc(&d.block), esc(&d.inst), esc(&d.message), ce.join(","), esc(&d.origin), esc(&d.at), esc(&d.source), esc(&d.hint)
     )
 }
 
@@ -305,6 +319,8 @@ fn func_key(module: &Module, func: &Func) -> u64 {
     f.block_names.clear();
     let mut callees: Vec<u32> = Vec::new();
     for b in &mut f.blocks {
+        b.at.clear(); // vị trí nguồn chỉ để báo lỗi
+        b.label_at.clear();
         for i in &mut b.insts {
             let id = match i {
                 Inst::Call { func_id, .. } | Inst::Parallel { func_id, .. } => func_id,

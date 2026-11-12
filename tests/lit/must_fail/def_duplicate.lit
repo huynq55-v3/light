@@ -1,0 +1,10 @@
+# EXPECT: bị định nghĩa hai lần
+# Hằng trùng tên trước đây lặng lẽ lấy giá trị sau cùng.
+def LIMIT 10
+def LIMIT 20
+
+func f bv64 %x:bv64 {
+    @req ult %x LIMIT
+    @b0
+        ret %x
+}

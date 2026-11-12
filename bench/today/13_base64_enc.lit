@@ -1,0 +1,126 @@
+# Light-Bench 13 — mã hoá base64 (RFC 4648, có '=') s[0..n) vào out, trả số ký tự = 4 * ceil(n / 3)
+include ../../lit_program/std/core.lit
+
+data B64 Byte {
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+}
+
+func b64_ch bv8 %i:bv64 {
+    @req ult %i 64
+    @b0
+        %t = addr B64
+        %p = slice %t %i ptr<Byte,1>
+        %c = load %p 0 bv8
+        ret %c
+}
+
+# nhóm 24 bit %w (k = 1..3 byte thật) -> 4 ký tự ở out[o..o+4)
+func b64_put void %cap:bv64 %out:ptr<Byte,%cap> %o:bv64 %w:bv64 %k:bv64 {
+    @req uge %k 1
+    @req ule %k 3
+    @req ult %w 0x1000000
+    @req uge %cap 4
+    @req ule %o sub %cap 4
+    @b0
+        %x0 = lshr %w 18
+        %c0 = call b64_ch %x0
+        %p0 = slice %out %o ptr<Byte,1>
+        store %p0 0 %c0
+        %y1 = lshr %w 12
+        %x1 = and %y1 63
+        %c1 = call b64_ch %x1
+        %o1 = add %o 1
+        %p1 = slice %out %o1 ptr<Byte,1>
+        store %p1 0 %c1
+        %y2 = lshr %w 6
+        %x2 = and %y2 63
+        %o2 = add %o 2
+        %p2 = slice %out %o2 ptr<Byte,1>
+        %x3 = and %w 63
+        %o3 = add %o 3
+        %p3 = slice %out %o3 ptr<Byte,1>
+        %h2 = cmp uge %k 2
+        br %h2 @c2 @pad2
+    @c2
+        %c2 = call b64_ch %x2
+        store %p2 0 %c2
+        %h3 = cmp uge %k 3
+        br %h3 @c3 @pad3
+    @c3
+        %c3 = call b64_ch %x3
+        store %p3 0 %c3
+        ret
+    @pad2
+        store %p2 0 61:bv8
+        store %p3 0 61:bv8
+        ret
+    @pad3
+        store %p3 0 61:bv8
+        ret
+}
+
+# Đặc tả mong muốn: cap >= 4*ceil(n/3) thì ghi đủ và r == 4*ceil(n/3). Z3 (bit-vector 64-bit) hết giờ cả với dạng
+# có udiv lẫn dạng tuyến tính không chia (4n <= 3r <= 4n+8), xem bench/tasks.md bài 13. Hôm nay đành KIỂM TRA LÚC CHẠY:
+# hết chỗ thì dừng (cắt bớt), và chỉ hứa r <= cap, r chia hết cho 4.
+func base64_enc bv64 %n:bv64 %s:ptr<Byte,%n> %cap:bv64 %out:ptr<Byte,%cap> {
+    @ens ule %r %cap
+    @ens eq and %r 3 0
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %o:bv64
+        @inv ule %i %n
+        @inv ule %o %cap
+        @inv eq and %o 3 0
+        %rest = sub %n %i
+        %room = sub %cap %o
+        %fits = cmp uge %room 4
+        br %fits @chk @stop
+    @stop
+        ret %o
+    @chk
+        %full = cmp uge %rest 3
+        br %full @grp @tail
+    @grp
+        %p0 = slice %s %i ptr<Byte,1>
+        %b0 = load %p0 0 bv8
+        %i1 = add %i 1
+        %p1 = slice %s %i1 ptr<Byte,1>
+        %b1 = load %p1 0 bv8
+        %i2 = add %i 2
+        %p2 = slice %s %i2 ptr<Byte,1>
+        %b2 = load %p2 0 bv8
+        %s0 = shl %b0 16
+        %s1 = shl %b1 8
+        %w01 = or %s0 %s1
+        %w = or %w01 %b2
+        call b64_put %cap %out %o %w 3
+        %i3 = add %i 3
+        %o4 = add %o 4
+        jmp @l %i3 %o4
+    # 0..2 byte cuối
+    @tail
+        %none = cmp eq %rest 0
+        br %none @end0 @part
+    @end0
+        ret %o
+    @part
+        %q0 = slice %s %i ptr<Byte,1>
+        %c0 = load %q0 0 bv8
+        %t0 = shl %c0 16
+        %two = cmp ugt %rest 1
+        br %two @part2 @part1
+    @part1
+        jmp @emit %t0
+    @part2
+        %tj = add %i 1
+        %q1 = slice %s %tj ptr<Byte,1>
+        %c1 = load %q1 0 bv8
+        %t1 = shl %c1 8
+        %tw = or %t0 %t1
+        jmp @emit %tw
+    @emit %v:bv64
+        @inv ult %v 0x1000000
+        call b64_put %cap %out %o %v %rest
+        %end = add %o 4
+        ret %end
+}

@@ -1,0 +1,22 @@
+# Light-Bench 02 — phần tử lớn nhất của mảng khác rỗng
+include ../../lit_program/std/core.lit
+
+func max_q bv64 %n:bv64 %a:ptr<DiskQword,%n> {
+    @req uge %n 1
+    @b0
+        %p0 = slice %a 0 ptr<DiskQword,1>
+        %v0 = load %p0 0 bv64
+        jmp @l 1 %v0
+    @l %i:bv64 %m:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %p = slice %a %i ptr<DiskQword,1>
+        %v = load %p 0 bv64
+        %m2 = call math_max %m %v
+        %i2 = add %i 1
+        jmp @l %i2 %m2
+    @done
+        ret %m
+}

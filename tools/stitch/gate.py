@@ -10,6 +10,7 @@ Các bước:
   4. light stack-report (khung stack thật <= cận verifier)
   5. cgtest --fuzz (mã máy == trình thông dịch trên chương trình ngẫu nhiên)
   6. tools/mandel_model.py test (đối chiếu TỪNG BIT các hàm số học của std với mô hình Python)
+  7. Light-Bench: `light check` + stack-report từng file bench/today/*.lit, rồi tools/bench.py test (mã máy == mô hình)
 """
 import glob
 import os
@@ -39,6 +40,11 @@ def main():
     ok = ok and step("light stack-report", ["./target/release/light", "stack-report"])
     ok = ok and step("cgtest --fuzz 1000", ["./target/release/cgtest", "--fuzz", "1000"])
     ok = ok and step("mandel_model.py test", [PY, "tools/mandel_model.py", "test"])
+    bench = sorted(glob.glob(os.path.join(REPO, "bench", "today", "*.lit")))
+    for f in bench:
+        ok = ok and step(f"light check {os.path.relpath(f, REPO)}", ["./target/release/light", "check", f])
+    ok = ok and step("light stack-report bench", ["./target/release/light", "stack-report", *bench])
+    ok = ok and step("bench.py test", [PY, "tools/bench.py", "test"])
     print("CỔNG:", "QUA" if ok else "TRƯỢT")
     sys.exit(0 if ok else 1)
 

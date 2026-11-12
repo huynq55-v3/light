@@ -1,0 +1,41 @@
+# Light-Bench 07 — s[0..n) là số thập phân (n >= 1, chỉ chữ số, giá trị < 2^64) -> out[0] = giá trị, trả 1;
+# ngược lại trả 0 và không ghi out.
+include ../../lit_program/std/core.lit
+
+func parse_dec bv64 %n:bv64 %s:ptr<Byte,%n> %out:ptr<DiskQword,1> {
+    @ens ule %r 1
+    @b0
+        %empty = cmp eq %n 0
+        br %empty @bad @start
+    @start
+        jmp @l 0 0
+    @l %i:bv64 %acc:bv64
+        @inv ule %i %n
+        %more = cmp ult %i %n
+        br %more @body @ok
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %lo = cmp uge %v 48
+        %hi = cmp ule %v 57
+        %dig = and %lo %hi
+        %isd = cmp ne %dig 0
+        br %isd @digit @bad
+    @digit
+        %d = sub %v 48
+        %o1 = mul_ovf %acc 10
+        %t = mul_wrap %acc 10
+        %o2 = add_ovf %t %d
+        %o = or %o1 %o2
+        %ovf = cmp ne %o 0
+        br %ovf @bad @acc_
+    @acc_
+        %acc2 = add_wrap %t %d
+        %i2 = add %i 1
+        jmp @l %i2 %acc2
+    @ok
+        store %out 0 %acc
+        ret 1
+    @bad
+        ret 0
+}

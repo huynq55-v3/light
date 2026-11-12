@@ -1,0 +1,22 @@
+# Light-Bench 06 — số byte '\n' (10) trong s[0..n)  (như `wc -l`)
+include ../../lit_program/std/core.lit
+
+func count_lines_b bv64 %n:bv64 %s:ptr<Byte,%n> {
+    @ens ule %r %n
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %c:bv64
+        @inv ule %i %n
+        @inv ule %c %i
+        %more = cmp ult %i %n
+        br %more @body @done
+    @body
+        %p = slice %s %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %nl = cmp eq %v 10
+        %c2 = add %c %nl
+        %i2 = add %i 1
+        jmp @l %i2 %c2
+    @done
+        ret %c
+}

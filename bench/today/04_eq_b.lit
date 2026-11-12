@@ -1,0 +1,28 @@
+# Light-Bench 04 — 1 nếu a[0..k) == b[0..k), ngược lại 0
+include ../../lit_program/std/core.lit
+
+func eq_b bv64 %n:bv64 %a:ptr<Byte,%n> %m:bv64 %b:ptr<Byte,%m> %k:bv64 {
+    @req ule %k %n
+    @req ule %k %m
+    @ens ule %r 1
+    @b0
+        jmp @l 0
+    @l %i:bv64
+        @inv ule %i %k
+        %more = cmp ult %i %k
+        br %more @body @same
+    @body
+        %pa = slice %a %i ptr<Byte,1>
+        %va = load %pa 0 bv8
+        %pb = slice %b %i ptr<Byte,1>
+        %vb = load %pb 0 bv8
+        %eq = cmp eq %va %vb
+        br %eq @next @diff
+    @next
+        %i2 = add %i 1
+        jmp @l %i2
+    @same
+        ret 1
+    @diff
+        ret 0
+}
