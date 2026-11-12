@@ -1,0 +1,229 @@
+# File: lit_program/std/fixq.lit
+# LIGHT STD — số điểm cố định Q4.60 có dấu (bù hai trên bv64: giá trị = v / 2^60, khoảng [-8, 8)) + lõi Mandelbrot.
+# Light chưa có số thực và chưa có phép nhân lấy nửa cao 128 bit: fq_mul ghép từ 4 tích 32x32 bit. Mọi phép ở đây là
+# _wrap (quay vòng, không đòi Z3 chứng minh không tràn): ĐÚNG ĐẮN SỐ HỌC không do verifier bảo đảm mà do mô hình Python
+# tools/mandel_model.py đối chiếu từng bit (cgtest --call). Verifier vẫn bảo đảm an toàn bộ nhớ / dừng của vòng lặp.
+
+def FQ_ONE 0x1000000000000000                   # 1.0
+def FQ_TWO 0x2000000000000000                   # 2.0
+def FQ_FOUR 0x4000000000000000                  # 4.0
+
+# |a| và mặt nạ dấu: m = 0 (a >= 0) hoặc 0xff..ff (a < 0); |a| = (a xor m) - m
+func fq_mask bv64 %a:bv64 {
+    @b0
+        %s = lshr %a 63
+        %m = sub_wrap 0 %s
+        ret %m
+}
+
+func fq_abs bv64 %a:bv64 {
+    @b0
+        %m = call fq_mask %a
+        %x = xor %a %m
+        %r = sub_wrap %x %m
+        ret %r
+}
+
+# a * b (Q4.60), làm tròn về 0 trên độ lớn; sai số <= 3 ulp (bỏ phần nhớ của các tích thấp). Chỉ dùng khi |a*b| < 8.
+func fq_mul bv64 %a:bv64 %b:bv64 {
+    @b0
+        %ua = call fq_abs %a
+        %ub = call fq_abs %b
+        %sx = xor %a %b
+        %sm = call fq_mask %sx
+        %ah = lshr %ua 32
+        %al = and %ua 0xffffffff
+        %bh = lshr %ub 32
+        %bl = and %ub 0xffffffff
+        %hh = mul_wrap %ah %bh
+        %hl = mul_wrap %ah %bl
+        %lh = mul_wrap %al %bh
+        %ll = mul_wrap %al %bl
+        %h4 = shl %hh 4
+        %m1 = lshr %hl 28
+        %m2 = lshr %lh 28
+        %l60 = lshr %ll 60
+        %s1 = add_wrap %h4 %m1
+        %s2 = add_wrap %s1 %m2
+        %u = add_wrap %s2 %l60
+        %x = xor %u %sm
+        %r = sub_wrap %x %sm
+        ret %r
+}
+
+# Số vòng lặp z <- z^2 + c (z0 = 0) trước khi thoát (|zx| > 2, |zy| > 2 hoặc |z|^2 > 4); = maxit nếu không thoát.
+# Kiểm tra |zx|, |zy| <= 2 TRƯỚC khi bình phương nên mọi tích nằm trong [-8, 8) khi |c| <= 2.
+# Kết quả đúng TỪNG BIT như dùng fq_mul cho cả 3 tích (bình phương: hl = lh nên cộng (hl>>28) hai lần), nhưng viết liền
+# trong vòng lặp (không gọi hàm) và DÒ CHU KỲ kiểu Brent: số điểm cố định là tất định, nên z quay lại đúng một giá trị
+# đã lưu (đã qua kiểm tra thoát) thì quỹ đạo tuần hoàn mãi -> không bao giờ thoát -> trả maxit sớm.
+func mb_iter bv64 %cx:bv64 %cy:bv64 %maxit:bv64 {
+    @ens ule %r %maxit
+    @b0
+        jmp @l 0 0 0 0 0 8
+    @l %n:bv64 %zx:bv64 %zy:bv64 %px:bv64 %py:bv64 %lim:bv64
+        @inv ule %n %maxit
+        @dec sub %maxit %n
+        %more = cmp ult %n %maxit
+        br %more @chk @inside
+    @chk
+        %sx = lshr %zx 63
+        %mx = sub_wrap 0 %sx
+        %ax0 = xor %zx %mx
+        %ax = sub_wrap %ax0 %mx
+        %sy = lshr %zy 63
+        %my = sub_wrap 0 %sy
+        %ay0 = xor %zy %my
+        %ay = sub_wrap %ay0 %my
+        %bx = cmp ugt %ax FQ_TWO
+        %by = cmp ugt %ay FQ_TWO
+        %big = or %bx %by
+        br %big @out @sq
+    @sq
+        %xh = lshr %ax 32
+        %xl = and %ax 0xffffffff
+        %yh = lshr %ay 32
+        %yl = and %ay 0xffffffff
+        %xhh = mul_wrap %xh %xh
+        %xhl = mul_wrap %xh %xl
+        %xll = mul_wrap %xl %xl
+        %xa = shl %xhh 4
+        %xb0 = lshr %xhl 28
+        %xb = shl %xb0 1
+        %xc = lshr %xll 60
+        %xs = add_wrap %xa %xb
+        %x2 = add_wrap %xs %xc
+        %yhh = mul_wrap %yh %yh
+        %yhl = mul_wrap %yh %yl
+        %yll = mul_wrap %yl %yl
+        %ya = shl %yhh 4
+        %yb0 = lshr %yhl 28
+        %yb = shl %yb0 1
+        %yc = lshr %yll 60
+        %ys = add_wrap %ya %yb
+        %y2 = add_wrap %ys %yc
+        %r2 = add_wrap %x2 %y2
+        %esc = cmp ugt %r2 FQ_FOUR
+        br %esc @out @step
+    @step
+        %hh = mul_wrap %xh %yh
+        %hl = mul_wrap %xh %yl
+        %lh = mul_wrap %xl %yh
+        %ll = mul_wrap %xl %yl
+        %h4 = shl %hh 4
+        %m1 = lshr %hl 28
+        %m2 = lshr %lh 28
+        %l60 = lshr %ll 60
+        %u1 = add_wrap %h4 %m1
+        %u2 = add_wrap %u1 %m2
+        %u = add_wrap %u2 %l60
+        %sxy = xor %mx %my
+        %ux = xor %u %sxy
+        %xy = sub_wrap %ux %sxy
+        %xy2 = shl %xy 1
+        %nzy = add_wrap %xy2 %cy
+        %d = sub_wrap %x2 %y2
+        %nzx = add_wrap %d %cx
+        %n1 = add %n 1
+        %ex = cmp eq %nzx %px
+        %ey = cmp eq %nzy %py
+        %rep = and %ex %ey
+        br %rep @inside @adv
+    @adv
+        %save = cmp eq %n1 %lim
+        br %save @mark @go
+    @mark
+        %lim2 = shl %lim 1
+        jmp @l %n1 %nzx %nzy %nzx %nzy %lim2
+    @go
+        jmp @l %n1 %nzx %nzy %px %py %lim
+    @out
+        ret %n
+    @inside
+        ret %maxit
+}
+
+# Màu của 5 mốc bảng màu (kiểu "Ultra Fractal": xanh thẫm -> xanh -> trắng ngà -> cam -> gần đen), 0..4
+func mb_key bv64 %k:bv64 {
+    @b0
+        %z = cmp eq %k 0
+        br %z @k0 @n1
+    @n1
+        %o = cmp eq %k 1
+        br %o @k1 @n2
+    @n2
+        %t = cmp eq %k 2
+        br %t @k2 @n3
+    @n3
+        %h = cmp eq %k 3
+        br %h @k3 @k4
+    @k0
+        ret 0x000764
+    @k1
+        ret 0x206bcb
+    @k2
+        ret 0xedffff
+    @k3
+        ret 0xffaa00
+    @k4
+        ret 0x000200
+}
+
+# Pha kênh 8 bit (dịch %sh) giữa a và b theo f/16
+func mb_mix bv64 %a:bv64 %b:bv64 %f:bv64 %sh:bv64 {
+    @req ult %f 16
+    @req ule %sh 16
+    @ens ule %r 0xff0000
+    @b0
+        %ca0 = lshr %a %sh
+        %ca = and %ca0 0xff
+        %cb0 = lshr %b %sh
+        %cb = and %cb0 0xff
+        %g = sub 16 %f
+        %pa = mul %ca %g
+        %pb = mul %cb %f
+        %s = add %pa %pb
+        %v = lshr %s 4
+        %v8 = and %v 0xff
+        %r = shl %v8 %sh
+        ret %r
+}
+
+# Màu điểm ảnh: trong tập -> đen; ngoài -> bảng màu tuần hoàn chu kỳ 80 vòng (5 mốc x 16 bước, pha tuyến tính)
+func mb_color bv32 %n:bv64 %maxit:bv64 {
+    @b0
+        %in = cmp uge %n %maxit
+        br %in @black @pal
+    @black
+        ret 0:bv32
+    @pal
+        %t = urem %n 80
+        %k = lshr %t 4
+        %f = and %t 15
+        %k1a = add %k 1
+        %k1 = urem %k1a 5
+        %a = call mb_key %k
+        %b = call mb_key %k1
+        %r = call mb_mix %a %b %f 16
+        %g = call mb_mix %a %b %f 8
+        %bl = call mb_mix %a %b %f 0
+        %rg = or %r %g
+        %c = or %rg %bl
+        %c32 = narrow %c bv32
+        ret %c32
+}
+
+# Kẹp v (có dấu) vào [-2, 2]
+func fq_clamp2 bv64 %v:bv64 {
+    @b0
+        %lo = cmp slt %v 0xe000000000000000
+        br %lo @neg @c2
+    @c2
+        %hi = cmp sgt %v FQ_TWO
+        br %hi @pos @keep
+    @neg
+        ret 0xe000000000000000
+    @pos
+        ret FQ_TWO
+    @keep
+        ret %v
+}

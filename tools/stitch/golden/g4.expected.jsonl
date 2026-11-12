@@ -33,13 +33,13 @@
 {"cmd": "cat /f.txt | sort | uniq -c", "exit": 0, "stdout": "      1 10 ten\n      1 100 hundred\n      1 9 nine\n      1 Banana split\n      2 apple\n      1 banana\n      1 cherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "sort /f.txt | uniq -c | sort -rn | head -n 2", "exit": 0, "stdout": "      2 apple\n      1 cherry\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "sort /f.txt /f.txt", "exit": 2, "stdout": "", "stderr": "sort: at most one file\n", "truncated": {"stdout": false, "stderr": false}}
-{"cmd": "find /", "exit": 0, "stdout": "/\n/apps\n/apps/editor.elf\n/apps/terminal.elf\n/apps/widgets.elf\n/data\n/data/note.txt\n/f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find /", "exit": 0, "stdout": "/\n/apps\n/apps/editor.elf\n/apps/mandel.elf\n/apps/terminal.elf\n/apps/widgets.elf\n/data\n/data/note.txt\n/f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "find / -type d", "exit": 0, "stdout": "/\n/apps\n/data\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
-{"cmd": "find /apps -name '*.elf'", "exit": 0, "stdout": "/apps/editor.elf\n/apps/terminal.elf\n/apps/widgets.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "find /apps -name '*.elf'", "exit": 0, "stdout": "/apps/editor.elf\n/apps/mandel.elf\n/apps/terminal.elf\n/apps/widgets.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "find -name 'e*'", "exit": 0, "stdout": "/apps/editor.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "find / -type f -name '?.txt'", "exit": 0, "stdout": "/f.txt\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "find /nope", "exit": 1, "stdout": "", "stderr": "find: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
-{"cmd": "cd /apps; find; cd /", "exit": 0, "stdout": "/apps\n/apps/editor.elf\n/apps/terminal.elf\n/apps/widgets.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
+{"cmd": "cd /apps; find; cd /", "exit": 0, "stdout": "/apps\n/apps/editor.elf\n/apps/mandel.elf\n/apps/terminal.elf\n/apps/widgets.elf\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "grep -c an /f.txt > /c.txt; cat /c.txt", "exit": 0, "stdout": "2\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "echo one > /g.txt; echo two >> /g.txt; cat /f.txt /g.txt | tail -n 3", "exit": 0, "stdout": "100 hundred\none\ntwo\n", "stderr": "", "truncated": {"stdout": false, "stderr": false}}
 {"cmd": "cat /nope | wc -l", "exit": 0, "stdout": "0\n", "stderr": "cat: no such file or directory: /nope\n", "truncated": {"stdout": false, "stderr": false}}
