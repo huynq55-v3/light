@@ -1,0 +1,13 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// có break: sau vòng KHÔNG còn biết i >= n
+fn find(n: u64, a: ptr<u8, n>, x: u8) -> u64
+    ensures result == n
+{
+    var i = 0;
+    while i < n invariant i <= n {
+        if a[i] == x { break; }
+        i += 1;
+    }
+    return i;
+}
+include "../../../lit_program/std/core.lit";

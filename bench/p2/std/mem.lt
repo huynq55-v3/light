@@ -1,0 +1,39 @@
+// P2: các hàm có vòng lặp của std/mem.lit
+include "../../../lit_program/std/core.lit";
+
+// p[0..n) = v
+fn mem_fill_q(n: u64, p: ptr<u64, n>, v: u64) {
+    for i in 0..n { p[i] = v; }
+}
+
+fn mem_fill_b(n: u64, p: ptr<u8, n>, v: u8) {
+    for i in 0..n { p[i] = v; }
+}
+
+fn mem_fill_px(n: u64, p: ptr<u32, n>, v: u32) {
+    for i in 0..n { p[i] = v; }
+}
+
+// dst[0..k) = src[0..k)
+fn mem_copy_q(n: u64, dst: ptr<u64, n>, m: u64, src: ptr<u64, m>, k: u64)
+    requires k <= n, k <= m
+{
+    for i in 0..k { dst[i] = src[i]; }
+}
+
+fn mem_copy_b(n: u64, dst: ptr<u8, n>, m: u64, src: ptr<u8, m>, k: u64)
+    requires k <= n, k <= m
+{
+    for i in 0..k { dst[i] = src[i]; }
+}
+
+// 1 nếu a[0..k) == b[0..k), ngược lại 0
+fn mem_eq_b(n: u64, a: ptr<u8, n>, m: u64, b: ptr<u8, m>, k: u64) -> u64
+    requires k <= n, k <= m
+    ensures result <= 1
+{
+    for i in 0..k {
+        if a[i] != b[i] { return 0; }
+    }
+    return 1;
+}

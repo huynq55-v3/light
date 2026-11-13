@@ -1,0 +1,12 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// break vòng ngoài đặt sau một vòng trong
+fn g(n: u64, m: u64) -> u64 ensures result == n {
+    var i = 0;
+    while i < n invariant i <= n {
+        var k = 0;
+        for j in 0..m { k +%= j; }
+        if k == 5 { break; }
+        i += 1;
+    }
+    return i;
+}

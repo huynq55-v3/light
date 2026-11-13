@@ -1,0 +1,181 @@
+// P2: var, while / for, break / continue, invariant / decreases — các hàm phải qua kiểm chứng
+include "../../../lit_program/std/core.lit";
+
+// không có break: sau vòng biết !(i < n) và i <= n nên i == n
+fn count_to(n: u64) -> u64
+    ensures result == n
+{
+    var i = 0;
+    while i < n invariant i <= n {
+        i += 1;
+    }
+    return i;
+}
+
+// break: sau vòng chỉ còn biết i <= n (bất biến), và nếu i < n thì a[i] == x
+fn find(n: u64, a: ptr<u8, n>, x: u8) -> u64
+    ensures result <= n
+{
+    var i = 0;
+    while i < n invariant i <= n {
+        if a[i] == x { break; }
+        i += 1;
+    }
+    return i;
+}
+
+// hoán đổi trong vòng: cạnh lùi `jmp @h b a` phải chép a sang biến tạm (parallel-copy)
+fn swap_k(k: u64) -> u64
+    ensures result == 1 || result == 2
+{
+    var a = 1;
+    var b = 2;
+    for j in 0..k invariant (a == 1 && b == 2) || (a == 2 && b == 1) {
+        let t = a;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
+// continue trong for vẫn tăng i
+fn count_nonzero(n: u64, a: ptr<u8, n>) -> u64
+    ensures result <= n
+{
+    var c = 0;
+    for i in 0..n invariant c <= i {
+        if a[i] == 0 { continue; }
+        c += 1;
+    }
+    return c;
+}
+
+// for a..b với a > b: 0 vòng (không tràn, không lặp vô hạn)
+fn span(a: u64, b: u64) -> u64
+    ensures a >= b ==> result == 0
+{
+    var c = 0;
+    for i in a..b invariant c == i -% a {
+        c += 1;
+    }
+    return c;
+}
+
+// lồng nhau, chỉ vòng trong gán; break chỉ thoát vòng trong
+fn nested(n: u64, m: u64) -> u64 {
+    var c = 0;
+    for i in 0..n {
+        for j in 0..m {
+            if j == 3 { break; }
+            c +%= 1;
+        }
+    }
+    return c;
+}
+
+// while với decreases tự viết, biến u8
+fn halve(x: u64) -> u64
+    ensures result == 0
+{
+    var v = x;
+    var steps: u8 = 0;
+    while v != 0 decreases v {
+        v = v >> 1;
+        if steps < 200 { steps = u8(steps + 1); }
+    }
+    return v;
+}
+
+// gán ở hai nhánh if -> block nối có tham số
+fn absdiff(a: u64, b: u64) -> u64
+    ensures a >= b ==> result == a -% b
+    ensures a < b ==> result == b -% a
+{
+    var d = 0;
+    if a > b { d = a - b; } else { d = b - a; }
+    return d;
+}
+
+// break / continue / return lẫn nhau, biến thay đổi ở nhiều cạnh ra
+fn first_big(n: u64, a: ptr<u64, n>, lim: u64) -> u64
+    ensures result <= n
+{
+    var i = 0;
+    var seen = 0;
+    while i < n invariant i <= n, seen <= i {
+        let v = a[i];
+        i += 1;
+        if v == 0 { continue; }
+        seen += 1;
+        if v > lim { break; }
+    }
+    return i;
+}
+
+// block nối lồng nhau, rồi chép qua if thứ hai
+fn join_chain(a: u64, b: u64) -> u64
+    ensures result == 1 || result == 2 || result == 3 || result == 5
+{
+    var x = 1;
+    if a > 3 { if b > 3 { x = 2; } else { x = 3; } }
+    var y = 0;
+    if b > 10 { y = x; } else { y = 5; }
+    return y;
+}
+
+// break vòng ngoài sau vòng trong
+fn outer_break(n: u64, m: u64) -> u64
+    ensures result <= n
+{
+    var i = 0;
+    while i < n invariant i <= n {
+        var k = 0;
+        for j in 0..m { k +%= j; }
+        if k == 5 { break; }
+        i += 1;
+    }
+    return i;
+}
+
+// hoán đổi biến u8: chép tạm bằng narrow cùng bề rộng
+fn swap8(k: u64) -> u64
+    ensures result == 0x201 || result == 0x102
+{
+    var a: u8 = 1;
+    var b: u8 = 2;
+    for j in 0..k invariant (a == 1 && b == 2) || (a == 2 && b == 1) {
+        let t = a;
+        a = b;
+        b = t;
+    }
+    return u64(a) | (u64(b) << 8);
+}
+
+// vòng không có cạnh lùi (return / break ngay vòng đầu)
+fn first_index(n: u64) -> u64 ensures result <= n {
+    for i in 0..n { return i; }
+    return n;
+}
+fn once(n: u64) -> u64 ensures result <= 1 {
+    var i = 0;
+    while i < n { i += 1; break; }
+    return i;
+}
+
+// điều kiện && có đọc bộ nhớ (ngắn mạch)
+fn strnlen_and(n: u64, s: ptr<u8, n>) -> u64
+    ensures result <= n
+{
+    var i = 0;
+    while i < n && s[i] != 0 invariant i <= n { i += 1; }
+    return i;
+}
+
+// var khởi tạo bằng hằng có kiểu
+fn sat_count(n: u64) -> u64
+    ensures result <= 200
+{
+    var c = u8(5);
+    for i in 0..n invariant c <= 200 { if c < 200 { c = u8(c + 1); } }
+    return u64(c);
+}

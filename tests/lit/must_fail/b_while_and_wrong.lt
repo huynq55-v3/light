@@ -1,0 +1,8 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// while a && b: ra khỏi vòng chỉ biết !(a && b), không biết !a
+include "../../../lit_program/std/core.lit";
+fn f(n: u64, s: ptr<u8, n>) -> u64 ensures result == n {
+    var i = 0;
+    while i < n && s[i] != 0 invariant i <= n { i += 1; }
+    return i;
+}

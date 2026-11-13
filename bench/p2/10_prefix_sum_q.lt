@@ -1,0 +1,12 @@
+// Light-Bench 10 — out[k] = (a[0] + ... + a[k]) mod 2^64 với mọi k < n
+include "../../lit_program/std/core.lit";
+
+fn prefix_sum_q(n: u64, a: ptr<u64, n>, m: u64, out: ptr<u64, m>)
+    requires n <= m
+{
+    var s = 0;
+    for i in 0..n {
+        s +%= a[i];
+        out[i] = s;
+    }
+}

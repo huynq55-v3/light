@@ -1,0 +1,13 @@
+// Light-Bench 15 — căn bậc hai nguyên: r lớn nhất có r*r <= x
+// Đặc tả mong muốn r*r <= x < (r+1)*(r+1) làm Z3 hết giờ (bench/tasks.md bài 15): hôm nay chỉ còn cận r < 2^32.
+fn isqrt(x: u64) -> u64
+    ensures result <= 0xffffffff
+{
+    var lo = 0;
+    var hi = 0x100000000;
+    while hi - lo > 1 invariant lo < hi, hi <= 0x100000000 decreases hi -% lo {
+        let mid = lo + ((hi - lo) >> 1);
+        if mid * mid <= x { lo = mid; } else { hi = mid; }
+    }
+    return lo;
+}

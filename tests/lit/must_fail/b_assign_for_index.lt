@@ -1,0 +1,6 @@
+// EXPECT: không gán lại được
+fn f(n: u64) -> u64 {
+    var c = 0;
+    for i in 0..n { i = i + 1; c +%= 1; }
+    return c;
+}

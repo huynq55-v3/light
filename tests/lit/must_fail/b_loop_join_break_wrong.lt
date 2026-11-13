@@ -1,0 +1,13 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// block nối của if trong thân vòng, rồi break: sau vòng không biết i == n
+include "../../../lit_program/std/core.lit";
+fn f(n: u64, a: ptr<u8, n>) -> u64 ensures result == n {
+    var i = 0;
+    var c = 0;
+    while i < n invariant i <= n {
+        if a[i] == 1 { c +%= 1; } else { c +%= 2; }
+        if c == 100 { break; }
+        i += 1;
+    }
+    return i;
+}

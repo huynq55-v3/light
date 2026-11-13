@@ -1,0 +1,13 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// continue bỏ qua c += 1 nên c có thể < n
+fn f(n: u64, a: ptr<u8, n>) -> u64
+    ensures result == n
+{
+    var c = 0;
+    for i in 0..n invariant c <= i {
+        if a[i] == 0 { continue; }
+        c += 1;
+    }
+    return c;
+}
+include "../../../lit_program/std/core.lit";

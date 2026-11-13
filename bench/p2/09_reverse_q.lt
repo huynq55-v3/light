@@ -1,0 +1,15 @@
+// Light-Bench 09 — đảo ngược a[0..n) tại chỗ
+include "../../lit_program/std/core.lit";
+
+fn reverse_q(n: u64, a: ptr<u64, n>) {
+    var i = 0;
+    var j = n;
+    while j - i > 1 invariant i <= j, j <= n decreases j -% i {
+        j -= 1;
+        let x = a[i];
+        let y = a[j];
+        a[i] = y;
+        a[j] = x;
+        i += 1;
+    }
+}

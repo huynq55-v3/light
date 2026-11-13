@@ -1,0 +1,5 @@
+// EXPECT: là tham số, không gán lại được
+fn f(n: u64) -> u64 {
+    n = n + 1;
+    return n;
+}

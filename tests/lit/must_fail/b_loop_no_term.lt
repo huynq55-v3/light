@@ -1,0 +1,8 @@
+// EXPECT: dừng
+fn f(x: u64) -> u64 {
+    var v = x;
+    while v != 0 {
+        v = v -% 2;
+    }
+    return v;
+}

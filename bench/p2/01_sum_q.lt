@@ -1,0 +1,10 @@
+// Light-Bench 01 — tổng các phần tử (quay vòng mod 2^64)
+include "../../lit_program/std/core.lit";
+
+fn sum_q(n: u64, a: ptr<u64, n>) -> u64 {
+    var s = 0;
+    for i in 0..n {
+        s +%= a[i];
+    }
+    return s;
+}

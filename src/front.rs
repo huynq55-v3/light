@@ -34,7 +34,8 @@ struct T {
 }
 
 const PUNCTS: &[&str] = &[
-    "<==>", "==>", "+%", "-%", "*%", "+|", "-|", "*|", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "->", "..",
+    "<==>", "+%=", "-%=", "*%=", "+|=", "-|=", "*|=", "<<=", ">>=", "==>", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
+    "^=", "+%", "-%", "*%", "+|", "-|", "*|", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "->", "..",
     "(", ")", "{", "}", "[", "]", ",", ";", ":", ".", "=", "<", ">", "+", "-", "*", "/", "%", "&", "|", "^", "!", "~",
 ];
 
@@ -168,6 +169,12 @@ enum TyB {
 #[derive(Clone, Debug)]
 enum S {
     Let(String, Option<TyB>, E, Pos),
+    Var(String, Option<TyB>, E, Pos),
+    Assign(String, E, Pos), // x = e (x op= e đã được viết lại thành x = x op e)
+    While { cond: E, invs: Vec<E>, dec: Option<E>, body: Vec<S>, p: Pos, end: Pos },
+    For { var: String, from: E, to: E, invs: Vec<E>, body: Vec<S>, p: Pos, end: Pos },
+    Break(Pos),
+    Continue(Pos),
     Store(E, E, Pos),
     Expr(E, Pos),
     If(E, Vec<S>, Option<Vec<S>>, Pos),
@@ -395,15 +402,50 @@ impl<'a> Ps<'a> {
     }
 
     fn block(&mut self) -> Result<Vec<S>, String> {
+        Ok(self.block_end()?.0)
+    }
+
+    /// `{ ... }` kèm vị trí dấu `}` (cạnh lùi của vòng lặp báo lỗi ở đó)
+    fn block_end(&mut self) -> Result<(Vec<S>, Pos), String> {
         self.expect("{")?;
         let mut out = Vec::new();
-        while !self.eat("}") {
+        loop {
+            let p = self.pos();
+            if self.eat("}") {
+                return Ok((out, p));
+            }
             if *self.peek() == Tok::Eof {
                 return self.err("thiếu '}'");
             }
             out.push(self.stmt()?);
         }
-        Ok(out)
+    }
+
+    /// `invariant e, e ... decreases e` (lặp lại được) trước thân vòng lặp
+    fn loop_annots(&mut self, allow_dec: bool) -> Result<(Vec<E>, Option<E>), String> {
+        let (mut invs, mut dec) = (Vec::new(), None);
+        loop {
+            if self.is_kw("invariant") {
+                self.i += 1;
+                loop {
+                    invs.push(self.expr(0)?);
+                    if !self.eat(",") {
+                        break;
+                    }
+                }
+            } else if self.is_kw("decreases") {
+                if !allow_dec {
+                    return self.err("for tự sinh decreases (to - i): không cần viết");
+                }
+                if dec.is_some() {
+                    return self.err("chỉ một decreases cho mỗi vòng");
+                }
+                self.i += 1;
+                dec = Some(self.expr(0)?);
+            } else {
+                return Ok((invs, dec));
+            }
+        }
     }
 
     fn stmt(&mut self) -> Result<S, String> {
@@ -426,15 +468,66 @@ impl<'a> Ps<'a> {
             self.expect(";")?;
             return Ok(S::Ret(e, p));
         }
-        for kw in ["while", "for", "loop", "var", "break", "continue"] {
+        if self.is_kw("var") {
+            self.i += 1;
+            let n = self.ident()?;
+            let ty = if self.eat(":") { Some(self.ty()?) } else { None };
+            self.expect("=")?;
+            let e = self.expr(0)?;
+            self.expect(";")?;
+            return Ok(S::Var(n, ty, e, p));
+        }
+        if self.is_kw("while") {
+            self.i += 1;
+            let cond = self.expr(0)?;
+            let (invs, dec) = self.loop_annots(true)?;
+            let (body, end) = self.block_end()?;
+            return Ok(S::While { cond, invs, dec, body, p, end });
+        }
+        if self.is_kw("for") {
+            // for i in a..b invariant ... { }
+            self.i += 1;
+            let var = self.ident()?;
+            if !self.is_kw("in") {
+                return self.err("cần `in`: for i in a..b { ... }");
+            }
+            self.i += 1;
+            let from = self.expr(0)?;
+            self.expect("..")?;
+            let to = self.expr(0)?;
+            let (invs, _) = self.loop_annots(false)?;
+            let (body, end) = self.block_end()?;
+            return Ok(S::For { var, from, to, invs, body, p, end });
+        }
+        for (kw, mk) in [("break", S::Break as fn(Pos) -> S), ("continue", S::Continue)] {
             if self.is_kw(kw) {
-                return self.err(&format!("'{}' chưa có (P2: vòng lặp và biến thay đổi được)", kw));
+                self.i += 1;
+                self.expect(";")?;
+                return Ok(mk(p));
             }
         }
+        if self.is_kw("loop") {
+            return self.err("không có `loop` (vòng vô hạn): dùng while <điều kiện> decreases <biểu thức>");
+        }
         let e = self.expr(0)?;
-        if self.eat("=") {
-            let v = self.expr(0)?;
+        let compound = match *self.peek() {
+            Tok::P(op) if op.len() >= 2 && op.ends_with('=') && !matches!(op, "==" | "!=" | "<=" | ">=") => {
+                Some(&op[..op.len() - 1])
+            }
+            _ => None,
+        };
+        if compound.is_some() || self.is("=") {
+            let op_pos = self.pos();
+            self.i += 1;
+            let mut v = self.expr(0)?;
             self.expect(";")?;
+            if let Some(op) = compound {
+                let op: &'static str = PUNCTS.iter().find(|q| **q == op).unwrap();
+                v = E { k: EK::Bin(op, Box::new(e.clone()), Box::new(v)), p: op_pos };
+            }
+            if let EK::Name(n) = &e.k {
+                return Ok(S::Assign(n.clone(), v, p));
+            }
             return Ok(S::Store(e, v, p));
         }
         self.expect(";")?;
@@ -593,6 +686,10 @@ impl Decls {
         for f in &m.funcs {
             let ret = match f.ret_ty {
                 None => None,
+                // con trỏ độ dài tĩnh (vd mbr_num -> ptr<DiskQword,17>); độ dài động theo tham số: chưa hỗ trợ
+                Some(Type::Ptr { layout_id, max_elems }) => {
+                    Some(VT::Ptr(m.layouts[layout_id as usize].name.clone(), max_elems.to_string()))
+                }
                 Some(t) => Some(bits_of(t).map_or(VT::Other, VT::Int)),
             };
             self.funcs.insert(f.name.clone(), Sig { nparams: f.params.len(), ret });
@@ -662,6 +759,42 @@ struct Fx<'a> {
     term: bool,
     ret: Option<TyB>,
     params: HashSet<String>,
+    /// tên khai báo bằng `var` theo từng tầng scope (song song với `scopes`)
+    vars: Vec<Vec<String>>,
+    loops: Vec<Lp>,
+}
+
+/// Vòng lặp đang hạ: đầu vòng (block có tham số) và các cạnh `break` chờ nối vào block sau vòng
+struct Lp {
+    head: String,
+    /// tham số của đầu vòng: [chỉ số for] + biến bị gán trong thân
+    hparams: Vec<String>,
+    /// chỉ số `for` (thanh ghi) — cạnh lùi truyền i + 1
+    idx: Option<String>,
+    /// biến `var` thấy được lúc vào vòng / giá trị lúc vào / tập bị gán trong thân
+    vars: Vec<String>,
+    env0: Vec<V>,
+    modified: Vec<String>,
+    breaks: Vec<(usize, Vec<V>)>,
+}
+
+/// Mọi tên bị gán (`x = ...`) trong thân, kể cả trong if / vòng lồng nhau (tập lớn hơn hoặc bằng tập thật)
+fn assigned(ss: &[S], out: &mut HashSet<String>) {
+    for s in ss {
+        match s {
+            S::Assign(n, ..) => {
+                out.insert(n.clone());
+            }
+            S::If(_, t, e, _) => {
+                assigned(t, out);
+                if let Some(e) = e {
+                    assigned(e, out);
+                }
+            }
+            S::While { body, .. } | S::For { body, .. } => assigned(body, out),
+            _ => {}
+        }
+    }
 }
 
 impl Fx<'_> {
@@ -700,6 +833,145 @@ impl Fx<'_> {
             cand = format!("{}_{}", n, k);
         }
         cand
+    }
+
+    // ---- biến `var` ----
+    fn is_var(&self, n: &str) -> bool {
+        self.vars.iter().any(|v| v.iter().any(|x| x == n))
+    }
+    /// biến `var` thấy được (theo thứ tự khai báo)
+    fn visible_vars(&self) -> Vec<String> {
+        self.vars.iter().flatten().cloned().collect()
+    }
+    fn snapshot(&self, names: &[String]) -> Vec<V> {
+        names.iter().map(|n| self.lookup(n).expect("biến var phải thấy được")).collect()
+    }
+    fn set_var(&mut self, n: &str, v: V) {
+        for s in self.scopes.iter_mut().rev() {
+            if let Some(x) = s.get_mut(n) {
+                *x = v;
+                return;
+            }
+        }
+        unreachable!("set_var {}", n)
+    }
+    fn restore(&mut self, names: &[String], env: &[V]) {
+        for (n, v) in names.iter().zip(env) {
+            self.set_var(n, v.clone());
+        }
+    }
+    /// Giá trị `v` đưa về số nguyên đúng `bits` bit, nằm trong thanh ghi (biến var luôn là thanh ghi có kiểu cố định)
+    fn materialize(&mut self, v: V, bits: u32, want: &str, p: Pos, what: &str) -> Result<V, String> {
+        if v.t == VT::Lit {
+            let raw = self.fit(v, bits, p, what)?;
+            self.emit(p, format!("{} = const {} bv{}", want, raw.split(':').next().unwrap(), bits));
+            return Ok(V { s: want.into(), t: VT::Int(bits) });
+        }
+        let s = self.fit(v, bits, p, what)?;
+        Ok(V { s, t: VT::Int(bits) })
+    }
+    /// `jmp @l` chưa có đối số: vị trí dòng để vá khi biết tham số của block nối
+    fn jmp_placeholder(&mut self, p: Pos, l: &str) -> usize {
+        self.emit(p, format!("jmp @{}", l));
+        self.term = true;
+        self.out.len() - 1
+    }
+    /// Block nối `l` của các cạnh `edges` (dòng jmp, giá trị các biến `names` trên cạnh đó). Biến có giá trị khác nhau
+    /// giữa các cạnh thành tham số của block; vá đối số vào từng jmp. Không cạnh nào tới -> không sinh block (term).
+    fn join(&mut self, l: &str, p: Pos, names: &[String], edges: Vec<(usize, Vec<V>)>) {
+        if edges.is_empty() {
+            self.term = true;
+            return;
+        }
+        let differ: Vec<usize> =
+            (0..names.len()).filter(|&k| edges.iter().any(|(_, env)| env[k].s != edges[0].1[k].s)).collect();
+        let mut head = format!("    @{}", l);
+        let mut regs = Vec::new();
+        for &k in &differ {
+            let VT::Int(b) = edges[0].1[k].t else { unreachable!() };
+            let r = format!("%{}", self.fresh_name(&mangle(&names[k])));
+            head.push_str(&format!(" {}:bv{}", r, b));
+            regs.push(V { s: r, t: VT::Int(b) });
+        }
+        for (idx, env) in &edges {
+            let args: String = differ.iter().map(|&k| format!(" {}", env[k].s)).collect();
+            self.out[*idx].0 = format!("        jmp @{}{}", l, args);
+        }
+        let env0 = edges[0].1.clone();
+        self.out.push((head, self.org(p)));
+        self.term = false;
+        self.restore(names, &env0);
+        for (&k, v) in differ.iter().zip(regs) {
+            self.set_var(&names[k], v);
+        }
+    }
+    /// Cạnh lùi về đầu vòng `self.loops[li]` (cuối thân hoặc `continue`)
+    fn back_jmp(&mut self, li: usize, p: Pos) -> Result<(), String> {
+        let lp = &self.loops[li];
+        let (head, hparams, idx) = (lp.head.clone(), lp.hparams.clone(), lp.idx.clone());
+        let (vars, env0, modified) = (lp.vars.clone(), lp.env0.clone(), lp.modified.clone());
+        self.check_unmodified(&vars, &env0, &modified, p)?;
+        let mut args = Vec::new();
+        if let Some(i) = idx {
+            let d = self.dst(None);
+            self.emit(p, format!("{} = add {} 1", d, i));
+            args.push(V { s: d, t: VT::Int(64) });
+        }
+        args.extend(self.snapshot(&modified));
+        // parallel-copy: đối số trùng tham số đứng TRƯỚC của đầu vòng (vd hoán đổi a, b) -> chép sang biến tạm
+        let mut ss = Vec::new();
+        for (j, a) in args.iter().enumerate() {
+            if hparams[..j].contains(&a.s) {
+                let VT::Int(b) = a.t else { unreachable!() };
+                let d = self.dst(None);
+                if b == 64 {
+                    self.emit(p, format!("{} = or {} 0", d, a.s));
+                } else {
+                    self.emit(p, format!("{} = narrow {} bv{}", d, a.s, b));
+                }
+                ss.push(d);
+            } else {
+                ss.push(a.s.clone());
+            }
+        }
+        let tail: String = ss.iter().map(|x| format!(" {}", x)).collect();
+        self.emit(p, format!("jmp @{}{}", head, tail));
+        self.term = true;
+        Ok(())
+    }
+    /// Kiểm nội bộ: biến không nằm trong tập bị gán thì phải giữ nguyên giá trị lúc vào vòng
+    fn check_unmodified(&self, vars: &[String], env0: &[V], modified: &[String], p: Pos) -> Result<(), String> {
+        for (n, v0) in vars.iter().zip(env0) {
+            if !modified.contains(n) && self.lookup(n).map(|v| v.s) != Some(v0.s.clone()) {
+                return self.err(p, &format!("lỗi nội bộ front-end: biến '{}' đổi giá trị nhưng không có trong tập bị gán", n));
+            }
+        }
+        Ok(())
+    }
+    /// tên -> toán hạng SSA của mọi biến / tham số đang thấy (cho invariant / decreases)
+    fn names_map(&self) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        for sc in &self.scopes {
+            for (n, v) in sc {
+                if v.s.starts_with('%') {
+                    m.insert(n.clone(), v.s.clone());
+                }
+            }
+        }
+        m
+    }
+    fn new_binding_ok(&self, n: &str, is_var: bool, p: Pos) -> Result<(), String> {
+        check_ident(n, self.file, p)?;
+        if n == "result" {
+            return self.err(p, "'result' là từ khóa của ensures");
+        }
+        if self.is_var(n) {
+            return self.err(p, &format!("'{}' trùng tên biến var đang thấy (không cho che biến var)", n));
+        }
+        if is_var && self.lookup(n).is_some() {
+            return self.err(p, &format!("biến var '{}' trùng tên đang thấy (tham số / let): đặt tên khác", n));
+        }
+        Ok(())
     }
 
     // ---- biểu thức (giá trị) ----
@@ -1045,16 +1317,19 @@ impl Fx<'_> {
     // ---- câu lệnh ----
     fn stmts(&mut self, ss: &[S]) -> Result<(), String> {
         self.scopes.push(HashMap::new());
+        self.vars.push(Vec::new());
         for s in ss {
             let p = match s {
-                S::Let(.., p) | S::Store(.., p) | S::Expr(_, p) | S::If(.., p) | S::Ret(_, p) => *p,
+                S::Let(.., p) | S::Var(.., p) | S::Assign(.., p) | S::Store(.., p) | S::Expr(_, p) | S::If(.., p) => *p,
+                S::Ret(_, p) | S::Break(p) | S::Continue(p) | S::While { p, .. } | S::For { p, .. } => *p,
             };
             if self.term {
-                return self.err(p, "câu lệnh không bao giờ chạy tới (sau return)");
+                return self.err(p, "câu lệnh không bao giờ chạy tới (sau return / break / continue)");
             }
             self.stmt(s)?;
         }
         self.scopes.pop();
+        self.vars.pop();
         Ok(())
     }
 
@@ -1064,7 +1339,7 @@ impl Fx<'_> {
                 if self.params.contains(n) || n == "result" {
                     return self.err(*p, &format!("'{}' trùng tên tham số / từ khóa", n));
                 }
-                check_ident(n, self.file, *p)?;
+                self.new_binding_ok(n, false, *p)?;
                 let name = self.fresh_name(&mangle(n));
                 let want = format!("%{}", name);
                 let v = self.expr(e, Some(want.clone()), true)?;
@@ -1112,7 +1387,7 @@ impl Fx<'_> {
                         let (off, bits) = self.field(&lay, f, place.p)?;
                         (c, off, bits, v)
                     }
-                    _ => return self.err(place.p, "chỉ gán được vào bộ nhớ: p[i] = ..., p.f = ..., p[i].f = ... (biến thay đổi được: P2)"),
+                    _ => return self.err(place.p, "chỉ gán được vào bộ nhớ: p[i] = ..., p.f = ..., p[i].f = ... (biến: khai báo `var x = ...;` rồi `x = ...;`)"),
                 };
                 let s = self.fit(v, bits, *p, "ghi bộ nhớ")?;
                 self.emit(*p, format!("store {} {} {}", c, off, s));
@@ -1145,32 +1420,219 @@ impl Fx<'_> {
             }
             S::If(c, then, els, p) => {
                 let (lt, le, lj) = (self.new_label("then"), self.new_label("else"), self.new_label("endif"));
-                let f = if els.is_some() { le.clone() } else { lj.clone() };
-                self.cond(c, &lt, &f)?;
+                let names = self.visible_vars();
+                let env0 = self.snapshot(&names);
+                self.cond(c, &lt, &le)?;
                 self.label(*p, &lt);
                 self.stmts(then)?;
-                let mut join = !self.term;
-                if join {
-                    self.emit(*p, format!("jmp @{}", lj));
-                    self.term = true;
+                let mut edges = Vec::new();
+                if !self.term {
+                    let i = self.jmp_placeholder(*p, &lj);
+                    edges.push((i, self.snapshot(&names)));
                 }
+                self.restore(&names, &env0);
+                self.label(*p, &le); // luôn có block else: br không nhảy thẳng được tới block nối có tham số
                 if let Some(es) = els {
-                    self.label(*p, &le);
                     self.stmts(es)?;
-                    if !self.term {
-                        self.emit(*p, format!("jmp @{}", lj));
-                        self.term = true;
-                        join = true;
-                    }
-                } else {
-                    join = true;
                 }
-                if join {
-                    self.label(*p, &lj);
+                if !self.term {
+                    let i = self.jmp_placeholder(*p, &lj);
+                    edges.push((i, self.snapshot(&names)));
                 }
+                self.join(&lj, *p, &names, edges);
                 Ok(())
             }
+            S::Var(n, ty, e, p) => {
+                self.new_binding_ok(n, true, *p)?;
+                let name = format!("%{}", self.fresh_name(&mangle(n)));
+                let v = self.expr(e, Some(name.clone()), true)?;
+                let bits = match (ty, &v.t) {
+                    (Some(TyB::Int(b)), _) => *b,
+                    (None, VT::Int(b)) => *b,
+                    (None, VT::Lit | VT::Bool(_)) => 64,
+                    _ => return self.err(*p, "var chỉ cho số nguyên (con trỏ: dùng let)"),
+                };
+                let v = self.materialize(v, bits, &name, *p, "var")?;
+                self.scopes.last_mut().unwrap().insert(n.clone(), v);
+                self.vars.last_mut().unwrap().push(n.clone());
+                Ok(())
+            }
+            S::Assign(n, e, p) => {
+                let Some(cur) = self.lookup(n) else { return self.err(*p, &format!("không có biến '{}'", n)) };
+                if !self.is_var(n) {
+                    let what = if self.scopes[0].contains_key(n) && self.scopes.iter().skip(1).all(|s| !s.contains_key(n)) {
+                        "tham số"
+                    } else {
+                        "let / chỉ số for"
+                    };
+                    return self.err(*p, &format!("'{}' là {}, không gán lại được: khai báo `var {} = ...;` để thay đổi", n, what, n));
+                }
+                let VT::Int(bits) = cur.t else { unreachable!() };
+                let name = format!("%{}", self.fresh_name(&mangle(n)));
+                let v = self.expr(e, Some(name.clone()), true)?;
+                if v.t == VT::Other {
+                    return self.err(*p, "giá trị này không gán được");
+                }
+                let v = self.materialize(v, bits, &name, *p, &format!("gán '{}' (u{})", n, bits))?;
+                self.set_var(n, v);
+                Ok(())
+            }
+            S::Break(p) | S::Continue(p) => {
+                let Some(li) = self.loops.len().checked_sub(1) else {
+                    return self.err(*p, "break / continue ngoài vòng lặp");
+                };
+                if matches!(s, S::Continue(_)) {
+                    return self.back_jmp(li, *p);
+                }
+                let (vars, env0, modified) =
+                    (self.loops[li].vars.clone(), self.loops[li].env0.clone(), self.loops[li].modified.clone());
+                self.check_unmodified(&vars, &env0, &modified, *p)?;
+                let done = format!("{}_done", self.loops[li].head);
+                let i = self.jmp_placeholder(*p, &done);
+                let env = self.snapshot(&vars);
+                self.loops[li].breaks.push((i, env));
+                Ok(())
+            }
+            S::While { cond, invs, dec, body, p, end } => {
+                self.lower_loop(None, Some(cond), invs, dec.as_ref(), body, *p, *end)
+            }
+            S::For { var, from, to, invs, body, p, end } => {
+                self.lower_loop(Some((var, from, to)), None, invs, None, body, *p, *end)
+            }
         }
+    }
+
+    /// while / for. Đầu vòng = block có tham số cho [chỉ số for] + mọi biến var bị gán trong thân;
+    /// `@inv` / `@dec` gắn ở đó. Ra khỏi vòng (điều kiện sai hoặc break) đi qua block nối `<đầu>_done`.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_loop(
+        &mut self,
+        for_: Option<(&String, &E, &E)>,
+        cond: Option<&E>,
+        invs: &[E],
+        dec: Option<&E>,
+        body: &[S],
+        p: Pos,
+        end: Pos,
+    ) -> Result<(), String> {
+        let vars = self.visible_vars();
+        let env0 = self.snapshot(&vars);
+        let mut asg = HashSet::new();
+        assigned(body, &mut asg);
+        let modified: Vec<String> = vars.iter().filter(|n| asg.contains(*n)).cloned().collect();
+        let head = self.new_label(if for_.is_some() { "for" } else { "while" });
+        let (lb, lx, ld) = (format!("{}_body", head), format!("{}_exit", head), format!("{}_done", head));
+        // for: cận dưới A, cận trên E = A + (B -| A) (a > b thì 0 vòng), tính MỘT lần trước vòng
+        let mut fr = None;
+        if let Some((iv, fe, te)) = for_ {
+            self.new_binding_ok(iv, false, p)?;
+            let a = self.expr(fe, None, false)?;
+            let b = self.expr(te, None, false)?;
+            self.int_operand(&a, fe.p)?;
+            self.int_operand(&b, te.p)?;
+            let a = if a.t == VT::Lit && a.s.parse::<u64>().is_err() {
+                let d = self.dst(None);
+                self.emit(fe.p, format!("{} = or {} 0", d, a.s));
+                d
+            } else {
+                self.fit(a, 64, fe.p, "cận dưới của for")?
+            };
+            let b = self.fit(b, 64, te.p, "cận trên của for")?;
+            let e = if a == "0" {
+                b
+            } else {
+                let t = self.dst(None);
+                self.emit(p, format!("{} = sub_sat {} {}", t, b, a));
+                let e = self.dst(None);
+                self.emit(p, format!("{} = add {} {}", e, a, t));
+                e
+            };
+            let ir = format!("%{}", self.fresh_name(&mangle(iv)));
+            fr = Some((iv.clone(), a, e, ir));
+        }
+        self.scopes.push(HashMap::new());
+        self.vars.push(Vec::new());
+        // cạnh vào
+        let mut hparams = Vec::new();
+        let mut entry_args = Vec::new();
+        let mut head_line = format!("    @{}", head);
+        if let Some((iv, a, _, ir)) = &fr {
+            hparams.push(ir.clone());
+            entry_args.push(a.clone());
+            head_line.push_str(&format!(" {}:bv64", ir));
+            self.scopes.last_mut().unwrap().insert(iv.clone(), V { s: ir.clone(), t: VT::Int(64) });
+        }
+        let mut hvals = Vec::new();
+        for n in &modified {
+            let v0 = self.lookup(n).unwrap();
+            let VT::Int(b) = v0.t else { unreachable!() };
+            let r = format!("%{}", self.fresh_name(&mangle(n)));
+            entry_args.push(v0.s.clone());
+            head_line.push_str(&format!(" {}:bv{}", r, b));
+            hparams.push(r.clone());
+            hvals.push((n.clone(), V { s: r, t: VT::Int(b) }));
+        }
+        let tail: String = entry_args.iter().map(|x| format!(" {}", x)).collect();
+        self.emit(p, format!("jmp @{}{}", head, tail));
+        self.out.push((head_line, self.org(p)));
+        self.term = false;
+        for (n, v) in hvals {
+            self.set_var(&n, v);
+        }
+        // bất biến / biến giảm
+        // của người viết TRƯỚC (số thứ tự @inv #k khớp `invariant` thứ k), rồi mới tới a <= i <= E tự sinh của for
+        let names = self.names_map();
+        for iv in invs {
+            let z = spec(iv, &names, false, self.file)?;
+            self.emit(iv.p, format!("@inv {}", z));
+        }
+        if let Some((_, a, e, ir)) = &fr {
+            if a != "0" {
+                self.emit(p, format!("@inv ule {} {}", a, ir));
+            }
+            self.emit(p, format!("@inv ule {} {}", ir, e));
+        }
+        if let Some((_, _, e, ir)) = &fr {
+            self.emit(p, format!("@dec sub {} {}", e, ir));
+        }
+        if let Some(d) = dec {
+            let z = spec(d, &names, false, self.file)?;
+            self.emit(d.p, format!("@dec {}", z));
+        }
+        // điều kiện
+        if let Some((_, _, e, ir)) = &fr {
+            let c = self.dst(None);
+            self.emit(p, format!("{} = cmp ult {} {}", c, ir, e));
+            self.emit(p, format!("br {} @{} @{}", c, lb, lx));
+            self.term = true;
+        } else {
+            self.cond(cond.unwrap(), &lb, &lx)?;
+        }
+        let hdr_env = self.snapshot(&vars);
+        self.label(p, &lb);
+        self.loops.push(Lp {
+            head: head.clone(),
+            hparams,
+            idx: fr.as_ref().map(|f| f.3.clone()),
+            vars: vars.clone(),
+            env0: env0.clone(),
+            modified,
+            breaks: Vec::new(),
+        });
+        let r = self.stmts(body);
+        let r = r.and_then(|_| if self.term { Ok(()) } else { self.back_jmp(self.loops.len() - 1, end) });
+        let lp = self.loops.pop().unwrap();
+        r?;
+        // ra khỏi vòng
+        self.restore(&vars, &hdr_env);
+        self.label(p, &lx);
+        let i = self.jmp_placeholder(p, &ld);
+        let mut edges = vec![(i, hdr_env)];
+        edges.extend(lp.breaks);
+        self.scopes.pop();
+        self.vars.pop();
+        self.join(&ld, p, &vars, edges);
+        Ok(())
     }
 }
 
@@ -1229,9 +1691,10 @@ fn bin_name(op: &str) -> Option<&'static str> {
 }
 
 /// requires / ensures -> biểu thức Z3 tiền tố của SSA
-fn spec(e: &E, params: &HashSet<String>, ens: bool, file: &str) -> Result<String, String> {
+/// `names`: tên người viết -> toán hạng SSA (tham số; trong invariant / decreases: mọi biến đang thấy)
+fn spec(e: &E, names: &HashMap<String, String>, ens: bool, file: &str) -> Result<String, String> {
     let err = |p: Pos, m: &str| Err(format!("Dòng {}:{}:{}: {}", file, p.0, p.1, m));
-    let r = |x: &E| spec(x, params, ens, file);
+    let r = |x: &E| spec(x, names, ens, file);
     Ok(match &e.k {
         EK::Int(v) => v.to_string(),
         EK::Name(n) if n == "result" => {
@@ -1240,9 +1703,9 @@ fn spec(e: &E, params: &HashSet<String>, ens: bool, file: &str) -> Result<String
             }
             "%r".into()
         }
-        EK::Name(n) if params.contains(n) => format!("%{}", mangle(n)),
+        EK::Name(n) if names.contains_key(n) => names[n].clone(),
         EK::Name(n) if n.chars().next().is_some_and(|c| c.is_ascii_uppercase()) || n.contains('.') => n.clone(),
-        EK::Name(n) => return err(e.p, &format!("'{}' không phải tham số (đặc tả chỉ nói về tham số, result và hằng HOA)", n)),
+        EK::Name(n) => return err(e.p, &format!("'{}' không phải tham số (requires / ensures chỉ nói về tham số, result và hằng HOA; invariant: biến đang thấy)", n)),
         EK::Call(n, a) if matches!(n.as_str(), "lt_s" | "le_s" | "gt_s" | "ge_s") && a.len() == 2 => {
             format!("s{} {} {}", &n[..2], r(&a[0])?, r(&a[1])?)
         }
@@ -1331,6 +1794,7 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
                 }
                 let ret = f.ret.as_ref().map(|t| match t {
                     TyB::Int(b) => VT::Int(*b),
+                    TyB::Ptr(l, n) if n.parse::<u64>().is_ok() || is_const_name(n) => VT::Ptr(l.clone(), n.clone()),
                     TyB::Ptr(..) => VT::Other,
                 });
                 decls.funcs.insert(f.name.clone(), Sig { nparams: f.params.len(), ret });
@@ -1362,14 +1826,15 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
             sig.push_str(&format!(" %{}:{}", mangle(n), ssa_ty(t, &params)));
         }
         out.push((format!("{} {{", sig), org(f.p)));
+        let pmap: HashMap<String, String> = params.iter().map(|n| (n.clone(), format!("%{}", mangle(n)))).collect();
         for e in &f.req {
-            out.push((format!("    @req {}", spec(e, &params, false, &file)?), org(e.p)));
+            out.push((format!("    @req {}", spec(e, &pmap, false, &file)?), org(e.p)));
         }
         for e in &f.ens {
             if f.ret.is_none() {
                 return Err(format!("Dòng {}: hàm không trả giá trị thì ensures chưa có gì để nói (P3: old/modifies)", org(e.p)));
             }
-            out.push((format!("    @ens {}", spec(e, &params, true, &file)?), org(e.p)));
+            out.push((format!("    @ens {}", spec(e, &pmap, true, &file)?), org(e.p)));
         }
         out.push(("    @entry".into(), org(f.p)));
         let mut scope = HashMap::new();
@@ -1387,6 +1852,8 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
             term: false,
             ret: f.ret.clone(),
             params: params.clone(),
+            vars: vec![Vec::new()],
+            loops: Vec::new(),
         };
         fx.stmts(&f.body)?;
         if !fx.term {

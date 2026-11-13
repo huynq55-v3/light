@@ -1,5 +1,0 @@
-// EXPECT: P2
-fn f(a: u64) -> u64 {
-    while a > 0 { }
-    return 0;
-}

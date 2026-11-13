@@ -1,0 +1,42 @@
+// P2: các hàm có vòng lặp của std/fmt.lit
+include "../../p1/fmt.lt";
+
+// số thập phân của v (không số 0 đứng đầu) từ pos
+fn fmt_u64(cap: u64, buf: ptr<u8, cap>, pos: u64, v: u64) -> u64
+    requires pos <= cap
+    ensures result <= cap, result >= pos
+{
+    if v == 0 { return fmt_byte(cap, buf, pos, '0'); }
+    // rem: phần còn lại; d: lũy thừa 10 hiện tại; on: đã in chữ số khác 0; at: vị trí ghi
+    var rem = v;
+    var d = 10000000000000000000;
+    var on = 0;
+    var at = pos;
+    while d != 0 invariant on <= 1, pos <= at, at <= cap {
+        let q = math_min(rem / d, 9);
+        rem = rem % d;
+        d = d / 10;
+        if q != 0 || on != 0 {
+            at = fmt_byte(cap, buf, at, u8(q + '0'));
+            on = 1;
+        }
+    }
+    return at;
+}
+
+// `digits` chữ số hex (A-F hoa) của v từ pos
+fn fmt_hex(cap: u64, buf: ptr<u8, cap>, pos: u64, v: u64, digits: u64) -> u64
+    requires pos <= cap, digits >= 1, digits <= 16
+    ensures result <= cap, result >= pos
+{
+    var k = digits;
+    var at = pos;
+    while k != 0 invariant k <= 16, pos <= at, at <= cap {
+        k -= 1;
+        let nib = (v >> (k << 2)) & 15;
+        var c = nib + '0';
+        if nib >= 10 { c = nib + 55; }
+        at = fmt_byte(cap, buf, at, u8(c));
+    }
+    return at;
+}

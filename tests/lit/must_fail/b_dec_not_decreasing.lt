@@ -1,0 +1,8 @@
+// EXPECT: decreases
+fn f(x: u64, n: u64) -> u64 {
+    var v = 0;
+    while v < n decreases v {
+        v += 1;
+    }
+    return v;
+}

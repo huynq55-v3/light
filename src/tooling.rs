@@ -275,7 +275,8 @@ pub fn parse_err(s: &str) -> Diag {
     }
     if b_syntax {
         // chỉ giữ biến người viết đặt tên; bỏ biến tạm %_tN và hằng %<số> do front-end / parser sinh
-        d.message = strip_temps(&d.message);
+        d.message = b_message(&strip_temps(&d.message), &d.at);
+        d.hint = hint_b(&d.message, &d.kind).into();
         if !d.source.is_empty() {
             d.inst = d.source.clone(); // lệnh SSA sinh ra không có ý nghĩa với người viết B (xem `light lower`)
         }
@@ -324,6 +325,27 @@ fn strip_temps(m: &str) -> String {
     out
 }
 
+/// Thông báo của verifier nói theo SSA (`@inv #k`, `@dec`) -> nói theo cú pháp B
+fn b_message(m: &str, at: &str) -> String {
+    let mut m = m.to_string();
+    if let Some(i) = m.find("thêm `@dec") {
+        m.truncate(i);
+        m.push_str("thêm `decreases <biểu thức>` (số không dấu giảm ngặt mỗi vòng, vd `decreases n -% i`)");
+    }
+    m = m.replace("@dec không giảm ngặt", "decreases không giảm ngặt");
+    // "Vi phạm bất biến (@inv #k) khi nhảy vào @L": cạnh vào (vị trí = từ khóa while/for) hay cạnh lùi (`}` / continue)
+    if let (Some(a), Some(b)) = (m.find("Vi phạm bất biến (@inv #"), m.find(") khi nhảy vào @")) {
+        let k: usize = m[a + "Vi phạm bất biến (@inv #".len()..b].parse().unwrap_or(0);
+        let rest_at = b + ") khi nhảy vào @".len();
+        let end = m[rest_at..].find(|c: char| c.is_whitespace()).map_or(m.len(), |e| rest_at + e);
+        let ch = split_loc(at).and_then(|(_, _, c)| source_line_raw(at)?.chars().nth(c?.checked_sub(1)?));
+        let back = matches!(ch, Some('}') | Some('c'));
+        let what = if back { "không còn đúng sau một vòng (cạnh quay lại đầu vòng)" } else { "sai ngay khi vào vòng" };
+        m = format!("{}invariant #{} {}{}", &m[..a], k + 1, what, &m[end..]);
+    }
+    m
+}
+
 /// Gợi ý viết theo cú pháp B
 fn hint_b(msg: &str, kind: &str) -> &'static str {
     let m = msg;
@@ -341,6 +363,11 @@ fn hint_b(msg: &str, kind: &str) -> &'static str {
         "u8(x) / u16(x) / u32(x) thu hẹp CÓ KIỂM: chứng minh x vừa (vd `x & 0xff`, hoặc `if x < 256`)."
     } else if m.contains("Vi phạm @req") && m.contains("khi gọi hàm") {
         "Đối số chưa chắc thỏa requires của hàm được gọi: thêm requires cho hàm này, hoặc kiểm bằng if trước khi gọi."
+    } else if m.contains("invariant #") && m.contains("khi vào vòng") {
+        "Invariant phải đúng với giá trị các biến ngay trước vòng lặp: sửa invariant hoặc giá trị khởi tạo."
+    } else if m.contains("invariant #") {
+        "Invariant phải được giữ: giả sử nó đúng ở đầu vòng và điều kiện vòng đúng thì sau thân vòng nó vẫn đúng. \
+         Thường thiếu invariant phụ (vd cận của biến khác), hoặc invariant quá mạnh."
     } else if m.contains("Vi phạm điều kiện đầu ra") {
         "ensures chưa chứng minh được trên MỌI nhánh return."
     } else if m.contains("Dịch bit") {

@@ -1,0 +1,6 @@
+// EXPECT: không gán lại được
+fn f(n: u64) -> u64 {
+    let x = n;
+    x += 1;
+    return x;
+}

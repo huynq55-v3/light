@@ -1,0 +1,14 @@
+// Light-Bench 12 — a[0..n) đã sắp tăng dần: chỉ số nhỏ nhất j có a[j] >= x, hoặc n
+include "../../lit_program/std/core.lit";
+
+fn lower_bound_q(n: u64, a: ptr<u64, n>, x: u64) -> u64
+    ensures result <= n
+{
+    var lo = 0;
+    var hi = n;
+    while lo < hi invariant lo <= hi, hi <= n decreases hi -% lo {
+        let mid = lo + ((hi - lo) >> 1);
+        if a[mid] < x { lo = mid + 1; } else { hi = mid; }
+    }
+    return lo;
+}

@@ -1,0 +1,14 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// sau 3 vòng hoán đổi a == 2: verifier phải theo được giá trị qua cạnh lùi (không chấp nhận ensures sai)
+fn f() -> u64
+    ensures result == 1
+{
+    var a = 1;
+    var b = 2;
+    for j in 0..3 invariant (a == 1 && b == 2) || (a == 2 && b == 1) {
+        let t = a;
+        a = b;
+        b = t;
+    }
+    return a;
+}

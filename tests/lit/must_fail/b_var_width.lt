@@ -1,0 +1,6 @@
+// EXPECT: u8(x)
+fn f(n: u64) -> u64 {
+    var c: u8 = 0;
+    c = c + 1;
+    return u64(c);
+}

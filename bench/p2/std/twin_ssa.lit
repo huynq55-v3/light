@@ -1,0 +1,113 @@
+# Bản SSA viết tay (không qua front-end) của bench/p2/std/twin.lt
+include ../../../lit_program/std/core.lit
+
+func cont_count bv64 %n:bv64 %a:ptr<Byte,%n> {
+    @ens ule %r %n
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %c:bv64
+        @inv ule %i %n
+        @inv ule %c %i
+        %m = cmp ult %i %n
+        br %m @body @done
+    @body
+        %p = slice %a %i ptr<Byte,1>
+        %v = load %p 0 bv8
+        %z = cmp eq %v 0
+        br %z @skip @cnt
+    @skip
+        %i1 = add %i 1
+        jmp @l %i1 %c
+    @cnt
+        %c1 = add %c 1
+        %i2 = add %i 1
+        jmp @l %i2 %c1
+    @done
+        ret %c
+}
+
+func nested_break bv64 %n:bv64 %m:bv64 {
+    @req ule %n 50
+    @req ule %m 50
+    @b0
+        jmp @o 0 0
+    @o %i:bv64 %c:bv64
+        @inv ule %i %n
+        %om = cmp ult %i %n
+        br %om @orow @odone
+    @orow
+        jmp @in 0 %c
+    @in %j:bv64 %d:bv64
+        @inv ule %j %m
+        %im = cmp ult %j %m
+        br %im @ibody @iend
+    @ibody
+        %three = cmp eq %j 3
+        br %three @iend @acc
+    @acc
+        %t = mul_wrap %i 7
+        %u = add_wrap %t %j
+        %d2 = add_wrap %d %u
+        %j1 = add %j 1
+        jmp @in %j1 %d2
+    @iend
+        %i1 = add %i 1
+        jmp @o %i1 %d
+    @odone
+        ret %c
+}
+
+func swap8 bv64 %k:bv64 {
+    @req ule %k 50
+    @b0
+        %a0 = const 1 bv8
+        %b0 = const 2 bv8
+        jmp @l 0 %a0 %b0
+    @l %j:bv64 %a:bv8 %b:bv8
+        @inv ule %j %k
+        %m = cmp ult %j %k
+        br %m @body @done
+    @body
+        %j1 = add %j 1
+        %t64 = or %a 0
+        %t = narrow %t64 bv8
+        jmp @l %j1 %b %t
+    @done
+        %x = or %a 0
+        %y0 = or %b 0
+        %y = shl %y0 8
+        %r = or %x %y
+        ret %r
+}
+
+func first_big bv64 %n:bv64 %a:ptr<DiskQword,%n> %lim:bv64 {
+    @b0
+        jmp @l 0 0
+    @l %i:bv64 %s:bv64
+        @inv ule %i %n
+        @inv ule %s %i
+        %m = cmp ult %i %n
+        br %m @body @exit
+    @body
+        %p = slice %a %i ptr<DiskQword,1>
+        %v = load %p 0 bv64
+        %i1 = add %i 1
+        %z = cmp eq %v 0
+        br %z @cont @nz
+    @cont
+        jmp @l %i1 %s
+    @nz
+        %s1 = add %s 1
+        %big = cmp ugt %v %lim
+        br %big @brk @back
+    @back
+        jmp @l %i1 %s1
+    @brk
+        jmp @out %i1 %s1
+    @exit
+        jmp @out %i %s
+    @out %fi:bv64 %fs:bv64
+        %h = mul_wrap %fi 256
+        %r = add_wrap %h %fs
+        ret %r
+}

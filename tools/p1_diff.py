@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Đối chiếu vi sai cú pháp B (P1): mỗi hàm trong bench/p1/*.lt chạy mã máy THẬT trên cùng đầu vào với bản SSA gốc
+"""Đối chiếu vi sai cú pháp B (P1 + P2): mỗi hàm trong bench/p1/*.lt và bench/p2/std/*.lt (hàm có vòng lặp) chạy mã máy THẬT trên cùng đầu vào với bản SSA gốc
 (lit_program/std/*.lit hoặc bench/today/*.lit) và phải cho KẾT QUẢ + BỘ NHỚ giống hệt từng bit.
 
     python3 tools/p1_diff.py            # 300 đầu vào / hàm
@@ -19,7 +19,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CGTEST = os.path.join(REPO, "target", "release", "cgtest")
 M64 = (1 << 64) - 1
 ORIG_FILES = sorted(glob.glob(os.path.join(REPO, "lit_program", "std", "*.lit"))) + [
-    os.path.join(REPO, "bench", "today", "13_base64_enc.lit")] + sorted(glob.glob(os.path.join(REPO, "bench", "p1", "*.lit")))
+    os.path.join(REPO, "bench", "today", "13_base64_enc.lit")] + sorted(glob.glob(os.path.join(REPO, "bench", "p1", "*.lit"))) + \
+    sorted(glob.glob(os.path.join(REPO, "bench", "p2", "std", "*.lit")))
 LAYOUT_BYTES = {m.group(1): int(m.group(2), 0) for p in ORIG_FILES for l in open(p, encoding="utf-8")
                 for m in [re.match(r"\s*layout\s+(\w+)\s+(\S+)", l)] if m}
 
@@ -117,7 +118,8 @@ def gen_case(rng, params, reqs):
                 cnt = env[n[1:]] if n.startswith("%") else num(n)
                 qwords = max(1, (cnt * LAYOUT_BYTES[lay] + 7) // 8)
                 buf = [rng.choice([rng.getrandbits(64), rng.getrandbits(8) * 0x0101010101010101,
-                                   0x3938373635343332, 0x5a41617a30393d2b]) for _ in range(qwords)]
+                                   0x3938373635343332, 0x5a41617a30393d2b,
+                                   0x3332312020202020, 0x2020093020203920]) for _ in range(qwords)]  # dấu cách / tab / chữ số
                 row.append(buf)
                 env[name] = 0
             else:
@@ -143,7 +145,9 @@ def main(n=300):
     rng = random.Random(20261113)
     bad = 0
     rows_stats = []
-    for lt in sorted(glob.glob(os.path.join(REPO, "bench", "p1", "*.lt"))):
+    lts = sorted(glob.glob(os.path.join(REPO, "bench", "p1", "*.lt"))) + sorted(
+        glob.glob(os.path.join(REPO, "bench", "p2", "std", "*.lt")))
+    for lt in lts:
         for name in re.findall(r"^fn (\w+)", open(lt, encoding="utf-8").read(), re.M):
             orig, ret, params, reqs = find_orig(name)
             cases = [gen_case(rng, params, reqs) for _ in range(n)]
@@ -158,7 +162,7 @@ def main(n=300):
             for c, x, y in diff[:3]:
                 print(f"    vào {c}\n    gốc {x}\n    B   {y}")
             bad += len(diff) + (len(a) != len(b))
-            if "/bench/p1/" not in orig:  # bản song sinh tự viết để thử trường có tên: không tính vào số đo std
+            if "/bench/p1/" not in orig and "/bench/p2/" not in orig:  # bản song sinh tự viết để thử trường có tên: không tính vào số đo std
                 rows_stats.append((name, orig, lt))
     if "--stats" in sys.argv:
         stats(rows_stats)

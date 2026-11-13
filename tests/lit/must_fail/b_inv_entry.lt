@@ -1,0 +1,8 @@
+// EXPECT: invariant #1 sai ngay khi vào vòng
+fn f(n: u64) -> u64 {
+    var i = 1;
+    while i < n invariant i == 0 {
+        i += 1;
+    }
+    return i;
+}

@@ -4,6 +4,7 @@
     python3 tools/bench.py metrics     # bảng số dòng / token / lệnh / mức đặc tả cho bench/today/*.lit
     python3 tools/bench.py test        # đối chiếu mã máy thật (cgtest --call) với mô hình Python, kể cả ca biên
     python3 tools/bench.py             # cả hai
+    python3 tools/bench.py --dir bench/p2 [metrics|test]   # cùng bộ bài viết bằng cú pháp B (.lt)
 
 Đề bài (độc lập ngôn ngữ) + đặc tả mong muốn ở bench/tasks.md. Z3 chỉ chứng minh được đặc tả YẾU (không nói được về
 nội dung bộ nhớ), nên tính đúng của chính bộ mẫu được bảo đảm bằng kiểm thử ở đây, không phải bằng verifier.
@@ -19,6 +20,17 @@ sys.path.insert(0, os.path.join(REPO, "tools", "stitch"))
 import litparse  # noqa: E402
 
 BENCH = os.path.join(REPO, "bench", "today")
+if "--dir" in sys.argv:
+    k = sys.argv.index("--dir")
+    BENCH = os.path.abspath(sys.argv[k + 1])
+    del sys.argv[k:k + 2]
+LIGHT = os.path.join(REPO, "target", "release", "light")
+
+
+def src_of(file):
+    """bench/today/NN_x.lit hoặc bản cú pháp B NN_x.lt cùng tên trong thư mục đang đo"""
+    lt = os.path.join(BENCH, file[:-4] + ".lt")
+    return lt if os.path.exists(lt) else os.path.join(BENCH, file)
 CGTEST = os.path.join(REPO, "target", "release", "cgtest")
 M64 = (1 << 64) - 1
 B64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -31,7 +43,7 @@ def call(file, func, rows):
     """rows: list các list đối số (int, hoặc list Qword = bộ đệm). Trả list (kết quả, [bộ đệm sau lời gọi])."""
     fmt = lambda t: "[" + ",".join(hex(v) for v in t) + "]" if isinstance(t, list) else hex(t)
     inp = "\n".join(" ".join(fmt(t) for t in r) for r in rows) + "\n"
-    out = subprocess.run([CGTEST, "--call", os.path.join(BENCH, file), func], input=inp,
+    out = subprocess.run([CGTEST, "--call", src_of(file), func], input=inp,
                          capture_output=True, text=True, check=True).stdout
     res = []
     for line in out.splitlines():
@@ -241,7 +253,38 @@ def code_lines(path):
     return n
 
 
+def metrics_b():
+    """Bản .lt: dòng mã (bỏ dòng trống / chú thích / include / data) + token cú pháp B + số mệnh đề đặc tả"""
+    rows, tot = [], [0, 0, 0, 0]
+    for p in sorted(glob.glob(os.path.join(BENCH, "*.lt"))):
+        code = [l.split("//")[0].strip() for l in open(p, encoding="utf-8")]
+        code = [l for l in code if l and not l.startswith(("include ", "data "))]
+        toks = int(subprocess.run([LIGHT, "tokens", "-"], input="\n".join(code), capture_output=True, text=True,
+                                  check=True).stdout)
+        src = " ".join(code)
+        nf = len([l for l in code if l.startswith("fn ")])
+        # mệnh đề = số biểu thức sau requires/ensures (cách nhau bằng dấu phẩy ở mức ngoài cùng — ước lượng theo dấu phẩy)
+        spec = 0
+        ann = 0
+        import re
+        for m in re.finditer(r"\b(requires|ensures|invariant|decreases)\b(.*?)(?=\brequires\b|\bensures\b|\binvariant\b|\bdecreases\b|\{)", src):
+            k = m.group(2).count(",") + 1
+            if m.group(1) in ("requires", "ensures"):
+                spec += k
+            else:
+                ann += k
+        row = [len(code), toks, spec, ann]
+        rows.append((os.path.basename(p), nf, row))
+        tot = [a + b for a, b in zip(tot, row)]
+    print(f"{'bài':24} {'hàm':>3} {'dòng':>5} {'token':>6} {'req/ens':>7} {'inv/dec':>7}")
+    for name, nf, r in rows:
+        print(f"{name:24} {nf:>3} {r[0]:>5} {r[1]:>6} {r[2]:>7} {r[3]:>7}")
+    print(f"{'TỔNG':24} {'':>3} {tot[0]:>5} {tot[1]:>6} {tot[2]:>7} {tot[3]:>7}")
+
+
 def metrics():
+    if glob.glob(os.path.join(BENCH, "*.lt")):
+        return metrics_b()
     rows, tot = [], [0, 0, 0, 0]
     for p in sorted(glob.glob(os.path.join(BENCH, "*.lit"))):
         fs = litparse.parse_file(p)

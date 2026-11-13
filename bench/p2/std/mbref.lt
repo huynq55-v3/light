@@ -1,0 +1,35 @@
+// P2: mb_ref_run của std/mbref.lit — quỹ đạo tham chiếu độ chính xác cao
+include "bignum.lt";
+include "../../p1/mbref.lt";
+
+fn mb_ref_run(s: ptr<u64, 119>, t: ptr<u64, 32>, n: u64, out: ptr<u64, 4096>, count: u64) -> u64
+    requires n >= 1, n <= 16, count <= 2048
+    ensures result <= count
+{
+    let cr = mbr_num(s, 0);
+    let ci = mbr_num(s, 1);
+    let zr = mbr_num(s, 2);
+    let zi = mbr_num(s, 3);
+    let x2 = mbr_num(s, 4);
+    let y2 = mbr_num(s, 5);
+    let xy = mbr_num(s, 6);
+    for k in 0..count {
+        let qr = bn_to_q(zr, n);
+        let qi = bn_to_q(zi, n);
+        let o = k << 1;
+        mem_set_q(4096, out, o, qr);
+        mem_set_q(4096, out, o + 1, qi);
+        // thoát: limb cao nhất (độ lớn) > 2.0 ở phần thực hoặc ảo
+        let mr = bn_limb(zr, n - 1);
+        let mi = bn_limb(zi, n - 1);
+        if mr > 0x2000000000000000 || mi > 0x2000000000000000 { return k + 1; }
+        bn_mul(x2, zr, zr, n, t);
+        bn_mul(y2, zi, zi, n, t);
+        bn_mul(xy, zr, zi, n, t);
+        bn_addsub(zr, x2, y2, n, 1);
+        bn_addsub(zr, zr, cr, n, 0);
+        bn_addsub(zi, xy, xy, n, 0);
+        bn_addsub(zi, zi, ci, n, 0);
+    }
+    return count;
+}

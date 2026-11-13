@@ -1,0 +1,21 @@
+// Light-Bench 07 — s[0..n) là số thập phân (n >= 1, chỉ chữ số, giá trị < 2^64) -> out[0] = giá trị, trả 1;
+// ngược lại trả 0 và không ghi out.
+include "../../lit_program/std/core.lit";
+
+fn parse_dec(n: u64, s: ptr<u8, n>, out: ptr<u64, 1>) -> u64
+    ensures result <= 1
+{
+    if n == 0 { return 0; }
+    var acc = 0;
+    for i in 0..n {
+        let v = s[i];
+        if v < '0' || v > '9' { return 0; }
+        let d = v - '0';
+        if mulhi(acc, 10) != 0 { return 0; }   // acc * 10 tràn
+        let t = acc *% 10;
+        if t +% d < t { return 0; }            // t + d tràn
+        acc = t + d;
+    }
+    out[0] = acc;
+    return 1;
+}

@@ -1,0 +1,9 @@
+// EXPECT: không bao giờ chạy tới
+fn f(n: u64) -> u64 {
+    var i = 0;
+    while i < n invariant i <= n {
+        break;
+        i += 1;
+    }
+    return i;
+}

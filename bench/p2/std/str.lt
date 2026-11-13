@@ -1,0 +1,38 @@
+// P2: các hàm có vòng lặp của std/str.lit
+include "../../../lit_program/std/mem.lit";
+
+// vị trí đầu tiên >= from có s[i] == ch, hoặc n
+fn str_find(n: u64, s: ptr<u8, n>, from: u64, ch: u8) -> u64
+    ensures result <= n
+{
+    let start = math_min(from, n);
+    for i in start..n {
+        if s[i] == ch { return i; }
+    }
+    return n;
+}
+
+// bỏ dấu cách từ from: vị trí byte đầu tiên khác ' ', hoặc n
+fn str_skip_spaces(n: u64, s: ptr<u8, n>, from: u64) -> u64
+    ensures result <= n
+{
+    var i = math_min(from, n);
+    while i < n invariant i <= n {
+        if s[i] != ' ' { break; }
+        i += 1;
+    }
+    return i;
+}
+
+// số thập phân bắt đầu từ from (bão hòa ở 2^64 - 1), dừng ở byte không phải chữ số
+fn str_parse_u64(n: u64, s: ptr<u8, n>, from: u64) -> u64 {
+    var i = math_min(from, n);
+    var acc = 0;
+    while i < n invariant i <= n {
+        let v = s[i];
+        if v < '0' || v > '9' { break; }
+        acc = (acc *| 10) +| (v - '0');
+        i += 1;
+    }
+    return acc;
+}

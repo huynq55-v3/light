@@ -1,0 +1,142 @@
+// P2: các hàm có vòng lặp của std/bignum.lit + bn_addsub (gọi chúng)
+// Số lớn: ô 17 qword = [dấu, limb 0 .. limb 15]
+include "../../p1/bignum.lt";
+
+const BN_TMP = 32;
+
+// số 0 luôn có dấu 0
+fn bn_norm(a: ptr<u64, 17>, n: u64)
+    requires n <= 16
+{
+    var acc = 0;
+    for i in 0..n {
+        let v = bn_limb(a, i);
+        acc = acc | v;
+    }
+    if acc == 0 { mem_set_q(BN_SLOT, a, 0, 0); }
+}
+
+// so độ lớn: 0 (|a| < |b|), 1 (bằng), 2 (|a| > |b|)
+fn bn_cmp_mag(a: ptr<u64, 17>, b: ptr<u64, 17>, n: u64) -> u64
+    requires n <= 16
+    ensures result <= 2
+{
+    var i = n;
+    while i != 0 invariant i <= n decreases i {
+        i -= 1;
+        let x = bn_limb(a, i);
+        let y = bn_limb(b, i);
+        if x < y { return 0; }
+        if x > y { return 2; }
+    }
+    return 1;
+}
+
+// |d| = |a| + |b| (bỏ nhớ khỏi limb cao nhất)
+fn bn_add_mag(d: ptr<u64, 17>, a: ptr<u64, 17>, b: ptr<u64, 17>, n: u64)
+    requires n <= 16
+{
+    var c = 0;
+    for i in 0..n {
+        let x = bn_limb(a, i);
+        let y = bn_limb(b, i);
+        let s = x +% y;
+        let c1 = s < x;
+        let s2 = s +% c;
+        let c2 = s2 < s;
+        bn_set_limb(d, i, s2);
+        c = u64(c1 || c2);
+    }
+}
+
+// |d| = |a| - |b| (cần |a| >= |b|)
+fn bn_sub_mag(d: ptr<u64, 17>, a: ptr<u64, 17>, b: ptr<u64, 17>, n: u64)
+    requires n <= 16
+{
+    var c = 0;
+    for i in 0..n {
+        let x = bn_limb(a, i);
+        let y = bn_limb(b, i);
+        let s = x -% y;
+        let c1 = x < y;
+        let s2 = s -% c;
+        let c2 = s < c;
+        bn_set_limb(d, i, s2);
+        c = u64(c1 || c2);
+    }
+}
+
+// d = a + b (neg_b = 0) hoặc a - b (neg_b = 1)
+fn bn_addsub(d: ptr<u64, 17>, a: ptr<u64, 17>, b: ptr<u64, 17>, n: u64, neg_b: u64)
+    requires n <= 16
+{
+    let sa0 = mem_get_q(BN_SLOT, a, 0);
+    let sb0 = mem_get_q(BN_SLOT, b, 0);
+    let sa = sa0 & 1;
+    let sb = (sb0 ^ neg_b) & 1;
+    if sa == sb {
+        bn_add_mag(d, a, b, n);
+        mem_set_q(BN_SLOT, d, 0, sa);
+    } else {
+        let c = bn_cmp_mag(a, b, n);
+        if c != 0 {
+            bn_sub_mag(d, a, b, n);
+            mem_set_q(BN_SLOT, d, 0, sa);
+        } else {
+            bn_sub_mag(d, b, a, n);
+            mem_set_q(BN_SLOT, d, 0, sb);
+        }
+    }
+    bn_norm(d, n);
+}
+
+// d = a * b (cắt về n limb), t: bộ đệm tạm 32 qword
+fn bn_mul(d: ptr<u64, 17>, a: ptr<u64, 17>, b: ptr<u64, 17>, n: u64, t: ptr<u64, 32>)
+    requires n >= 1, n <= 16
+{
+    let sa = mem_get_q(BN_SLOT, a, 0);
+    let sb = mem_get_q(BN_SLOT, b, 0);
+    let sgn = (sa ^ sb) & 1;
+    let n2 = n << 1;
+    for k in 0..n2 { mem_set_q(BN_TMP, t, k, 0); }
+    for i in 0..n {
+        let ai = bn_limb(a, i);
+        var c = 0;
+        for j in 0..n {
+            let bj = bn_limb(b, j);
+            let lo = ai *% bj;
+            let hi = mulhi(ai, bj);
+            let p = i + j;
+            let tv = mem_get_q(BN_TMP, t, p);
+            let s = tv +% lo;
+            let c1 = s < lo;
+            let s2 = s +% c;
+            let c2 = s2 < c;
+            mem_set_q(BN_TMP, t, p, s2);
+            c = hi +% c1 +% c2;
+        }
+        mem_set_q(BN_TMP, t, i + n, c);
+    }
+    // d_k = (t[k + n - 1] >> 60) | (t[k + n] << 4)
+    let nm1 = n - 1;
+    for k in 0..n {
+        let tl = mem_get_q(BN_TMP, t, k + nm1);
+        let th = mem_get_q(BN_TMP, t, k + n);
+        bn_set_limb(d, k, (tl >> 60) | (th << 4));
+    }
+    mem_set_q(BN_SLOT, d, 0, sgn);
+    bn_norm(d, n);
+}
+
+// d = v (Q4.60 bù hai) ở limb cao nhất
+fn bn_from_q(d: ptr<u64, 17>, v: u64, n: u64)
+    requires n >= 1, n <= 16
+{
+    let s = v >> 63;
+    let m = 0 -% s;
+    let mag = (v ^ m) -% m;
+    for i in 0..n { bn_set_limb(d, i, 0); }
+    bn_set_limb(d, n - 1, mag);
+    mem_set_q(BN_SLOT, d, 0, s);
+    bn_norm(d, n);
+}

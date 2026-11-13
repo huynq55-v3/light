@@ -1,0 +1,45 @@
+// P2: mb_iter của std/fixq.lit — số vòng Mandelbrot Q4.60 (phát hiện chu kỳ kiểu Brent)
+include "../../p1/fixq.lt";
+
+const FQ_FOUR = 0x4000000000000000;
+
+fn mb_iter(cx: u64, cy: u64, maxit: u64) -> u64
+    ensures result <= maxit
+{
+    var zx = 0;
+    var zy = 0;
+    var px = 0;
+    var py = 0;
+    var lim = 8;
+    for n in 0..maxit {
+        let sx = zx >> 63;
+        let mx = 0 -% sx;
+        let ax = (zx ^ mx) -% mx;
+        let sy = zy >> 63;
+        let my = 0 -% sy;
+        let ay = (zy ^ my) -% my;
+        if ax > FQ_TWO || ay > FQ_TWO { return n; }
+        let xh = ax >> 32;
+        let xl = ax & 0xffffffff;
+        let yh = ay >> 32;
+        let yl = ay & 0xffffffff;
+        let x2 = ((xh *% xh) << 4) +% (((xh *% xl) >> 28) << 1) +% ((xl *% xl) >> 60);
+        let y2 = ((yh *% yh) << 4) +% (((yh *% yl) >> 28) << 1) +% ((yl *% yl) >> 60);
+        if x2 +% y2 > FQ_FOUR { return n; }
+        let u = ((xh *% yh) << 4) +% ((xh *% yl) >> 28) +% ((xl *% yh) >> 28) +% ((xl *% yl) >> 60);
+        let sxy = mx ^ my;
+        let xy = (u ^ sxy) -% sxy;
+        let nzy = (xy << 1) +% cy;
+        let nzx = (x2 -% y2) +% cx;
+        let n1 = n + 1;
+        if nzx == px && nzy == py { return maxit; }
+        zx = nzx;
+        zy = nzy;
+        if n1 == lim {
+            px = nzx;
+            py = nzy;
+            lim = lim << 1;
+        }
+    }
+    return maxit;
+}

@@ -1,0 +1,53 @@
+// P2: hàm thử các đường điều khiển mới (continue, break vòng trong, hoán đổi u8, nhiều cạnh ra) — đối chiếu với bản SSA
+// viết tay twin_ssa.lit bằng tools/p1_diff.py (mã máy thật, từng bit)
+include "../../../lit_program/std/core.lit";
+
+fn cont_count(n: u64, a: ptr<u8, n>) -> u64
+    ensures result <= n
+{
+    var c = 0;
+    for i in 0..n invariant c <= i {
+        if a[i] == 0 { continue; }
+        c += 1;
+    }
+    return c;
+}
+
+fn nested_break(n: u64, m: u64) -> u64
+    requires n <= 50, m <= 50
+{
+    var c = 0;
+    for i in 0..n {
+        for j in 0..m {
+            if j == 3 { break; }
+            c +%= i *% 7 +% j;
+        }
+    }
+    return c;
+}
+
+fn swap8(k: u64) -> u64
+    requires k <= 50
+{
+    var a: u8 = 1;
+    var b: u8 = 2;
+    for j in 0..k {
+        let t = a;
+        a = b;
+        b = t;
+    }
+    return u64(a) | (u64(b) << 8);
+}
+
+fn first_big(n: u64, a: ptr<u64, n>, lim: u64) -> u64 {
+    var i = 0;
+    var seen = 0;
+    while i < n invariant i <= n, seen <= i {
+        let v = a[i];
+        i += 1;
+        if v == 0 { continue; }
+        seen += 1;
+        if v > lim { break; }
+    }
+    return i *% 256 +% seen;
+}

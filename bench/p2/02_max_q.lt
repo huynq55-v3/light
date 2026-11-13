@@ -1,0 +1,13 @@
+// Light-Bench 02 — phần tử lớn nhất của mảng khác rỗng
+include "../../lit_program/std/core.lit";
+
+fn max_q(n: u64, a: ptr<u64, n>) -> u64
+    requires n >= 1
+{
+    var m = a[0];
+    for i in 1..n {
+        let v = a[i];
+        m = math_max(m, v);
+    }
+    return m;
+}

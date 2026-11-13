@@ -1,0 +1,55 @@
+// Light-Bench 13 — mã hoá base64 (RFC 4648, có '=') s[0..n) vào out, trả số ký tự = 4 * ceil(n / 3)
+include "../../lit_program/std/core.lit";
+
+data B64: u8 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn b64_ch(i: u64) -> u8
+    requires i < 64
+{
+    let t = addr(B64);
+    return t[i];
+}
+
+// nhóm 24 bit w (k = 1..3 byte thật) -> 4 ký tự ở out[o..o+4)
+fn b64_put(cap: u64, out: ptr<u8, cap>, o: u64, w: u64, k: u64)
+    requires k >= 1, k <= 3, w < 0x1000000, cap >= 4, o <= cap -% 4
+{
+    out[o] = b64_ch(w >> 18);
+    out[o + 1] = b64_ch((w >> 12) & 63);
+    if k >= 2 {
+        out[o + 2] = b64_ch((w >> 6) & 63);
+        if k >= 3 {
+            out[o + 3] = b64_ch(w & 63);
+        } else {
+            out[o + 3] = '=';
+        }
+    } else {
+        out[o + 2] = '=';
+        out[o + 3] = '=';
+    }
+}
+
+// Đặc tả mong muốn (cap >= 4*ceil(n/3) thì r == 4*ceil(n/3)) làm Z3 hết giờ — xem bench/tasks.md bài 13.
+// Hôm nay KIỂM TRA LÚC CHẠY: hết chỗ thì dừng, chỉ hứa r <= cap, r chia hết cho 4.
+fn base64_enc(n: u64, s: ptr<u8, n>, cap: u64, out: ptr<u8, cap>) -> u64
+    ensures result <= cap, result & 3 == 0
+{
+    var i = 0;
+    var o = 0;
+    while cap - o >= 4 invariant i <= n, o <= cap, o & 3 == 0 decreases cap -% o {
+        let rest = n - i;
+        if rest < 3 {
+            // 0..2 byte cuối
+            if rest == 0 { return o; }
+            var w = s[i] << 16;
+            if rest > 1 { w = w | (s[i + 1] << 8); }
+            b64_put(cap, out, o, w, rest);
+            return o + 4;
+        }
+        let w = (s[i] << 16) | (s[i + 1] << 8) | s[i + 2];
+        b64_put(cap, out, o, w, 3);
+        i += 3;
+        o += 4;
+    }
+    return o;
+}

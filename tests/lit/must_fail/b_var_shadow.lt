@@ -1,0 +1,6 @@
+// EXPECT: trùng tên biến var
+fn f(n: u64) -> u64 {
+    var x = 0;
+    if n > 1 { let x = 5; return x; }
+    return x;
+}

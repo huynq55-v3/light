@@ -1,0 +1,8 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+fn f(a: u64, b: u64) -> u64
+    ensures result == a -% b
+{
+    var d = 0;
+    if a > b { d = a - b; } else { d = b - a; }
+    return d;
+}

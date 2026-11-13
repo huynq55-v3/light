@@ -1,0 +1,9 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// block nối lồng nhau (if trong if) rồi if thứ hai chép x vào y: giả định theo cạnh không được mâu thuẫn
+fn f(a: u64, b: u64) -> u64 ensures result == 7 {
+    var x = 1;
+    if a > 3 { if b > 3 { x = 2; } else { x = 3; } }
+    var y = 0;
+    if b > 10 { y = x; } else { y = 5; }
+    return y;
+}

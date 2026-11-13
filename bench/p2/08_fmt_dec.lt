@@ -1,0 +1,31 @@
+// Light-Bench 08 — ghi số thập phân của v (không số 0 đứng đầu, "0" cho 0) vào buf[0..), trả số chữ số
+include "../../lit_program/std/core.lit";
+
+fn fmt_dec(cap: u64, buf: ptr<u8, cap>, v: u64) -> u64
+    requires cap >= 20
+    ensures result >= 1, result <= 20
+{
+    // ghi chữ số theo thứ tự ngược (hàng đơn vị trước)
+    var t = v;
+    var len = 0;
+    while len < 20 invariant len <= 20 {
+        let q = t / 10;
+        let d = t % 10;
+        buf[len] = u8(d + '0');
+        len += 1;
+        if q == 0 { break; }
+        t = q;
+    }
+    // đảo buf[i..j)
+    var i = 0;
+    var j = len;
+    while j - i > 1 invariant i <= j, j <= len decreases j -% i {
+        j -= 1;
+        let x = buf[i];
+        let y = buf[j];
+        buf[i] = y;
+        buf[j] = x;
+        i += 1;
+    }
+    return len;
+}

@@ -12,6 +12,8 @@ Các bước:
   6. tools/mandel_model.py test (đối chiếu TỪNG BIT các hàm số học của std với mô hình Python)
   7. Light-Bench: `light check` + stack-report từng file bench/today/*.lit, rồi tools/bench.py test (mã máy == mô hình)
   8. Cú pháp B (P1): `light check` + stack-report bench/p1/*.lt (+ bản SSA song sinh *.lit), rồi tools/p1_diff.py (mã máy bản B == bản SSA gốc, từng bit)
+  9. Cú pháp B (P2, vòng lặp): `light check` + stack-report bench/p2/*.lt (15 bài) và bench/p2/std/*.lt, rồi
+     tools/bench.py --dir bench/p2 test (mã máy bản B == mô hình Python); bench/p2/std được p1_diff.py ở bước 8 đối chiếu
 """
 import glob
 import os
@@ -51,6 +53,12 @@ def main():
         ok = ok and step(f"light check {os.path.relpath(f, REPO)}", ["./target/release/light", "check", f])
     ok = ok and step("light stack-report bench/p1", ["./target/release/light", "stack-report", *p1])
     ok = ok and step("p1_diff.py (B == SSA gốc)", [PY, "tools/p1_diff.py"])
+    p2 = sorted(glob.glob(os.path.join(REPO, "bench", "p2", "*.lt")) + glob.glob(os.path.join(REPO, "bench", "p2", "std", "*.lt"))
+                + glob.glob(os.path.join(REPO, "bench", "p2", "std", "*.lit")))
+    for f in p2:
+        ok = ok and step(f"light check {os.path.relpath(f, REPO)}", ["./target/release/light", "check", f])
+    ok = ok and step("light stack-report bench/p2", ["./target/release/light", "stack-report", *p2])
+    ok = ok and step("bench.py --dir bench/p2 test", [PY, "tools/bench.py", "--dir", "bench/p2", "test"])
     print("CỔNG:", "QUA" if ok else "TRƯỢT")
     sys.exit(0 if ok else 1)
 
