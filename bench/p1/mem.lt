@@ -1,0 +1,15 @@
+// P1: các hàm không vòng lặp của std/mem.lit
+include "../../lit_program/std/core.lit";
+
+// p[i] — đọc / ghi một qword theo chỉ số
+fn mem_get_q(n: u64, p: ptr<u64, n>, i: u64) -> u64
+    requires i < n
+{
+    return p[i];
+}
+
+fn mem_set_q(n: u64, p: ptr<u64, n>, i: u64, v: u64)
+    requires i < n
+{
+    p[i] = v;
+}

@@ -3,6 +3,7 @@
 
 > Nhánh `lang-refactor` (2026-11-12): Light OS (kernel, driver, App, LightFS, công cụ QEMU) đã được xoá; lịch sử còn trên `main`.
 > Hướng mới: viết app Linux bằng std Light, kiểm chứng ĐÚNG CHỨC NĂNG (không chỉ an toàn bộ nhớ). Lộ trình: `ROADMAP.md`.
+> **Cú pháp B** (file `.lt`, kiểu Rust, hạ xuống SSA bên dưới): xem `SYNTAX_B.md`. Tài liệu dưới đây mô tả lớp SSA `.lit`.
 
 ---
 

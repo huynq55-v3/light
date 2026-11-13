@@ -16,6 +16,8 @@
 
 #[path = "../ir.rs"]
 mod ir;
+#[path = "../front.rs"]
+mod front;
 #[path = "../parser.rs"]
 mod parser;
 #[path = "../verify.rs"]

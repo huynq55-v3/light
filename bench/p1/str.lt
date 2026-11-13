@@ -1,0 +1,30 @@
+// P1: các hàm không vòng lặp của std/str.lit
+include "../../lit_program/std/mem.lit";
+
+// 1 nếu hai chuỗi bằng nhau (cùng độ dài, cùng byte)
+fn str_eq(n: u64, a: ptr<u8, n>, m: u64, b: ptr<u8, m>) -> u64
+    ensures result <= 1
+{
+    if n != m { return 0; }
+    return mem_eq_b(n, a, m, b, n);
+}
+
+// 1 nếu s bắt đầu bằng pre
+fn str_starts_with(n: u64, s: ptr<u8, n>, m: u64, pre: ptr<u8, m>) -> u64
+    ensures result <= 1
+{
+    if m > n { return 0; }
+    return mem_eq_b(n, s, m, pre, m);
+}
+
+fn byte_lower(b: u8) -> u8 {
+    if b >= 'A' && b <= 'Z' { return u8(b + 32); }
+    return b;
+}
+
+// 1 nếu b là chữ số '0'..'9'
+fn byte_is_digit(b: u8) -> u64
+    ensures result <= 1
+{
+    return u64(b >= '0' && b <= '9');
+}

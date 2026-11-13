@@ -1,0 +1,5 @@
+// EXPECT: không bao giờ chạy tới
+fn f(a: u64) -> u64 {
+    return a;
+    return 0;
+}

@@ -1,0 +1,16 @@
+// Ví dụ đầu SYNTAX_B.md (giữ hai bản khớp nhau)
+include "../../../lit_program/std/str.lit";      // dùng được mọi hàm / layout / hằng của file SSA
+
+const LIMIT = 100;
+
+// ghi 1 byte nếu còn chỗ, trả vị trí mới
+fn put(cap: u64, buf: ptr<u8, cap>, pos: u64, b: u8) -> u64
+    requires pos <= cap
+    ensures result <= cap, result >= pos
+{
+    if pos < cap {
+        buf[pos] = b;
+        return pos + 1;
+    }
+    return pos;
+}

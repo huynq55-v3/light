@@ -1,0 +1,43 @@
+# Bản SSA song sinh của pair.lt (gốc để tools/p1_diff.py đối chiếu)
+include pair_layout.lit
+
+func pair_get_val bv32 %n:bv64 %p:ptr<Pair,%n> %i:bv64 {
+    @req ult %i %n
+    @b0
+        %c = slice %p %i ptr<Pair,1>
+        %v = load %c Pair.val bv32
+        ret %v
+}
+
+func pair_set void %n:bv64 %p:ptr<Pair,%n> %i:bv64 %k:bv64 %v:bv32 {
+    @req ult %i %n
+    @b0
+        %c = slice %p %i ptr<Pair,1>
+        store %c Pair.key %k
+        store %c Pair.val %v
+        store %c Pair.flag 1
+        ret
+}
+
+func pair_first_key bv64 %p:ptr<Pair,1> {
+    @b0
+        %k = load %p Pair.key bv64
+        ret %k
+}
+
+func pair_swap_first void %p:ptr<Pair,2> {
+    @b0
+        %k0 = load %p Pair.key bv64
+        %q = slice %p 1 ptr<Pair,1>
+        %k1 = load %q Pair.key bv64
+        store %p Pair.key %k1
+        store %q Pair.key %k0
+        %f = load %q Pair.flag bv8
+        %z = cmp eq %f 0
+        br %z @mark @done
+    @mark
+        store %p Pair.flag 7
+        ret
+    @done
+        ret
+}

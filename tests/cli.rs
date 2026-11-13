@@ -138,3 +138,25 @@ fn real_stack_frames_never_exceed_verifier_bound() {
     let (out, err, ok) = light(&root, &["stack-report"]);
     assert!(ok && out.contains("OK:"), "{}\n{}", out, err);
 }
+
+#[test]
+fn b_syntax_lowers_and_reports_line_and_column() {
+    let d = scratch("bsyn");
+    let src = "fn f(x: u64, y: u64) -> u64\n    requires x < 100\n{\n    let s = x + y * 2;\n    return s;\n}\n";
+    std::fs::write(d.join("f.lt"), src).unwrap();
+    // light lower: SSA sinh ra dùng tên người viết cho đích của let
+    let (out, err, ok) = light(&d, &["lower", "f.lt"]);
+    assert!(ok && out.contains("func f bv64 %x:bv64 %y:bv64 {") && out.contains("@req ult %x 100") && out.contains("%s = add %x"), "{}{}", out, err);
+    // lỗi tràn của phép nhân con chỉ đúng CỘT của `*` (4:19), không lộ biến tạm
+    let (j, _, ok) = light(&d, &["check", "f.lt", "--json", "--no-cache"]);
+    assert!(!ok && j.contains("\"at\":\"f.lt:4:19\"") && j.contains("Tràn số nhân") && !j.contains("%_t"), "{}", j);
+    assert!(j.contains("\"source\":\"let s = x + y * 2;\"") && j.contains("requires"), "{}", j);
+    // chế độ người đọc: dòng nguồn + dấu ^ đúng cột
+    let (_, e, _) = light(&d, &["check", "f.lt", "--no-cache"]);
+    let caret = format!("    let s = x + y * 2;\n{}^", " ".repeat(4 + 18));
+    assert!(e.contains("f.lt:4:19: Tràn số nhân") && e.contains(&caret), "{}", e);
+    // lỗi cú pháp B cũng có dòng:cột
+    std::fs::write(d.join("p.lt"), "fn g(a: u64) -> u64 {\n    return a +;\n}\n").unwrap();
+    let (j, _, ok) = light(&d, &["check", "p.lt", "--json"]);
+    assert!(!ok && j.contains("p.lt:2:15") && j.contains("cần biểu thức"), "{}", j);
+}

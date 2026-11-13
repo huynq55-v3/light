@@ -41,6 +41,7 @@ pub struct FieldDef {
     pub offset: u32,         // Offset cố định tính bằng byte (AI hoặc người viết tự căn)
     pub ty: Type,            // Kiểu của trường dữ liệu tại offset này
     pub inv: Option<Z3Expr>, // Bất biến kiểu (Type Invariant): Z3 tự kiểm tra mỗi khi Store
+    pub name: Option<String>, // tên trường (nếu có) — để front-end cú pháp B tra `p.tên`
 }
 
 #[derive(Debug, Clone)]

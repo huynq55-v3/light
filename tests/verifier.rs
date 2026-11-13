@@ -1,6 +1,6 @@
 //! Bộ test hồi quy cho parser + verifier Light.
 //!
-//! - `tests/lit/must_fail/*.lit`: PHẢI bị từ chối. Dòng `# EXPECT: <chuỗi>` = đoạn thông báo lỗi bắt buộc xuất hiện
+//! - `tests/lit/must_fail/*.lit|*.lt`: PHẢI bị từ chối. Dòng `# EXPECT: <chuỗi>` = đoạn thông báo lỗi bắt buộc xuất hiện
 //!   (để chắc chắn bị từ chối đúng lý do, không phải vì một lỗi cú pháp vô tình).
 //! - `tests/lit/must_pass/*.lit`: PHẢI qua kiểm chứng (chống verifier quá khắt khe sau khi sửa).
 //! - `tests/lit/known_holes/*.lit`: lỗ hổng ĐÃ BIẾT nhưng CHƯA vá — hiện vẫn qua kiểm chứng. Khi vá xong, test này sẽ
@@ -32,7 +32,7 @@ fn lit_files(dir: &str) -> Vec<PathBuf> {
     };
     let mut v: Vec<PathBuf> = rd
         .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "lit"))
+        .filter(|p| p.extension().is_some_and(|x| x == "lit" || x == "lt"))
         .collect();
     v.sort();
     assert!(!v.is_empty() || dir == "known_holes", "thư mục {} không có file .lit", d.display());
@@ -40,8 +40,9 @@ fn lit_files(dir: &str) -> Vec<PathBuf> {
 }
 
 fn header(src: &str, key: &str) -> Option<String> {
+    // `# KEY:` (.lit) hoặc `// KEY:` (.lt, cú pháp B)
     src.lines()
-        .filter_map(|l| l.trim().strip_prefix('#'))
+        .filter_map(|l| l.trim().strip_prefix('#').or_else(|| l.trim().strip_prefix("//")))
         .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
 }
 

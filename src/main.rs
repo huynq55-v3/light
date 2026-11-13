@@ -1,5 +1,6 @@
 // File: src/main.rs — CLI của trình biên dịch / kiểm chứng Light: check, doc, stack-report
 mod elf64;
+mod front;
 mod ir;
 mod parser;
 mod verify;
@@ -22,7 +23,7 @@ fn run() -> Result<(), String> {
         if files.is_empty() {
             for e in fs::read_dir("lit_program/std").map_err(|e| e.to_string())? {
                 let p = e.map_err(|e| e.to_string())?.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("lit") {
+                if matches!(p.extension().and_then(|s| s.to_str()), Some("lit" | "lt")) {
                     files.push(p.to_string_lossy().into_owned());
                 }
             }
@@ -40,6 +41,31 @@ fn run() -> Result<(), String> {
             worst = worst.min(slack);
         }
         say!("OK: {} hàm, khung thật luôn <= cận verifier (khoảng trống nhỏ nhất {} byte)", total, worst);
+        return Ok(());
+    }
+
+    // light lower FILE.lt: in văn bản SSA mà front-end cú pháp B sinh ra (cột phải: vị trí gốc)
+    if args.len() > 2 && args[1] == "lower" {
+        for (line, origin) in front::lower_file(std::path::Path::new(&args[2]))? {
+            if args.iter().any(|a| a == "--origins") {
+                println!("{:<60} # {}", line, origin);
+            } else {
+                println!("{}", line);
+            }
+        }
+        return Ok(());
+    }
+
+    // light tokens FILE.lt|-: số token cú pháp B (để so độ dài với SSA)
+    if args.len() > 2 && args[1] == "tokens" {
+        let src = if args[2] == "-" {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| e.to_string())?;
+            s
+        } else {
+            std::fs::read_to_string(&args[2]).map_err(|e| e.to_string())?
+        };
+        println!("{}", front::count_tokens(&src)?);
         return Ok(());
     }
 
@@ -75,7 +101,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    Err("cách dùng: light check FILE.lit | light doc [...] | light stack-report [FILE.lit...]  (thêm --json, --no-cache)".into())
+    Err("cách dùng: light check FILE.lit|FILE.lt | light lower FILE.lt [--origins] | light doc [...] | light stack-report [FILE.lit...]  (thêm --json, --no-cache)".into())
 }
 
 fn main() {

@@ -1,0 +1,25 @@
+// P1: các hàm không vòng lặp của std/fmt.lit — ghi vào bộ đệm (cap, buf) từ vị trí pos, trả vị trí mới
+include "../../lit_program/std/str.lit";
+
+fn fmt_byte(cap: u64, buf: ptr<u8, cap>, pos: u64, b: u8) -> u64
+    requires pos <= cap
+    ensures result <= cap, result >= pos
+{
+    if pos < cap {
+        buf[pos] = b;
+        return pos + 1;
+    }
+    return pos;
+}
+
+// Chép chuỗi (n, s) vào bộ đệm, hết chỗ thì cắt bớt
+fn fmt_str(cap: u64, buf: ptr<u8, cap>, pos: u64, n: u64, s: ptr<u8, n>) -> u64
+    requires pos <= cap
+    ensures result <= cap, result >= pos
+{
+    let room = cap - pos;
+    let k = math_min(n, room);
+    let dst = buf[pos..cap];
+    mem_copy_b(room, dst, n, s, k);
+    return pos + k;
+}

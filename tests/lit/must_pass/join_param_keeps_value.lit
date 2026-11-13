@@ -1,0 +1,14 @@
+# Block nối (không phải đầu vòng lặp) biết giá trị tham số theo từng cạnh vào: r == 1 <=> b == 0
+func j bv64 %b:bv64 {
+    @ens or not eq %b 0 eq %r 1
+    @ens or eq %b 0 eq %r 0
+    @entry
+        %t = cmp eq %b 0
+        br %t @T @F
+    @T
+        jmp @J 1
+    @F
+        jmp @J 0
+    @J %ok:bv64
+        ret %ok
+}

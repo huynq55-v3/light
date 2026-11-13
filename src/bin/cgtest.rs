@@ -12,6 +12,8 @@
 mod elf64;
 #[path = "../ir.rs"]
 mod ir;
+#[path = "../front.rs"]
+mod front;
 #[path = "../parser.rs"]
 mod parser;
 #[path = "../verify.rs"]
@@ -478,6 +480,20 @@ fn main() {
                 })
                 .collect();
             let r = native(exe, offs[fi], &a);
+            // hàm trả con trỏ vào bộ đệm k -> in `&k+offset` (địa chỉ tuyệt đối khác nhau giữa các lần chạy)
+            let ret_ptr = matches!(m.funcs[fi].ret_ty, Some(Type::Ptr { .. } | Type::DPtr { .. }));
+            let inside = bufs.iter().enumerate().filter(|_| ret_ptr).find(|(_, b)| {
+                let (lo, hi) = (b.as_ptr() as u64, b.as_ptr() as u64 + 8 * b.len() as u64);
+                r >= lo && r < hi
+            });
+            if let Some((k, b)) = inside {
+                let dump: Vec<String> = bufs
+                    .iter()
+                    .map(|b| format!("[{}]", b.iter().map(|v| format!("0x{:x}", v)).collect::<Vec<_>>().join(",")))
+                    .collect();
+                println!("&{}+{} {}", k, r - b.as_ptr() as u64, dump.join(" "));
+                continue;
+            }
             let dump: Vec<String> = bufs
                 .iter()
                 .map(|b| format!("[{}]", b.iter().map(|v| format!("0x{:x}", v)).collect::<Vec<_>>().join(",")))

@@ -1,0 +1,28 @@
+// P1: các hàm không vòng lặp của std/bignum.lit (trừ bn_addsub: gọi hàm có vòng lặp cùng file -> P2)
+// Số lớn: ô 17 qword = [dấu, limb 0 .. limb 15]
+include "../../lit_program/std/mem.lit";
+
+const BN_SLOT = 17;
+
+// a[i] (limb i)
+fn bn_limb(a: ptr<u64, 17>, i: u64) -> u64
+    requires i < 16
+{
+    return mem_get_q(BN_SLOT, a, i + 1);
+}
+
+fn bn_set_limb(a: ptr<u64, 17>, i: u64, v: u64)
+    requires i < 16
+{
+    mem_set_q(BN_SLOT, a, i + 1, v);
+}
+
+// Limb cao nhất kèm dấu -> Q4.60 bù hai (cắt về 0 trên độ lớn)
+fn bn_to_q(a: ptr<u64, 17>, n: u64) -> u64
+    requires n >= 1, n <= 16
+{
+    let mag = bn_limb(a, n - 1);
+    let s0 = mem_get_q(BN_SLOT, a, 0);
+    let m = 0 -% (s0 & 1);
+    return (mag ^ m) -% m;
+}

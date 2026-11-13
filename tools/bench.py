@@ -36,7 +36,9 @@ def call(file, func, rows):
     res = []
     for line in out.splitlines():
         parts = line.split(" ")
-        res.append((int(parts[0], 16), [[int(x, 16) for x in b[1:-1].split(",") if x] for b in parts[1:]]))
+        # `&k+off` = kết quả là con trỏ vào bộ đệm k (cgtest in tương đối); hàm void có rax rác nên có thể gặp
+        r = parts[0] if parts[0].startswith("&") else int(parts[0], 16)
+        res.append((r, [[int(x, 16) for x in b[1:-1].split(",") if x] for b in parts[1:]]))
     return res
 
 
@@ -216,7 +218,7 @@ def test(n=300):
             if not ok:
                 fails += 1
                 if fails <= 3:
-                    print(f"  {func}{args} -> {r:#x} {bufs}; mong đợi {exp_r:#x} {exp_bufs}")
+                    print(f"  {func}{args} -> {r} {bufs}; mong đợi {exp_r:#x} {exp_bufs}")
         print(f"[{'OK' if not fails else 'FAIL'}] {func}: {n - fails}/{n}")
         bad += fails
     return bad == 0

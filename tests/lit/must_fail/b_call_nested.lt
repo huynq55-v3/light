@@ -1,0 +1,5 @@
+// EXPECT: gọi hàm phải đứng riêng
+include "../../../lit_program/std/core.lit";
+fn f(a: u64, b: u64) -> u64 {
+    return math_min(a, b) +% 1;
+}

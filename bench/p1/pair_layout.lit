@@ -1,0 +1,6 @@
+# Layout có trường tên — để thử p.f / p[i].f của cú pháp B (std chưa có layout nào có tên trường)
+layout Pair 16 {
+    0: bv64 key
+    8: bv32 val
+    12: bv8 flag
+}

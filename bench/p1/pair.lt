@@ -1,0 +1,30 @@
+// P1: đọc / ghi trường có tên (p.f, p[i].f) — đối chiếu với pair_ssa.lit
+include "pair_layout.lit";
+
+fn pair_get_val(n: u64, p: ptr<Pair, n>, i: u64) -> u32
+    requires i < n
+{
+    return p[i].val;
+}
+
+fn pair_set(n: u64, p: ptr<Pair, n>, i: u64, k: u64, v: u32)
+    requires i < n
+{
+    p[i].key = k;
+    p[i].val = v;
+    p[i].flag = 1;
+}
+
+fn pair_first_key(p: ptr<Pair, 1>) -> u64 {
+    return p.key;
+}
+
+fn pair_swap_first(p: ptr<Pair, 2>) {
+    let k0 = p.key;
+    let k1 = p[1].key;
+    p.key = k1;
+    p[1].key = k0;
+    if p[1].flag == 0 {
+        p.flag = 7;
+    }
+}

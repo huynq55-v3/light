@@ -1,0 +1,34 @@
+// P1: các hàm không vòng lặp của std/core.lit viết bằng cú pháp B
+
+fn math_min(a: u64, b: u64) -> u64
+    ensures result <= a, result <= b
+    ensures result == a || result == b
+{
+    if a < b { return a; }
+    return b;
+}
+
+fn math_max(a: u64, b: u64) -> u64
+    ensures result >= a, result >= b
+    ensures result == a || result == b
+{
+    if a > b { return a; }
+    return b;
+}
+
+// Kẹp v vào [lo, hi]
+fn math_clamp(v: u64, lo: u64, hi: u64) -> u64
+    requires lo <= hi
+    ensures result >= lo, result <= hi
+{
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+// u8 -> u64 (giá trị giữ nguyên, < 256)
+fn byte_u64(b: u8) -> u64
+    ensures result < 256
+{
+    return u64(b);
+}

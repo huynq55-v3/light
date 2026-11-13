@@ -92,6 +92,24 @@ fn with_names(s: &str, func: &str) -> String {
 /// Chuỗi lỗi với số SSA đổi lại thành tên biến (cho người đọc)
 pub fn pretty_err(e: &str) -> String {
     let d = parse_err(e);
+    // file `.lt` (cú pháp B): báo theo dòng:cột của mã B, kèm dòng nguồn + dấu ^, không lộ biến tạm của SSA
+    let loc = if d.at.is_empty() { &d.origin } else { &d.at };
+    if let Some((_, _, Some(col))) = split_loc(loc).filter(|x| x.0.ends_with(".lt")) {
+        let mut o = format!("{}: {}", loc, d.message);
+        if !d.counterexample.is_empty() {
+            let ce: Vec<String> = d.counterexample.iter().map(|(k, v)| format!("{} = {}", k.trim_start_matches('%'), v)).collect();
+            o.push_str(&format!(" — phản ví dụ: {}", ce.join(", ")));
+        }
+        if !d.source.is_empty() {
+            let raw = source_line_raw(loc).unwrap_or_default();
+            let caret: String = raw.chars().take(col.saturating_sub(1)).map(|c| if c == '\t' { '\t' } else { ' ' }).collect();
+            o.push_str(&format!("\n    {}\n    {}^", raw, caret));
+        }
+        if !d.hint.is_empty() {
+            o.push_str(&format!("\n  gợi ý: {}", d.hint));
+        }
+        return o;
+    }
     if d.func.is_empty() {
         e.to_string()
     } else {
@@ -239,7 +257,11 @@ pub fn parse_err(s: &str) -> Diag {
             d.source = source_line(&d.at).unwrap_or_default();
         }
     }
-    d.hint = hint_for(&d.message, &d.kind).into();
+    let b_syntax = split_loc(if d.at.is_empty() { &d.origin } else { &d.at }).is_some_and(|x| x.0.ends_with(".lt"));
+    if b_syntax && d.source.is_empty() {
+        d.source = source_line(&d.origin).unwrap_or_default();
+    }
+    d.hint = if b_syntax { hint_b(&d.message, &d.kind) } else { hint_for(&d.message, &d.kind) }.into();
     if !d.func.is_empty() {
         d.message = with_names(&d.message, &d.func);
         d.inst = with_names(&d.inst, &d.func);
@@ -251,14 +273,83 @@ pub fn parse_err(s: &str) -> Diag {
             c.0 = with_names(&c.0, &f);
         }
     }
+    if b_syntax {
+        // chỉ giữ biến người viết đặt tên; bỏ biến tạm %_tN và hằng %<số> do front-end / parser sinh
+        d.message = strip_temps(&d.message);
+        if !d.source.is_empty() {
+            d.inst = d.source.clone(); // lệnh SSA sinh ra không có ý nghĩa với người viết B (xem `light lower`)
+        }
+        d.counterexample.retain(|(k, _)| k == "%_r" || !k.starts_with("%_") && !k[1..].starts_with(|c: char| c.is_ascii_digit()));
+        for c in &mut d.counterexample {
+            if c.0 == "%_r" {
+                c.0 = "%r".into(); // biến người viết tên `r` (front-end đổi thành %_r)
+            }
+        }
+    }
     d
 }
 
-/// Nội dung gốc (trước khi đổi tên %x -> %số) của "file:dòng"
+/// "file:dòng" hoặc "file:dòng:cột" -> (file, dòng, cột)
+fn split_loc(at: &str) -> Option<(&str, usize, Option<usize>)> {
+    let (a, last) = at.rsplit_once(':')?;
+    let last: usize = last.parse().ok()?;
+    match a.rsplit_once(':') {
+        Some((f, l)) if l.parse::<usize>().is_ok() => Some((f, l.parse().unwrap(), Some(last))),
+        _ => Some((a, last, None)),
+    }
+}
+
+fn source_line_raw(at: &str) -> Option<String> {
+    let (file, n, _) = split_loc(at)?;
+    Some(fs::read_to_string(file).ok()?.lines().nth(n.checked_sub(1)?)?.to_string())
+}
+
+/// Nội dung gốc (trước khi đổi tên %x -> %số) của "file:dòng[:cột]"
 fn source_line(at: &str) -> Option<String> {
-    let (file, line) = at.rsplit_once(':')?;
-    let n: usize = line.parse().ok()?;
-    Some(fs::read_to_string(file).ok()?.lines().nth(n.checked_sub(1)?)?.trim().to_string())
+    Some(source_line_raw(at)?.trim().to_string())
+}
+
+/// Bỏ tên biến tạm `%_tN` của front-end khỏi thông báo (người viết B không thấy chúng)
+fn strip_temps(m: &str) -> String {
+    let mut out = String::new();
+    let mut rest = m;
+    while let Some(i) = rest.find("%_t") {
+        let (head, tail) = rest.split_at(i);
+        let head = head.strip_suffix(" tại ").or_else(|| head.strip_suffix(' ')).unwrap_or(head);
+        out.push_str(head);
+        let n = tail[3..].bytes().take_while(|b| b.is_ascii_digit()).count();
+        rest = &tail[3 + n..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Gợi ý viết theo cú pháp B
+fn hint_b(msg: &str, kind: &str) -> &'static str {
+    let m = msg;
+    if kind == "z3_timeout" {
+        "Z3 hết giờ (thường do nhân / chia 64-bit): tách hàm nhỏ có requires/ensures rõ, hoặc giới hạn toán hạng bằng requires."
+    } else if m.contains("không chắc dừng") || m.contains("vòng lặp") && m.contains("dừng") {
+        "Vòng lặp phải dừng: thêm `decreases <biểu thức>` giảm ngặt mỗi vòng."
+    } else if m.contains("Tràn biên") || m.contains("Tràn vùng nhớ") || m.contains("vượt độ dài") || m.contains("Tràn số cộng index") {
+        "Chỉ số có thể vượt độ dài ptr: thêm `requires i < n`, hoặc kiểm `if i < n { ... }` trước khi dùng p[i]."
+    } else if m.contains("Tràn số") {
+        "`+ - *` có kiểm tràn: giới hạn toán hạng bằng requires (vd `requires x <= 0xffffffff`) hoặc if, hoặc chọn nghĩa khác: `+%` quay vòng (hash, checksum), `+|` bão hòa."
+    } else if m.contains("chia cho 0") {
+        "Thêm `requires d != 0` hoặc kiểm `if d != 0 { ... }` trước khi chia."
+    } else if m.contains("narrow") {
+        "u8(x) / u16(x) / u32(x) thu hẹp CÓ KIỂM: chứng minh x vừa (vd `x & 0xff`, hoặc `if x < 256`)."
+    } else if m.contains("Vi phạm @req") && m.contains("khi gọi hàm") {
+        "Đối số chưa chắc thỏa requires của hàm được gọi: thêm requires cho hàm này, hoặc kiểm bằng if trước khi gọi."
+    } else if m.contains("Vi phạm điều kiện đầu ra") {
+        "ensures chưa chứng minh được trên MỌI nhánh return."
+    } else if m.contains("Dịch bit") {
+        "Số bit dịch phải < 64: thêm `requires s < 64` hoặc dùng `s & 63`."
+    } else if kind == "z3_fail" {
+        "Z3 có phản ví dụ: thêm requires loại giá trị đó, hoặc sửa phép tính."
+    } else {
+        ""
+    }
 }
 
 pub fn diag_json(d: &Diag) -> String {

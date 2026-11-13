@@ -1,0 +1,8 @@
+// .lt include .lt: dùng hàm sq của b_inc_table.lt
+include "b_inc_table.lt";
+fn sq_plus(i: u64) -> u64
+    requires i < 5
+{
+    let v = sq(i);
+    return v +% 1;
+}

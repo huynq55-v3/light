@@ -1,0 +1,7 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// Tham số tên `r` không được nhầm với %r (kết quả) của SSA: trước đây `result == r` thành `eq %r %r` (luôn đúng)
+fn f(r: u64) -> u64
+    ensures result == r
+{
+    return 0;
+}

@@ -1,0 +1,7 @@
+// EXPECT: chưa có số học toán học
+// `+` trong đặc tả bị cấm cho tới P3 (int): trong mã nó có kiểm tràn, trong đặc tả sẽ quay vòng — hai nghĩa khác nhau
+fn f(a: u64) -> u64
+    ensures result == a + 1
+{
+    return a +% 1;
+}

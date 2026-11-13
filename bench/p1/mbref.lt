@@ -1,0 +1,10 @@
+// P1: hàm không vòng lặp của std/mbref.lit
+include "../../lit_program/std/core.lit";
+
+// số thứ k (0..6) trong trạng thái 7 x 17 qword
+fn mbr_num(s: ptr<u64, 119>, k: u64) -> ptr<u64, 17>
+    requires k < 7
+{
+    let o = k * 17;
+    return s[o..o + 17];
+}

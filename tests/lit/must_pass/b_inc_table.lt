@@ -1,0 +1,9 @@
+// data dạng [..] + TÊN.len trong đặc tả; được b_inc_use.lt include (.lt include .lt)
+include "../../../lit_program/std/core.lit";
+data SQ: u64 = [0, 1, 4, 9, 16];
+fn sq(i: u64) -> u64
+    requires i < SQ.len
+{
+    let t = addr(SQ);
+    return t[i];
+}

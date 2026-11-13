@@ -1,0 +1,5 @@
+// EXPECT: không vừa
+// u8(x) là thu hẹp CÓ KIỂM (không cắt bớt như `as` của Rust)
+fn f(x: u64) -> u8 {
+    return u8(x);
+}

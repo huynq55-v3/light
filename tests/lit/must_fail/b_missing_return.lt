@@ -1,0 +1,4 @@
+// EXPECT: mà không return
+fn f(a: u64) -> u64 {
+    if a > 1 { return a; }
+}

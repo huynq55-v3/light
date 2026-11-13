@@ -1,0 +1,148 @@
+// Cú pháp B (P1): && / || ngắn mạch, ==> trong đặc tả, let có kiểu, u8()/u64(), else if, ghi bộ nhớ
+include "../../../lit_program/std/core.lit";
+
+// a[i] chỉ được đọc khi i < n (nếu && không ngắn mạch thì Z3 sẽ báo tràn biên)
+fn hit_at(n: u64, a: ptr<u64, n>, i: u64, x: u64) -> u64
+    ensures result <= 1
+{
+    if i < n && a[i] == x { return 1; }
+    return 0;
+}
+
+// || ngắn mạch trong ngữ cảnh giá trị (sinh block nối có tham số)
+fn zero_or_out(n: u64, a: ptr<u64, n>, i: u64) -> u64
+    ensures result <= 1
+{
+    let ok = i >= n || a[i] == 0;
+    if ok { return 1; }
+    return 0;
+}
+
+fn add_small(a: u64, b: u64) -> u64
+    requires a < 10 ==> b < 10
+    ensures (a < 10 && b < 10) ==> result < 20
+    ensures result == a +% b
+{
+    return a +% b;
+}
+
+fn low_plus7(b: u8) -> u8 {
+    let x: u8 = 7;
+    let y = u64(b) & 0x0f;
+    return u8(y + u64(x));
+}
+
+fn sign3(a: u64, b: u64) -> u64
+    ensures result <= 2
+{
+    if a < b {
+        return 0;
+    } else if a == b {
+        return 1;
+    } else {
+        return 2;
+    }
+}
+
+fn put_max(n: u64, a: ptr<u64, n>, i: u64, x: u64, y: u64)
+    requires i < n
+{
+    let m = math_max(x, y);
+    a[i] = m;
+    if a[i] < x {
+        a[0] = 0;
+    }
+}
+
+// ---- Các hàm dưới có ensures CHÍNH XÁC: Z3 đối chiếu cách hạ nhánh / phép toán với cách hạ đặc tả ----
+
+fn or_small(a: u64, b: u64) -> u64
+    ensures result == 1 <==> (a < 5 || b < 5)
+    ensures result <= 1
+{
+    if a < 5 || b < 5 { return 1; }
+    return 0;
+}
+
+fn not_both_zero(a: u64, b: u64) -> u64
+    ensures result == 1 <==> !(a == 0 && b == 0)
+    ensures result <= 1
+{
+    if !(a == 0 && b == 0) { return 1; }
+    return 0;
+}
+
+// || giá trị với vế phải có điều kiện chứng minh (chia) -> block nối có tham số
+fn zero_or_big_ratio(a: u64, b: u64) -> u64
+    ensures result == 1 <==> (b == 0 || a / b > 2)
+    ensures result <= 1
+{
+    let ok = b == 0 || a / b > 2;
+    if ok { return 1; }
+    return 0;
+}
+
+fn cmp3(a: u64, b: u64) -> u64
+    ensures a < b ==> result == 0
+    ensures a == b ==> result == 1
+    ensures a > b ==> result == 2
+{
+    if a < b {
+        return 0;
+    } else if a == b {
+        return 1;
+    } else {
+        return 2;
+    }
+}
+
+fn bit_not(a: u64) -> u64
+    ensures result == a ^ 0xffffffffffffffff
+{
+    return ~a;
+}
+
+fn sat_add(a: u64, b: u64) -> u64
+    ensures a +% b >= a ==> result == a +% b
+    ensures a +% b < a ==> result == 0xffffffffffffffff
+{
+    return a +| b;
+}
+
+fn signed_le(a: u64, b: u64) -> u64
+    ensures result == 1 <==> le_s(a, b)
+    ensures result <= 1
+{
+    if le_s(a, b) { return 1; }
+    return 0;
+}
+
+fn signed_ge(a: u64, b: u64) -> u64
+    ensures result == 1 <==> ge_s(a, b)
+    ensures result <= 1
+{
+    if ge_s(a, b) { return 1; }
+    return 0;
+}
+
+fn low16(a: u64) -> u16
+    ensures result == a & 0xffff
+{
+    return u16(a & 0xffff);
+}
+
+// mulhi mờ trong verifier: chỉ có cận
+fn high_mul(a: u64, b: u64) -> u64
+    ensures result <= a, result <= b
+{
+    return mulhi(a, b);
+}
+
+// `>>` có điều kiện (số bit < 64): && phải ngắn mạch, không được tính thẳng bằng `and`
+fn shift_nonzero(x: u64, s: u64) -> u64
+    ensures result <= 1
+{
+    let ok = s < 64 && (x >> s) != 0;
+    if ok { return 1; }
+    return 0;
+}

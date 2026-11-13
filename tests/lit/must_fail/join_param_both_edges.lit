@@ -1,0 +1,14 @@
+# EXPECT: Vi phạm điều kiện đầu ra
+# Block nối giữ giá trị theo TỪNG cạnh (điều_kiện => tham_số == đối_số), không được giả định giá trị của một cạnh cho mọi đường
+func j bv64 %b:bv64 {
+    @ens eq %r 1
+    @entry
+        %t = cmp eq %b 0
+        br %t @T @F
+    @T
+        jmp @J 1
+    @F
+        jmp @J 0
+    @J %ok:bv64
+        ret %ok
+}

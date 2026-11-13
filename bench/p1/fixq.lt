@@ -1,0 +1,66 @@
+// P1: các hàm không vòng lặp của std/fixq.lit — số cố định Q4.60 bù hai
+const FQ_TWO = 0x2000000000000000;
+
+// mặt nạ dấu: 0 (a >= 0) hoặc 0xff..ff (a < 0)
+fn fq_mask(a: u64) -> u64 {
+    return 0 -% (a >> 63);
+}
+
+fn fq_abs(a: u64) -> u64 {
+    let m = fq_mask(a);
+    return (a ^ m) -% m;
+}
+
+// a * b (Q4.60), làm tròn về 0 trên độ lớn; sai số <= 3 ulp. Chỉ dùng khi |a*b| < 8.
+fn fq_mul(a: u64, b: u64) -> u64 {
+    let ua = fq_abs(a);
+    let ub = fq_abs(b);
+    let sm = fq_mask(a ^ b);
+    let ah = ua >> 32;
+    let al = ua & 0xffffffff;
+    let bh = ub >> 32;
+    let bl = ub & 0xffffffff;
+    let u = ((ah *% bh) << 4) +% ((ah *% bl) >> 28) +% ((al *% bh) >> 28) +% ((al *% bl) >> 60);
+    return (u ^ sm) -% sm;
+}
+
+// Màu của 5 mốc bảng màu, 0..4
+fn mb_key(k: u64) -> u64 {
+    if k == 0 { return 0x000764; }
+    if k == 1 { return 0x206bcb; }
+    if k == 2 { return 0xedffff; }
+    if k == 3 { return 0xffaa00; }
+    return 0x000200;
+}
+
+// Pha kênh 8 bit (dịch sh) giữa a và b theo f/16
+fn mb_mix(a: u64, b: u64, f: u64, sh: u64) -> u64
+    requires f < 16, sh <= 16
+    ensures result <= 0xff0000
+{
+    let ca = (a >> sh) & 0xff;
+    let cb = (b >> sh) & 0xff;
+    let v = (ca * (16 - f) + cb * f) >> 4;
+    return (v & 0xff) << sh;
+}
+
+// Màu điểm ảnh: trong tập -> đen; ngoài -> bảng màu tuần hoàn chu kỳ 80 vòng
+fn mb_color(n: u64, maxit: u64) -> u32 {
+    if n >= maxit { return 0; }
+    let t = n % 80;
+    let k = t >> 4;
+    let f = t & 15;
+    let a = mb_key(k);
+    let b = mb_key((k + 1) % 5);
+    let r = mb_mix(a, b, f, 16);
+    let g = mb_mix(a, b, f, 8);
+    let bl = mb_mix(a, b, f, 0);
+    return u32(r | g | bl);
+}
+
+// Kẹp v (có dấu) vào [-2, 2]
+fn fq_clamp2(v: u64) -> u64 {
+    if lt_s(v, 0xe000000000000000) { return 0xe000000000000000; }
+    if gt_s(v, FQ_TWO) { return FQ_TWO; }
+    return v;
+}

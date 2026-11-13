@@ -1,0 +1,17 @@
+# EXPECT: Vi phạm điều kiện đầu ra
+# Đầu vòng lặp có cạnh lùi: giá trị tham số khác nhau mỗi vòng, chỉ biết @inv — không được lấy giá trị của cạnh vào đầu tiên
+func f bv64 %n:bv64 {
+    @req ule %n 10
+    @ens eq %r 0
+    @entry
+        jmp @L 0
+    @L %i:bv64
+        @inv ule %i %n
+        %c = cmp ult %i %n
+        br %c @B @D
+    @B
+        %i2 = add %i 1
+        jmp @L %i2
+    @D
+        ret %i
+}

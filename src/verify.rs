@@ -527,6 +527,9 @@ struct Verifier<'ctx> {
     conds: HashMap<usize, Option<Bool<'ctx>>>,
     pos: Vec<usize>,
     n_assume: usize,
+    /// Cạnh jmp TIẾN vào block có tham số: (điều kiện đường đi của block nguồn, đối số). Block không phải đầu vòng lặp
+    /// (không có cạnh lùi vào) dùng chúng để biết giá trị tham số — xem chỗ vào block trong verify_inner.
+    edge_args: HashMap<usize, Vec<(Option<Bool<'ctx>>, Vec<BV<'ctx>>)>>,
     /// Vòng lặp phải dừng (hàm không giữ thẻ io: không có lý do chờ phần cứng vô hạn)
     need_term: bool,
     /// Biến giảm còn hợp lệ của từng đầu vòng (block index) sau các cạnh lùi đã kiểm
@@ -1741,6 +1744,10 @@ impl<'ctx> Verifier<'ctx> {
                 }
                 self.check_target_invs(func, ti, &env, None)?;
                 self.check_back_edge(func, cfg, bi, ti, &env, None)?;
+                if cfg.pos[ti] > cfg.pos[bi] && !tb.params.is_empty() {
+                    let vals = tb.params.iter().map(|(p, _)| env[p].clone()).collect();
+                    self.edge_args.entry(ti).or_default().push((self.cur_cond.clone(), vals));
+                }
                 self.add_pred(bi, ti, self.cur_cond.clone());
             }
             Inst::Assume(e) => {
@@ -1825,6 +1832,7 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
         conds: HashMap::from([(0, None)]),
         pos: cfg.pos.clone(),
         n_assume: 0,
+        edge_args: HashMap::new(),
         need_term: !func.params.iter().any(|&(_, t)| matches!(t, Type::Io { .. })),
         term: HashMap::new(),
     };
@@ -1836,6 +1844,21 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
         v.solver.assert(&v.ev(req)?);
     }
 
+    // block là đích của cạnh lùi (đầu vòng lặp)
+    let mut back_target = vec![false; func.blocks.len()];
+    for (bi, b) in func.blocks.iter().enumerate() {
+        for t in b.insts.iter().flat_map(|i| match i {
+            Inst::Br { then_bb, else_bb, .. } => vec![*then_bb, *else_bb],
+            Inst::Jmp { target_bb, .. } => vec![*target_bb],
+            _ => vec![],
+        }) {
+            if let Some(&ti) = cfg.idx.get(&t) {
+                if cfg.pos[ti] <= cfg.pos[bi] {
+                    back_target[ti] = true;
+                }
+            }
+        }
+    }
     for &bi in &cfg.rpo {
         let Some(c) = v.conds.get(&bi).cloned() else {
             continue;
@@ -1855,6 +1878,20 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
         v.cur_regs = block.params.iter().map(|&(r, _)| r).collect();
         for &(r, ty) in &block.params {
             v.decl_reg(r, ty)?;
+        }
+        // Block nối (có tham số, KHÔNG có cạnh lùi vào — không phải đầu vòng lặp): mỗi cạnh jmp tiến e cho
+        // `điều_kiện(e) => tham_số == đối_số(e)`. Đúng đắn: nguồn của jmp chỉ có một đích nên trong một lần chạy chỉ một
+        // cạnh tiến vào được đi qua; điều kiện đường đi chính xác trên phần không vòng của CFG. Đầu vòng lặp thì giá trị
+        // khác nhau mỗi vòng nên vẫn chỉ biết @inv như cũ.
+        if !block.params.is_empty() && !back_target[bi] {
+            for (c, vals) in v.edge_args.get(&bi).cloned().unwrap_or_default() {
+                let eqs: Vec<Bool> = block.params.iter().zip(&vals).map(|((p, _), a)| v.regs[p]._eq(a)).collect();
+                let all = Bool::and(&ctx, &eqs.iter().collect::<Vec<_>>());
+                match c {
+                    Some(c) => v.solver.assert(&c.implies(&all)),
+                    None => v.solver.assert(&all),
+                }
+            }
         }
         for inv in &block.invs {
             v.assume(&v.ev(inv)?);

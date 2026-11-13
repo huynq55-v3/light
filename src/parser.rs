@@ -122,12 +122,19 @@ fn load_source_recursive(
         return Ok(String::new()); // Đã include rồi thì bỏ qua (Chống trùng lặp #pragma once)
     }
     let parent_dir = canon.parent().unwrap_or_else(|| Path::new("."));
-    let content = std::fs::read_to_string(&canon)
-        .map_err(|e| format!("Lỗi đọc '{}': {}", path.display(), e))?;
+    // `.lt` (cú pháp B): front-end hạ xuống các dòng SSA, mỗi dòng kèm vị trí gốc "file:dòng:cột"
+    let lines: Vec<(String, String)> = if canon.extension().is_some_and(|e| e == "lt") {
+        crate::front::lower_file(path)?
+    } else {
+        let content = std::fs::read_to_string(&canon)
+            .map_err(|e| format!("Lỗi đọc '{}': {}", path.display(), e))?;
+        content.lines().enumerate().map(|(i, l)| (l.to_string(), format!("{}:{}", path.display(), i + 1))).collect()
+    };
 
     let mut combined = String::new();
-    for (i, raw_line) in content.lines().enumerate() {
-        let origin = format!("{}:{}", path.display(), i + 1);
+    for (raw_line, origin) in &lines {
+        let raw_line = raw_line.as_str();
+        let origin = origin.clone();
         let line = raw_line.split('#').next().unwrap_or("").trim();
         let mut toks = line.split_whitespace();
         if toks.next() == Some("include") {
@@ -713,7 +720,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     .last_mut()
                     .unwrap()
                     .fields
-                    .push(FieldDef { offset, ty, inv });
+                    .push(FieldDef { offset, ty, inv, name: named.then(|| toks[2].to_string()) });
             }
             _ => {
                 // Các chỉ thị SSA bên trong Basic Block

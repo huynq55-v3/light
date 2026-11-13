@@ -1,0 +1,5 @@
+// EXPECT: bắt đầu bằng
+fn f(a: u64) -> u64 {
+    let _t1 = a;
+    return _t1;
+}
