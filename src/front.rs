@@ -11,8 +11,14 @@
 //   - Gọi hàm phải đứng riêng (`let x = f(..);`, `f(..);`, `return f(..);`) để thứ tự tác dụng phụ luôn rõ.
 //   - `u8(x)` / `u16` / `u32`: thu hẹp CÓ KIỂM (Z3 chứng minh x vừa), không cắt bớt như `as` của Rust. `u64(x)`: mở rộng.
 use crate::ir::{Module, Type};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+thread_local! {
+    /// hàm spec đã biết (tên -> số tham số): từ include và từ file đang hạ; `spec()` dùng để dịch lời gọi trong đặc tả
+    static SPECS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Lexer
@@ -154,6 +160,8 @@ enum EK {
     Call(String, Vec<E>),
     /// `forall j in lo..hi: thân` / `exists ...` (chỉ trong đặc tả)
     Quant(bool, String, Box<E>, Box<E>, Box<E>),
+    /// `if c { a } else { b }` dùng làm biểu thức (chỉ trong đặc tả / thân hàm spec)
+    IfE(Box<E>, Box<E>, Box<E>),
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +184,8 @@ enum S {
     While { cond: E, invs: Vec<E>, dec: Option<E>, body: Vec<S>, p: Pos, end: Pos },
     For { var: String, from: E, to: E, invs: Vec<E>, body: Vec<S>, p: Pos, end: Pos },
     Break(Pos),
+    /// `assert e;` (đặc tả): chứng minh e ở đây rồi dùng làm giả thiết — gợi ý cho Z3 (vd nhắc tới hạng dec(n, s, i + 1))
+    Assert(E, Pos),
     Continue(Pos),
     Store(E, E, Pos),
     Expr(E, Pos),
@@ -194,7 +204,18 @@ struct FnB {
     p: Pos,
 }
 
+/// `spec fn tên(tham số) -> int [decreases e] { biểu_thức }`
+#[derive(Clone, Debug)]
+struct SpecB {
+    name: String,
+    params: Vec<(String, TyB, Pos)>,
+    dec: Option<E>,
+    body: E,
+    p: Pos,
+}
+
 enum Item {
+    Spec(SpecB),
     Include(String, Pos),
     Const(String, u64, Pos),
     Data(String, String, Vec<u64>, Pos),
@@ -321,9 +342,30 @@ impl<'a> Ps<'a> {
                     out.push(Item::Data(n, lay, vals, p));
                 }
                 "fn" => out.push(Item::Fn(self.func(p)?)),
+                "spec" => {
+                    if !self.is_kw("fn") {
+                        return self.err("cần `spec fn tên(...) -> int { ... }`");
+                    }
+                    self.i += 1;
+                    let f = self.func_head()?;
+                    let (name, params, ret) = f;
+                    if !matches!(ret.as_deref(), Some("int")) {
+                        return self.err("hàm spec trả `int` (số nguyên toán học): `-> int`");
+                    }
+                    let dec = if self.is_kw("decreases") {
+                        self.i += 1;
+                        Some(self.expr(0)?)
+                    } else {
+                        None
+                    };
+                    self.expect("{")?;
+                    let body = self.expr(0)?;
+                    self.expect("}")?;
+                    out.push(Item::Spec(SpecB { name, params, dec, body, p }));
+                }
                 _ => {
                     self.i -= 1;
-                    return self.err(&format!("cần include / const / data / fn, gặp '{}'", kw));
+                    return self.err(&format!("cần include / const / data / fn / spec fn, gặp '{}'", kw));
                 }
             }
         }
@@ -366,6 +408,25 @@ impl<'a> Ps<'a> {
                 self.err(&format!("kiểu không hợp lệ '{}' (u8 u16 u32 u64 ptr<T, n>)", n))
             }
         }
+    }
+
+    /// `tên(tham số) -> int` của hàm spec (kiểu trả về là tên `int`)
+    #[allow(clippy::type_complexity)]
+    fn func_head(&mut self) -> Result<(String, Vec<(String, TyB, Pos)>, Option<String>), String> {
+        let name = self.ident()?;
+        self.expect("(")?;
+        let mut params = Vec::new();
+        while !self.eat(")") {
+            let pp = self.pos();
+            let n = self.ident()?;
+            self.expect(":")?;
+            params.push((n, self.ty()?, pp));
+            if !self.is(")") {
+                self.expect(",")?;
+            }
+        }
+        let ret = if self.eat("->") { Some(self.ident()?) } else { None };
+        Ok((name, params, ret))
     }
 
     fn func(&mut self, p: Pos) -> Result<FnB, String> {
@@ -463,6 +524,12 @@ impl<'a> Ps<'a> {
         }
         if self.is_kw("if") {
             return self.if_stmt();
+        }
+        if self.is_kw("assert") {
+            self.i += 1;
+            let e = self.expr(0)?;
+            self.expect(";")?;
+            return Ok(S::Assert(e, p));
         }
         if self.is_kw("return") {
             self.i += 1;
@@ -616,6 +683,25 @@ impl<'a> Ps<'a> {
         let p = self.pos();
         match self.next() {
             Tok::Int(v) => Ok(E { k: EK::Int(v), p }),
+            Tok::Id(n) if n == "if" => {
+                let c = self.expr(0)?;
+                self.expect("{")?;
+                let a = self.expr(0)?;
+                self.expect("}")?;
+                if !self.is_kw("else") {
+                    return self.err("biểu thức if cần else: if c { a } else { b }");
+                }
+                self.i += 1;
+                let b = if self.is_kw("if") {
+                    self.primary()?
+                } else {
+                    self.expect("{")?;
+                    let b = self.expr(0)?;
+                    self.expect("}")?;
+                    b
+                };
+                Ok(E { k: EK::IfE(Box::new(c), Box::new(a), Box::new(b)), p })
+            }
             Tok::Id(n) if (n == "forall" || n == "exists") && matches!(self.peek(), Tok::Id(_)) => {
                 let v = self.ident()?;
                 if !self.is_kw("in") {
@@ -1001,7 +1087,9 @@ impl Fx<'_> {
     fn expr(&mut self, e: &E, want: Option<String>, top: bool) -> Result<V, String> {
         let p = e.p;
         match &e.k {
-            EK::Quant(..) => self.err(p, "forall / exists chỉ dùng trong đặc tả (requires / ensures / invariant)"),
+            EK::Quant(..) | EK::IfE(..) => {
+                self.err(p, "forall / exists / biểu thức if chỉ dùng trong đặc tả (requires / ensures / invariant / spec fn)")
+            }
             EK::Int(v) => Ok(V { s: v.to_string(), t: VT::Lit }),
             EK::Name(n) => {
                 if n == "result" {
@@ -1337,7 +1425,7 @@ impl Fx<'_> {
         for s in ss {
             let p = match s {
                 S::Let(.., p) | S::Var(.., p) | S::Assign(.., p) | S::Store(.., p) | S::Expr(_, p) | S::If(.., p) => *p,
-                S::Ret(_, p) | S::Break(p) | S::Continue(p) | S::While { p, .. } | S::For { p, .. } => *p,
+                S::Ret(_, p) | S::Assert(_, p) | S::Break(p) | S::Continue(p) | S::While { p, .. } | S::For { p, .. } => *p,
             };
             if self.term {
                 return self.err(p, "câu lệnh không bao giờ chạy tới (sau return / break / continue)");
@@ -1491,6 +1579,12 @@ impl Fx<'_> {
                 }
                 let v = self.materialize(v, bits, &name, *p, &format!("gán '{}' (u{})", n, bits))?;
                 self.set_var(n, v);
+                Ok(())
+            }
+            S::Assert(e, p) => {
+                let names = self.names_map();
+                let z = spec(e, &names, false, self.file)?;
+                self.emit(*p, format!("assert {}", z));
                 Ok(())
             }
             S::Break(p) | S::Continue(p) => {
@@ -1783,6 +1877,19 @@ fn spec_m(e: &E, names: &HashMap<String, String>, ens: bool, dec: bool, file: &s
             return err(e.p, "đặc tả: chưa đọc được p.trường / p[a..b] (P3 giai đoạn sau); dùng p[i]")
         }
         EK::Call(n, a) if n == "old" && a.len() == 1 => format!("old {}", r(&a[0])?),
+        EK::Call(n, a) if SPECS.with(|s| s.borrow().contains_key(n)) => {
+            let k = SPECS.with(|s| s.borrow()[n]);
+            if a.len() != k {
+                return err(e.p, &format!("hàm spec '{}' nhận {} đối số, gọi với {}", n, k, a.len()));
+            }
+            let mut out = format!("app {} {}", n, k);
+            for x in a {
+                out.push(' ');
+                out.push_str(&r(x)?);
+            }
+            out
+        }
+        EK::IfE(c, a, b) => format!("ite {} {} {}", r(c)?, r(a)?, r(b)?),
         EK::Quant(all, v, lo, hi, body) => {
             if names.contains_key(v) || v == "result" {
                 return err(e.p, &format!("biến lượng từ '{}' trùng tên đang dùng: đặt tên khác", v));
@@ -1808,6 +1915,7 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut decls = Decls::default();
     let mut defined = HashSet::new();
+    SPECS.with(|s| s.borrow_mut().clear());
 
     for it in &items {
         match it {
@@ -1816,6 +1924,11 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
                 let m = crate::parser::parse_file(&inc.display().to_string())
                     .map_err(|e| format!("Dòng {}: include '{}' lỗi:\n{}", org(*p), s, e))?;
                 decls.add_module(&m);
+                SPECS.with(|t| {
+                    for sp in &m.specs {
+                        t.borrow_mut().insert(sp.name.clone(), sp.params.len());
+                    }
+                });
                 out.push((format!("include {}", s), org(*p)));
             }
             Item::Const(n, v, p) => {
@@ -1841,7 +1954,30 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
                 });
                 decls.funcs.insert(f.name.clone(), Sig { nparams: f.params.len(), ret });
             }
+            Item::Spec(_) => {}
         }
+    }
+
+    // hàm spec: hạ TRƯỚC mọi hàm (SSA cần khai báo trước khi dùng); một hàm spec chỉ gọi chính nó hoặc hàm spec trước nó
+    for it in &items {
+        let Item::Spec(sp) = it else { continue };
+        if !defined.insert(sp.name.clone()) || SPECS.with(|s| s.borrow().contains_key(&sp.name)) {
+            return Err(format!("Dòng {}: '{}' bị định nghĩa hai lần", org(sp.p), sp.name));
+        }
+        let params: HashSet<String> = sp.params.iter().map(|p| p.0.clone()).collect();
+        let mut sig = format!("spec {} int", sp.name);
+        for (n, t, pp) in &sp.params {
+            check_ident(n, &file, *pp)?;
+            sig.push_str(&format!(" %{}:{}", mangle(n), ssa_ty(t, &params)));
+        }
+        out.push((format!("{} {{", sig), org(sp.p)));
+        SPECS.with(|s| s.borrow_mut().insert(sp.name.clone(), sp.params.len()));
+        let pmap: HashMap<String, String> = params.iter().map(|n| (n.clone(), format!("%{}", mangle(n)))).collect();
+        if let Some(d) = &sp.dec {
+            out.push((format!("    @dec {}", spec(d, &pmap, false, &file)?), org(d.p)));
+        }
+        out.push((format!("    @def {}", spec(&sp.body, &pmap, false, &file)?), org(sp.body.p)));
+        out.push(("}".into(), org(sp.p)));
     }
 
     for it in &items {

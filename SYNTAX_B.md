@@ -10,7 +10,8 @@ light lower  app.lt [--origins] # xem SSA sinh ra (và vị trí gốc của t�
 
 Trạng thái: **P2**, gồm biểu thức, `let` / `var`, gán, bộ nhớ, gọi hàm, `if/else`, `while` / `for`, `break` /
 `continue`, `return`, đặc tả không lượng từ và `invariant` / `decreases`. P3 (đang làm): đã có số học toán học, `a[i]`,
-`old(...)`, `forall` / `exists` trong đặc tả. Hàm spec và khung gọi hàm theo vùng chưa có (xem `ROADMAP.md`).
+`old(...)`, `forall` / `exists`, `spec fn`, `assert` trong đặc tả. Khung gọi hàm theo vùng và bổ đề chưa có (xem
+`ROADMAP.md`).
 
 ## Ví dụ
 
@@ -119,7 +120,28 @@ Không có số âm. Dùng `0 -% x` để lấy bù hai.
   - Trong vòng lặp có ghi, invariant phải nói rõ phần nào đã đổi và phần nào giữ nguyên.
 - Sự thật về bộ nhớ chỉ checker số nguyên biết. Checker an toàn (tràn số, biên) không dùng được chúng: `requires
   a[0] < 1000` không giúp chứng minh `a[0] + a[0]` không tràn. Khi đó kiểm bằng `if`, hoặc dùng `+%`.
-- Chưa có: `p.trường` / `p[a..b]` trong đặc tả, `modifies`, khung theo vùng cho lệnh gọi, hàm spec.
+- Hàm spec (chỉ dùng trong đặc tả, không sinh mã), giá trị là số nguyên toán học:
+  ```
+  spec fn sum(n: u64, a: ptr<u64, n>, k: u64) -> int
+      decreases k
+  {
+      if k == 0 { 0 } else { sum(n, a, k - 1) + a[k - 1] }
+  }
+  ```
+  - Thân là MỘT biểu thức. `if c { x } else { y }` là biểu thức, chỉ dùng trong đặc tả.
+  - Hàm spec chỉ gọi được chính nó, hoặc hàm spec khai báo trước nó. Đệ quy thì bắt buộc có `decreases`: verifier
+    chứng minh nó >= 0 và giảm ngặt ở mỗi lời gọi đệ quy. Nếu không, định nghĩa có thể mâu thuẫn (`f(k) == f(k) + 1`).
+  - Verifier mở định nghĩa tối đa 2 tầng mỗi chỗ dùng. Nên viết invariant dạng quy nạp: `s == sum(n, a, i)`, rồi
+    bước `sum(n, a, i + 1) == sum(n, a, i) + a[i]` Z3 tự thấy.
+  - Hàm có ghi bộ nhớ: áp hàm spec lên `old(...)`, ví dụ `out[k] == old(sum(n, a, k + 1)) % (M + 1)`. Bộ nhớ lúc
+    vào không đổi, nên không cần chứng minh "ghi chỗ khác không làm đổi tổng" (Z3 không tự quy nạp được).
+- `assert e;` là câu lệnh đặc tả. Verifier chứng minh `e` tại đó rồi dùng nó làm giả thiết. Dùng để gợi ý cho Z3
+  một hạng nó không tự nghĩ ra, ví dụ `assert dec(n, s, i + 1) > M;` trước `return 0` khi tràn
+  (`bench/p3/07_parse_dec.lt`).
+- Khi đặc tả có hàm spec đệ quy, đặc tả sai thường bị từ chối với "không kết luận" (sau 10 s) thay vì có phản ví dụ.
+  Lý do: Z3 khó dựng mô hình cho định nghĩa đệ quy. Bị từ chối vẫn là bị từ chối, nhưng muốn có phản ví dụ thì tách
+  mệnh đề nhỏ hơn hoặc thêm `assert`.
+- Chưa có: `p.trường` / `p[a..b]` trong đặc tả, `modifies`, khung theo vùng cho lệnh gọi, bổ đề (lemma) quy nạp.
 
 ## Vòng lặp: `invariant` / `decreases`
 

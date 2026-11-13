@@ -1,0 +1,21 @@
+// Light-Bench 01 (P3, đặc tả đầy đủ) — tổng các phần tử (quay vòng mod 2^64)
+include "../../lit_program/std/core.lit";
+
+const M64M1 = 18446744073709551615;
+
+// tổng TOÁN HỌC a[0] + ... + a[k-1]
+spec fn sum(n: u64, a: ptr<u64, n>, k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { sum(n, a, k - 1) + a[k - 1] }
+}
+
+fn sum_q(n: u64, a: ptr<u64, n>) -> u64
+    ensures result == sum(n, a, n) % (M64M1 + 1)
+{
+    var s = 0;
+    for i in 0..n invariant s == sum(n, a, i) % (M64M1 + 1) {
+        s +%= a[i];
+    }
+    return s;
+}

@@ -28,6 +28,7 @@ use z3::ast::{Array, Ast, Bool, Int};
 use z3::{Config, Context, FuncDecl, Params, SatResult, Solver, Sort};
 
 const TIMEOUT_MS: u32 = 10_000;
+const FEASIBLE_MS: u32 = 500;
 
 type IEnv<'ctx> = HashMap<Reg, Int<'ctx>>;
 /// (layout_id, offset trường trong phần tử)
@@ -95,6 +96,131 @@ struct IV<'ctx> {
     /// độ sâu lượng từ: > 0 thì sự thật phụ không khẳng định toàn cục được (có biến buộc) mà gom vào `side`
     depth: u32,
     side: Vec<Bool<'ctx>>,
+    /// hàm spec đã khai báo trong Z3: hàm không diễn giải + các heap nó đọc (đối số đầu)
+    /// tầng (fuel) [f0, f1, f2]: f2 = thân[f1], f1 = thân[f0], f0 không mở -> không có vòng lặp khớp mẫu vô hạn
+    spec_decls: HashMap<u32, (Vec<FuncDecl<'ctx>>, Vec<HKey>)>,
+    /// khi tính thân tầng L của hàm spec: lời gọi đệ quy dùng tầng L-1
+    spec_layer: HashMap<u32, usize>,
+    /// đang tính thân hàm spec: KHÔNG thêm miền giá trị ô nhớ (lượng từ chạy trên MỌI mảng, kể cả mảng có ô ngoài miền;
+    /// và miền của ô ở nhánh không đi, vd a[k-1] khi k == 0, sẽ chặn tiên đề)
+    in_spec_body: bool,
+    /// ứng viên pattern cho lượng từ đang tính (mỗi tầng lượng từ một khung): các hạng đọc heap / gọi hàm spec
+    pat_frames: Vec<Vec<z3::ast::Dynamic<'ctx>>>,
+    /// con trỏ từ slice cùng Layout: (gốc, chỉ số) -> địa chỉ chuẩn khi load / store qua nó
+    slice_of: HashMap<Reg, (Int<'ctx>, Int<'ctx>)>,
+    /// cực tính của biểu thức đang tính: true = mục tiêu cần chứng minh, false = giả định (Not lật)
+    pol: bool,
+    /// lượng từ trong cùng có thêm miền ô nhớ: forall ở mục tiêu (giả thiết dễ hơn) / exists ở giả định (thêm thông tin)
+    want_range: bool,
+}
+
+const SPEC_FUEL: usize = 2;
+
+/// Giá trị của biểu thức hằng toán học (Const / iadd isub imul của hằng), nếu có
+fn const_math(e: &Z3Expr) -> Option<i128> {
+    match e {
+        Z3Expr::Const(v) => Some(*v as i128),
+        Z3Expr::Math(op, l, r) => {
+            let (a, b) = (const_math(l)?, const_math(r)?);
+            match op {
+                MathOp::Add => a.checked_add(b),
+                MathOp::Sub => a.checked_sub(b),
+                MathOp::Mul => a.checked_mul(b),
+                MathOp::Div if b > 0 && a >= 0 => Some(a / b),
+                MathOp::Mod if b > 0 && a >= 0 => Some(a % b),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Heap mà hàm spec đọc (trực tiếp hoặc qua hàm spec nó gọi)
+fn spec_reads(module: &Module, id: u32, stack: &mut Vec<u32>, out: &mut HashSet<HKey>) -> Result<(), String> {
+    if stack.contains(&id) {
+        return Ok(());
+    }
+    stack.push(id);
+    let sp = module.specs.get(id as usize).ok_or("hàm spec không tồn tại")?;
+    let tys: HashMap<Reg, Type> = sp.params.iter().copied().collect();
+    fn walk(m: &Module, e: &Z3Expr, tys: &HashMap<Reg, Type>, st: &mut Vec<u32>, out: &mut HashSet<HKey>) -> Result<(), String> {
+        match e {
+            Z3Expr::Mem(p, i, off) => {
+                let l = tys.get(p).and_then(|t| t.ptr_layout()).ok_or_else(|| format!("mem: %{} không phải con trỏ (tham số hàm spec)", p))?;
+                let size = m.layouts[l as usize].size.max(1);
+                out.insert((l, off % size));
+                walk(m, i, tys, st, out)
+            }
+            Z3Expr::App(f, args) => {
+                spec_reads(m, *f, st, out)?;
+                args.iter().try_for_each(|a| walk(m, a, tys, st, out))
+            }
+            Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) | Z3Expr::Math(_, l, r) => {
+                walk(m, l, tys, st, out)?;
+                walk(m, r, tys, st, out)
+            }
+            Z3Expr::Not(x) | Z3Expr::Old(x) => walk(m, x, tys, st, out),
+            Z3Expr::Ite(c, a, b) => [c, a, b].iter().try_for_each(|x| walk(m, x, tys, st, out)),
+            Z3Expr::Quant(_, _, lo, hi, b) => [lo, hi, b].iter().try_for_each(|x| walk(m, x, tys, st, out)),
+            Z3Expr::Reg(_) | Z3Expr::Const(_) | Z3Expr::FieldVal => Ok(()),
+        }
+    }
+    if let Some(b) = &sp.body {
+        walk(module, b, &tys, stack, out)?;
+    }
+    stack.pop();
+    Ok(())
+}
+
+fn collect_apps(e: &Z3Expr, out: &mut Vec<u32>) {
+    match e {
+        Z3Expr::App(f, args) => {
+            out.push(*f);
+            args.iter().for_each(|a| collect_apps(a, out));
+        }
+        Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) | Z3Expr::Math(_, l, r) => {
+            collect_apps(l, out);
+            collect_apps(r, out);
+        }
+        Z3Expr::Not(x) | Z3Expr::Old(x) => collect_apps(x, out),
+        Z3Expr::Mem(_, i, _) => collect_apps(i, out),
+        Z3Expr::Ite(c, a, b) => [c, a, b].iter().for_each(|x| collect_apps(x, out)),
+        Z3Expr::Quant(_, _, lo, hi, b) => [lo, hi, b].iter().for_each(|x| collect_apps(x, out)),
+        Z3Expr::Reg(_) | Z3Expr::Const(_) | Z3Expr::FieldVal => {}
+    }
+}
+
+/// Các lời gọi hàm spec `id` trong `e`, kèm điều kiện ite trên đường tới nó (cho chứng minh dừng)
+fn rec_calls(e: &Z3Expr, id: u32, pc: &mut Vec<(Z3Expr, bool)>, out: &mut Vec<(Vec<(Z3Expr, bool)>, Vec<Z3Expr>)>, in_q: bool) -> Result<(), String> {
+    match e {
+        Z3Expr::App(f, args) => {
+            if *f == id {
+                if in_q {
+                    return Err("hàm spec: lời gọi đệ quy nằm trong forall / exists chưa được hỗ trợ".into());
+                }
+                out.push((pc.clone(), args.clone()));
+            }
+            args.iter().try_for_each(|a| rec_calls(a, id, pc, out, in_q))
+        }
+        Z3Expr::Ite(c, a, b) => {
+            rec_calls(c, id, pc, out, in_q)?;
+            pc.push(((**c).clone(), true));
+            rec_calls(a, id, pc, out, in_q)?;
+            pc.pop();
+            pc.push(((**c).clone(), false));
+            rec_calls(b, id, pc, out, in_q)?;
+            pc.pop();
+            Ok(())
+        }
+        Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) | Z3Expr::Math(_, l, r) => {
+            rec_calls(l, id, pc, out, in_q)?;
+            rec_calls(r, id, pc, out, in_q)
+        }
+        Z3Expr::Not(x) | Z3Expr::Old(x) => rec_calls(x, id, pc, out, in_q),
+        Z3Expr::Mem(_, i, _) => rec_calls(i, id, pc, out, in_q),
+        Z3Expr::Quant(_, _, lo, hi, b) => [lo, hi, b].iter().try_for_each(|x| rec_calls(x, id, pc, out, true)),
+        Z3Expr::Reg(_) | Z3Expr::Const(_) | Z3Expr::FieldVal => Ok(()),
+    }
 }
 
 /// Mọi khoá heap của module: (Layout, offset trường) -> số bit của trường
@@ -164,9 +290,21 @@ fn written_rec(module: &Module, func: &Func, tys: &HashMap<Reg, Type>, stack: &m
 }
 
 fn written_body(module: &Module, func: &Func, tys: &HashMap<Reg, Type>, stack: &mut Vec<String>) -> Option<HashSet<HKey>> {
+    let all: Vec<usize> = (0..func.blocks.len()).collect();
+    written_blocks(module, func, tys, stack, &all)
+}
+
+/// Heap mà các block `blocks` của hàm có thể ghi
+fn written_blocks(
+    module: &Module,
+    func: &Func,
+    tys: &HashMap<Reg, Type>,
+    stack: &mut Vec<String>,
+    blocks: &[usize],
+) -> Option<HashSet<HKey>> {
     let mut w = HashSet::new();
     let has_const_ptr = func.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, Inst::Const { ty, .. } if ty.ptr_layout().is_some()));
-    for i in func.blocks.iter().flat_map(|b| &b.insts) {
+    for i in blocks.iter().flat_map(|&b| &func.blocks[b].insts) {
         match i {
             Inst::Store { base, offset, .. } => {
                 let l = tys.get(base).and_then(|t| t.ptr_layout())?;
@@ -304,6 +442,9 @@ impl<'ctx> IV<'ctx> {
         let diff = Int::sub(ctx, &[a, b]);
         let prod = Int::mul(ctx, &[a, b]);
         let is_mask = |k: u64| k != 0 && k & k.wrapping_add(1) == 0;
+        // sự thật về phép bit / chia chỉ đúng khi toán hạng là số 64 bit; trong ĐẶC TẢ toán hạng có thể là số toán học
+        // (âm / rất lớn, vd `(a - b) & c`), khẳng định không điều kiện sẽ ép a >= b ở mọi nhánh -> phải có điều kiện
+        let inr = Bool::and(ctx, &[&self.range(a, 64), &self.range(b, 64)]);
         match op {
             // mã: BV đã chứng minh không tràn -> chính xác; đặc tả: ngữ nghĩa BV quay vòng
             BinOp::Add if checked => sum,
@@ -326,7 +467,7 @@ impl<'ctx> IV<'ctx> {
                         let q = self.uf("udiv", a, b);
                         let bq = Int::mul(ctx, &[b, &q]);
                         let pos = b.gt(&self.n(0));
-                        self.fact(pos.implies(&Bool::and(ctx, &[&bq.le(a), &a.lt(&Int::add(ctx, &[&bq, b]))])));
+                        self.fact(Bool::and(ctx, &[&inr, &pos]).implies(&Bool::and(ctx, &[&bq.le(a), &a.lt(&Int::add(ctx, &[&bq, b]))])));
                         let r = Int::sub(ctx, &[a, &bq]);
                         let zero = b._eq(&self.n(0));
                         (zero.ite(&Int::sub(ctx, &[&m, &self.n(1)]), &q), zero.ite(a, &r))
@@ -376,14 +517,14 @@ impl<'ctx> IV<'ctx> {
             }
             BinOp::And => {
                 let v = self.uf("and", a, b);
-                self.fact(Bool::and(ctx, &[&v.le(a), &v.le(b)]));
+                self.fact(inr.implies(&Bool::and(ctx, &[&v.le(a), &v.le(b)])));
                 v
             }
             BinOp::Or | BinOp::Xor => {
                 let v = self.uf(if op == BinOp::Or { "or" } else { "xor" }, a, b);
-                self.fact(v.le(&sum)); // a | b <= a + b, a ^ b <= a + b
+                self.fact(inr.implies(&v.le(&sum))); // a | b <= a + b, a ^ b <= a + b
                 if op == BinOp::Or {
-                    self.fact(Bool::and(ctx, &[&v.ge(a), &v.ge(b)]));
+                    self.fact(inr.implies(&Bool::and(ctx, &[&v.ge(a), &v.ge(b)])));
                 }
                 v
             }
@@ -438,9 +579,17 @@ impl<'ctx> IV<'ctx> {
                 let iv = self.ev_int(i, env)?;
                 let (addr, key, bits) = self.elem(l, &pv, Some(&iv), *off)?;
                 let h = if self.in_old { &self.old_heap } else { &self.heap };
-                let v = h[&key].select(&addr).as_int().unwrap();
-                let r = self.range(&v, bits);
-                self.fact(r);
+                let sel = h[&key].select(&addr);
+                if let Some(f) = self.pat_frames.last_mut() {
+                    f.push(sel.clone());
+                }
+                // miền giá trị ô nhớ (đúng với bộ nhớ thật). Ngoài lượng từ: sự thật cụ thể. Trong lượng từ: chỉ khi
+                // giúp chứng minh (`want_range`), vì ở giả thiết của lượng từ nó chặn việc dùng lượng từ.
+                let v = sel.as_int().unwrap();
+                if !self.in_spec_body && (self.depth == 0 || self.want_range) {
+                    let r = self.range(&v, bits);
+                    self.fact(r);
+                }
                 v
             }
             Z3Expr::Old(x) => {
@@ -448,6 +597,29 @@ impl<'ctx> IV<'ctx> {
                 let v = self.ev_int(x, env);
                 self.in_old = prev;
                 v?
+            }
+            Z3Expr::Ite(c, a, b) => {
+                let c = self.ev_bool(c, env)?;
+                let (a, b) = (self.ev_int(a, env)?, self.ev_int(b, env)?);
+                c.ite(&a, &b)
+            }
+            Z3Expr::App(f, args) => {
+                self.define_spec(*f)?;
+                let mut vals = Vec::new();
+                for a in args {
+                    vals.push(self.ev_int(a, env)?);
+                }
+                let (decls, reads) = &self.spec_decls[f];
+                let decl = &decls[self.spec_layer.get(f).copied().unwrap_or(SPEC_FUEL)];
+                let h = if self.in_old { &self.old_heap } else { &self.heap };
+                let hs: Vec<Array> = reads.iter().map(|k| h[k].clone()).collect();
+                let mut all: Vec<&dyn Ast> = hs.iter().map(|x| x as &dyn Ast).collect();
+                all.extend(vals.iter().map(|x| x as &dyn Ast));
+                let t = decl.apply(&all);
+                if let Some(f) = self.pat_frames.last_mut() {
+                    f.push(t.clone());
+                }
+                t.as_int().unwrap()
             }
             Z3Expr::Math(op, l, r) => {
                 let (a, b) = (self.ev_int(l, env)?, self.ev_int(r, env)?);
@@ -457,9 +629,19 @@ impl<'ctx> IV<'ctx> {
                     MathOp::Mul => Int::mul(self.ctx, &[&a, &b]),
                     MathOp::Div | MathOp::Mod => {
                         // chia Euclid; số chia là hằng dương -> thương mới (tuyến tính), còn lại `div`/`mod` của Z3
-                        let q = match k(r) {
-                            Some(c) if c > 0 => self.divc(&a, &self.n(c)),
-                            _ => a.div(&b),
+                        // số chia là hằng (kể cả biểu thức hằng như 2^64 - 1 + 1): thương mới, tuyến tính
+                        let q = match const_math(r) {
+                            Some(c) if c > 0 => {
+                                let c = Int::from_str(self.ctx, &c.to_string()).unwrap();
+                                self.divc(&a, &c)
+                            }
+                            // a >= 0, b > 0: CÙNG hàm thương với `udiv` / `urem` của mã (để Z3 thấy hai bên là một hạng);
+                            // còn lại `div` của Z3 (Euclid)
+                            _ => {
+                                let ok = Bool::and(self.ctx, &[&a.ge(&self.n(0)), &b.gt(&self.n(0)), &a.lt(&self.m64()), &b.lt(&self.m64())]);
+                                let q = self.binop(BinOp::UDiv, &a, &b, None, None, false, false, false);
+                                ok.ite(&q, &a.div(&b))
+                            }
                         };
                         if *op == MathOp::Div {
                             q
@@ -486,7 +668,12 @@ impl<'ctx> IV<'ctx> {
                 let (a, b) = (self.ev_bool(l, env)?, self.ev_bool(r, env)?);
                 Bool::or(self.ctx, &[&a, &b])
             }
-            Z3Expr::Not(x) => self.ev_bool(x, env)?.not(),
+            Z3Expr::Not(x) => {
+                self.pol = !self.pol;
+                let v = self.ev_bool(x, env);
+                self.pol = !self.pol;
+                v?.not()
+            }
             Z3Expr::Old(x) => {
                 let prev = std::mem::replace(&mut self.in_old, true);
                 let v = self.ev_bool(x, env);
@@ -500,20 +687,187 @@ impl<'ctx> IV<'ctx> {
                 env2.insert(*v, j.clone());
                 let mark = self.side.len();
                 self.depth += 1;
+                self.pat_frames.push(Vec::new());
+                let prev_wr = std::mem::replace(&mut self.want_range, *all == self.pol);
                 let b = self.ev_bool(body, &env2);
+                self.want_range = prev_wr;
+                let cands = self.pat_frames.pop().unwrap();
                 self.depth -= 1;
                 let b = b?;
                 let mut hyp: Vec<Bool> = vec![lo.le(&j), j.lt(&hi)];
                 hyp.extend(self.side.drain(mark..));
                 let hyp = Bool::and(self.ctx, &hyp.iter().collect::<Vec<_>>());
+                // pattern: hạng đọc heap / gọi hàm spec CÓ biến buộc j (mỗi hạng một pattern thay thế); hạng không có j
+                // thuộc về lượng từ bên ngoài. Không có ứng viên: để Z3 tự chọn.
+                let jn = j.to_string();
+                let has_j = |t: &z3::ast::Dynamic| {
+                    let st = t.to_string();
+                    st.match_indices(&jn).any(|(i, _)| !st[i + jn.len()..].starts_with(|c: char| c.is_ascii_digit()))
+                };
+                let (mine, rest): (Vec<_>, Vec<_>) = cands.into_iter().partition(|t| has_j(t));
+                if let Some(f) = self.pat_frames.last_mut() {
+                    f.extend(rest);
+                }
+                let pats: Vec<z3::Pattern> = mine.iter().map(|t| z3::Pattern::new(self.ctx, &[t as &dyn Ast])).collect();
+                let pref: Vec<&z3::Pattern> = pats.iter().collect();
                 if *all {
-                    z3::ast::forall_const(self.ctx, &[&j], &[], &hyp.implies(&b))
+                    z3::ast::forall_const(self.ctx, &[&j], &pref, &hyp.implies(&b))
                 } else {
-                    z3::ast::exists_const(self.ctx, &[&j], &[], &Bool::and(self.ctx, &[&hyp, &b]))
+                    z3::ast::exists_const(self.ctx, &[&j], &pref, &Bool::and(self.ctx, &[&hyp, &b]))
                 }
             }
             _ => return Err("biểu thức đòi hỏi kiểu logic (Cmp/And/Or/Not/forall/exists)".into()),
         })
+    }
+
+    /// Khai báo hàm spec `id` (một lần): hàm không diễn giải f(heap đọc..., đối số...) + tiên đề mở một bước
+    /// `miền(đối số) => f(..) == thân` với pattern f(..) (đo: bench/p3/smt/r1_sum_axiom). Đệ quy: chứng minh @dec >= 0 và
+    /// giảm ngặt ở mỗi lời gọi đệ quy (đối số trong miền) TRƯỚC khi khẳng định tiên đề -> tiên đề có nghiệm, không mâu thuẫn.
+    fn define_spec(&mut self, id: u32) -> Result<(), String> {
+        if self.spec_decls.contains_key(&id) {
+            return Ok(());
+        }
+        let ctx = self.ctx;
+        let module = self.module;
+        let sp = module.specs.get(id as usize).ok_or("hàm spec không tồn tại")?;
+        let body = sp.body.as_ref().ok_or_else(|| format!("hàm spec '{}' thiếu thân", sp.name))?;
+        let mut reads = HashSet::new();
+        spec_reads(module, id, &mut Vec::new(), &mut reads)?;
+        let mut reads: Vec<HKey> = reads.into_iter().collect();
+        reads.sort();
+        let asort = Sort::array(ctx, &Sort::int(ctx), &Sort::int(ctx));
+        let mut dom: Vec<Sort> = reads.iter().map(|_| asort.clone()).collect();
+        dom.extend(sp.params.iter().map(|_| Sort::int(ctx)));
+        let dref: Vec<&Sort> = dom.iter().collect();
+        let decls: Vec<FuncDecl> =
+            (0..=SPEC_FUEL).map(|l| FuncDecl::new(ctx, format!("spec_{}_{}", sp.name, l), &dref, &Sort::int(ctx))).collect();
+        self.spec_decls.insert(id, (decls, reads.clone()));
+        let fail = |m: String| format!("[hàm spec '{}'] {}{}", sp.name, m, if sp.origin.is_empty() { String::new() } else { format!("\n    tại {}", sp.origin) });
+        // biến buộc: heap + tham số
+        let arrs: Vec<Array> = reads
+            .iter()
+            .map(|k| {
+                self.fresh += 1;
+                Array::new_const(ctx, format!("SH{}_{}!{}", k.0, k.1, self.fresh), &Sort::int(ctx), &Sort::int(ctx))
+            })
+            .collect();
+        let xs: Vec<Int> = sp.params.iter().map(|(r, _)| self.new_int(&format!("sx{}", r))).collect();
+        let env: IEnv = sp.params.iter().map(|p| p.0).zip(xs.iter().cloned()).collect();
+        let ranges: Vec<Bool> = sp.params.iter().zip(&xs).map(|((_, t), x)| self.range(x, int_bits(*t))).collect();
+        // ngữ cảnh tính thân: heap = mảng buộc, kiểu = tham số hàm spec
+        let saved_heap = self.heap.clone();
+        let saved_old = self.old_heap.clone();
+        let saved_tys = self.spec_tys.replace(sp.params.iter().copied().collect());
+        let saved_in_old = std::mem::replace(&mut self.in_old, false);
+        // có thể được gọi lần đầu từ TRONG một lượng từ: định nghĩa là toàn cục, độc lập với ngữ cảnh đó
+        let saved_depth = std::mem::replace(&mut self.depth, 0);
+        let saved_side = std::mem::take(&mut self.side);
+        for (k, a) in reads.iter().zip(&arrs) {
+            self.heap.insert(*k, a.clone());
+        }
+        self.old_heap = self.heap.clone();
+        let r = (|| -> Result<(), String> {
+            // hàm spec khác được gọi: định nghĩa TRƯỚC (ngoài push/pop của chứng minh dừng, để tiên đề của nó không bị pop)
+            let mut others = Vec::new();
+            collect_apps(body, &mut others);
+            if let Some(d) = &sp.dec {
+                collect_apps(d, &mut others);
+            }
+            for o in others {
+                if o != id {
+                    self.define_spec(o)?;
+                }
+            }
+            // như tiên đề: không giả định miền ô nhớ (tiên đề đúng cho MỌI mảng)
+            self.in_spec_body = true;
+            // dừng
+            let mut calls = Vec::new();
+            rec_calls(body, id, &mut Vec::new(), &mut calls, false).map_err(&fail)?;
+            if !calls.is_empty() {
+                let dec = sp.dec.as_ref().ok_or_else(|| fail("đệ quy cần `decreases`".into()))?;
+                self.solver.push();
+                for r in &ranges {
+                    self.solver.assert(r);
+                }
+                let d0 = self.ev_int(dec, &env)?;
+                let res = (|| -> Result<(), String> {
+                    self.solver.push();
+                    self.solver.assert(&d0.lt(&self.n(0)));
+                    let st = self.solver.check();
+                    self.solver.pop(1);
+                    if st != SatResult::Unsat {
+                        return Err(fail("decreases có thể âm".into()));
+                    }
+                    for (pc, args) in &calls {
+                        self.solver.push();
+                        for (c, pol) in pc {
+                            let b = self.ev_bool(c, &env)?;
+                            self.solver.assert(&if *pol { b } else { b.not() });
+                        }
+                        let mut env2 = env.clone();
+                        for (((r, t), a), _) in sp.params.iter().zip(args).zip(&xs) {
+                            let v = self.ev_int(a, &env)?;
+                            self.solver.assert(&self.range(&v, int_bits(*t)));
+                            env2.insert(*r, v);
+                        }
+                        let d1 = self.ev_int(dec, &env2)?;
+                        self.solver.assert(&d1.ge(&d0));
+                        let st = self.solver.check();
+                        self.solver.pop(1);
+                        if st != SatResult::Unsat {
+                            return Err(fail("decreases không giảm ngặt ở một lời gọi đệ quy".into()));
+                        }
+                    }
+                    Ok(())
+                })();
+                self.solver.pop(1);
+                res?;
+            }
+            self.in_spec_body = false;
+            // tiên đề, theo tầng: fL(x) == thân[f_{L-1}] và fL(x) == f_{L-1}(x), pattern fL(x)
+            let mut all: Vec<&dyn Ast> = arrs.iter().map(|x| x as &dyn Ast).collect();
+            all.extend(xs.iter().map(|x| x as &dyn Ast));
+            for l in 1..=SPEC_FUEL {
+                self.spec_layer.insert(id, l - 1);
+                let mark = self.side.len();
+                self.depth += 1;
+                let prev_sb = std::mem::replace(&mut self.in_spec_body, true);
+                let bv = self.ev_int(body, &env);
+                self.in_spec_body = prev_sb;
+                self.depth -= 1;
+                self.spec_layer.remove(&id);
+                let bv = bv?;
+                // sự thật phụ (miền / tính chất của hàm không diễn giải) nằm ở VẾ KẾT LUẬN: đúng với mọi đối số nên
+                // không làm tiên đề mâu thuẫn, và không chặn tiên đề như khi đặt ở giả thiết
+                let facts: Vec<Bool> = self.side.drain(mark..).collect();
+                let hyp = ranges.clone();
+                let (decls, _) = &self.spec_decls[&id];
+                let app = decls[l].apply(&all);
+                let low = decls[l - 1].apply(&all);
+                let pat = z3::Pattern::new(ctx, &[&app as &dyn Ast]);
+                let hyp = Bool::and(ctx, &hyp.iter().collect::<Vec<_>>());
+                let ai = app.as_int().unwrap();
+                let mut concl = vec![ai._eq(&bv)];
+                concl.extend(facts);
+                let concl = Bool::and(ctx, &concl.iter().collect::<Vec<_>>());
+                let ax = z3::ast::forall_const(ctx, &all, &[&pat], &hyp.implies(&concl));
+                let syn = z3::ast::forall_const(ctx, &all, &[&pat], &ai._eq(&low.as_int().unwrap()));
+                self.solver.assert(&ax);
+                self.solver.assert(&syn);
+            }
+            Ok(())
+        })();
+        self.heap = saved_heap;
+        self.old_heap = saved_old;
+        self.spec_tys = saved_tys;
+        self.in_old = saved_in_old;
+        self.in_spec_body = false;
+        self.depth = saved_depth;
+        self.side = saved_side;
+        if r.is_err() {
+            self.spec_decls.remove(&id);
+        }
+        r
     }
 
     /// Địa chỉ phần tử + khoá heap cho trường ở `off` (có thể vượt một phần tử) của phần tử `idx` sau con trỏ `p`
@@ -525,16 +879,31 @@ impl<'ctx> IV<'ctx> {
             .iter()
             .find(|f| f.offset == off % size)
             .ok_or_else(|| format!("mem: offset {} không phải đầu trường của Layout '{}'", off, lay.name))?;
-        let mut a = Int::add(self.ctx, &[p, &self.n(((off / size) * size) as u64)]);
-        if let Some(i) = idx {
-            a = Int::add(self.ctx, &[&a, &Int::mul(self.ctx, &[i, &self.n(size as u64)])]);
+        // dạng CHUẨN `gốc + chỉ_số * kích_thước` (bỏ số hạng 0) cho cả mã lẫn đặc tả: e-matching của lượng từ khớp
+        // theo cấu trúc hạng, nên `a + j*8` (đặc tả) phải gặp đúng `a + i*8` (mã), không phải `r10 + 0` với r10 = a + i*8
+        let mut a = match idx {
+            Some(i) => Int::add(self.ctx, &[p, &Int::mul(self.ctx, &[i, &self.n(size as u64)])]),
+            None => p.clone(),
+        };
+        if off >= size {
+            a = Int::add(self.ctx, &[&a, &self.n(((off / size) * size) as u64)]);
         }
         Ok((a, (l, off % size), int_bits(f.ty)))
     }
+    /// địa chỉ cho load / store qua thanh ghi con trỏ `base` (dạng chuẩn nếu base là slice). Đúng trên đường đi tới
+    /// lệnh: slice được giả định theo điều kiện đường đi, và lệnh dùng nó nằm sau nó.
+    fn addr_of(&self, l: u16, base: Reg, off: u32) -> Result<(Int<'ctx>, HKey, u32), String> {
+        match self.slice_of.get(&base) {
+            Some((root, i)) => self.elem(l, root, Some(i), off),
+            None => self.elem(l, &self.get(base)?, None, off),
+        }
+    }
+    /// Phiên bản heap mới (mảng tuỳ ý). Miền giá trị ô: xem `want_range`.
     fn fresh_heap(&mut self, keys: &[HKey]) {
+        let ctx = self.ctx;
         for k in keys {
             self.fresh += 1;
-            let a = Array::new_const(self.ctx, format!("H{}_{}!{}", k.0, k.1, self.fresh), &Sort::int(self.ctx), &Sort::int(self.ctx));
+            let a = Array::new_const(ctx, format!("H{}_{}!{}", k.0, k.1, self.fresh), &Sort::int(ctx), &Sort::int(ctx));
             self.heap.insert(*k, a);
         }
     }
@@ -544,6 +913,14 @@ impl<'ctx> IV<'ctx> {
     }
     fn ptr_layout_of(&self, r: Reg) -> Option<u16> {
         self.tys.get(&r).and_then(|t| t.ptr_layout())
+    }
+
+    /// tính mệnh đề làm MỤC TIÊU (cực tính dương)
+    fn ev_goal(&mut self, e: &Z3Expr, env: &IEnv<'ctx>) -> Result<Bool<'ctx>, String> {
+        let prev = std::mem::replace(&mut self.pol, true);
+        let r = self.ev_bool(e, env);
+        self.pol = prev;
+        r
     }
 
     /// mệnh đề checker này phải CHỨNG MINH (BV không chứng minh nó, hoặc chế độ đối chiếu chéo)
@@ -558,14 +935,23 @@ impl<'ctx> IV<'ctx> {
         }
     }
 
+    /// Có đường đi tới đây? "unknown" (thường do lượng từ: Z3 khó trả lời sat) = coi như có -> vẫn kiểm (an toàn), nên
+    /// chỉ cho thời gian ngắn thay vì chờ hết TIMEOUT_MS mỗi block
     fn feasible(&self) -> bool {
+        self.set_timeout(FEASIBLE_MS);
         self.solver.push();
         if let Some(c) = &self.cur_cond {
             self.solver.assert(c);
         }
         let r = self.solver.check();
         self.solver.pop(1);
+        self.set_timeout(TIMEOUT_MS);
         !matches!(r, SatResult::Unsat)
+    }
+    fn set_timeout(&self, ms: u32) {
+        let mut p = Params::new(self.ctx);
+        p.set_u32("timeout", ms);
+        self.solver.set_params(&p);
     }
 
     fn check(&self, goal: &Bool<'ctx>, msg: &str) -> Result<(), String> {
@@ -574,8 +960,16 @@ impl<'ctx> IV<'ctx> {
             self.solver.assert(c);
         }
         self.solver.assert(&goal.not());
+        if std::env::var_os("LIGHT_INT_DUMP").is_some() {
+            eprintln!("{}", self.solver);
+        }
         let at = if self.cur_at.is_empty() { String::new() } else { format!("\n    tại {}", self.cur_at) };
-        let out = match self.solver.check() {
+        let t0 = std::time::Instant::now();
+        let res = self.solver.check();
+        if std::env::var_os("LIGHT_INT_TIME").is_some() {
+            eprintln!("[int] {:>6} ms  {} {}", t0.elapsed().as_millis(), self.func.name, msg);
+        }
+        let out = match res {
             SatResult::Unsat => Ok(()),
             SatResult::Sat => {
                 let ce = self
@@ -601,9 +995,14 @@ impl<'ctx> IV<'ctx> {
                 ))
             }
             SatResult::Unknown => Err(format!(
-                "[Z3 TIMEOUT] func {} @b{}: '{}' -> Không chứng minh được (checker số nguyên không kết luận — thường do nhân / \
-                 chia phi tuyến): {}{}",
-                self.func.name, self.cur_bb, self.cur_inst, msg, at
+                "[Z3 TIMEOUT] func {} @b{}: '{}' -> Không chứng minh được (checker số nguyên không kết luận ({}) — thường do \
+                 nhân / chia phi tuyến, hoặc lượng từ / hàm spec cần mở thêm): {}{}",
+                self.func.name,
+                self.cur_bb,
+                self.cur_inst,
+                self.solver.get_reason_unknown().unwrap_or_default(),
+                msg,
+                at
             )),
         };
         self.solver.pop(1);
@@ -628,7 +1027,7 @@ impl<'ctx> IV<'ctx> {
             if !self.mine(inv) {
                 continue;
             }
-            let g = self.ev_bool(inv, env)?;
+            let g = self.ev_goal(inv, env)?;
             let g = match extra {
                 Some(x) => x.implies(&g),
                 None => g,
@@ -716,6 +1115,14 @@ impl<'ctx> IV<'ctx> {
                 let v = Int::add(ctx, &[&self.get(*base)?, &Int::mul(ctx, &[&self.get(*i)?, &self.n(size)])]);
                 let d = self.decl(*dst, *ty);
                 self.assume(&d._eq(&v)); // từng phần (như add có kiểm)
+                if ty.ptr_layout() == Some(lay) {
+                    let iv = self.get(*i)?;
+                    let entry = match self.slice_of.get(base) {
+                        Some((root, i0)) => (root.clone(), Int::add(ctx, &[i0, &iv])),
+                        None => (self.get(*base)?, iv),
+                    };
+                    self.slice_of.insert(*dst, entry);
+                }
                 if self.opaque.contains(base) {
                     self.opaque.insert(*dst);
                 }
@@ -736,14 +1143,14 @@ impl<'ctx> IV<'ctx> {
             Inst::Load { dst, ty, base, offset } => {
                 let d = self.decl(*dst, *ty);
                 if let (Some(l), false) = (self.ptr_layout_of(*base), self.opaque.contains(base)) {
-                    let (addr, key, _) = self.elem(l, &self.get(*base)?, None, *offset)?;
+                    let (addr, key, _) = self.addr_of(l, *base, *offset)?;
                     let v = self.heap[&key].select(&addr).as_int().unwrap();
                     self.solver.assert(&d._eq(&v));
                 }
             }
             Inst::Store { base, offset, val } => match self.ptr_layout_of(*base) {
                 Some(l) if !self.opaque.contains(base) => {
-                    let (addr, key, _) = self.elem(l, &self.get(*base)?, None, *offset)?;
+                    let (addr, key, _) = self.addr_of(l, *base, *offset)?;
                     let v = self.get(*val)?;
                     let h = self.heap[&key].store(&addr, &v);
                     let others: Vec<HKey> = self.heap.keys().filter(|k| k.0 != l).copied().collect();
@@ -764,7 +1171,7 @@ impl<'ctx> IV<'ctx> {
                 let r = (|| -> Result<(), String> {
                     for (i, req) in callee.requires.iter().enumerate() {
                         if self.mine(req) {
-                            let g = self.ev_bool(req, &env)?;
+                            let g = self.ev_goal(req, &env)?;
                             self.check(&g, &format!("Vi phạm @req #{} khi gọi hàm '{}'", i, callee.name))?;
                         }
                     }
@@ -831,7 +1238,7 @@ impl<'ctx> IV<'ctx> {
                 self.assume(&b);
             }
             Inst::Assert(e) => {
-                let b = self.ev_bool(e, &self.regs.clone())?;
+                let b = self.ev_goal(e, &self.regs.clone())?;
                 if self.mine(e) {
                     self.check(&b, "Vi phạm lệnh Assert")?;
                 }
@@ -844,7 +1251,7 @@ impl<'ctx> IV<'ctx> {
                 }
                 for (i, ens) in self.func.ensures.iter().enumerate() {
                     if self.mine(ens) {
-                        let g = self.ev_bool(ens, &env)?;
+                        let g = self.ev_goal(ens, &env)?;
                         self.check(&g, &format!("Vi phạm điều kiện đầu ra (@ens #{}) của hàm '{}'", i, self.func.name))?;
                     }
                 }
@@ -897,6 +1304,16 @@ fn regs_of(e: &Z3Expr, out: &mut Vec<Reg>) {
             out.push(*p);
             regs_of(i, out);
         }
+        Z3Expr::Ite(c, a, b) => {
+            for x in [c, a, b] {
+                regs_of(x, out);
+            }
+        }
+        Z3Expr::App(_, args) => {
+            for x in args {
+                regs_of(x, out);
+            }
+        }
         Z3Expr::Quant(_, v, lo, hi, body) => {
             let mut inner = vec![];
             for x in [lo, hi, body] {
@@ -904,7 +1321,7 @@ fn regs_of(e: &Z3Expr, out: &mut Vec<Reg>) {
             }
             out.extend(inner.into_iter().filter(|r| r != v));
         }
-        Z3Expr::Reg(_) | Z3Expr::Const(_) | Z3Expr::FieldVal => {}
+        Z3Expr::Const(_) | Z3Expr::FieldVal => {}
     }
 }
 
@@ -915,6 +1332,9 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
     let solver = Solver::new(&ctx);
     let mut params = Params::new(&ctx);
     params.set_u32("timeout", TIMEOUT_MS);
+    if std::env::var_os("LIGHT_INT_NOMBQI").is_some() {
+        params.set_bool("smt.mbqi", false);
+    }
     solver.set_params(&params);
     let mut v = IV {
         ctx: &ctx,
@@ -947,6 +1367,13 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
         in_old: false,
         depth: 0,
         side: Vec::new(),
+        spec_decls: HashMap::new(),
+        spec_layer: HashMap::new(),
+        in_spec_body: false,
+        pat_frames: Vec::new(),
+        slice_of: HashMap::new(),
+        pol: false,
+        want_range: false,
     };
     let keys: Vec<HKey> = heap_keys(module).into_iter().map(|(k, _)| k).collect();
     v.fresh_heap(&keys);
@@ -968,19 +1395,55 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
         return Err(format!("[func '{}'] các @req mâu thuẫn nhau (checker số nguyên)", func.name));
     }
     let mut back_target = vec![false; func.blocks.len()];
-    for (bi, b) in func.blocks.iter().enumerate() {
-        for t in b.insts.iter().flat_map(|i| match i {
-            Inst::Br { then_bb, else_bb, .. } => vec![*then_bb, *else_bb],
-            Inst::Jmp { target_bb, .. } => vec![*target_bb],
-            _ => vec![],
-        }) {
-            if let Some(&ti) = cfg_idx.get(&t) {
-                if v.pos[ti] <= v.pos[bi] {
-                    back_target[ti] = true;
+    let succs: Vec<Vec<usize>> = func
+        .blocks
+        .iter()
+        .map(|b| {
+            b.insts
+                .iter()
+                .flat_map(|i| match i {
+                    Inst::Br { then_bb, else_bb, .. } => vec![*then_bb, *else_bb],
+                    Inst::Jmp { target_bb, .. } => vec![*target_bb],
+                    _ => vec![],
+                })
+                .filter_map(|t| cfg_idx.get(&t).copied())
+                .collect()
+        })
+        .collect();
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); func.blocks.len()];
+    for (bi, ss) in succs.iter().enumerate() {
+        for &t in ss {
+            preds[t].push(bi);
+        }
+    }
+    // vòng lặp tự nhiên của từng đầu vòng: đầu + mọi block tới được cạnh lùi mà không qua đầu (DFS ngược)
+    let mut loop_blocks: HashMap<usize, HashSet<usize>> = HashMap::new();
+    for (bi, ss) in succs.iter().enumerate() {
+        for &ti in ss {
+            if v.pos[ti] <= v.pos[bi] {
+                back_target[ti] = true;
+                let body = loop_blocks.entry(ti).or_insert_with(|| HashSet::from([ti]));
+                let mut stack = vec![bi];
+                while let Some(x) = stack.pop() {
+                    if body.insert(x) {
+                        stack.extend(preds[x].iter().copied());
+                    }
                 }
             }
         }
     }
+    // heap thân vòng có thể ghi (đầu vòng: mảng mới chỉ cho chúng; heap khác giữ giá trị từ cạnh vào)
+    let loop_written: HashMap<usize, Vec<HKey>> = loop_blocks
+        .iter()
+        .map(|(&h, body)| {
+            let bl: Vec<usize> = body.iter().copied().collect();
+            let w = match written_blocks(module, func, &rtys, &mut vec![func.name.clone()], &bl) {
+                Some(w) => w.into_iter().collect(),
+                None => keys.clone(),
+            };
+            (h, w)
+        })
+        .collect();
     for &bi in &order {
         let Some(c) = v.conds.get(&bi).cloned() else { continue };
         v.cur_cond = c;
@@ -996,7 +1459,29 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
         }
         // bộ nhớ ở đầu block
         if back_target[bi] {
-            let w: Vec<HKey> = v.written.iter().copied().collect();
+            // giá trị heap không bị thân vòng ghi = giá trị trên cạnh vào (các cạnh tiến; nối như block thường)
+            if let Some(edges) = v.edge_heaps.get(&bi).cloned() {
+                if edges.len() == 1 {
+                    v.heap = edges[0].1.clone();
+                } else {
+                    let w: Vec<HKey> = v.written.iter().copied().collect();
+                    for k in w {
+                        if edges.iter().all(|(_, h)| h[&k] == edges[0].1[&k]) {
+                            v.heap.insert(k, edges[0].1[&k].clone());
+                            continue;
+                        }
+                        v.fresh_heap(&[k]);
+                        for (c, h) in &edges {
+                            let eq = v.heap[&k]._eq(&h[&k]);
+                            match c {
+                                Some(c) => v.solver.assert(&c.implies(&eq)),
+                                None => v.solver.assert(&eq),
+                            }
+                        }
+                    }
+                }
+            }
+            let w = loop_written[&bi].clone();
             v.fresh_heap(&w);
         } else if let Some(edges) = v.edge_heaps.get(&bi).cloned() {
             if edges.len() == 1 {

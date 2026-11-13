@@ -132,6 +132,22 @@ pub enum Z3Expr {
     Old(Box<Z3Expr>),
     /// `forall %j LO HI BODY` / `exists ...`: lượng từ trên khoảng nửa mở LO <= j < HI (số nguyên toán học)
     Quant(bool, Reg, Box<Z3Expr>, Box<Z3Expr>, Box<Z3Expr>),
+    /// `ite C A B`: nếu C thì A, ngược lại B (giá trị số)
+    Ite(Box<Z3Expr>, Box<Z3Expr>, Box<Z3Expr>),
+    /// `app TÊN K a1 .. aK`: gọi hàm spec `module.specs[id]` (giá trị số nguyên toán học)
+    App(u32, Vec<Z3Expr>),
+}
+
+/// Hàm spec thuần (chỉ dùng trong đặc tả, không sinh mã): `spec TÊN int %x:kiểu ... {` + `@dec E` + `@def E` + `}`.
+/// Giá trị là số nguyên toán học. Đệ quy (chỉ gọi chính nó hoặc hàm spec khai báo TRƯỚC) cần `@dec`: checker số nguyên
+/// chứng minh @dec >= 0 và giảm ngặt ở mỗi lời gọi đệ quy, nên định nghĩa có nghiệm duy nhất (tiên đề không mâu thuẫn).
+#[derive(Debug, Clone)]
+pub struct SpecFn {
+    pub name: String,
+    pub params: Vec<(Reg, Type)>,
+    pub dec: Option<Z3Expr>,
+    pub body: Option<Z3Expr>,
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +176,7 @@ impl Z3Expr {
         match self {
             Z3Expr::Math(MathOp::Add | MathOp::Sub, l, r) => Some(l.wide_bits()?.max(r.wide_bits()?) + 1),
             Z3Expr::Math(MathOp::Mul, l, r) => Some(l.wide_bits()? + r.wide_bits()?),
-            Z3Expr::Math(..) | Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => None,
+            Z3Expr::Math(..) | Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) | Z3Expr::Ite(..) | Z3Expr::App(..) => None,
             e if e.has_math() => None, // toán học lồng trong phép bit-vector
             _ => Some(65),
         }
@@ -170,7 +186,7 @@ impl Z3Expr {
     /// có thành phần chỉ checker số nguyên hiểu (số học toán học, bộ nhớ, old, lượng từ)
     pub fn has_math(&self) -> bool {
         match self {
-            Z3Expr::Math(..) | Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => true,
+            Z3Expr::Math(..) | Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) | Z3Expr::Ite(..) | Z3Expr::App(..) => true,
             Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) => l.has_math() || r.has_math(),
             Z3Expr::Not(x) => x.has_math(),
             _ => false,
@@ -368,6 +384,7 @@ pub struct Module {
     pub layouts: Vec<Layout>, // Danh sách các cấu trúc dữ liệu phẳng
     pub funcs: Vec<Func>,     // Danh sách các hàm SSA
     pub datas: Vec<Data>,     // Dữ liệu tĩnh (`data TÊN Layout { ... }`), đặt sau mã máy
+    pub specs: Vec<SpecFn>,   // Hàm spec thuần (P3): chỉ checker số nguyên dùng
 }
 
 /// Dữ liệu tĩnh khởi tạo sẵn: `count` phần tử Layout `layout_id` (Layout không có @inv), lấy bằng `%p = addr TÊN`.

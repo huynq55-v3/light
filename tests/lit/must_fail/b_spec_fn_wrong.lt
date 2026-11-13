@@ -1,0 +1,17 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// tri(n) = 0 + 1 + ... + n; vòng lặp cộng thiếu n
+spec fn tri(k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { tri(k - 1) + k }
+}
+fn tri_loop(n: u64) -> u64
+    requires n <= 1000
+    ensures result == tri(n)
+{
+    var s = 0;
+    for i in 0..n invariant s <= i * 1000 {
+        s += i;
+    }
+    return s;
+}

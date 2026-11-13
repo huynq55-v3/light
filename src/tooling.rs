@@ -435,6 +435,10 @@ fn func_key(module: &Module, func: &Func) -> u64 {
         h = fnv(if std::env::var_os(k).is_some() { b"1" } else { b"0" }, h);
     }
     h = fnv(format!("{:?}", module.layouts).as_bytes(), h);
+    // hàm spec: mệnh đề chỉ chứa App(id), nên thân hàm spec phải nằm trong khoá (bỏ vị trí nguồn)
+    for sp in &module.specs {
+        h = fnv(format!("{}|{:?}|{:?}|{:?}", sp.name, sp.params, sp.dec, sp.body).as_bytes(), h);
+    }
     // Chuẩn hóa: id hàm -> băm tên, bỏ origin (dòng đổi không làm mất cache)
     let mut f = func.clone();
     f.origin.clear();

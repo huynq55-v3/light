@@ -1,0 +1,9 @@
+// EXPECT: đệ quy cần `decreases`
+spec fn f(k: u64) -> int {
+    if k == 0 { 0 } else { f(k - 1) + 1 }
+}
+fn g(k: u64) -> u64
+    ensures result == f(k)
+{
+    return k;
+}

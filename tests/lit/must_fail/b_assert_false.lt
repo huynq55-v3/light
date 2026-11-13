@@ -1,0 +1,10 @@
+// EXPECT: Vi phạm lệnh Assert
+spec fn tri(k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { tri(k - 1) + k }
+}
+fn f() -> u64 {
+    assert tri(2) == 4;
+    return 0;
+}

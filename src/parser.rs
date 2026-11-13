@@ -378,6 +378,28 @@ where
         let off = u32::try_from(off).map_err(|_| "mem: offset quá lớn")?;
         return Ok(Z3Expr::Mem(p, Box::new(i), off));
     }
+    if tok == "ite" {
+        let c = p_z3(it, defs)?;
+        let a = p_z3(it, defs)?;
+        let b = p_z3(it, defs)?;
+        return Ok(Z3Expr::Ite(Box::new(c), Box::new(a), Box::new(b)));
+    }
+    if tok == "app" {
+        let name = it.next().ok_or("app: thiếu tên hàm spec")?;
+        let id = *defs
+            .get(&format!("spec:{}", name))
+            .ok_or_else(|| format!("app: hàm spec '{}' chưa khai báo (khai báo trước khi dùng)", name))?;
+        let k = p_u64(it.next().ok_or("app: thiếu số đối số")?, defs)?;
+        let arity = defs.get(&format!("spec_arity:{}", name)).copied().unwrap_or(k);
+        if k != arity {
+            return Err(format!("app {}: {} đối số, hàm spec có {}", name, k, arity));
+        }
+        let mut args = Vec::new();
+        for _ in 0..k {
+            args.push(p_z3(it, defs)?);
+        }
+        return Ok(Z3Expr::App(id as u32, args));
+    }
     if tok == "old" {
         return Ok(Z3Expr::Old(Box::new(p_z3(it, defs)?)));
     }
@@ -527,6 +549,8 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
     let mut m = Module::default();
     let mut defs: HashMap<String, u64> = HashMap::new();
     let mut in_layout = false;
+    // đang ở trong `spec TÊN ... {` (các dòng @dec / @def thuộc hàm spec cuối)
+    let mut in_spec = false;
     let func_max = func_max_regs(src);
     let mut lits = Lits::default();
     // Trường có tên: `Layout.tên` -> kiểu (offset nằm trong `defs` nên dùng được ở mọi chỗ nhận số)
@@ -618,7 +642,39 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                 m.datas.push(Data { name: toks[1].into(), layout_id: lid as u16, count: 0, bytes: vec![] });
                 in_data = Some((decl, vec![]));
             }
-            "}" => in_layout = false,
+            "}" => {
+                in_layout = false;
+                if in_spec {
+                    in_spec = false;
+                    let s = m.specs.last().unwrap();
+                    if s.body.is_none() {
+                        return Err(err(&format!("hàm spec '{}' thiếu @def", s.name)));
+                    }
+                }
+            }
+            "spec" => {
+                // spec sum int %n:bv64 %a:ptr<DiskQword,%n> %k:bv64 {
+                if toks.len() < 4 || toks[2] != "int" || toks[toks.len() - 1] != "{" {
+                    return Err(err("Cú pháp: spec <tên> int [%x:kiểu ...] {"));
+                }
+                if m.specs.iter().any(|s| s.name == toks[1]) {
+                    return Err(err(&format!("hàm spec '{}' bị khai báo hai lần", toks[1])));
+                }
+                let params = p_params(&toks[3..toks.len() - 1], &m.layouts, &defs).map_err(|e| err(&e))?;
+                defs.insert(format!("spec:{}", toks[1]), m.specs.len() as u64);
+                defs.insert(format!("spec_arity:{}", toks[1]), params.len() as u64);
+                m.specs.push(SpecFn { name: toks[1].into(), params, dec: None, body: None, origin: loc.clone() });
+                in_spec = true;
+            }
+            "@dec" | "@def" if in_spec => {
+                let e = p_z3_all(&toks[1..], &defs).map_err(|e| err(&e))?;
+                let s = m.specs.last_mut().unwrap();
+                let slot = if toks[0] == "@dec" { &mut s.dec } else { &mut s.body };
+                if slot.is_some() {
+                    return Err(err(&format!("hàm spec '{}': {} lặp lại", s.name, toks[0])));
+                }
+                *slot = Some(e);
+            }
             "def" => {
                 // def IPC_WIN_DRAWN 112 | def TITLE_TERM "TERMINAL"
                 if toks.len() < 3 {
@@ -1187,7 +1243,7 @@ fn scan_line(line: &str, mut f: impl FnMut(char, &str) -> Option<String>) -> Str
 /// `@b<chữ số>` là nhãn số; `@req/@ens/@inv` là chỉ thị; còn lại `@tên` là nhãn có tên
 fn is_named_label(id: &str) -> bool {
     let numeric = id.strip_prefix('b').is_some_and(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()));
-    !id.is_empty() && !numeric && !matches!(id, "req" | "ens" | "inv" | "dec") && !id.as_bytes()[0].is_ascii_digit()
+    !id.is_empty() && !numeric && !matches!(id, "req" | "ens" | "inv" | "dec" | "def") && !id.as_bytes()[0].is_ascii_digit()
 }
 
 type NameTables = (Vec<(Reg, String)>, Vec<(BlockId, String)>);
@@ -1197,11 +1253,15 @@ type NameTables = (Vec<(Reg, String)>, Vec<(BlockId, String)>);
 /// tới trước, đích br/jmp). Số cấp bắt đầu sau số `%<chữ số>` / `@b<chữ số>` lớn nhất của hàm nên tên và số không đụng nhau.
 fn rename_names(src: &str) -> (String, Vec<NameTables>) {
     let lines: Vec<&str> = src.lines().collect();
-    let starts: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].trim_start().starts_with("func ")).collect();
+    // mỗi `func` / `spec` là một phạm vi tên riêng; bảng tên chỉ cho func (zip với m.funcs)
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].trim_start().starts_with("func ") || lines[i].trim_start().starts_with("spec "))
+        .collect();
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     let mut tables = Vec::new();
     for (k, &st) in starts.iter().enumerate() {
         let end = starts.get(k + 1).copied().unwrap_or(lines.len());
+        let is_func = lines[st].trim_start().starts_with("func ");
         let (mut max_r, mut max_b) = (0u64, 0u64);
         let mut any = false;
         for l in &lines[st..end] {
@@ -1221,7 +1281,9 @@ fn rename_names(src: &str) -> (String, Vec<NameTables>) {
             });
         }
         if !any {
-            tables.push((Vec::new(), Vec::new()));
+            if is_func {
+                tables.push((Vec::new(), Vec::new()));
+            }
             continue;
         }
         let mut rmap: HashMap<String, Reg> = HashMap::new();
@@ -1253,7 +1315,9 @@ fn rename_names(src: &str) -> (String, Vec<NameTables>) {
         t.sort();
         let mut bt: Vec<(BlockId, String)> = bmap.into_iter().map(|(n, b)| (b, n)).collect();
         bt.sort();
-        tables.push((t, bt));
+        if is_func {
+            tables.push((t, bt));
+        }
     }
     let mut joined = out.join("\n");
     if src.ends_with('\n') {

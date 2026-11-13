@@ -1,0 +1,20 @@
+// Light-Bench 06 (P3, đặc tả đầy đủ) — số byte '\n' trong s[0..n)  (như `wc -l`)
+include "../../lit_program/std/core.lit";
+
+// số byte '\n' trong s[0..k)
+spec fn lines(n: u64, s: ptr<u8, n>, k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { lines(n, s, k - 1) + (if s[k - 1] == '\n' { 1 } else { 0 }) }
+}
+
+fn count_lines_b(n: u64, s: ptr<u8, n>) -> u64
+    ensures result <= n
+    ensures result == lines(n, s, n)
+{
+    var c = 0;
+    for i in 0..n invariant c <= i, c == lines(n, s, i) {
+        c += u64(s[i] == '\n');
+    }
+    return c;
+}

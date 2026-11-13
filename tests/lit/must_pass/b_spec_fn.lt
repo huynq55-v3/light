@@ -1,0 +1,44 @@
+// P3: hàm spec (spec fn) — đệ quy có decreases, gọi lồng, không đệ quy; câu lệnh assert làm gợi ý
+include "../../../lit_program/std/core.lit";
+
+spec fn mx(a: u64, b: u64) -> int {
+    if a >= b { a } else { b }
+}
+
+spec fn tri(k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { tri(k - 1) + k }
+}
+
+// gọi hàm spec khác trong thân
+spec fn tri2(k: u64) -> int {
+    2 * tri(k)
+}
+
+fn max2(a: u64, b: u64) -> u64
+    ensures result == mx(a, b)
+{
+    if a >= b { return a; }
+    return b;
+}
+
+fn tri_loop(n: u64) -> u64
+    requires n <= 1000
+    ensures result == tri(n)
+    ensures 2 * result == tri2(n)
+{
+    var s = 0;
+    for i in 0..n invariant s == tri(i), s <= i * 1000 {
+        s += i + 1;
+    }
+    return s;
+}
+
+fn three() -> u64
+    ensures result == tri(2) + 3
+{
+    assert tri(2) == tri(1) + 2;
+    assert tri(1) == 1;
+    return 6;
+}

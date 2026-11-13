@@ -1,0 +1,22 @@
+// Light-Bench 14 (P3, đặc tả đầy đủ) — ước chung lớn nhất (Euclid); gcd(0, 0) = 0
+include "../../lit_program/std/core.lit";
+
+// định nghĩa Euclid (đệ quy theo b: a % b < b)
+spec fn g(a: u64, b: u64) -> int
+    decreases b
+{
+    if b == 0 { a } else { g(b, a % b) }
+}
+
+fn gcd(a: u64, b: u64) -> u64
+    ensures result == g(a, b)
+{
+    var x = a;
+    var y = b;
+    while y != 0 invariant g(x, y) == g(a, b) decreases y {
+        let m = x % y;
+        x = y;
+        y = m;
+    }
+    return x;
+}

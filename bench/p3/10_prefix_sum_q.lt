@@ -1,0 +1,27 @@
+// Light-Bench 10 (P3, đặc tả đầy đủ) — out[k] = (a[0] + ... + a[k]) mod 2^64 với mọi k < n
+include "../../lit_program/std/core.lit";
+
+const M64M1 = 18446744073709551615;
+
+spec fn sum(n: u64, a: ptr<u64, n>, k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { sum(n, a, k - 1) + a[k - 1] }
+}
+
+// out trùng hẳn a (tại chỗ) hoặc tách rời a; chồng lệch thì kết quả khác (đọc a[i] sau khi đã ghi đè)
+fn prefix_sum_q(n: u64, a: ptr<u64, n>, m: u64, out: ptr<u64, m>)
+    requires n <= m
+    requires out == a || out + 8 * m <= a || a + 8 * n <= out
+    ensures forall k in 0..n: out[k] == old(sum(n, a, k + 1)) % (M64M1 + 1)
+{
+    var s = 0;
+    for i in 0..n
+        invariant s == old(sum(n, a, i)) % (M64M1 + 1),
+            forall t in i..n: a[t] == old(a[t]),
+            forall k in 0..i: out[k] == old(sum(n, a, k + 1)) % (M64M1 + 1)
+    {
+        s +%= a[i];
+        out[i] = s;
+    }
+}

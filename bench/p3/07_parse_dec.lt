@@ -1,0 +1,45 @@
+// Light-Bench 07 (P3, đặc tả đầy đủ) — s[0..n) là số thập phân (n >= 1, chỉ chữ số, giá trị < 2^64) -> out[0] = giá trị,
+// trả 1; ngược lại trả 0 và không ghi out.
+include "../../lit_program/std/core.lit";
+
+const M64M1 = 18446744073709551615;
+
+// giá trị thập phân TOÁN HỌC của s[0..k)
+spec fn dec(n: u64, s: ptr<u8, n>, k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { dec(n, s, k - 1) * 10 + (s[k - 1] - '0') }
+}
+
+// "giá trị < 2^64" viết cho MỌI tiền tố (với chuỗi chữ số, dec tăng theo k nên tương đương; dạng này Z3 chứng minh
+// được không cần quy nạp: khi tràn ở vị trí i, tiền tố i+1 là phản chứng)
+fn parse_dec(n: u64, s: ptr<u8, n>, out: ptr<u64, 1>) -> u64
+    ensures result <= 1
+    ensures result == 1 <==> n >= 1 && (forall j in 0..n: old(s[j]) >= '0' && old(s[j]) <= '9')
+        && (forall k in 0..n + 1: old(dec(n, s, k)) <= M64M1)
+    ensures result == 1 ==> out[0] == old(dec(n, s, n))
+    ensures result == 0 ==> out[0] == old(out[0])
+{
+    if n == 0 { return 0; }
+    var acc = 0;
+    for i in 0..n
+        invariant acc == dec(n, s, i), forall j in 0..i: s[j] >= '0' && s[j] <= '9',
+            forall k in 0..i + 1: dec(n, s, k) <= M64M1
+    {
+        let v = s[i];
+        if v < '0' || v > '9' { return 0; }
+        let d = v - '0';
+        if mulhi(acc, 10) != 0 {               // acc * 10 tràn
+            assert dec(n, s, i + 1) > M64M1;
+            return 0;
+        }
+        let t = acc *% 10;
+        if t +% d < t {                        // t + d tràn
+            assert dec(n, s, i + 1) > M64M1;   // gợi ý: tiền tố i+1 là phản chứng cho "mọi tiền tố < 2^64"
+            return 0;
+        }
+        acc = t + d;
+    }
+    out[0] = acc;
+    return 1;
+}

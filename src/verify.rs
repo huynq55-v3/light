@@ -129,6 +129,16 @@ fn expr_regs(e: &Z3Expr, out: &mut Vec<Reg>) {
             expr_regs(i, out);
         }
         Z3Expr::Old(x) => expr_regs(x, out),
+        Z3Expr::Ite(c, a, b) => {
+            for x in [c, a, b] {
+                expr_regs(x, out);
+            }
+        }
+        Z3Expr::App(_, args) => {
+            for x in args {
+                expr_regs(x, out);
+            }
+        }
         // biến lượng từ là biến buộc: không phải thanh ghi
         Z3Expr::Quant(_, v, lo, hi, body) => {
             let mut inner = vec![];
@@ -1033,7 +1043,7 @@ impl<'ctx> Verifier<'ctx> {
             Z3Expr::Not(x) => Ok(self.eval_bv(x, env, fv)?.bvnot()),
             Z3Expr::Cmp(..) => Err("Biểu thức so sánh không thể dùng làm giá trị số".into()),
             Z3Expr::Math(..) => Err("số học toán học (iadd/isub/...) chỉ dùng dưới phép so sánh".into()),
-            Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => {
+            Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) | Z3Expr::Ite(..) | Z3Expr::App(..) => {
                 Err("đặc tả bộ nhớ / lượng từ chỉ checker số nguyên xử lý".into())
             }
         }

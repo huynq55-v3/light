@@ -257,14 +257,16 @@ fn ev(e: &Z3Expr, regs: &Regs, fv: Option<u64>) -> Result<u64, String> {
         Z3Expr::Not(x) => Ok(!ev(x, regs, fv)?),
         Z3Expr::Cmp(..) => Err("biểu thức so sánh dùng làm giá trị số".into()),
         Z3Expr::Math(..) => u64::try_from(evm(e, regs, fv)?).map_err(|_| "số toán học ngoài [0, 2^64)".to_string()),
-        Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => Err("đặc tả bộ nhớ: oracle chưa hỗ trợ".into()),
+        Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) | Z3Expr::Ite(..) | Z3Expr::App(..) => {
+            Err("đặc tả bộ nhớ / hàm spec: oracle chưa hỗ trợ".into())
+        }
     }
 }
 
 /// đặc tả nói về bộ nhớ / lượng từ (P3): oracle không tính được -> bỏ qua kiểm (requires ở đỉnh: bỏ đầu vào)
 fn mem_spec(e: &Z3Expr) -> bool {
     match e {
-        Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => true,
+        Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) | Z3Expr::Ite(..) | Z3Expr::App(..) => true,
         Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) | Z3Expr::Math(_, l, r) => {
             mem_spec(l) || mem_spec(r)
         }

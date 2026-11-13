@@ -1,0 +1,9 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// sự thật về phép bit / chia trong đặc tả không được ép toán hạng toán học (a - b có thể âm) ở nhánh a < b
+fn f(a: u64, b: u64, c: u64) -> u64
+    requires c > 0
+    ensures result == 7 || (a - b) % c == 1
+{
+    if a < b { return 0; }
+    return 7;
+}

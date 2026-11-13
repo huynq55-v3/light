@@ -1,0 +1,12 @@
+// EXPECT: decreases không giảm ngặt
+// định nghĩa đệ quy không giảm sẽ cho tiên đề mâu thuẫn (f(k) == f(k) + 1) -> phải bị từ chối
+spec fn f(k: u64) -> int
+    decreases k
+{
+    if k == 0 { 0 } else { f(k) + 1 }
+}
+fn g(k: u64) -> u64
+    ensures result == f(k)
+{
+    return 0;
+}
