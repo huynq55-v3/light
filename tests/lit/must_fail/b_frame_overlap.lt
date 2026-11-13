@@ -1,0 +1,14 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// b có thể nằm trong vùng của a: khung không được hứa b giữ nguyên
+include "../../../lit_program/std/core.lit";
+fn zero(n: u64, a: ptr<u64, n>) {
+    for i in 0..n {
+        a[i] = 0;
+    }
+}
+fn f(n: u64, a: ptr<u64, n>, m: u64, b: ptr<u64, m>)
+    requires m >= 1
+    ensures b[0] == old(b[0])
+{
+    zero(n, a);
+}

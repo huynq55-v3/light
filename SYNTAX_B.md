@@ -10,7 +10,7 @@ light lower  app.lt [--origins] # xem SSA sinh ra (và vị trí gốc của t�
 
 Trạng thái: **P2**, gồm biểu thức, `let` / `var`, gán, bộ nhớ, gọi hàm, `if/else`, `while` / `for`, `break` /
 `continue`, `return`, đặc tả không lượng từ và `invariant` / `decreases`. P3 (đang làm): đã có số học toán học, `a[i]`,
-`old(...)`, `forall` / `exists`, `spec fn`, `assert` trong đặc tả. Khung gọi hàm theo vùng và bổ đề chưa có (xem
+`old(...)`, `forall` / `exists`, `spec fn`, `assert` trong đặc tả. Khung theo vùng (tự suy) đã có. Bổ đề chưa có (xem
 `ROADMAP.md`).
 
 ## Ví dụ
@@ -115,9 +115,16 @@ Không có số âm. Dùng `0 -% x` để lấy bù hai.
   - Hai con trỏ có thể trỏ cùng chỗ, kể cả khi khác kiểu. Ghi `p[0]` thì không còn biết gì về `q[0]` (của bất kỳ
     con trỏ nào khác), trừ khi đặc tả nói `q` khác `p`.
   - Ghi qua kiểu u8 thì mọi mảng kiểu khác (u64, ...) coi như đã đổi.
-  - Lệnh gọi hàm làm mất thông tin về các kiểu bộ nhớ mà hàm đó (hoặc hàm nó gọi) có ghi. Hàm không ghi gì thì
-    giữ nguyên.
-  - Trong vòng lặp có ghi, invariant phải nói rõ phần nào đã đổi và phần nào giữ nguyên.
+  - Khung tự động (không cần chú thích): verifier tự tìm xem hàm ghi vào vùng của tham số con trỏ nào, kể cả qua
+    `p[a..b]`, `view` và qua hàm nó gọi. Sau lệnh gọi, mọi ô nằm NGOÀI các vùng đó (vùng `p` là `p .. p + len*kích_thước`
+    byte) giữ nguyên. Ví dụ `zero(n, a)` không đổi `b` nếu requires nói `a + 8 * n <= b || b + 8 * m <= a`.
+  - Vòng lặp cũng vậy: ở đầu vòng, mọi ô ngoài vùng các tham số mà thân vòng ghi giữ giá trị lúc vào vòng. Invariant
+    chỉ cần nói về phần trong vùng được ghi.
+  - Không có khung khi có lệnh ghi không xuất phát từ tham số: ghi vào `data` qua `addr`, qua con trỏ đọc từ bộ nhớ,
+    con trỏ hằng, SIMD, syscall, gọi gián tiếp, đệ quy. Khi đó lệnh gọi làm mất mọi thông tin về các kiểu bộ nhớ
+    hàm đó ghi.
+  - Khung giữ TỪNG Ô, không giữ giá trị hàm spec: sau `zero(m, b)`, `sum(n, a, n)` trên heap mới không tự bằng
+    `old(sum(n, a, n))` dù `a` không bị ghi (cần quy nạp, chưa có). Nói về từng ô (`a[0] == old(a[0])`) thì được.
 - Sự thật về bộ nhớ chỉ checker số nguyên biết. Checker an toàn (tràn số, biên) không dùng được chúng: `requires
   a[0] < 1000` không giúp chứng minh `a[0] + a[0]` không tràn. Khi đó kiểm bằng `if`, hoặc dùng `+%`.
 - Hàm spec (chỉ dùng trong đặc tả, không sinh mã), giá trị là số nguyên toán học:
@@ -141,7 +148,7 @@ Không có số âm. Dùng `0 -% x` để lấy bù hai.
 - Khi đặc tả có hàm spec đệ quy, đặc tả sai thường bị từ chối với "không kết luận" (sau 10 s) thay vì có phản ví dụ.
   Lý do: Z3 khó dựng mô hình cho định nghĩa đệ quy. Bị từ chối vẫn là bị từ chối, nhưng muốn có phản ví dụ thì tách
   mệnh đề nhỏ hơn hoặc thêm `assert`.
-- Chưa có: `p.trường` / `p[a..b]` trong đặc tả, `modifies`, khung theo vùng cho lệnh gọi, bổ đề (lemma) quy nạp.
+- Chưa có: `p.trường` / `p[a..b]` trong đặc tả, `modifies` khai báo tường minh (hiện tự suy), bổ đề (lemma) quy nạp.
 
 ## Vòng lặp: `invariant` / `decreases`
 

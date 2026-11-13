@@ -1,0 +1,14 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// hàm được gọi ghi dữ liệu tĩnh (gốc không phải tham số): a có thể chính là D -> không có khung
+include "../../../lit_program/std/core.lit";
+data D: u64 = [1, 2];
+fn g() {
+    let d = addr(D);
+    d[0] = 9;
+}
+fn f(n: u64, a: ptr<u64, n>)
+    requires n >= 1
+    ensures a[0] == old(a[0])
+{
+    g();
+}

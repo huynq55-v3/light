@@ -1,0 +1,18 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// h ghi a qua zero (tham số đổi chỗ): a[0] đổi
+include "../../../lit_program/std/core.lit";
+fn zero(n: u64, a: ptr<u64, n>) {
+    for i in 0..n {
+        a[i] = 0;
+    }
+}
+fn h(m: u64, b: ptr<u64, m>, n: u64, a: ptr<u64, n>) {
+    zero(n, a);
+}
+fn f(n: u64, a: ptr<u64, n>, m: u64, b: ptr<u64, m>)
+    requires n >= 1
+    requires a + 8 * n <= b || b + 8 * m <= a
+    ensures a[0] == old(a[0])
+{
+    h(m, b, n, a);
+}

@@ -269,11 +269,17 @@ fn written_keys(module: &Module, func: &Func, tys: &HashMap<Reg, Type>) -> Optio
 
 /// Tóm tắt ghi của hàm dưới dạng chuỗi (khoá cache của HÀM GỌI phải phụ thuộc nó: nó suy từ THÂN hàm được gọi)
 pub fn write_summary(module: &Module, func: &Func) -> String {
+    let all: Vec<usize> = (0..func.blocks.len()).collect();
+    let roots = write_roots(module, func, &all, &mut vec![func.name.clone()]).map(|r| {
+        let mut v: Vec<Reg> = r.into_iter().collect();
+        v.sort();
+        v
+    });
     match written_keys(module, func, &reg_types(module, func)) {
         Some(w) => {
             let mut v: Vec<HKey> = w.into_iter().collect();
             v.sort();
-            format!("{:?}", v)
+            format!("{:?}|{:?}", v, roots)
         }
         None => "ALL".into(),
     }
@@ -344,6 +350,72 @@ fn written_blocks(
         }
     }
     Some(w)
+}
+
+/// Tham số con trỏ (thanh ghi tham số của `func`) mà các block `blocks` có thể ghi vào VÙNG của nó. `None` = có lệnh ghi
+/// không xuất phát từ tham số (addr, con trỏ đọc từ bộ nhớ / trả về / hằng / tham số block, SIMD, phần cứng, gọi gián
+/// tiếp, đệ quy) -> coi như ghi mọi nơi. Gốc đi qua slice / view; BV đã chứng minh mọi truy cập nằm trong vùng của gốc
+/// ([p, p + len * size)), nên ghi qua gốc p chỉ đổi byte trong vùng của p.
+fn write_roots(module: &Module, func: &Func, blocks: &[usize], stack: &mut Vec<String>) -> Option<HashSet<Reg>> {
+    if stack.len() > 32 {
+        return None;
+    }
+    let mut root: HashMap<Reg, Reg> = func.params.iter().filter(|(_, t)| t.ptr_layout().is_some()).map(|(r, _)| (*r, *r)).collect();
+    // lan truyền qua slice / view (lặp tới điểm bất động: thứ tự block không nhất thiết là thứ tự định nghĩa)
+    loop {
+        let n0 = root.len();
+        for i in func.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::Slice { dst, base: src, .. } | Inst::View { dst, src, .. } = i {
+                if let Some(&r) = root.get(src) {
+                    root.insert(*dst, r);
+                }
+            }
+        }
+        if root.len() == n0 {
+            break;
+        }
+    }
+    let mut out = HashSet::new();
+    for i in blocks.iter().flat_map(|&b| &func.blocks[b].insts) {
+        match i {
+            Inst::Store { base, .. } => {
+                out.insert(*root.get(base)?);
+            }
+            Inst::AtaRead { ptr, .. } => {
+                out.insert(*root.get(ptr)?);
+            }
+            Inst::Call { func_id, args, .. } => {
+                let c = module.funcs.get(*func_id as usize)?;
+                if stack.contains(&c.name) {
+                    return None;
+                }
+                stack.push(c.name.clone());
+                let all: Vec<usize> = (0..c.blocks.len()).collect();
+                let cr = write_roots(module, c, &all, stack);
+                stack.pop();
+                for r in cr? {
+                    let j = c.params.iter().position(|(p, _)| *p == r)?;
+                    out.insert(*root.get(args.get(j)?)?);
+                }
+            }
+            Inst::CallPtr { .. } | Inst::Simd256 { .. } | Inst::Parallel { .. } | Inst::HwIo { .. } => return None,
+            Inst::Const { .. }
+            | Inst::Bin { .. }
+            | Inst::Cmp { .. }
+            | Inst::Slice { .. }
+            | Inst::Load { .. }
+            | Inst::SmpWorkers { .. }
+            | Inst::Narrow { .. }
+            | Inst::View { .. }
+            | Inst::Addr { .. }
+            | Inst::Br { .. }
+            | Inst::Jmp { .. }
+            | Inst::Ret { .. }
+            | Inst::Assume(_)
+            | Inst::Assert(_) => {}
+        }
+    }
+    Some(out)
 }
 
 impl<'ctx> IV<'ctx> {
@@ -898,6 +970,38 @@ impl<'ctx> IV<'ctx> {
             None => self.elem(l, &self.get(base)?, None, off),
         }
     }
+    /// Khung: `forall x: x không chạm vùng nào trong `regions` (byte [P, P + B)) => new[x] == old[x]`, pattern new[x].
+    /// x là địa chỉ PHẦN TỬ của heap `k` (kích thước phần tử s): chạm vùng <=> B > 0, x + s > P và x < P + B.
+    fn frame(&mut self, k: HKey, new: &Array<'ctx>, old: &Array<'ctx>, regions: &[(Int<'ctx>, Int<'ctx>)]) {
+        let ctx = self.ctx;
+        self.fresh += 1;
+        let x = Int::new_const(ctx, format!("fx!{}", self.fresh));
+        let s = self.n(self.module.layouts[k.0 as usize].size.max(1) as u64);
+        let xe = Int::add(ctx, &[&x, &s]);
+        let outside: Vec<Bool> = regions
+            .iter()
+            .map(|(p, b)| Bool::and(ctx, &[&b.gt(&self.n(0)), &xe.gt(p), &x.lt(&Int::add(ctx, &[p, b]))]).not())
+            .collect();
+        let hyp = Bool::and(ctx, &outside.iter().collect::<Vec<_>>());
+        let nx = new.select(&x);
+        let pat = z3::Pattern::new(ctx, &[&nx as &dyn Ast]);
+        let body = hyp.implies(&nx._eq(&old.select(&x)));
+        self.solver.assert(&z3::ast::forall_const(ctx, &[&x], &[&pat], &body));
+    }
+
+    /// Vùng byte (đầu, số byte) của tham số con trỏ `r` của hàm `f`; `val` cho giá trị của tham số f (độ dài động)
+    fn region_of(&self, f: &Func, r: Reg, val: &dyn Fn(Reg) -> Option<Int<'ctx>>) -> Option<(Int<'ctx>, Int<'ctx>)> {
+        let ty = f.params.iter().find(|(p, _)| *p == r)?.1;
+        let start = val(r)?;
+        let (l, len) = match ty {
+            Type::Ptr { layout_id, max_elems } => (layout_id, self.n(max_elems)),
+            Type::DPtr { layout_id, len } => (layout_id, val(len)?),
+            _ => return None,
+        };
+        let size = self.n(self.module.layouts[l as usize].size as u64);
+        Some((start, Int::mul(self.ctx, &[&len, &size])))
+    }
+
     /// Phiên bản heap mới (mảng tuỳ ý). Miền giá trị ô: xem `want_range`.
     fn fresh_heap(&mut self, keys: &[HKey]) {
         let ctx = self.ctx;
@@ -1176,10 +1280,34 @@ impl<'ctx> IV<'ctx> {
                         }
                     }
                     // hàm được gọi ghi được mọi heap trong tóm tắt của nó (chưa có khung theo vùng): old = trước lệnh gọi
+                    let all_b: Vec<usize> = (0..callee.blocks.len()).collect();
+                    let roots = write_roots(self.module, callee, &all_b, &mut vec![callee.name.clone()]);
                     match written_keys(self.module, callee, &reg_types(self.module, callee)) {
                         Some(w) => {
                             let w: Vec<HKey> = w.into_iter().collect();
-                            self.fresh_heap(&w)
+                            let before = self.heap.clone();
+                            self.fresh_heap(&w);
+                            // khung theo vùng: hàm được gọi chỉ ghi trong vùng các tham số con trỏ gốc của lệnh ghi
+                            if let Some(roots) = roots {
+                                let mut regions = Vec::new();
+                                let mut ok = true;
+                                for r in roots {
+                                    let val = |q: Reg| {
+                                        let j = callee.params.iter().position(|(p, _)| *p == q)?;
+                                        self.regs.get(args.get(j)?).cloned()
+                                    };
+                                    match self.region_of(callee, r, &val) {
+                                        Some(g) => regions.push(g),
+                                        None => ok = false,
+                                    }
+                                }
+                                if ok {
+                                    for k in &w {
+                                        let (nh, oh) = (self.heap[k].clone(), before[k].clone());
+                                        self.frame(*k, &nh, &oh, &regions);
+                                    }
+                                }
+                            }
                         }
                         None => self.havoc_all(),
                     }
@@ -1433,7 +1561,8 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
         }
     }
     // heap thân vòng có thể ghi (đầu vòng: mảng mới chỉ cho chúng; heap khác giữ giá trị từ cạnh vào)
-    let loop_written: HashMap<usize, Vec<HKey>> = loop_blocks
+    #[allow(clippy::type_complexity)]
+    let loop_written: HashMap<usize, (Vec<HKey>, Option<Vec<Reg>>)> = loop_blocks
         .iter()
         .map(|(&h, body)| {
             let bl: Vec<usize> = body.iter().copied().collect();
@@ -1441,7 +1570,8 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
                 Some(w) => w.into_iter().collect(),
                 None => keys.clone(),
             };
-            (h, w)
+            let roots = write_roots(module, func, &bl, &mut vec![func.name.clone()]).map(|r| r.into_iter().collect());
+            (h, (w, roots))
         })
         .collect();
     for &bi in &order {
@@ -1481,8 +1611,20 @@ pub fn verify(module: &Module, func: &Func, all: bool) -> Result<(), String> {
                     }
                 }
             }
-            let w = loop_written[&bi].clone();
+            let (w, roots) = loop_written[&bi].clone();
+            let before = v.heap.clone();
             v.fresh_heap(&w);
+            // khung đầu vòng (luật Dafny): ngoài vùng các tham số con trỏ thân vòng ghi, heap == heap lúc vào vòng
+            if let Some(roots) = roots {
+                let val = |q: Reg| v.regs.get(&q).cloned();
+                let regions: Option<Vec<_>> = roots.iter().map(|&r| v.region_of(func, r, &val)).collect();
+                if let Some(regions) = regions {
+                    for k in &w {
+                        let (nh, oh) = (v.heap[k].clone(), before[k].clone());
+                        v.frame(*k, &nh, &oh, &regions);
+                    }
+                }
+            }
         } else if let Some(edges) = v.edge_heaps.get(&bi).cloned() {
             if edges.len() == 1 {
                 v.heap = edges[0].1.clone();

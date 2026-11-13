@@ -1,0 +1,15 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// vùng byte của b chạm phần tử u64 cuối của a (lệch 1 byte): khung phải tính chồng lấn theo byte
+include "../../../lit_program/std/core.lit";
+fn zero(n: u64, a: ptr<u8, n>) {
+    for i in 0..n {
+        a[i] = 0;
+    }
+}
+fn f(n: u64, a: ptr<u8, n>, b: ptr<u64, 1>)
+    requires n >= 1
+    requires b + 1 == a + n
+    ensures b[0] == old(b[0])
+{
+    zero(n, a);
+}

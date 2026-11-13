@@ -1,0 +1,83 @@
+// P3 giai đoạn 3: khung theo vùng — hàm được gọi / thân vòng lặp chỉ đổi vùng các tham số con trỏ mà nó ghi
+include "../../../lit_program/std/core.lit";
+
+fn zero(n: u64, a: ptr<u64, n>)
+    ensures forall j in 0..n: a[j] == 0
+{
+    for i in 0..n invariant forall j in 0..i: a[j] == 0 {
+        a[i] = 0;
+    }
+}
+
+// b tách rời a: gọi zero(a) không đổi b (không cần ensures "b giữ nguyên" ở zero)
+fn zero_keep(n: u64, a: ptr<u64, n>, m: u64, b: ptr<u64, m>)
+    requires m >= 1
+    requires a + 8 * n <= b || b + 8 * m <= a
+    ensures b[0] == old(b[0])
+    ensures forall j in 0..n: a[j] == 0
+{
+    zero(n, a);
+}
+
+// vòng lặp ghi out: a (tách rời) giữ nguyên ở đầu vòng mà KHÔNG cần invariant về a
+fn copy(n: u64, a: ptr<u64, n>, out: ptr<u64, n>)
+    requires a + 8 * n <= out || out + 8 * n <= a
+    ensures forall j in 0..n: out[j] == old(a[j])
+{
+    for i in 0..n invariant forall j in 0..i: out[j] == old(a[j]) {
+        out[i] = a[i];
+    }
+}
+
+// ghi qua slice (gốc vẫn là tham số): phần ngoài vùng giữ nguyên
+fn set_tail(n: u64, a: ptr<u64, n>)
+    requires n >= 2
+{
+    let t = a[1..n];
+    t[0] = 5;
+}
+
+fn use_tail(n: u64, a: ptr<u64, n>, m: u64, b: ptr<u8, m>)
+    requires n >= 2, m >= 1
+    requires a + 8 * n <= b || b + m <= a
+    ensures b[0] == old(b[0])
+{
+    set_tail(n, a);
+}
+
+// lệnh gọi lồng, tham số đổi chỗ: h ghi a (tham số thứ 4) qua zero
+fn h(m: u64, b: ptr<u64, m>, n: u64, a: ptr<u64, n>) {
+    zero(n, a);
+}
+
+fn h_keep(n: u64, a: ptr<u64, n>, m: u64, b: ptr<u64, m>)
+    requires m >= 1
+    requires a + 8 * n <= b || b + 8 * m <= a
+    ensures b[0] == old(b[0])
+{
+    h(m, b, n, a);
+}
+
+// lệnh gọi trong thân vòng lặp
+fn zero_k(k: u64, n: u64, a: ptr<u64, n>, m: u64, b: ptr<u64, m>)
+    requires m >= 1
+    requires a + 8 * n <= b || b + 8 * m <= a
+    ensures b[0] == old(b[0])
+{
+    for i in 0..k {
+        zero(n, a);
+    }
+}
+
+// độ dài tĩnh
+fn zero4(a: ptr<u64, 4>) {
+    a[3] = 0;
+}
+
+fn zero4_keep(a: ptr<u64, 4>, m: u64, b: ptr<u64, m>)
+    requires m >= 1
+    requires a + 32 <= b || b + 8 * m <= a
+    ensures b[0] == old(b[0])
+{
+    zero4(a);
+}
