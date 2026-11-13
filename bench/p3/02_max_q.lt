@@ -1,0 +1,15 @@
+// Light-Bench 02 (P3, đặc tả đầy đủ) — phần tử lớn nhất của mảng khác rỗng
+include "../../lit_program/std/core.lit";
+
+fn max_q(n: u64, a: ptr<u64, n>) -> u64
+    requires n >= 1
+    ensures forall j in 0..n: a[j] <= result
+    ensures exists j in 0..n: a[j] == result
+{
+    var m = a[0];
+    for i in 1..n invariant forall j in 0..i: a[j] <= m, exists j in 0..i: a[j] == m {
+        let v = a[i];
+        m = math_max(m, v);
+    }
+    return m;
+}

@@ -4,6 +4,7 @@ mod front;
 mod ir;
 mod parser;
 mod verify;
+mod verify_int;
 mod x86;
 #[macro_use]
 mod tooling;

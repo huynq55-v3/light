@@ -122,6 +122,77 @@ pub enum Z3Expr {
     And(Box<Z3Expr>, Box<Z3Expr>),
     Or(Box<Z3Expr>, Box<Z3Expr>),
     Not(Box<Z3Expr>),
+    /// Số học TOÁN HỌC (số nguyên không giới hạn, không quay vòng) — chỉ trong đặc tả. Viết `iadd isub imul idiv imod`.
+    /// idiv / imod: chia Euclid (số dư >= 0), chia cho 0 không xác định.
+    Math(MathOp, Box<Z3Expr>, Box<Z3Expr>),
+    /// `mem %p IDX OFF`: trường ở offset OFF của phần tử IDX mà %p trỏ tới (địa chỉ p + IDX*size + OFF), đọc ở trạng thái
+    /// bộ nhớ hiện tại của mệnh đề (requires: lúc vào; ensures: lúc ra; invariant: ở đầu vòng). Chỉ checker số nguyên.
+    Mem(Reg, Box<Z3Expr>, u32),
+    /// `old E`: E tính trên bộ nhớ lúc VÀO hàm
+    Old(Box<Z3Expr>),
+    /// `forall %j LO HI BODY` / `exists ...`: lượng từ trên khoảng nửa mở LO <= j < HI (số nguyên toán học)
+    Quant(bool, Reg, Box<Z3Expr>, Box<Z3Expr>, Box<Z3Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+/// Lớp của một mệnh đề đặc tả theo việc checker nào xử lý (xem verify_int.rs)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SpecClass {
+    /// chỉ phép bit-vector: checker BV giả định + chứng minh (như trước P3)
+    Bv,
+    /// có `iadd isub imul` dưới so sánh = / != / không dấu: BV tính đúng bằng bit-vector rộng và chỉ GIẢ ĐỊNH; checker Int chứng minh
+    Wide,
+    /// còn lại (idiv, imod, toán học lồng trong phép bit, so sánh có dấu trên số toán học, ...): chỉ checker Int
+    Rich,
+}
+
+impl Z3Expr {
+    /// Số bit (có dấu) đủ để tính đúng một biểu thức toán học trên toán hạng 64 bit; None nếu không tính được bằng BV rộng
+    pub fn wide_bits(&self) -> Option<u32> {
+        match self {
+            Z3Expr::Math(MathOp::Add | MathOp::Sub, l, r) => Some(l.wide_bits()?.max(r.wide_bits()?) + 1),
+            Z3Expr::Math(MathOp::Mul, l, r) => Some(l.wide_bits()? + r.wide_bits()?),
+            Z3Expr::Math(..) | Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => None,
+            e if e.has_math() => None, // toán học lồng trong phép bit-vector
+            _ => Some(65),
+        }
+        .filter(|&b| b <= 256)
+    }
+
+    /// có thành phần chỉ checker số nguyên hiểu (số học toán học, bộ nhớ, old, lượng từ)
+    pub fn has_math(&self) -> bool {
+        match self {
+            Z3Expr::Math(..) | Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => true,
+            Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) => l.has_math() || r.has_math(),
+            Z3Expr::Not(x) => x.has_math(),
+            _ => false,
+        }
+    }
+
+    pub fn class(&self) -> SpecClass {
+        match self {
+            Z3Expr::Cmp(op, l, r) if l.has_math() || r.has_math() => {
+                let unsigned = matches!(op, CmpOp::Eq | CmpOp::Ne | CmpOp::Ult | CmpOp::Ule | CmpOp::Ugt | CmpOp::Uge);
+                if unsigned && l.wide_bits().is_some() && r.wide_bits().is_some() {
+                    SpecClass::Wide
+                } else {
+                    SpecClass::Rich
+                }
+            }
+            Z3Expr::And(l, r) | Z3Expr::Or(l, r) => l.class().max(r.class()),
+            Z3Expr::Not(x) => x.class(),
+            e if e.has_math() => SpecClass::Rich,
+            _ => SpecClass::Bv,
+        }
+    }
 }
 
 /// 5. TẬP CHỈ THỊ SSA CỐT LÕI (Chỉ đúng 12 lệnh cho cả Z3 lẫn x86_64 ELF64)
@@ -287,6 +358,9 @@ pub struct Func {
     pub block_names: Vec<(BlockId, String)>, // nhãn có tên (@tên) -> số block; chỉ để báo lỗi
     pub names: Vec<(Reg, String)>, // tên biến người viết (%tên) -> số SSA; chỉ để báo lỗi, sắp theo số
     pub origin: String,        // "file:dòng" nơi khai báo hàm (chỉ để báo lỗi/ tài liệu, không tham gia kiểm chứng)
+    /// Phép *_sat / *_ovf parser đã hạ thành chuỗi phép bit: đích -> (phép gốc, toán hạng). Checker số nguyên dùng ngữ nghĩa
+    /// gốc (chuỗi phép bit mờ với số học tuyến tính); BV và mã máy chỉ thấy bản đã hạ.
+    pub lowered: Vec<(Reg, BinOp, Reg, Reg)>,
 }
 
 #[derive(Debug, Clone, Default)]

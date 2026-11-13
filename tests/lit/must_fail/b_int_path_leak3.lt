@@ -1,0 +1,8 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// định nghĩa từng phần (a - b có kiểm, u8()) KHÔNG được ép điều kiện lên nhánh anh em trong checker số nguyên
+fn f(a: u64) -> u64
+    ensures result == a
+{
+    if a < 256 { let x = u8(a); return x; }
+    return 5;
+}

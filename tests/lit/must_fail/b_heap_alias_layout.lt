@@ -1,0 +1,9 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// con trỏ KHÁC kiểu cũng có thể cùng vùng nhớ: ghi qua u8 thì heap u64 bị thay mới
+include "../../../lit_program/std/core.lit";
+fn f(n: u64, p: ptr<u8, n>, q: ptr<u64, n>)
+    requires n >= 1
+    ensures q[0] == old(q[0])
+{
+    p[0] = 1;
+}

@@ -1,0 +1,8 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// định nghĩa từng phần (a - b có kiểm, u8()) KHÔNG được ép điều kiện lên nhánh anh em trong checker số nguyên
+fn f(a: u64, b: u64) -> u64
+    ensures result == a - b
+{
+    if a < b { return 5; }
+    return a - b;
+}

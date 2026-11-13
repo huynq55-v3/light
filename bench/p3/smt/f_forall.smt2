@@ -1,0 +1,17 @@
+
+(declare-const M0 (Array Int Int)) (declare-const Mp (Array Int Int)) (declare-const H (Array Int Int))
+(declare-const a Int) (declare-const n Int) (declare-const i Int) (declare-const j Int) (declare-const c Int) (declare-const cn Int)
+(assert (and (<= 0 a) (< n 1099511627776) (<= 0 i) (<= i j) (<= j n) (> (- j i) 1) (= (+ i j) n)))
+; một lời gọi hàm trước đó sửa vùng c[0..cn) KHÔNG chồng lên a[0..n)
+(assert (or (<= (+ c (* 8 cn)) a) (<= (+ a (* 8 n)) c))) (assert (<= 0 cn))
+(declare-const M (Array Int Int)) (assert (forall ((x Int)) (! (=> (not (and (<= c x) (< x (+ c (* 8 cn))))) (= (select M x) (select Mp x))) :pattern ((select M x)))))
+(define-fun A ((t Int)) Int (+ a (* 8 t)))
+(assert (forall ((t Int)) (! (=> (and (<= 0 t) (or (< t i) (and (<= j t) (< t n)))) (= (select Mp (A t)) (select M0 (A (- (- n 1) t))))) :pattern ((select Mp (A t))))))
+(assert (forall ((t Int)) (! (=> (and (<= i t) (< t j)) (= (select Mp (A t)) (select M0 (A t)))) :pattern ((select Mp (A t))))))
+(define-fun j1 () Int (- j 1))
+(define-fun M2 () (Array Int Int) (store (store M (A i) (select M (A j1))) (A j1) (select M (A i))))
+(define-fun i2 () Int (+ i 1))
+(assert (not (and
+  (forall ((t Int)) (=> (and (<= 0 t) (or (< t i2) (and (<= j1 t) (< t n)))) (= (select M2 (A t)) (select M0 (A (- (- n 1) t))))))
+  (forall ((t Int)) (=> (and (<= i2 t) (< t j1)) (= (select M2 (A t)) (select M0 (A t))))))))
+(check-sat)

@@ -1,0 +1,13 @@
+(declare-const M0 (Array Int Int)) (declare-const M (Array Int Int))
+(declare-const a Int) (declare-const n Int) (declare-const i Int) (declare-const j Int)
+(assert (and (<= 0 a) (< n 1099511627776) (<= 0 i) (<= i j) (<= j n) (> (- j i) 1) (= (+ i j) n)))
+(define-fun A ((t Int)) Int (+ a (* 8 t)))
+(assert (forall ((t Int)) (! (=> (and (<= 0 t) (or (< t i) (and (<= j t) (< t n)))) (= (select M (A t)) (select M0 (A (- (- n 1) t))))) :pattern ((select M (A t))))))
+(assert (forall ((t Int)) (! (=> (and (<= i t) (< t j)) (= (select M (A t)) (select M0 (A t)))) :pattern ((select M (A t))))))
+(define-fun j1 () Int (- j 1))
+(define-fun M2 () (Array Int Int) (store (store M (A i) (select M (A j1))) (A j1) (select M (A i))))
+(define-fun i2 () Int (+ i 1))
+(assert (not (and
+  (forall ((t Int)) (=> (and (<= 0 t) (or (< t i2) (and (<= j1 t) (< t n)))) (= (select M2 (A t)) (select M0 (A (- (- n 1) t))))))
+  (forall ((t Int)) (=> (and (<= i2 t) (< t j1)) (= (select M2 (A t)) (select M0 (A t))))))))
+(check-sat)

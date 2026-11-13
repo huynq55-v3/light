@@ -14,6 +14,9 @@ Các bước:
   8. Cú pháp B (P1): `light check` + stack-report bench/p1/*.lt (+ bản SSA song sinh *.lit), rồi tools/p1_diff.py (mã máy bản B == bản SSA gốc, từng bit)
   9. Cú pháp B (P2, vòng lặp): `light check` + stack-report bench/p2/*.lt (15 bài) và bench/p2/std/*.lt, rồi
      tools/bench.py --dir bench/p2 test (mã máy bản B == mô hình Python); bench/p2/std được p1_diff.py ở bước 8 đối chiếu
+ 10. P3 (đặc tả đầy đủ, checker số nguyên): `light check` bench/p3/*.lt rồi tools/bench.py --dir bench/p3 test
+ 10b. tools/p3_mut.py: mọi đột biến của bench/p3 phải bị từ chối (chống chứng minh rỗng)
+ 11. tools/int_shadow.py: checker số nguyên chạy trên MỌI hàm đúng (phải qua) và một mình trên must_fail đặc tả (không được nhận)
 """
 import glob
 import os
@@ -59,6 +62,12 @@ def main():
         ok = ok and step(f"light check {os.path.relpath(f, REPO)}", ["./target/release/light", "check", f])
     ok = ok and step("light stack-report bench/p2", ["./target/release/light", "stack-report", *p2])
     ok = ok and step("bench.py --dir bench/p2 test", [PY, "tools/bench.py", "--dir", "bench/p2", "test"])
+    p3 = sorted(glob.glob(os.path.join(REPO, "bench", "p3", "*.lt")))
+    for f in p3:
+        ok = ok and step(f"light check {os.path.relpath(f, REPO)}", ["./target/release/light", "check", f])
+    ok = ok and step("bench.py --dir bench/p3 test", [PY, "tools/bench.py", "--dir", "bench/p3", "test"])
+    ok = ok and step("p3_mut.py (đột biến bench/p3)", [PY, "tools/p3_mut.py"])
+    ok = ok and step("int_shadow.py (đối chiếu checker số nguyên)", [PY, "tools/int_shadow.py"])
     print("CỔNG:", "QUA" if ok else "TRƯỢT")
     sys.exit(0 if ok else 1)
 

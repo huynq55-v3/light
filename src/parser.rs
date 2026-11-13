@@ -363,6 +363,34 @@ where
             Box::new(p_z3(it, defs)?),
         ));
     }
+    let math = match tok {
+        "iadd" => Some(MathOp::Add),
+        "isub" => Some(MathOp::Sub),
+        "imul" => Some(MathOp::Mul),
+        "idiv" => Some(MathOp::Div),
+        "imod" => Some(MathOp::Mod),
+        _ => None,
+    };
+    if tok == "mem" {
+        let p = p_reg(it.next().ok_or("mem: thiếu con trỏ")?)?;
+        let i = p_z3(it, defs)?;
+        let off = p_u64(it.next().ok_or("mem: thiếu offset")?, defs)?;
+        let off = u32::try_from(off).map_err(|_| "mem: offset quá lớn")?;
+        return Ok(Z3Expr::Mem(p, Box::new(i), off));
+    }
+    if tok == "old" {
+        return Ok(Z3Expr::Old(Box::new(p_z3(it, defs)?)));
+    }
+    if tok == "forall" || tok == "exists" {
+        let v = p_reg(it.next().ok_or("forall/exists: thiếu biến")?)?;
+        let lo = p_z3(it, defs)?;
+        let hi = p_z3(it, defs)?;
+        let body = p_z3(it, defs)?;
+        return Ok(Z3Expr::Quant(tok == "forall", v, Box::new(lo), Box::new(hi), Box::new(body)));
+    }
+    if let Some(op) = math {
+        return Ok(Z3Expr::Math(op, Box::new(p_z3(it, defs)?), Box::new(p_z3(it, defs)?)));
+    }
     if let Some(op) = p_binop(tok) {
         return Ok(Z3Expr::Bin(
             op,
@@ -641,6 +669,7 @@ fn parse_module_at(src: &str, origins: Option<&[String]>) -> Result<Module, Stri
                     origin: loc.clone(),
                     names: Vec::new(),
                     block_names: Vec::new(),
+                    lowered: Vec::new(),
                 });
             }
             "@req" => m
@@ -1044,6 +1073,15 @@ fn lower_func(f: &mut Func) {
         }
     }
     let mut next = max + 1;
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Inst::Bin { dst, op, lhs, rhs } = i {
+                if matches!(op, BinOp::AddSat | BinOp::SubSat | BinOp::MulSat | BinOp::AddOvf | BinOp::SubOvf | BinOp::MulOvf) {
+                    f.lowered.push((*dst, *op, *lhs, *rhs));
+                }
+            }
+        }
+    }
     for b in &mut f.blocks {
         let old = std::mem::take(&mut b.insts);
         let old_at = std::mem::take(&mut b.at);

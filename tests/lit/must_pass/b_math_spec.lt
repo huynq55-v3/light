@@ -1,0 +1,49 @@
+// P3: `+ - * / %` trong đặc tả là số học toán học (không quay vòng)
+fn add3(a: u64, b: u64) -> u64
+    requires a + b <= 1000
+    ensures result == a + b + 3
+{
+    return a + b + 3;
+}
+
+fn mid(lo: u64, hi: u64) -> u64
+    requires lo <= hi
+    ensures lo <= result && result <= hi
+    ensures result == (lo + hi) / 2
+{
+    return lo + (hi - lo) / 2;
+}
+
+fn wrap(a: u64) -> u64
+    ensures a < 18446744073709551615 ==> result == a + 1
+    ensures a == 18446744073709551615 ==> result == 0
+{
+    return a +% 1;
+}
+
+fn sq(x: u32) -> u64
+    ensures result == x * x
+{
+    return u64(x) * u64(x);
+}
+
+fn divmod(a: u64, b: u64) -> u64
+    requires b > 0
+    ensures result == a - (a / b) * b
+    ensures result == a % b
+{
+    return a % b;
+}
+
+fn sum(n: u64) -> u64
+    requires n <= 1000
+    ensures result * 2 == n * (n + 1)
+{
+    var s = 0;
+    var i = 0;
+    while i < n invariant i <= n && s * 2 == i * (i + 1) && s <= 500500 decreases n - i {
+        i += 1;
+        s += i;
+    }
+    return s;
+}

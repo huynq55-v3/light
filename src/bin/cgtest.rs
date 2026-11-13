@@ -18,6 +18,8 @@ mod front;
 mod parser;
 #[path = "../verify.rs"]
 mod verify;
+#[path = "../verify_int.rs"]
+mod verify_int;
 #[path = "../x86.rs"]
 mod x86;
 

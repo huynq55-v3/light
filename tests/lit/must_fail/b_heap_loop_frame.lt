@@ -1,0 +1,11 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// vòng lặp ghi a[i]: sau vòng, a[0] không còn là giá trị cũ (bất biến không nói gì về nó -> không chứng minh được)
+include "../../../lit_program/std/core.lit";
+fn f(n: u64, a: ptr<u64, n>)
+    requires n >= 1
+    ensures a[0] == old(a[0])
+{
+    for i in 0..n {
+        a[i] = 0;
+    }
+}

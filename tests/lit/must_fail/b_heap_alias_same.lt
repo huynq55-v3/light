@@ -1,0 +1,9 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// hai con trỏ cùng kiểu có thể trùng nhau: ghi p[0] có thể đổi q[0]
+include "../../../lit_program/std/core.lit";
+fn f(n: u64, p: ptr<u64, n>, q: ptr<u64, n>)
+    requires n >= 1
+    ensures q[0] == old(q[0])
+{
+    p[0] = 1;
+}

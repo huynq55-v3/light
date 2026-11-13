@@ -9,8 +9,8 @@ light lower  app.lt [--origins] # xem SSA sinh ra (và vị trí gốc của t�
 ```
 
 Trạng thái: **P2**, gồm biểu thức, `let` / `var`, gán, bộ nhớ, gọi hàm, `if/else`, `while` / `for`, `break` /
-`continue`, `return`, đặc tả không lượng từ và `invariant` / `decreases`. Số học toán học, `forall` và `old` trong đặc tả
-thuộc P3 (xem `ROADMAP.md`).
+`continue`, `return`, đặc tả không lượng từ và `invariant` / `decreases`. P3 (đang làm): đã có số học toán học, `a[i]`,
+`old(...)`, `forall` / `exists` trong đặc tả. Hàm spec và khung gọi hàm theo vùng chưa có (xem `ROADMAP.md`).
 
 ## Ví dụ
 
@@ -94,9 +94,32 @@ Không có số âm. Dùng `0 -% x` để lấy bù hai.
 - `ensures` gọi giá trị trả về là `result`.
 - Có thể dùng so sánh, `lt_s/le_s/gt_s/ge_s` (có dấu), `&& || !`, `==>` (kéo theo), `<==>` (tương đương), phép bit,
   `/ %`, `<< >>`, `+% -% *%`. Tên trong đặc tả chỉ là tham số, `result` hoặc hằng HOA.
-- `+ - *` bị **cấm** trong đặc tả cho tới P3. Trong mã chúng có kiểm tràn, còn đặc tả hiện tính trên bit-vector quay
-  vòng, nên cùng một ký hiệu sẽ mang hai nghĩa. Viết `+%` nếu chấp nhận quay vòng.
-- Đặc tả chưa đọc được bộ nhớ (`a[i]`) và chưa gọi được hàm. Phần này thuộc P3 (`forall`, `old`, hàm spec).
+- Trong đặc tả, `+ - * / %` là **số học toán học** (số nguyên không giới hạn, không tràn, không quay vòng). Ví dụ
+  `ensures result == (lo + hi) / 2` đúng nghĩa trung bình kể cả khi `lo + hi` vượt 2^64. Trong mã, chúng có kiểm tràn.
+  Viết `+% -% *%` nếu muốn phép quay vòng mod 2^64. `/ %` trên số không âm, chia cho 0 là không xác định (đừng viết).
+- Riêng `decreases` dùng phép bit-vector (`n - i` hiểu là `n -% i`). Mọi cách hiểu đều đúng cho chứng minh dừng.
+- Mệnh đề có số học toán học được chứng minh bởi **checker số nguyên** (`src/verify_int.rs`). Checker này chạy sau
+  checker bit-vector, và chỉ chạy khi cần. Checker bit-vector vẫn là bên duy nhất chứng minh an toàn (tràn, biên,
+  chia 0, dừng). Mệnh đề không có phép bit lồng quanh số học thì checker bit-vector tính được chính xác nên vẫn
+  dùng làm giả thiết. Ngược lại (có `/ %` toán học), checker bit-vector bỏ qua mệnh đề đó, nên mã phải tự kiểm
+  lúc chạy những gì an toàn cần (xem `bench/p3/13_base64_enc.lt`).
+- Đặc tả đọc được bộ nhớ: `a[i]` là phần tử i của con trỏ `a` (tham số, hoặc biến đang thấy trong invariant).
+  Trong requires, `a[i]` là giá trị lúc vào hàm. Trong ensures là lúc ra, trong invariant là ở đầu vòng.
+  `old(e)` tính `e` trên bộ nhớ lúc vào hàm.
+- Lượng từ trên khoảng nửa mở: `forall j in lo..hi: điều_kiện` và `exists j in lo..hi: điều_kiện`. Có thể lồng nhau,
+  ví dụ mảng đã sắp xếp là `forall j in 0..n: forall k in j..n: a[j] <= a[k]`. Hãy viết dạng hai biến này: dạng
+  "từng cặp kề nhau" `a[j-1] <= a[j]` cần quy nạp, Z3 không tự suy ra được.
+- Hàm không trả giá trị vẫn có ensures về bộ nhớ, ví dụ `ensures forall t in 0..n: a[t] == old(a[n - 1 - t])`.
+- Mô hình bộ nhớ (checker số nguyên, xem `bench/p3.md`):
+  - Hai con trỏ có thể trỏ cùng chỗ, kể cả khi khác kiểu. Ghi `p[0]` thì không còn biết gì về `q[0]` (của bất kỳ
+    con trỏ nào khác), trừ khi đặc tả nói `q` khác `p`.
+  - Ghi qua kiểu u8 thì mọi mảng kiểu khác (u64, ...) coi như đã đổi.
+  - Lệnh gọi hàm làm mất thông tin về các kiểu bộ nhớ mà hàm đó (hoặc hàm nó gọi) có ghi. Hàm không ghi gì thì
+    giữ nguyên.
+  - Trong vòng lặp có ghi, invariant phải nói rõ phần nào đã đổi và phần nào giữ nguyên.
+- Sự thật về bộ nhớ chỉ checker số nguyên biết. Checker an toàn (tràn số, biên) không dùng được chúng: `requires
+  a[0] < 1000` không giúp chứng minh `a[0] + a[0]` không tràn. Khi đó kiểm bằng `if`, hoặc dùng `+%`.
+- Chưa có: `p.trường` / `p[a..b]` trong đặc tả, `modifies`, khung theo vùng cho lệnh gọi, hàm spec.
 
 ## Vòng lặp: `invariant` / `decreases`
 

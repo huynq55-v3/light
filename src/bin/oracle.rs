@@ -22,6 +22,8 @@ mod front;
 mod parser;
 #[path = "../verify.rs"]
 mod verify;
+#[path = "../verify_int.rs"]
+mod verify_int;
 
 use ir::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -254,10 +256,55 @@ fn ev(e: &Z3Expr, regs: &Regs, fv: Option<u64>) -> Result<u64, String> {
         Z3Expr::Or(l, r) => Ok(ev(l, regs, fv)? | ev(r, regs, fv)?),
         Z3Expr::Not(x) => Ok(!ev(x, regs, fv)?),
         Z3Expr::Cmp(..) => Err("biểu thức so sánh dùng làm giá trị số".into()),
+        Z3Expr::Math(..) => u64::try_from(evm(e, regs, fv)?).map_err(|_| "số toán học ngoài [0, 2^64)".to_string()),
+        Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => Err("đặc tả bộ nhớ: oracle chưa hỗ trợ".into()),
+    }
+}
+
+/// đặc tả nói về bộ nhớ / lượng từ (P3): oracle không tính được -> bỏ qua kiểm (requires ở đỉnh: bỏ đầu vào)
+fn mem_spec(e: &Z3Expr) -> bool {
+    match e {
+        Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => true,
+        Z3Expr::Bin(_, l, r) | Z3Expr::Cmp(_, l, r) | Z3Expr::And(l, r) | Z3Expr::Or(l, r) | Z3Expr::Math(_, l, r) => {
+            mem_spec(l) || mem_spec(r)
+        }
+        Z3Expr::Not(x) => mem_spec(x),
+        _ => false,
+    }
+}
+/// số học toán học (i128 đủ cho đặc tả trên toán hạng 64 bit mức hiện tại)
+fn evm(e: &Z3Expr, regs: &Regs, fv: Option<u64>) -> Result<i128, String> {
+    match e {
+        Z3Expr::Math(op, l, r) => {
+            let (a, b) = (evm(l, regs, fv)?, evm(r, regs, fv)?);
+            let ov = || "tràn i128 khi tính đặc tả".to_string();
+            Ok(match op {
+                MathOp::Add => a.checked_add(b).ok_or_else(ov)?,
+                MathOp::Sub => a.checked_sub(b).ok_or_else(ov)?,
+                MathOp::Mul => a.checked_mul(b).ok_or_else(ov)?,
+                MathOp::Div if b != 0 => a.div_euclid(b),
+                MathOp::Mod if b != 0 => a.rem_euclid(b),
+                _ => return Err("idiv / imod cho 0".into()),
+            })
+        }
+        _ => Ok(ev(e, regs, fv)? as i128),
     }
 }
 fn evb(e: &Z3Expr, regs: &Regs, fv: Option<u64>) -> Result<bool, String> {
     match e {
+        e if mem_spec(e) => Ok(true),
+        Z3Expr::Cmp(op, l, r) if l.has_math() || r.has_math() => {
+            let (a, b) = (evm(l, regs, fv)?, evm(r, regs, fv)?);
+            Ok(match op {
+                CmpOp::Eq => a == b,
+                CmpOp::Ne => a != b,
+                CmpOp::Ult => a < b,
+                CmpOp::Ule => a <= b,
+                CmpOp::Ugt => a > b,
+                CmpOp::Uge => a >= b,
+                _ => return Err("so sánh có dấu trên số toán học".into()),
+            })
+        }
         Z3Expr::Cmp(op, l, r) => Ok(cmp(*op, ev(l, regs, fv)?, ev(r, regs, fv)?)),
         Z3Expr::And(l, r) => Ok(evb(l, regs, fv)? && evb(r, regs, fv)?),
         Z3Expr::Or(l, r) => Ok(evb(l, regs, fv)? || evb(r, regs, fv)?),
@@ -657,6 +704,9 @@ impl<'a> Vm<'a> {
         }
         if top {
             for (i, req) in func.requires.iter().enumerate() {
+                if mem_spec(req) {
+                    return Err(Stop::Discard(DKind::Req, format!("@req #{} (bộ nhớ: oracle chưa hỗ trợ)", i)));
+                }
                 match evb(req, &regs, None) {
                     Ok(true) => {}
                     Ok(false) => return Err(Stop::Discard(DKind::Req, format!("@req #{}", i))),

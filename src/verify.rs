@@ -120,6 +120,23 @@ fn expr_regs(e: &Z3Expr, out: &mut Vec<Reg>) {
             expr_regs(r, out);
         }
         Z3Expr::Not(x) => expr_regs(x, out),
+        Z3Expr::Math(_, l, r) => {
+            expr_regs(l, out);
+            expr_regs(r, out);
+        }
+        Z3Expr::Mem(p, i, _) => {
+            out.push(*p);
+            expr_regs(i, out);
+        }
+        Z3Expr::Old(x) => expr_regs(x, out),
+        // biến lượng từ là biến buộc: không phải thanh ghi
+        Z3Expr::Quant(_, v, lo, hi, body) => {
+            let mut inner = vec![];
+            for x in [lo, hi, body] {
+                expr_regs(x, &mut inner);
+            }
+            out.extend(inner.into_iter().filter(|r| r != v));
+        }
     }
 }
 
@@ -164,14 +181,14 @@ fn uses_of(i: &Inst) -> Vec<Reg> {
     }
 }
 
-struct Cfg {
-    idx: HashMap<BlockId, usize>,
-    rpo: Vec<usize>,
-    pos: Vec<usize>,
+pub(crate) struct Cfg {
+    pub(crate) idx: HashMap<BlockId, usize>,
+    pub(crate) rpo: Vec<usize>,
+    pub(crate) pos: Vec<usize>,
     dom: Vec<Vec<bool>>,
 }
 
-fn build_cfg(func: &Func) -> Result<Cfg, String> {
+pub(crate) fn build_cfg(func: &Func) -> Result<Cfg, String> {
     let n = func.blocks.len();
     if n == 0 {
         return Err("hàm không có block nào".into());
@@ -1015,6 +1032,26 @@ impl<'ctx> Verifier<'ctx> {
             Z3Expr::Or(l, r) => Ok(self.eval_bv(l, env, fv)?.bvor(&self.eval_bv(r, env, fv)?)),
             Z3Expr::Not(x) => Ok(self.eval_bv(x, env, fv)?.bvnot()),
             Z3Expr::Cmp(..) => Err("Biểu thức so sánh không thể dùng làm giá trị số".into()),
+            Z3Expr::Math(..) => Err("số học toán học (iadd/isub/...) chỉ dùng dưới phép so sánh".into()),
+            Z3Expr::Mem(..) | Z3Expr::Old(..) | Z3Expr::Quant(..) => {
+                Err("đặc tả bộ nhớ / lượng từ chỉ checker số nguyên xử lý".into())
+            }
+        }
+    }
+
+    /// Biểu thức toán học tính ĐÚNG bằng bit-vector có dấu `w` bit (đủ rộng theo Z3Expr::wide_bits)
+    fn eval_wide(&self, e: &Z3Expr, w: u32, env: &Env<'ctx>, fv: Option<&BV<'ctx>>) -> Result<BV<'ctx>, String> {
+        match e {
+            Z3Expr::Math(op, l, r) => {
+                let (a, b) = (self.eval_wide(l, w, env, fv)?, self.eval_wide(r, w, env, fv)?);
+                Ok(match op {
+                    MathOp::Add => a.bvadd(&b),
+                    MathOp::Sub => a.bvsub(&b),
+                    MathOp::Mul => a.bvmul(&b),
+                    _ => return Err("idiv / imod chỉ có ở checker số nguyên".into()),
+                })
+            }
+            _ => Ok(self.eval_bv(e, env, fv)?.zero_ext(w - 64)),
         }
     }
 
@@ -1025,6 +1062,22 @@ impl<'ctx> Verifier<'ctx> {
         fv: Option<&BV<'ctx>>,
     ) -> Result<Bool<'ctx>, String> {
         match e {
+            Z3Expr::Cmp(op, l, r) if l.has_math() || r.has_math() => {
+                let w = match (l.wide_bits(), r.wide_bits()) {
+                    (Some(a), Some(b)) => a.max(b),
+                    _ => return Err("mệnh đề toán học này chỉ có ở checker số nguyên".into()),
+                };
+                let (a, b) = (self.eval_wide(l, w, env, fv)?, self.eval_wide(r, w, env, fv)?);
+                Ok(match op {
+                    CmpOp::Eq => a._eq(&b),
+                    CmpOp::Ne => a._eq(&b).not(),
+                    CmpOp::Ult => a.bvslt(&b),
+                    CmpOp::Ule => a.bvsle(&b),
+                    CmpOp::Ugt => a.bvsgt(&b),
+                    CmpOp::Uge => a.bvsge(&b),
+                    _ => return Err("so sánh có dấu trên số toán học chỉ có ở checker số nguyên".into()),
+                })
+            }
             Z3Expr::Cmp(op, l, r) => {
                 Ok(self.eval_cmpop(*op, &self.eval_bv(l, env, fv)?, &self.eval_bv(r, env, fv)?))
             }
@@ -1106,6 +1159,9 @@ impl<'ctx> Verifier<'ctx> {
         extra: Option<&Bool<'ctx>>,
     ) -> Result<(), String> {
         for (i, inv) in func.blocks[ti].invs.iter().enumerate() {
+            if inv.class() != SpecClass::Bv {
+                continue; // checker số nguyên (verify_int.rs) chứng minh
+            }
             self.check_with(
                 extra,
                 &self.eval_bool(inv, env, None)?,
@@ -1134,7 +1190,7 @@ impl<'ctx> Verifier<'ctx> {
         let h = &func.blocks[ti];
         // Bất biến của đích (đã được chứng minh ở cạnh này) làm giả thiết
         let mut hyp = Vec::new();
-        for inv in &h.invs {
+        for inv in h.invs.iter().filter(|e| e.class() != SpecClass::Rich) {
             hyp.push(self.eval_bool(inv, env_new, None)?);
         }
         let hyp_refs: Vec<&Bool> = hyp.iter().collect();
@@ -1416,7 +1472,16 @@ impl<'ctx> Verifier<'ctx> {
                         ));
                     }
                 }
-                let (s1, s2) = (self.bv(self.elem_size(l1)?), self.bv(self.elem_size(l2)?));
+                // heap theo kiểu của checker số nguyên (verify_int.rs) cần: hai phần tử cùng Layout không chồng một phần.
+                // slice giữ điều đó; view giữ nếu kích thước đích chia hết kích thước nguồn (vd qword -> byte).
+                let (z1, z2) = (self.elem_size(l1)?, self.elem_size(l2)?);
+                if z2 == 0 || z1 % z2 != 0 {
+                    return Err(format!(
+                        "view %{}: kích thước phần tử đích ({} byte) phải chia hết kích thước nguồn ({} byte)",
+                        dst, z2, z1
+                    ));
+                }
+                let (s1, s2) = (self.bv(z1), self.bv(z2));
                 self.check(
                     &m_new.bvmul_no_overflow(&s2, false),
                     &format!("view %{}: tràn số khi tính số byte đích", dst),
@@ -1531,6 +1596,9 @@ impl<'ctx> Verifier<'ctx> {
                 env.insert(wp[1], self.get_reg(*arg)?.clone());
                 env.insert(wp[2], i.clone());
                 for (k, req) in worker.requires.iter().enumerate() {
+                    if req.class() != SpecClass::Bv {
+                        return Err(format!("parallel: @req #{} của worker '{}' dùng số học toán học (chưa hỗ trợ)", k, worker.name));
+                    }
                     self.check_with(
                         Some(&in_range),
                         &self.eval_bool(req, &env, None)?,
@@ -1645,6 +1713,9 @@ impl<'ctx> Verifier<'ctx> {
                     )?;
                 }
                 for (i, req) in callee.requires.iter().enumerate() {
+                    if req.class() != SpecClass::Bv {
+                        continue; // checker số nguyên chứng minh
+                    }
                     self.check(
                         &self.eval_bool(req, &env, None)?,
                         &format!("Vi phạm @req #{} khi gọi hàm '{}'", i, callee.name),
@@ -1668,7 +1739,7 @@ impl<'ctx> Verifier<'ctx> {
                         if let Some(r) = result_reg(callee) {
                             env.insert(r, dbv);
                         }
-                        for ens in &callee.ensures {
+                        for ens in callee.ensures.iter().filter(|e| e.class() != SpecClass::Rich) {
                             self.assume(&self.eval_bool(ens, &env, None)?);
                         }
                     }
@@ -1757,9 +1828,12 @@ impl<'ctx> Verifier<'ctx> {
                         func.name
                     ));
                 }
-                self.assume(&self.ev(e)?);
+                if e.class() != SpecClass::Rich {
+                    self.assume(&self.ev(e)?);
+                }
                 self.n_assume += 1;
             }
+            Inst::Assert(e) if e.class() != SpecClass::Bv => {}
             Inst::Assert(e) => self.check(&self.ev(e)?, "Vi phạm lệnh Assert")?,
             Inst::Ret { val } => {
                 if val.is_some() != func.ret_ty.is_some() {
@@ -1780,6 +1854,9 @@ impl<'ctx> Verifier<'ctx> {
                     env.insert(rr, self.get_reg(*r)?.clone());
                 }
                 for (i, ens) in func.ensures.iter().enumerate() {
+                    if ens.class() != SpecClass::Bv {
+                        continue;
+                    }
                     self.check(
                         &self.eval_bool(ens, &env, None)?,
                         &format!(
@@ -1796,7 +1873,20 @@ impl<'ctx> Verifier<'ctx> {
 
 /// Trả số lệnh `assume` (tiên đề không được chứng minh)
 pub fn verify_func(module: &Module, func: &Func) -> Result<u32, String> {
-    verify_inner(module, func).map_err(|e| {
+    if std::env::var_os("LIGHT_INT_ONLY").is_some() {
+        // chỉ để kiểm thử checker số nguyên (chống chứng minh rỗng): KHÔNG kiểm an toàn
+        return crate::verify_int::verify(module, func, true).map(|_| 0);
+    }
+    verify_inner(module, func)
+        .and_then(|n| {
+            // An toàn (tràn, biên, dừng) do checker BV ở trên chứng minh; mệnh đề toán học / giàu do checker số nguyên
+            let all = std::env::var_os("LIGHT_INT_ALL").is_some();
+            if all || crate::verify_int::needed(module, func) {
+                crate::verify_int::verify(module, func, all)?;
+            }
+            Ok(n)
+        })
+        .map_err(|e| {
         if e.starts_with("[Z3 ") {
             e
         } else {
@@ -1840,7 +1930,7 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
     for &(r, ty) in &func.params {
         v.decl_reg(r, ty)?;
     }
-    for req in &func.requires {
+    for req in func.requires.iter().filter(|e| e.class() != SpecClass::Rich) {
         v.solver.assert(&v.ev(req)?);
     }
 
@@ -1893,7 +1983,7 @@ fn verify_inner(module: &Module, func: &Func) -> Result<u32, String> {
                 }
             }
         }
-        for inv in &block.invs {
+        for inv in block.invs.iter().filter(|e| e.class() != SpecClass::Rich) {
             v.assume(&v.ev(inv)?);
         }
         if (!block.params.is_empty() || !block.invs.is_empty()) && !v.feasible() {

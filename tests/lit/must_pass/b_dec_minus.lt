@@ -1,4 +1,4 @@
-// EXPECT: P3
+// decreases dùng phép bit-vector quay vòng (đủ cho việc dừng): `n - i` hợp lệ
 fn f(n: u64) -> u64 {
     var i = 0;
     while i < n invariant i <= n decreases n - i {

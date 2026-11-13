@@ -1,0 +1,67 @@
+// P3: đặc tả đọc bộ nhớ (a[i], old, forall / exists) — checker số nguyên, heap theo kiểu
+include "../../../lit_program/std/core.lit";
+
+// miền giá trị ô nhớ phải đúng cả dưới lượng từ (u8 <= 255)
+fn bytes_small(n: u64, a: ptr<u8, n>) -> u64
+    ensures forall j in 0..n: a[j] <= 255
+{
+    return 0;
+}
+
+// không ghi gì: bộ nhớ giữ nguyên qua hàm và qua lệnh gọi hàm không ghi
+fn peek(n: u64, a: ptr<u64, n>) -> u64
+    requires n >= 1
+    ensures result == a[0]
+{
+    return a[0];
+}
+
+fn peek_twice(n: u64, a: ptr<u64, n>) -> u64
+    requires n >= 1, a[0] < 1000
+    ensures result == 2 * a[0]
+{
+    let x = peek(n, a);
+    let y = peek(n, a);
+    return x +% y; // checker BV không biết a[0] < 1000 (sự thật bộ nhớ): dùng +%, checker số nguyên chứng minh không quay vòng
+}
+
+// ghi một ô, các ô khác (cùng mảng) giữ nguyên
+fn set_one(n: u64, a: ptr<u64, n>, k: u64, v: u64)
+    requires k < n
+    ensures a[k] == v
+    ensures forall j in 0..n: j != k ==> a[j] == old(a[j])
+{
+    a[k] = v;
+}
+
+// đổi chỗ qua hàm được gọi: @ens của hàm được gọi nói về old(...) TRƯỚC lệnh gọi
+fn swap(n: u64, a: ptr<u64, n>, i: u64, j: u64)
+    requires i < n, j < n
+    ensures a[i] == old(a[j]), a[j] == old(a[i])
+    ensures forall t in 0..n: t != i && t != j ==> a[t] == old(a[t])
+{
+    let x = a[i];
+    let y = a[j];
+    a[i] = y;
+    a[j] = x;
+}
+
+fn swap01(n: u64, a: ptr<u64, n>)
+    requires n >= 2
+    ensures a[0] == old(a[1]), a[1] == old(a[0])
+{
+    swap(n, a, 0, 1);
+}
+
+// điền: forall trong bất biến, đường đi rẽ nhánh (heap nối ở block nối)
+fn fill(n: u64, a: ptr<u64, n>, v: u64)
+    ensures forall j in 0..n: a[j] == v || a[j] == 0
+{
+    for i in 0..n invariant forall j in 0..i: a[j] == v || a[j] == 0 {
+        if v > 10 {
+            a[i] = v;
+        } else {
+            a[i] = 0;
+        }
+    }
+}

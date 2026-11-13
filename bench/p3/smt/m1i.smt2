@@ -1,0 +1,7 @@
+(declare-const M (Array Int Int))
+(declare-const a Int) (declare-const b Int) (declare-const i Int) (declare-const k Int)
+(assert (and (<= 0 i) (< i k) (< k 17592186044416) (<= 0 a) (<= 0 b)))
+(assert (forall ((j Int)) (! (=> (and (<= 0 j) (< j i)) (= (select M (+ a j)) (select M (+ b j)))) :pattern ((select M (+ a j))))))
+(assert (= (select M (+ a i)) (select M (+ b i))))
+(assert (not (forall ((j Int)) (=> (and (<= 0 j) (< j (+ i 1))) (= (select M (+ a j)) (select M (+ b j)))))))
+(check-sat)

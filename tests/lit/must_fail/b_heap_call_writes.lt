@@ -1,0 +1,14 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// hàm được gọi ghi a[0]: người gọi không được giả định a[0] giữ nguyên
+include "../../../lit_program/std/core.lit";
+fn g(n: u64, a: ptr<u64, n>)
+    requires n >= 1
+{
+    a[0] = 7;
+}
+fn f(n: u64, a: ptr<u64, n>)
+    requires n >= 1
+    ensures a[0] == old(a[0])
+{
+    g(n, a);
+}

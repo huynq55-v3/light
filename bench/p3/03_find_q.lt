@@ -1,0 +1,13 @@
+// Light-Bench 03 (P3, đặc tả đầy đủ) — chỉ số đầu tiên có a[j] == x, hoặc n nếu không có
+include "../../lit_program/std/core.lit";
+
+fn find_q(n: u64, a: ptr<u64, n>, x: u64) -> u64
+    ensures result <= n
+    ensures forall j in 0..result: a[j] != x
+    ensures result < n ==> a[result] == x
+{
+    for i in 0..n invariant forall j in 0..i: a[j] != x {
+        if a[i] == x { return i; }
+    }
+    return n;
+}

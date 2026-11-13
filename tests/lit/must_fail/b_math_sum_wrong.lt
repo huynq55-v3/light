@@ -1,0 +1,14 @@
+// EXPECT: invariant #1 không còn đúng
+// bất biến toán học sai (i*(i-1) thay vì i*(i+1)): đúng lúc vào, sai sau một vòng
+fn sum(n: u64) -> u64
+    requires n <= 1000
+    ensures result <= 500500
+{
+    var s = 0;
+    var i = 0;
+    while i < n invariant i <= n && s * 2 == i * (i - 1) && s <= 500500 decreases n - i {
+        i += 1;
+        s += i;
+    }
+    return s;
+}

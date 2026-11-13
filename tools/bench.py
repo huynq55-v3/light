@@ -215,6 +215,8 @@ def test(n=300):
     rng = random.Random(20261112)
     bad = 0
     for file, func, gen in TASKS:
+        if os.path.basename(BENCH) == "p3" and not os.path.exists(src_of(file)):
+            continue  # bench/p3: chỉ những bài đã viết lại với đặc tả đầy đủ (thư mục khác: thiếu file là lỗi)
         cases = [gen(rng) for _ in range(n)]
         got = call(file, func, [c[0] for c in cases])
         fails = 0

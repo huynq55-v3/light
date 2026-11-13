@@ -427,8 +427,13 @@ fn func_key(module: &Module, func: &Func) -> u64 {
     // Mã nguồn bộ kiểm chứng + IR + phiên bản: đổi verifier thì cache tự mất hiệu lực
     let mut h = 0xcbf29ce484222325u64;
     h = fnv(include_bytes!("verify.rs"), h);
+    h = fnv(include_bytes!("verify_int.rs"), h);
     h = fnv(include_bytes!("ir.rs"), h);
     h = fnv(env!("CARGO_PKG_VERSION").as_bytes(), h);
+    // chế độ thử checker số nguyên: kết quả khác chế độ thường nên phải khác khoá cache
+    for k in ["LIGHT_INT_ALL", "LIGHT_INT_ONLY"] {
+        h = fnv(if std::env::var_os(k).is_some() { b"1" } else { b"0" }, h);
+    }
     h = fnv(format!("{:?}", module.layouts).as_bytes(), h);
     // Chuẩn hóa: id hàm -> băm tên, bỏ origin (dòng đổi không làm mất cache)
     let mut f = func.clone();
@@ -452,8 +457,10 @@ fn func_key(module: &Module, func: &Func) -> u64 {
     callees.sort_by_key(|&id| module.funcs[id as usize].name.clone());
     callees.dedup();
     for id in callees {
-        let c = &module.funcs[id as usize]; // chỉ HỢP ĐỒNG của hàm được gọi, không phải thân
+        let c = &module.funcs[id as usize]; // HỢP ĐỒNG của hàm được gọi + tóm tắt ghi (không phải toàn bộ thân)
         h = fnv(format!("{}|{:?}|{:?}|{:?}|{:?}", c.name, c.params, c.ret_ty, c.requires, c.ensures).as_bytes(), h);
+        // checker số nguyên dùng tập heap hàm được gọi có thể ghi (suy từ thân của nó, đệ quy)
+        h = fnv(crate::verify_int::write_summary(module, c).as_bytes(), h);
     }
     h
 }

@@ -1,0 +1,10 @@
+// EXPECT: Vi phạm @req
+// requires toán học ở hàm được gọi phải được chứng minh (checker số nguyên)
+fn g(a: u64, b: u64) -> u64
+    requires a + b <= 100
+{
+    return a + b;
+}
+fn f(a: u64) -> u64 {
+    return g(a, 60);
+}

@@ -1,0 +1,23 @@
+// Light-Bench 09 (P3, đặc tả đầy đủ) — đảo ngược a[0..n) tại chỗ
+include "../../lit_program/std/core.lit";
+
+fn reverse_q(n: u64, a: ptr<u64, n>)
+    ensures forall t in 0..n: a[t] == old(a[n - 1 - t])
+{
+    var i = 0;
+    var j = n;
+    while j - i > 1
+        invariant i <= j, j <= n, i + j == n,
+            forall t in 0..i: a[t] == old(a[n - 1 - t]),
+            forall t in j..n: a[t] == old(a[n - 1 - t]),
+            forall t in i..j: a[t] == old(a[t])
+        decreases j - i
+    {
+        j -= 1;
+        let x = a[i];
+        let y = a[j];
+        a[i] = y;
+        a[j] = x;
+        i += 1;
+    }
+}

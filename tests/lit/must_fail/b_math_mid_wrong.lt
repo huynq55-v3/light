@@ -1,0 +1,8 @@
+// EXPECT: Vi phạm điều kiện đầu ra
+// (lo + hi) / 2 toán học khác (lo +% hi) / 2 khi tràn
+fn mid(lo: u64, hi: u64) -> u64
+    requires lo <= hi
+    ensures result == (lo + hi) / 2
+{
+    return (lo +% hi) / 2;
+}

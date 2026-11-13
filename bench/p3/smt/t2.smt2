@@ -1,0 +1,11 @@
+; lower_bound: requires sắp (dạng từng cặp); inv forall j<lo: a[j] < x, forall j in hi..n: a[j] >= x; nhánh a[mid] < x -> lo = mid+1
+(declare-const M (Array Int Int)) (declare-const a Int) (declare-const n Int) (declare-const lo Int) (declare-const hi Int) (declare-const x Int)
+(define-fun A ((t Int)) Int (+ a (* 8 t)))
+(assert (and (<= 0 a) (<= 0 lo) (< lo hi) (<= hi n)))
+(assert (forall ((j Int) (k Int)) (! (=> (and (<= 0 j) (<= j k) (< k n)) (<= (select M (A j)) (select M (A k)))) :pattern ((select M (A j)) (select M (A k))))))
+(assert (forall ((j Int)) (! (=> (and (<= 0 j) (< j lo)) (< (select M (A j)) x)) :pattern ((select M (A j))))))
+(assert (forall ((j Int)) (! (=> (and (<= hi j) (< j n)) (>= (select M (A j)) x)) :pattern ((select M (A j))))))
+(define-fun mid () Int (+ lo (div (- hi lo) 2)))
+(assert (< (select M (A mid)) x))
+(assert (not (forall ((j Int)) (=> (and (<= 0 j) (< j (+ mid 1))) (< (select M (A j)) x)))))
+(check-sat)

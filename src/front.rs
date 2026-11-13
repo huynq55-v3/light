@@ -152,6 +152,8 @@ enum EK {
     Range(Box<E>, Box<E>, Box<E>),
     Field(Box<E>, String),
     Call(String, Vec<E>),
+    /// `forall j in lo..hi: thân` / `exists ...` (chỉ trong đặc tả)
+    Quant(bool, String, Box<E>, Box<E>, Box<E>),
 }
 
 #[derive(Clone, Debug)]
@@ -614,6 +616,19 @@ impl<'a> Ps<'a> {
         let p = self.pos();
         match self.next() {
             Tok::Int(v) => Ok(E { k: EK::Int(v), p }),
+            Tok::Id(n) if (n == "forall" || n == "exists") && matches!(self.peek(), Tok::Id(_)) => {
+                let v = self.ident()?;
+                if !self.is_kw("in") {
+                    return self.err("cần `in`: forall j in lo..hi: điều_kiện");
+                }
+                self.i += 1;
+                let lo = self.expr(0)?;
+                self.expect("..")?;
+                let hi = self.expr(0)?;
+                self.expect(":")?;
+                let body = self.expr(0)?;
+                Ok(E { k: EK::Quant(n == "forall", v, Box::new(lo), Box::new(hi), Box::new(body)), p })
+            }
             Tok::Id(n) => {
                 if self.eat("(") {
                     let mut args = Vec::new();
@@ -986,6 +1001,7 @@ impl Fx<'_> {
     fn expr(&mut self, e: &E, want: Option<String>, top: bool) -> Result<V, String> {
         let p = e.p;
         match &e.k {
+            EK::Quant(..) => self.err(p, "forall / exists chỉ dùng trong đặc tả (requires / ensures / invariant)"),
             EK::Int(v) => Ok(V { s: v.to_string(), t: VT::Lit }),
             EK::Name(n) => {
                 if n == "result" {
@@ -1596,7 +1612,7 @@ impl Fx<'_> {
             self.emit(p, format!("@dec sub {} {}", e, ir));
         }
         if let Some(d) = dec {
-            let z = spec(d, &names, false, self.file)?;
+            let z = spec_m(d, &names, false, true, self.file)?;
             self.emit(d.p, format!("@dec {}", z));
         }
         // điều kiện
@@ -1692,9 +1708,15 @@ fn bin_name(op: &str) -> Option<&'static str> {
 
 /// requires / ensures -> biểu thức Z3 tiền tố của SSA
 /// `names`: tên người viết -> toán hạng SSA (tham số; trong invariant / decreases: mọi biến đang thấy)
+/// `+ - * / %` là số học TOÁN HỌC (iadd ... imod: số nguyên không giới hạn, không quay vòng). Riêng `decreases` (`dec`):
+/// phép bit-vector quay vòng — biến giảm chỉ cần giảm ngặt theo nghĩa không dấu nên cách hiểu nào cũng đúng cho việc dừng.
 fn spec(e: &E, names: &HashMap<String, String>, ens: bool, file: &str) -> Result<String, String> {
+    spec_m(e, names, ens, false, file)
+}
+
+fn spec_m(e: &E, names: &HashMap<String, String>, ens: bool, dec: bool, file: &str) -> Result<String, String> {
     let err = |p: Pos, m: &str| Err(format!("Dòng {}:{}:{}: {}", file, p.0, p.1, m));
-    let r = |x: &E| spec(x, names, ens, file);
+    let r = |x: &E| spec_m(x, names, ens, dec, file);
     Ok(match &e.k {
         EK::Int(v) => v.to_string(),
         EK::Name(n) if n == "result" => {
@@ -1719,14 +1741,20 @@ fn spec(e: &E, names: &HashMap<String, String>, ens: bool, file: &str) -> Result
         EK::Bin("&&", a, b) => format!("and {} {}", r(a)?, r(b)?),
         EK::Bin("||", a, b) => format!("or {} {}", r(a)?, r(b)?),
         EK::Bin(op, a, b) if cmp_name(op).is_some() => format!("{} {} {}", cmp_name(op).unwrap(), r(a)?, r(b)?),
-        EK::Bin(op @ ("+" | "-" | "*"), ..) => {
-            return err(
-                e.p,
-                &format!(
-                    "`{}` trong đặc tả: chưa có số học toán học (P3). Dùng `{}%` nếu chấp nhận quay vòng mod 2^64",
-                    op, op
-                ),
-            )
+        EK::Bin(op @ ("+" | "-" | "*" | "/" | "%"), a, b) => {
+            let n = match (*op, dec) {
+                ("+", false) => "iadd",
+                ("-", false) => "isub",
+                ("*", false) => "imul",
+                ("/", false) => "idiv",
+                ("%", false) => "imod",
+                ("+", true) => "add",
+                ("-", true) => "sub",
+                ("*", true) => "mul",
+                ("/", true) => "udiv",
+                _ => "urem",
+            };
+            format!("{} {} {}", n, r(a)?, r(b)?)
         }
         EK::Bin(op, a, b) => {
             let n = match *op {
@@ -1735,8 +1763,6 @@ fn spec(e: &E, names: &HashMap<String, String>, ens: bool, file: &str) -> Result
                 "^" => "xor",
                 "<<" => "shl",
                 ">>" => "lshr",
-                "/" => "udiv",
-                "%" => "urem",
                 "+%" => "add_wrap",
                 "-%" => "sub_wrap",
                 "*%" => "mul_wrap",
@@ -1748,8 +1774,24 @@ fn spec(e: &E, names: &HashMap<String, String>, ens: bool, file: &str) -> Result
             let EK::Name(n) = &b.k else { unreachable!() };
             format!("{}.{}", n, f) // DATA.len / Layout.trường: hằng
         }
-        EK::Index(..) | EK::Range(..) | EK::Field(..) => {
-            return err(e.p, "đặc tả chưa nói được về nội dung bộ nhớ (P3: forall / old)")
+        EK::Index(a, i) => {
+            let EK::Name(n) = &a.k else { return err(e.p, "đặc tả: chỉ đọc được p[i] với p là tên con trỏ") };
+            let Some(pr) = names.get(n) else { return err(a.p, &format!("'{}' không phải con trỏ nhìn thấy được ở đây", n)) };
+            format!("mem {} {} 0", pr, r(i)?)
+        }
+        EK::Range(..) | EK::Field(..) => {
+            return err(e.p, "đặc tả: chưa đọc được p.trường / p[a..b] (P3 giai đoạn sau); dùng p[i]")
+        }
+        EK::Call(n, a) if n == "old" && a.len() == 1 => format!("old {}", r(&a[0])?),
+        EK::Quant(all, v, lo, hi, body) => {
+            if names.contains_key(v) || v == "result" {
+                return err(e.p, &format!("biến lượng từ '{}' trùng tên đang dùng: đặt tên khác", v));
+            }
+            let mut n2 = names.clone();
+            let bound = format!("%q_{}_{}_{}", v, e.p.0, e.p.1);
+            n2.insert(v.clone(), bound.clone());
+            let rb = |x: &E| spec_m(x, &n2, ens, dec, file);
+            format!("{} {} {} {} {}", if *all { "forall" } else { "exists" }, bound, r(lo)?, r(hi)?, rb(body)?)
         }
         EK::Call(n, _) => return err(e.p, &format!("gọi '{}' trong đặc tả: chưa có hàm spec (P3)", n)),
     })
@@ -1831,10 +1873,8 @@ pub fn lower_file(path: &Path) -> Result<Vec<(String, String)>, String> {
             out.push((format!("    @req {}", spec(e, &pmap, false, &file)?), org(e.p)));
         }
         for e in &f.ens {
-            if f.ret.is_none() {
-                return Err(format!("Dòng {}: hàm không trả giá trị thì ensures chưa có gì để nói (P3: old/modifies)", org(e.p)));
-            }
-            out.push((format!("    @ens {}", spec(e, &pmap, true, &file)?), org(e.p)));
+            // hàm không trả giá trị: ensures nói về bộ nhớ (vd `a[t] == old(...)`), không có `result`
+            out.push((format!("    @ens {}", spec(e, &pmap, f.ret.is_some(), &file)?), org(e.p)));
         }
         out.push(("    @entry".into(), org(f.p)));
         let mut scope = HashMap::new();

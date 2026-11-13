@@ -1,0 +1,14 @@
+# EXPECT: phải chia hết kích thước nguồn
+# heap theo kiểu cần phần tử cùng Layout không chồng một phần: view chỉ sang Layout có kích thước chia hết
+layout Q 8 {
+    0: bv64
+}
+layout T 3 {
+    0: bv8
+}
+func f bv64 %q:ptr<Q,3> {
+    @b0
+        %t = view %q ptr<T,8>
+        %z = const 0 bv64
+        ret %z
+}
